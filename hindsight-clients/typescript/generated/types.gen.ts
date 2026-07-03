@@ -2108,6 +2108,12 @@ export type KnowledgeNode = {
    */
   timestamp?: string | null;
   /**
+   * Is Stale
+   *
+   * Pages only: true when memories in scope are newer than the last refresh (out of sync). Populated by the tree endpoint.
+   */
+  is_stale?: boolean | null;
+  /**
    * Children
    */
   children?: Array<KnowledgeNode>;
@@ -2144,7 +2150,7 @@ export type KnowledgePageBundleResponse = {
 /**
  * KnowledgePageGraphResponse
  *
- * Constellation graph of knowledge pages linked by shared tags.
+ * Source memories as nodes, clustered by the page they ground.
  */
 export type KnowledgePageGraphResponse = {
   /**
@@ -2164,9 +2170,9 @@ export type KnowledgePageGraphResponse = {
    */
   total_pages: number;
   /**
-   * Total Edges
+   * Total Memories
    */
-  total_edges: number;
+  total_memories: number;
 };
 
 /**
