@@ -27,6 +27,13 @@ export interface RetainOpts {
   async?: boolean; // enqueue server-side (default) vs block on extraction
 }
 
+export interface RecallResult {
+  content?: string;
+  memory?: string;
+  text?: string;
+  scores?: Record<string, number>;
+}
+
 const TERMINAL = new Set(["completed", "failed", "cancelled", "error"]);
 
 export class HindsightClient {
@@ -81,6 +88,35 @@ export class HindsightClient {
       if (!resp.ok) throw new Error(`reflect ${resp.status}`);
       const data = (await resp.json()) as { text?: string };
       return (data.text || "").trim();
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  /** Recall (search) memories for a query. Fail-open: returns [] on any error so a turn never breaks. */
+  async recall(
+    query: string,
+    opts: { maxTokens?: number; budget?: string; types?: string[]; timeoutMs?: number } = {}
+  ): Promise<RecallResult[]> {
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), opts.timeoutMs ?? 10000);
+    try {
+      const resp = await fetch(this.bankUrl("/memories/recall"), {
+        method: "POST",
+        headers: this.headers(),
+        body: JSON.stringify({
+          query,
+          max_tokens: opts.maxTokens ?? 1024,
+          budget: opts.budget ?? "mid",
+          ...(opts.types ? { types: opts.types } : {}),
+        }),
+        signal: ctrl.signal,
+      });
+      if (!resp.ok) return [];
+      const data = (await resp.json()) as { results?: RecallResult[] };
+      return data.results ?? [];
+    } catch {
+      return [];
     } finally {
       clearTimeout(timer);
     }
