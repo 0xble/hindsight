@@ -5,8 +5,8 @@
 Repo-scoped, long-term memory for Claude Code. The plugin resolves one
 Hindsight memory bank per repository and keeps it in sync with your work:
 every prompt gets relevant memory injected, every session's transcript gets
-written back, new repos get offered a one-time background seed from git
-history, and an MCP server exposes knowledge-page tools against the same
+written back, new repos are automatically seeded from git history in the
+background, and an MCP server exposes knowledge-page tools against the same
 bank. This package (`hindsight-integrations/claude-code-v2/`) is a thin
 wrapper — all the actual logic (recall/reflect, transcript parsing, seeding,
 bank resolution, config loading) lives in the shared TypeScript core at
@@ -29,17 +29,21 @@ Four surfaces, all wired up automatically once the plugin is installed:
    (`retainLiveSession`), so what happened in the session compounds into
    memory for next time. On by default unless the plugin is `disabled`.
 3. **Auto-seed for new repos (`SessionStart` hook,
-   `dist/claude-sessionstart-hook.js`)** — if the repo's bank looks cold (no
-   git-sourced memory yet) and you haven't already seeded or declined, the
-   agent is prompted to ask you whether to learn the repo's git history. If
-   you say yes, it runs `dist/hindsight-seed.js seed --repo <dir>`, which
-   kicks off a non-blocking background backfill (extraction happens
-   server-side/async, so it doesn't consume your session's tokens or block
-   your work).
+   `dist/claude-sessionstart-hook.js`)** — if the repo's bank is cold (no
+   git-sourced memory yet) and it hasn't already been seeded/declined, the
+   hook itself **deterministically** kicks off a non-blocking background
+   backfill of recent git history (no prompt, no dependence on the agent
+   running anything) and injects a short visible `🧠 Hindsight is learning …`
+   note. Extraction happens server-side/async, so it doesn't consume your
+   session's tokens or block your work. Governed by `autoSeed` (default on)
+   and `seedLimit` (default 300 most-recent commits). This hook also injects
+   a `<hindsight_knowledge>` bank-mission every session, instructing the
+   agent to consult and create/update knowledge pages as it works.
 4. **Knowledge-page tools (MCP server, `.mcp.json` → `dist/mcp-server.js`)**
    — exposes `agent_knowledge_*` tools (list/get/create/update/delete
    knowledge pages, plus recall) against the same per-repo bank the hooks
-   use.
+   use. The `SessionStart` bank-mission is what drives the agent to actually
+   use these, so pages grow as a living wiki rather than a one-time dump.
 
 ## Bank model
 
@@ -89,12 +93,17 @@ from the coding agent's own model and token budget.
 
 ## Auto-seed flow
 
-The first time you use the plugin in a new repo, `SessionStart` checks
-whether the repo's bank already has git-sourced memory. If not, it offers to
-seed it. On yes, a background backfill of recent git history starts
-(non-blocking — extraction happens server-side/async, so your session isn't
-held up). If you decline, that choice is remembered per-bank and you won't
-be asked again for that repo.
+The first time you use the plugin in a new git repo, `SessionStart` checks
+whether the repo's bank already has git-sourced memory. If it's cold, the
+hook **automatically** starts a non-blocking background backfill of the
+`seedLimit` most-recent commits (default 300) — no prompt, and it does not
+depend on the agent running any command. Extraction happens
+server-side/async, so your session isn't held up; a short `🧠 Hindsight is
+learning …` note is injected so you can see it happening. The bank is marked
+seeded so it won't re-seed on later sessions. Set `"autoSeed": false` in
+`~/.hindsight/coding-agent.json` to turn this off, or run
+`node <plugin>/dist/hindsight-seed.js decline --repo .` to opt a specific
+repo out.
 
 ## Migration from v1 (`hindsight-memory`)
 
@@ -109,17 +118,20 @@ see the install warning above.
 
 ## Troubleshooting
 
-**It stopped offering to seed a repo.** Seed state is tracked per bank at
-`~/.hindsight/coding-agent-state/<bankId>.json` (the bank id is
-URL-encoded in the filename). Delete that file to be re-offered on the next
-session, or force a seed right now:
+**A repo didn't auto-seed (or I want to re-seed).** Seed state is tracked
+per bank at `~/.hindsight/coding-agent-state/<bankId>.json` (the bank id is
+URL-encoded in the filename). A bank that was already seeded or already warm
+is marked and won't auto-seed again — even if it later goes cold
+server-side. Delete that state file to let it auto-seed again next session,
+or force a seed right now:
 
 ```bash
 node <plugin>/dist/hindsight-seed.js seed --repo .
 ```
 
-Note that a bank marked as seeded or already warm won't be re-offered even
-if it later goes cold again server-side.
+The `hindsight-seed` CLI is the manual escape hatch: `seed` forces a
+background backfill now, `decline` opts a repo out of auto-seeding. Normal
+seeding is automatic via the `SessionStart` hook and needs no commands.
 
 **Is memory actually running?** Check `/tmp/hindsight-plugin.log` (override
 with `HINDSIGHT_DIAG_FILE`) for `recall_ok` / `reflect_ok` / `retain_ok`
