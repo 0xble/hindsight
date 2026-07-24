@@ -9,15 +9,17 @@ export default defineConfig({
     "cursor-hook": "src/cursor-hook.ts",
     "codex-hook": "src/codex-hook.ts",
     "mcp-server": "src/mcp-server.ts",
+    "hindsight-seed": "src/hindsight-seed.ts",
   },
   format: ["esm"],
   target: "node18",
   clean: true,
   dts: { entry: "src/index.ts" },
   shims: false,
-  // Each bin entry (claude-hook.js, cursor-hook.js, codex-hook.js, backfill.js, mcp-server.js)
-  // must be a single self-contained file: plugin wrappers (e.g. claude-code-v2/scripts/build.mjs)
-  // copy just that one file out of dist/, so shared code can't live in a separate chunk-*.js.
+  // Each bin entry (claude-hook.js, cursor-hook.js, codex-hook.js, backfill.js, mcp-server.js,
+  // hindsight-seed.js) must be a single self-contained file: plugin wrappers (e.g.
+  // claude-code-v2/scripts/build.mjs) copy just that one file out of dist/, so shared code can't
+  // live in a separate chunk-*.js.
   splitting: false,
   // mcp-server.js additionally needs its npm deps (the MCP SDK + zod) inlined, since the wrapper
   // only copies the single bundle file, not node_modules. The regexes catch subpath imports too

@@ -1,8 +1,15 @@
 import { mkdtempSync, rmSync, writeFileSync, mkdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { isColdRepo, readSeedState, writeSeedState } from "./seed";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import {
+  isColdRepo,
+  readSeedState,
+  writeSeedState,
+  startBackgroundSeed,
+  seedControl,
+  DEFAULT_SEED_LIMIT,
+} from "./seed";
 
 let stateDir: string;
 
@@ -82,5 +89,79 @@ describe("seed state persistence", () => {
     expect(() => writeSeedState("b", { declined: true }, brokenDir)).not.toThrow();
     expect(() => readSeedState("b", brokenDir)).not.toThrow();
     expect(readSeedState("b", brokenDir)).toEqual({});
+  });
+});
+
+describe("startBackgroundSeed", () => {
+  function fakeSpawn() {
+    return vi.fn().mockReturnValue({ unref: vi.fn() });
+  }
+
+  it("spawns node against backfillPath, detached + stdio ignore, with the default limit", () => {
+    const spawn = fakeSpawn();
+    startBackgroundSeed("/some/repo", { backfillPath: "/dist/backfill.js", spawn });
+    expect(spawn).toHaveBeenCalledWith(
+      "node",
+      ["/dist/backfill.js", "--repo", "/some/repo", "--limit", String(DEFAULT_SEED_LIMIT)],
+      { detached: true, stdio: "ignore" }
+    );
+    expect(spawn.mock.results[0].value.unref).toHaveBeenCalled();
+  });
+
+  it("opts.limit overrides the default limit", () => {
+    const spawn = fakeSpawn();
+    startBackgroundSeed("/some/repo", { backfillPath: "/dist/backfill.js", spawn, limit: 50 });
+    expect(spawn).toHaveBeenCalledWith(
+      "node",
+      ["/dist/backfill.js", "--repo", "/some/repo", "--limit", "50"],
+      { detached: true, stdio: "ignore" }
+    );
+  });
+
+  it("fail-safe: a spawn that throws does not throw out of startBackgroundSeed", () => {
+    const spawn = vi.fn().mockImplementation(() => {
+      throw new Error("spawn EMFILE");
+    });
+    expect(() =>
+      startBackgroundSeed("/some/repo", { backfillPath: "/dist/backfill.js", spawn })
+    ).not.toThrow();
+  });
+});
+
+describe("seedControl", () => {
+  function fakeSpawn() {
+    return vi.fn().mockReturnValue({ unref: vi.fn() });
+  }
+
+  it("seed: spawns the background backfill and persists seededAt", () => {
+    const spawn = fakeSpawn();
+    const result = seedControl("seed", { repo: "/r", bankId: "b", spawn, stateDir });
+    expect(spawn).toHaveBeenCalled();
+    const state = readSeedState("b", stateDir);
+    expect(typeof state.seededAt).toBe("string");
+    expect(state.seededAt).not.toBe("");
+    expect(result.ok).toBe(true);
+  });
+
+  it("decline: persists declined without spawning", () => {
+    const spawn = fakeSpawn();
+    const result = seedControl("decline", { repo: "/r", bankId: "b", spawn, stateDir });
+    expect(spawn).not.toHaveBeenCalled();
+    expect(readSeedState("b", stateDir)).toEqual({ declined: true });
+    expect(result.ok).toBe(true);
+  });
+
+  it("decline: works fine without a spawn injected at all", () => {
+    const result = seedControl("decline", { repo: "/r", bankId: "b", stateDir });
+    expect(readSeedState("b", stateDir)).toEqual({ declined: true });
+    expect(result.ok).toBe(true);
+  });
+
+  it("unknown command: not ok, no state written, no spawn", () => {
+    const spawn = fakeSpawn();
+    const result = seedControl("bogus", { repo: "/r", bankId: "b", spawn, stateDir });
+    expect(spawn).not.toHaveBeenCalled();
+    expect(readSeedState("b", stateDir)).toEqual({});
+    expect(result.ok).toBe(false);
   });
 });

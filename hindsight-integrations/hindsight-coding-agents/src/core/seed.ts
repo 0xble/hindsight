@@ -5,9 +5,11 @@
  * git-sourced docs exist (network errors -> false, never offer to seed on a guess). State
  * read/write never throws — a corrupt or unwritable state file must not break the hook.
  */
+import { spawn as realSpawn } from "node:child_process";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 
 export interface SeedState {
   declined?: boolean; // user said no to seeding this bank — don't re-ask every session
@@ -60,4 +62,58 @@ export function writeSeedState(
   } catch {
     /* best-effort: never throw */
   }
+}
+
+export const DEFAULT_SEED_LIMIT = 300;
+
+/** Spawn a DETACHED background backfill of the most-recent `limit` commits of `repoDir`. Fire-and-forget:
+ *  the child outlives this process; extraction is server-side/async so nothing here blocks. Never throws. */
+export function startBackgroundSeed(
+  repoDir: string,
+  opts: { limit?: number; backfillPath?: string; spawn?: typeof realSpawn } = {}
+): void {
+  try {
+    const spawnFn = opts.spawn ?? realSpawn;
+    const backfillPath =
+      opts.backfillPath ?? join(dirname(fileURLToPath(import.meta.url)), "backfill.js");
+    const limit = opts.limit ?? DEFAULT_SEED_LIMIT;
+    const child = spawnFn("node", [backfillPath, "--repo", repoDir, "--limit", String(limit)], {
+      detached: true,
+      stdio: "ignore",
+    });
+    child.unref();
+  } catch {
+    /* best-effort: a failed spawn must not break the caller */
+  }
+}
+
+export interface SeedControlResult {
+  ok: boolean;
+  message: string;
+}
+
+/** Execute a seed-control command. Pure-ish: bank + connection are passed in; spawn + stateDir injectable. */
+export function seedControl(
+  command: string,
+  args: {
+    repo: string;
+    bankId: string;
+    limit?: number;
+    spawn?: typeof realSpawn;
+    stateDir?: string;
+  }
+): SeedControlResult {
+  if (command === "seed") {
+    startBackgroundSeed(args.repo, { limit: args.limit, spawn: args.spawn });
+    writeSeedState(args.bankId, { seededAt: new Date().toISOString() }, args.stateDir);
+    return {
+      ok: true,
+      message: `Hindsight is learning ${args.bankId} from its git history in the background — memories will appear as it processes.`,
+    };
+  }
+  if (command === "decline") {
+    writeSeedState(args.bankId, { declined: true }, args.stateDir);
+    return { ok: true, message: `Okay — won't offer to seed ${args.bankId} again.` };
+  }
+  return { ok: false, message: "usage: hindsight-seed <seed|decline> --repo <dir>" };
 }

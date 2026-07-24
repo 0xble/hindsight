@@ -14,6 +14,15 @@ export function repoNameOf(repo: string): string {
   return repo.replace(/\/+$/, "").split("/").pop() || "repo";
 }
 
+/** True iff `dir` is a git repo with at least one commit. Fast (--max-count=1). False on non-git/empty/error. */
+export function hasGitHistory(dir: string): boolean {
+  try {
+    return git(dir, "rev-list", "--max-count=1", "HEAD").trim().length > 0;
+  } catch {
+    return false;
+  }
+}
+
 /**
  * Retain ONE commit (full message + full diff) under the `git` strategy. The document_id is `git:<sha>`,
  * so a later run (or the live git-sync) can tell what's already ingested and stays idempotent. Shared by
