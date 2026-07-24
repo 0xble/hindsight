@@ -1,4 +1,5 @@
 import { mkdtempSync, rmSync, writeFileSync, mkdirSync } from "node:fs";
+import { EventEmitter } from "node:events";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -94,7 +95,7 @@ describe("seed state persistence", () => {
 
 describe("startBackgroundSeed", () => {
   function fakeSpawn() {
-    return vi.fn().mockReturnValue({ unref: vi.fn() });
+    return vi.fn().mockReturnValue({ on: vi.fn(), unref: vi.fn() });
   }
 
   it("spawns node against backfillPath, detached + stdio ignore, with the default limit", () => {
@@ -126,11 +127,26 @@ describe("startBackgroundSeed", () => {
       startBackgroundSeed("/some/repo", { backfillPath: "/dist/backfill.js", spawn })
     ).not.toThrow();
   });
+
+  it("fail-safe: an async 'error' event on the child (ENOENT/EACCES/sandbox) does not crash the caller", () => {
+    // Real spawn() failures like ENOENT arrive as an async 'error' event on the returned
+    // ChildProcess, not as a synchronous throw — so the spy must be a real EventEmitter to
+    // exercise that path (a plain object with unref() wouldn't emit anything).
+    const child = new EventEmitter() as EventEmitter & { unref: () => void };
+    child.unref = vi.fn();
+    const spawn = vi.fn().mockReturnValue(child);
+    expect(() =>
+      startBackgroundSeed("/some/repo", { backfillPath: "/dist/backfill.js", spawn })
+    ).not.toThrow();
+    // Emitting 'error' with no listener would normally throw (EventEmitter semantics) and crash
+    // the process — proving a listener was attached means this does NOT throw.
+    expect(() => child.emit("error", new Error("ENOENT"))).not.toThrow();
+  });
 });
 
 describe("seedControl", () => {
   function fakeSpawn() {
-    return vi.fn().mockReturnValue({ unref: vi.fn() });
+    return vi.fn().mockReturnValue({ on: vi.fn(), unref: vi.fn() });
   }
 
   it("seed: spawns the background backfill and persists seededAt", () => {

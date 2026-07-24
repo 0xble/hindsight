@@ -81,6 +81,10 @@ export function startBackgroundSeed(
       detached: true,
       stdio: "ignore",
     });
+    // spawn() failures (ENOENT/EACCES/fd exhaustion/sandboxed environments) often arrive
+    // ASYNCHRONOUSLY as an 'error' event on the child, not as a synchronous throw — an
+    // unhandled 'error' event would crash the caller. Swallow it: fire-and-forget best-effort.
+    child.on("error", () => {});
     child.unref();
   } catch {
     /* best-effort: a failed spawn must not break the caller */
