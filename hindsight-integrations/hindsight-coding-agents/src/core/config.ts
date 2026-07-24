@@ -42,7 +42,7 @@ export interface RawConfig {
   resolveWorktrees?: boolean; // {gitProject}: worktrees share the main repo's bank (default true)
   harness?: string; // runtime adapter (default "opencode")
   disabled?: boolean; // hard off-switch — inert plugin, for a no-memory baseline (default false)
-  retainSessions?: boolean; // enable live write-back (default false)
+  retainSessions?: boolean; // opencode plugin only; the Stop hook always writes back unless disabled (default false)
   retainEveryTurns?: number; // write-back cadence in user turns (default 5)
   reflectTimeoutMs?: number; // reflect timeout (default 120000)
   recallMaxTokens?: number; // per-turn recall token budget (default 1024)

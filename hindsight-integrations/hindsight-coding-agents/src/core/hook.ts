@@ -14,12 +14,13 @@
  * in `buildHookOutput` (client + cache file in, injection string out) so it's unit-testable
  * without stdin/stdout; `runHook` is thin plumbing around it, with a `makeClient` seam for tests.
  */
-import { appendFileSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { deriveBankId } from "./bank";
 import type { Config } from "./config";
 import { loadConfig } from "./config";
+import { diag } from "./diag";
 import type { ClientOpts, RecallResult } from "./hindsight";
 import { HindsightClient } from "./hindsight";
 import { buildSystemInjection } from "./inject";
@@ -38,17 +39,6 @@ export interface HookSpec {
   parse(event: Record<string, unknown>): HookEventFields;
   /** Wrap injected context in the harness's native hook-output schema. */
   emit(context: string): unknown;
-}
-
-export function diag(harness: string, event: string, extra: Record<string, unknown> = {}): void {
-  try {
-    appendFileSync(
-      process.env.HINDSIGHT_DIAG_FILE || "/tmp/hindsight-plugin.log",
-      JSON.stringify({ ts: new Date().toISOString(), harness, event, ...extra }) + "\n"
-    );
-  } catch {
-    /* diagnostics must not break the agent */
-  }
 }
 
 /** Minimal client shape `buildHookOutput` needs — `HindsightClient` satisfies it structurally. */

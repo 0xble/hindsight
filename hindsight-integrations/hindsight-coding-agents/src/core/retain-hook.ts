@@ -14,11 +14,10 @@
 import { readFileSync } from "node:fs";
 import { deriveBankId } from "./bank";
 import { retainLiveSession } from "./chat";
-import type { Config } from "./config";
 import { loadConfig } from "./config";
+import { diag } from "./diag";
 import type { ClientOpts } from "./hindsight";
 import { HindsightClient } from "./hindsight";
-import { diag } from "./hook";
 import { readClaudeTranscript } from "./transcript";
 
 export interface RetainHookEventFields {
@@ -48,8 +47,6 @@ export async function buildRetain(args: {
   harness: string;
   sessionId: string;
   transcriptPath: string;
-  cwd: string;
-  cfg: Config;
   client: RetainClient;
 }): Promise<void> {
   const { harness, sessionId, transcriptPath, client } = args;
@@ -97,8 +94,6 @@ export async function runRetainHook(
     harness: spec.harness,
     sessionId: sessionId || "no-session",
     transcriptPath,
-    cwd: cwd || process.cwd(),
-    cfg,
     client,
   });
 }

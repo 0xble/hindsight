@@ -2,7 +2,6 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { resolveConfig } from "./config";
 import type { HindsightClient } from "./hindsight";
 import { buildRetain } from "./retain-hook";
 
@@ -44,8 +43,6 @@ describe("buildRetain", () => {
       harness: "claude-code",
       sessionId: "sess-1",
       transcriptPath: file,
-      cwd: root,
-      cfg: resolveConfig({}),
       client,
     });
 
@@ -77,8 +74,6 @@ describe("buildRetain", () => {
       harness: "claude-code",
       sessionId: "sess-2",
       transcriptPath: file,
-      cwd: root,
-      cfg: resolveConfig({}),
       client,
     });
 
@@ -103,8 +98,6 @@ describe("buildRetain", () => {
         harness: "claude-code",
         sessionId: "sess-3",
         transcriptPath: file,
-        cwd: root,
-        cfg: resolveConfig({}),
         client,
       })
     ).resolves.toBeUndefined();
