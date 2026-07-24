@@ -74,8 +74,14 @@ describe.runIf(LIVE)("live system: backfill -> reflect -> hook injection", () =>
       {
         id: "retry-policy",
         turns: [
-          { role: "user", text: "The client retried a 401 storm last night and locked accounts. What retry policy do we want?" },
-          { role: "assistant", text: "Decided: retry any 5xx, plus exactly 429 and 408 from the 4xx range; every other 4xx fails fast." },
+          {
+            role: "user",
+            text: "The client retried a 401 storm last night and locked accounts. What retry policy do we want?",
+          },
+          {
+            role: "assistant",
+            text: "Decided: retry any 5xx, plus exactly 429 and 408 from the 4xx range; every other 4xx fails fast.",
+          },
         ],
       },
     ];
@@ -85,8 +91,19 @@ describe.runIf(LIVE)("live system: backfill -> reflect -> hook injection", () =>
     // the REAL backfill CLI: ingests git + chats, drains extraction (server-side real LLM)
     execFileSync(
       "node",
-      [join(DIST, "backfill.js"), "--repo", repo, "--bank", `live-e2e-${basename(repo)}`,
-       "--api-url", API_URL, "--reset", "--conversations", convFile, "--no-pages"],
+      [
+        join(DIST, "backfill.js"),
+        "--repo",
+        repo,
+        "--bank",
+        `live-e2e-${basename(repo)}`,
+        "--api-url",
+        API_URL,
+        "--reset",
+        "--conversations",
+        convFile,
+        "--no-pages",
+      ],
       { encoding: "utf-8", timeout: 600_000 }
     );
   }, 660_000);

@@ -5,7 +5,7 @@ One package, several agents: a shared reflect-and-inject core with a thin entry 
 (**opencode**, **Claude Code**, **Codex CLI**, **Cursor CLI**), plus a one-shot **backfill** CLI that
 ingests a repo's git history and past developer conversations into a memory bank.
 
-The premise: most of a real fix is derivable from the code, but the *last mile* often hinges on a
+The premise: most of a real fix is derivable from the code, but the _last mile_ often hinges on a
 project-specific decision that isn't in the code at all — a rounding rule, a retry allowlist, a
 tie-break policy. Those decisions live in git history and past conversations. This package puts them
 in front of the agent at the moment it starts working.
@@ -34,12 +34,12 @@ longer in effect.
 
 ## Harnesses
 
-| harness       | kind              | entry point                                     | install |
-| ------------- | ----------------- | ----------------------------------------------- | ------- |
-| `opencode`    | persistent plugin | package default export (`dist/index.js`)        | add the package dir to `opencode.json` → `"plugin": [...]` |
-| `claude-code` | per-prompt hook   | `hindsight-claude-hook` (`dist/claude-hook.js`) | `UserPromptSubmit` hook in Claude Code `settings.json` |
+| harness       | kind              | entry point                                     | install                                                                                      |
+| ------------- | ----------------- | ----------------------------------------------- | -------------------------------------------------------------------------------------------- |
+| `opencode`    | persistent plugin | package default export (`dist/index.js`)        | add the package dir to `opencode.json` → `"plugin": [...]`                                   |
+| `claude-code` | per-prompt hook   | `hindsight-claude-hook` (`dist/claude-hook.js`) | `UserPromptSubmit` hook in Claude Code `settings.json`                                       |
 | `codex`       | per-prompt hook   | `hindsight-codex-hook` (`dist/codex-hook.js`)   | `UserPromptSubmit` hook in `~/.codex/hooks.json` (+ `codex_hooks = true`, Codex CLI ≥ 0.116) |
-| `cursor-cli`  | per-prompt hook   | `hindsight-cursor-hook` (`dist/cursor-hook.js`) | `beforeSubmitPrompt` hook in Cursor `hooks.json` |
+| `cursor-cli`  | per-prompt hook   | `hindsight-cursor-hook` (`dist/cursor-hook.js`) | `beforeSubmitPrompt` hook in Cursor `hooks.json`                                             |
 
 Hook-based harnesses share one runtime (`src/core/hook.ts`); each is a ~25-line spec of its event
 fields and output schema. The opencode plugin additionally exposes an on-demand **`memory_reflect`
@@ -77,39 +77,39 @@ the diagnostics path). Layering, later wins per field:
    project-local (the natural home for per-repo settings)
 5. its `harnesses.<name>` section
 
-Each entry point knows which harness it *is* (the opencode plugin is loaded by opencode, the codex
+Each entry point knows which harness it _is_ (the opencode plugin is loaded by opencode, the codex
 hook by Codex...), so one shared config serves several agents side by side:
 
 ```jsonc
 {
   "apiUrl": "http://localhost:8888",
   "harnesses": {
-    "opencode":    { "reflectTimeoutMs": 60000 },
-    "claude-code": { "disabled": true }          // e.g. memory off for Claude only
-  }
+    "opencode": { "reflectTimeoutMs": 60000 },
+    "claude-code": { "disabled": true }, // e.g. memory off for Claude only
+  },
 }
 ```
 
 ### Reference
 
-| field | default | meaning |
-| --- | --- | --- |
-| `apiUrl` | `http://localhost:8888` | Hindsight API base URL |
-| `apiToken` | — | bearer token (Hindsight Cloud) |
-| `bankId` | — | **explicit static bank**; unset ⇒ per-repo dynamic resolution (below) |
-| `dynamicBankId` | dynamic iff no `bankId` | force dynamic (`true`) or static (`false`) resolution |
-| `bankIdTemplate` | `"{gitProject}"` | dynamic bank id format, e.g. `"hindsight-{gitProject}"` |
-| `directoryBankMap` | — | absolute path → bank; **longest prefix wins**; overrides everything |
-| `resolveWorktrees` | `true` | `{gitProject}`: linked worktrees share the main repo's bank |
-| `disabled` | `false` | hard off-switch (inert plugin/hook — a no-memory baseline) |
-| `reflectTimeoutMs` | `120000` | reflect timeout; on timeout the agent runs without memory (recorded in diagnostics) |
-| `retainSessions` | `false` | opencode only: upsert the live transcript into the bank every N turns |
-| `retainEveryTurns` | `5` | write-back cadence (user turns) |
-| `gitSync.enabled` | `false` | opencode only: on load, retain commits new since the backfill |
-| `gitSync.ref` | `origin/main` | git-sync target ref (falls back to `HEAD`) |
-| `gitSync.fetch` | `false` | `git fetch` the ref before diffing |
-| `harnesses.<name>` | — | per-harness override of any field above |
-| `harness` | `opencode` | **backfill only**: which session format `--conversations` is read as |
+| field              | default                 | meaning                                                                             |
+| ------------------ | ----------------------- | ----------------------------------------------------------------------------------- |
+| `apiUrl`           | `http://localhost:8888` | Hindsight API base URL                                                              |
+| `apiToken`         | —                       | bearer token (Hindsight Cloud)                                                      |
+| `bankId`           | —                       | **explicit static bank**; unset ⇒ per-repo dynamic resolution (below)               |
+| `dynamicBankId`    | dynamic iff no `bankId` | force dynamic (`true`) or static (`false`) resolution                               |
+| `bankIdTemplate`   | `"{gitProject}"`        | dynamic bank id format, e.g. `"hindsight-{gitProject}"`                             |
+| `directoryBankMap` | —                       | absolute path → bank; **longest prefix wins**; overrides everything                 |
+| `resolveWorktrees` | `true`                  | `{gitProject}`: linked worktrees share the main repo's bank                         |
+| `disabled`         | `false`                 | hard off-switch (inert plugin/hook — a no-memory baseline)                          |
+| `reflectTimeoutMs` | `120000`                | reflect timeout; on timeout the agent runs without memory (recorded in diagnostics) |
+| `retainSessions`   | `false`                 | opencode only: upsert the live transcript into the bank every N turns               |
+| `retainEveryTurns` | `5`                     | write-back cadence (user turns)                                                     |
+| `gitSync.enabled`  | `false`                 | opencode only: on load, retain commits new since the backfill                       |
+| `gitSync.ref`      | `origin/main`           | git-sync target ref (falls back to `HEAD`)                                          |
+| `gitSync.fetch`    | `false`                 | `git fetch` the ref before diffing                                                  |
+| `harnesses.<name>` | —                       | per-harness override of any field above                                             |
+| `harness`          | `opencode`              | **backfill only**: which session format `--conversations` is read as                |
 
 ### Bank resolution
 
@@ -162,7 +162,14 @@ Every reflect outcome is appended as a JSON line to `/tmp/hindsight-plugin.log` 
 `HINDSIGHT_DIAG_FILE`):
 
 ```json
-{"ts":"2026-07-23T07:05:52Z","harness":"claude-code","event":"reflect_ok","ms":15816,"chars":324,"query":"..."}
+{
+  "ts": "2026-07-23T07:05:52Z",
+  "harness": "claude-code",
+  "event": "reflect_ok",
+  "ms": 15816,
+  "chars": 324,
+  "query": "..."
+}
 ```
 
 `reflect_failed` records the error; if you're comparing memory-on vs memory-off, check this file —
