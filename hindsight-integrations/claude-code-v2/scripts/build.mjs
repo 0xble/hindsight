@@ -16,7 +16,7 @@ execSync("npm run build", { cwd: core, stdio: "inherit" });
 // leftover from a previous build) can't linger and get shipped by accident.
 rmSync(distDir, { recursive: true, force: true });
 mkdirSync(distDir, { recursive: true });
-const bundleFiles = ["claude-hook.js", "claude-stop-hook.js"];
+const bundleFiles = ["claude-hook.js", "claude-stop-hook.js", "mcp-server.js"];
 for (const f of bundleFiles) {
   cpSync(join(core, "dist", f), join(distDir, f));
   console.log(`[build] copied ${f} -> claude-code-v2/dist/${f}`);
@@ -33,6 +33,13 @@ writeFileSync(join(distDir, "package.json"), JSON.stringify({ type: "module" }, 
 // a sibling "./chunk-*.js") or a hook's source picks up a real npm dependency,
 // the copied file would reference something we didn't bring along and would
 // only fail at runtime, in a live Claude Code session. Catch it here instead.
+// mcp-server.js DOES depend on npm packages (@modelcontextprotocol/sdk, zod) —
+// tsup's `noExternal` (see hindsight-coding-agents/tsup.config.ts) inlines their
+// source directly into the bundle, so it still imports nothing but Node
+// builtins and passes this same check unmodified. If a future SDK version adds
+// a dependency that can't be inlined and this guard starts failing ONLY for
+// mcp-server.js, exempt it specifically here rather than weakening the check
+// for the hook bundles below, which must stay strictly Node-builtins-only.
 const allowed = new Set([...builtinModules, ...builtinModules.map((m) => `node:${m}`)]);
 for (const f of bundleFiles) {
   const bundled = readFileSync(join(distDir, f), "utf8");
