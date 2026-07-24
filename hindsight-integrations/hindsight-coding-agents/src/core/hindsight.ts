@@ -28,10 +28,9 @@ export interface RetainOpts {
 }
 
 export interface RecallResult {
-  content?: string;
-  memory?: string;
-  text?: string;
-  scores?: Record<string, number>;
+  text: string;
+  type?: string; // fact type: "world" | "experience" | "observation"
+  scores?: { final?: number; reranker?: number; semantic?: number; keyword?: number };
 }
 
 const TERMINAL = new Set(["completed", "failed", "cancelled", "error"]);

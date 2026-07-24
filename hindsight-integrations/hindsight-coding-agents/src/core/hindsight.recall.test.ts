@@ -38,4 +38,15 @@ describe("HindsightClient.recall", () => {
     const c = new HindsightClient({ apiUrl: "http://x", bank: "b" });
     expect(await c.recall("q")).toEqual([]);
   });
+
+  it("returns [] when fetch itself throws/aborts", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => {
+        throw new Error("network down");
+      })
+    );
+    const c = new HindsightClient({ apiUrl: "http://x", bank: "b" });
+    expect(await c.recall("q")).toEqual([]);
+  });
 });
