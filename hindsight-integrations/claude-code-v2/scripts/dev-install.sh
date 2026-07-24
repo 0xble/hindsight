@@ -25,6 +25,7 @@ mkdir -p "${INSTALL_DIR}"
 cp -R "${WRAPPER_DIR}/.claude-plugin" "${INSTALL_DIR}/"
 cp -R "${WRAPPER_DIR}/hooks" "${INSTALL_DIR}/"
 cp -R "${WRAPPER_DIR}/dist" "${INSTALL_DIR}/"
+cp "${WRAPPER_DIR}/.mcp.json" "${INSTALL_DIR}/"   # MCP server (agent_knowledge_* tools)
 
 echo ""
 echo "=================================================================="
