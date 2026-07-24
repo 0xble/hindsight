@@ -149,4 +149,39 @@ describe("buildHookOutput", () => {
     });
     expect(recallSpy).toHaveBeenCalledWith("the prompt", { maxTokens: 512, timeoutMs: 7000 });
   });
+
+  it("caps reflect's timeoutMs to the hook kill window even when cfg.reflectTimeoutMs is huge", async () => {
+    // Claude Code's UserPromptSubmit hook is killed at 15s; cfg.reflectTimeoutMs defaults to
+    // 120000 for the opencode RuntimeCore path. The hook must cap it so reflect always
+    // resolves/aborts before the external kill (see HOOK_REFLECT_CAP_MS in hook.ts).
+    const cfg = resolveConfig({ reflectTimeoutMs: 120000 });
+    const reflectSpy = vi.fn(async () => "R");
+    await buildHookOutput({
+      harness: "claude-code",
+      prompt: "the prompt",
+      cfg,
+      client: {
+        reflect: reflectSpy,
+        recall: async () => [],
+      },
+      cacheFile,
+    });
+    expect(reflectSpy).toHaveBeenCalledWith("the prompt", { budget: "high", timeoutMs: 8000 });
+  });
+
+  it("uses cfg.reflectTimeoutMs as-is when it's already below the hook cap", async () => {
+    const cfg = resolveConfig({ reflectTimeoutMs: 3000 });
+    const reflectSpy = vi.fn(async () => "R");
+    await buildHookOutput({
+      harness: "claude-code",
+      prompt: "the prompt",
+      cfg,
+      client: {
+        reflect: reflectSpy,
+        recall: async () => [],
+      },
+      cacheFile,
+    });
+    expect(reflectSpy).toHaveBeenCalledWith("the prompt", { budget: "high", timeoutMs: 3000 });
+  });
 });

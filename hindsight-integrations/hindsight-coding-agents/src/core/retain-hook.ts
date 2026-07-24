@@ -77,7 +77,8 @@ export async function runRetainHook(
   } catch {
     return; // no/invalid event: stay silent
   }
-  const { sessionId, transcriptPath, cwd } = spec.parse(ev);
+  const { sessionId, transcriptPath, cwd: rawCwd } = spec.parse(ev);
+  const cwd = rawCwd || process.cwd();
 
   const cfg = loadConfig({ harness: spec.harness, projectDir: cwd });
   if (cfg.disabled) return;
@@ -87,7 +88,7 @@ export async function runRetainHook(
   const client = makeClient({
     apiUrl: cfg.apiUrl,
     apiToken: cfg.apiToken,
-    bank: deriveBankId(cfg, cwd || process.cwd(), spec.harness),
+    bank: deriveBankId(cfg, cwd, spec.harness),
   });
 
   await buildRetain({

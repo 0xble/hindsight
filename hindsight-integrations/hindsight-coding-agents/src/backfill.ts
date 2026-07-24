@@ -22,7 +22,7 @@
  *       [--config <path>] [--limit N] [--reset] [--no-pages] [--concurrency 8]
  */
 import { deriveBankId } from "./core/bank";
-import { loadConfig, CONFIG_PATH } from "./core/config";
+import { loadConfig } from "./core/config";
 import { HindsightClient } from "./core/hindsight";
 import { ingestGit } from "./core/git";
 import { ingestChats } from "./core/chat";
@@ -34,9 +34,16 @@ function arg(name: string, def?: string): string | undefined {
   return process.argv.includes(`--${name}`) ? "true" : def;
 }
 
-// Shared settings: config file provides the base; the matching --flag overrides per-run.
-const cfg = loadConfig(arg("config") ?? CONFIG_PATH);
 const REPO = arg("repo");
+// Shared settings: config file provides the base; the matching --flag overrides per-run. Layer the
+// project-local .hindsight/coding-agent.json for REPO (when given) so a project-local bankId/etc.
+// matches what the runtime plugin would resolve for the SAME directory — mirroring every other
+// entry point (mcp-server.ts, hindsight-seed.ts, core/hook.ts, ...), which all pass projectDir.
+const cfg = loadConfig({
+  harness: arg("harness") ?? undefined,
+  projectDir: REPO || undefined,
+  path: arg("config"),
+});
 // --bank wins; else the SAME per-repo resolution the runtime uses on --repo, so
 // `hindsight-coding-backfill --repo .` fills exactly the bank the agents will read.
 const BANK =

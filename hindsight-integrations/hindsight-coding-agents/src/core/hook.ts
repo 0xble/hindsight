@@ -47,6 +47,11 @@ interface HookClient {
   recall(query: string, opts: { maxTokens?: number; timeoutMs?: number }): Promise<RecallResult[]>;
 }
 
+/** Hook processes are killed by the host at a fixed wall-clock timeout (Claude Code UserPromptSubmit = 15s).
+ *  Cap reflect so it always aborts and lets the cache write + recall injection complete before that kill,
+ *  degrading to recall-only on a slow reflect instead of failing the whole turn (repeatedly). */
+const HOOK_REFLECT_CAP_MS = 8000;
+
 /**
  * Pure hook logic: recall every turn; reflect (and cache the outcome) only on the session's first
  * turn. Returns the combined injection string, or `undefined` when there's nothing to inject.
@@ -80,7 +85,10 @@ export async function buildHookOutput(args: {
     const t0 = Date.now();
     let answer = "";
     try {
-      answer = await client.reflect(prompt, { budget: "high", timeoutMs: cfg.reflectTimeoutMs });
+      answer = await client.reflect(prompt, {
+        budget: "high",
+        timeoutMs: Math.min(cfg.reflectTimeoutMs, HOOK_REFLECT_CAP_MS),
+      });
       diag(harness, answer ? "reflect_ok" : "reflect_empty", {
         ms: Date.now() - t0,
         chars: answer.length,
@@ -134,7 +142,8 @@ export async function runHook(
   } catch {
     return; // no/invalid event: stay silent
   }
-  const { prompt: rawPrompt, cwd, sessionId } = spec.parse(ev);
+  const { prompt: rawPrompt, cwd: rawCwd, sessionId } = spec.parse(ev);
+  const cwd = rawCwd || process.cwd();
   const prompt = (rawPrompt || "").trim();
   if (!prompt) return;
 
@@ -146,7 +155,7 @@ export async function runHook(
   const client = makeClient({
     apiUrl: cfg.apiUrl,
     apiToken: cfg.apiToken,
-    bank: deriveBankId(cfg, cwd || process.cwd(), spec.harness),
+    bank: deriveBankId(cfg, cwd, spec.harness),
   });
   const cacheFile = join(
     tmpdir(),
