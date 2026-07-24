@@ -33,17 +33,21 @@ function statePath(bankId: string, stateDir: string): string {
   return join(stateDir, encodeURIComponent(bankId) + ".json");
 }
 
-/** Read persisted per-bank seed state. Missing file or invalid JSON -> {} (never throws). */
+/** Read persisted per-bank seed state. Missing file, invalid JSON, or valid-but-wrong-shaped
+ *  JSON (e.g. a hand-edited file containing a bare string/number/array) -> {} (never throws). */
 export function readSeedState(bankId: string, stateDir: string = DEFAULT_STATE_DIR): SeedState {
   try {
-    return JSON.parse(readFileSync(statePath(bankId, stateDir), "utf8")) as SeedState;
+    const v: unknown = JSON.parse(readFileSync(statePath(bankId, stateDir), "utf8"));
+    return v && typeof v === "object" && !Array.isArray(v) ? (v as SeedState) : {};
   } catch {
     return {};
   }
 }
 
 /** Merge `patch` into the persisted per-bank seed state and write it. Best-effort: never throws
- *  (a failed write must not break a hook). */
+ *  (a failed write must not break a hook). Not atomic: the read-merge-write is not locked, so a
+ *  concurrent write for the same bank could lose a patch — accepted trade-off for low-frequency
+ *  per-bank consent state. */
 export function writeSeedState(
   bankId: string,
   patch: SeedState,

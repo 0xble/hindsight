@@ -65,4 +65,22 @@ describe("seed state persistence", () => {
     writeFileSync(join(stateDir, encodeURIComponent("bank-1") + ".json"), "{ not json");
     expect(readSeedState("bank-1", stateDir)).toEqual({});
   });
+
+  it("readSeedState on valid-but-non-object JSON (e.g. a bare string) returns {}", () => {
+    mkdirSync(stateDir, { recursive: true });
+    writeFileSync(
+      join(stateDir, encodeURIComponent("bank-1") + ".json"),
+      JSON.stringify("just a string")
+    );
+    expect(readSeedState("bank-1", stateDir)).toEqual({});
+  });
+
+  it("writeSeedState never throws when the parent path is blocked by a file", () => {
+    const blocker = join(stateDir, "blocker");
+    writeFileSync(blocker, "x");
+    const brokenDir = join(blocker, "sub");
+    expect(() => writeSeedState("b", { declined: true }, brokenDir)).not.toThrow();
+    expect(() => readSeedState("b", brokenDir)).not.toThrow();
+    expect(readSeedState("b", brokenDir)).toEqual({});
+  });
 });
