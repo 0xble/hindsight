@@ -1,6 +1,6 @@
 {
   "name": "hindsight-memory-v2",
-  "description": "Long-term repo memory for Claude Code — per-turn recall + first-turn reflect (shared coding-agents core).",
+  "description": "Repo-aware long-term memory for Claude Code — per-turn recall + first-turn reflect, live write-back on stop, automatic background seeding of new repos, and knowledge-page tools (shared coding-agents core).",
   "version": "0.1.0",
   "author": { "name": "Hindsight Team", "url": "https://vectorize.io/hindsight" },
   "license": "MIT"
