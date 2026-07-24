@@ -28,8 +28,10 @@ describe("buildSessionOffer", () => {
     });
     expect(offer).toBeDefined();
     expect(offer).toContain("/repo/dir");
-    expect(offer).toContain('/plugin/root/dist/hindsight-seed.js" seed --repo');
-    expect(offer).toContain("decline --repo");
+    expect(offer).toContain("node '/plugin/root/dist/hindsight-seed.js' seed --repo '/repo/dir'");
+    expect(offer).toContain(
+      "node '/plugin/root/dist/hindsight-seed.js' decline --repo '/repo/dir'"
+    );
     expect(offer).toContain("/plugin/root");
   });
 
@@ -109,6 +111,32 @@ describe("buildSessionOffer", () => {
     const state = readSeedState("bank-1", stateDir);
     expect(typeof state.seededAt).toBe("string");
     expect(state.seededAt).not.toBe("");
+  });
+
+  it("shell-escapes a malicious cwd so it can't break out of the quoted --repo argument", async () => {
+    const maliciousCwd = '/tmp/x" ; touch /tmp/PWNED ; echo "';
+    const client = { listDocumentIds: async () => new Set<string>() };
+    const offer = await buildSessionOffer({
+      cwd: maliciousCwd,
+      bankId: "bank-1",
+      pluginRoot: "/plugin/root",
+      client,
+      stateDir,
+      hasGit: () => true,
+    });
+    expect(offer).toBeDefined();
+    // Only the two actual shell command lines matter for injection safety — the human-readable
+    // question line above them intentionally echoes the raw cwd as plain text, never executed.
+    const commandLines = offer!.split("\n").filter((l) => l.trim().startsWith("node "));
+    expect(commandLines).toHaveLength(2);
+    for (const line of commandLines) {
+      // The cwd must be wrapped in POSIX-safe single quotes, as the LAST token on the line — i.e.
+      // nothing after it breaks out to run `touch /tmp/PWNED` unquoted.
+      expect(line.trim().endsWith(`--repo '/tmp/x" ; touch /tmp/PWNED ; echo "'`)).toBe(true);
+      // No unquoted `;` after the closing quote of --repo's argument.
+      const afterRepoArg = line.split(`--repo '/tmp/x" ; touch /tmp/PWNED ; echo "'`)[1] ?? "";
+      expect(afterRepoArg.trim()).toBe("");
+    }
   });
 
   it("server unreachable (client throws) -> undefined AND no state is written (transient outage)", async () => {

@@ -1,9 +1,11 @@
 /**
- * Cold-repo detection + per-bank seed-consent state, for the auto-seed flow (Task 10).
+ * Per-bank seed-consent state, for the auto-seed flow (Task 10).
  *
- * Fail-safe throughout: isColdRepo only reports "cold" when it can positively confirm no
- * git-sourced docs exist (network errors -> false, never offer to seed on a guess). State
- * read/write never throws — a corrupt or unwritable state file must not break the hook.
+ * (Cold-repo detection itself lives in core/session-start.ts, which needs a tri-state result —
+ * cold / warm / server-unreachable — that a plain boolean can't express.)
+ *
+ * Fail-safe throughout: state read/write never throws — a corrupt or unwritable state file must
+ * not break the hook.
  */
 import { spawn as realSpawn } from "node:child_process";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
@@ -17,19 +19,6 @@ export interface SeedState {
 }
 
 const DEFAULT_STATE_DIR = join(homedir(), ".hindsight", "coding-agent-state");
-
-/** True if the bank has no git-sourced documents (never backfilled). Fail-SAFE: any error
- *  (e.g. server unreachable) returns false — we only offer to seed when we can positively
- *  confirm the bank is cold. */
-export async function isColdRepo(client: {
-  listDocumentIds(tag: string): Promise<Set<string>>;
-}): Promise<boolean> {
-  try {
-    return (await client.listDocumentIds("source:git")).size === 0;
-  } catch {
-    return false;
-  }
-}
 
 function statePath(bankId: string, stateDir: string): string {
   return join(stateDir, encodeURIComponent(bankId) + ".json");

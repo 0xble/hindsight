@@ -4,7 +4,6 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
-  isColdRepo,
   readSeedState,
   writeSeedState,
   startBackgroundSeed,
@@ -20,27 +19,6 @@ beforeEach(() => {
 
 afterEach(() => {
   rmSync(stateDir, { recursive: true, force: true });
-});
-
-describe("isColdRepo", () => {
-  it("true when there are no git-sourced docs", async () => {
-    const client = { listDocumentIds: async () => new Set<string>() };
-    expect(await isColdRepo(client)).toBe(true);
-  });
-
-  it("false when git-sourced docs exist", async () => {
-    const client = { listDocumentIds: async () => new Set(["git:abc"]) };
-    expect(await isColdRepo(client)).toBe(false);
-  });
-
-  it("fail-safe: false when the client throws", async () => {
-    const client = {
-      listDocumentIds: async () => {
-        throw new Error("network down");
-      },
-    };
-    expect(await isColdRepo(client)).toBe(false);
-  });
 });
 
 describe("seed state persistence", () => {

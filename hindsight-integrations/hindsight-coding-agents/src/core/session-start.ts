@@ -1,11 +1,10 @@
 /**
  * Claude Code `SessionStart` hook: offers to auto-seed a cold repo's bank from its git history.
  *
- * Tri-state cold check (deliberately NOT `isColdRepo` from core/seed.ts, which collapses "cold"
- * and "server unreachable" into one false — fine for a fail-open feature-gate, wrong here where a
- * transient outage must not get treated the same as "already seeded" and silently suppress the
- * offer forever). `buildSessionOffer` calls `client.listDocumentIds` directly so it can tell the
- * three cases apart:
+ * Tri-state cold check: a boolean "is it cold?" would collapse "cold" and "server unreachable"
+ * into the same outcome, which is wrong here — a transient outage must not get treated the same
+ * as "already seeded" and silently suppress the offer forever. So `buildSessionOffer` calls
+ * `client.listDocumentIds` directly so it can tell the three cases apart:
  *   - throws (server unreachable)      -> no offer, no state written  (ask again next session)
  *   - non-empty set (warm/pre-seeded)  -> no offer, seededAt written  (remember, skip enumerating)
  *   - empty set (cold)                 -> return the offer string
@@ -24,9 +23,19 @@ interface SeedOfferClient {
   listDocumentIds(tag: string): Promise<Set<string>>;
 }
 
+/** POSIX single-quote a string so it's safe to paste into a shell command. */
+function shq(s: string): string {
+  return "'" + s.replace(/'/g, "'\\''") + "'";
+}
+
 function offerText(cwd: string, pluginRoot: string): string {
-  const seedCmd = `node "${pluginRoot}/dist/hindsight-seed.js" seed --repo "${cwd}"`;
-  const declineCmd = `node "${pluginRoot}/dist/hindsight-seed.js" decline --repo "${cwd}"`;
+  // Single-quote (not double) the interpolated paths: the agent runs these commands verbatim in
+  // a plain shell, and cwd/pluginRoot are not trusted input (e.g. a checkout dir named from an
+  // untrusted branch could contain a `"` and break out of double-quoting into arbitrary shell
+  // execution). Inside single quotes the shell treats everything literally, so this is safe.
+  const seedJs = shq(pluginRoot + "/dist/hindsight-seed.js");
+  const seedCmd = `node ${seedJs} seed --repo ${shq(cwd)}`;
+  const declineCmd = `node ${seedJs} decline --repo ${shq(cwd)}`;
   return `🧠 Hindsight has no memory of this repository yet.
 
 Before continuing, ask the user one yes/no question:
@@ -81,6 +90,9 @@ export async function buildSessionOffer(args: {
 export async function runSessionStartHook(
   makeClient: (opts: ClientOpts) => SeedOfferClient = (o) => new HindsightClient(o)
 ): Promise<void> {
+  // Whole-body try/catch (unlike runHook/runRetainHook, which only guard individual steps): a
+  // throw here happens during session bootstrap, before the agent has done anything — more
+  // disruptive than a failure mid-prompt — so nothing in this function may ever escape it.
   try {
     let ev: Record<string, unknown> = {};
     try {
