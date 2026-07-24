@@ -1,94 +1,109 @@
 /**
- * Claude Code `SessionStart` hook: offers to auto-seed a cold repo's bank from its git history.
+ * Claude Code `SessionStart` hook: deterministically auto-seeds a cold repo's bank from its git
+ * history (in the background, non-blocking) and injects a short visible note plus a standing
+ * "bank mission" that tells the agent to consult and curate the repo's knowledge pages.
+ *
+ * Earlier design injected an instruction asking the AGENT to pose a y/n question to the user and
+ * then run a seed command itself. Live testing showed that doesn't work: the model surfaces the
+ * question, then plows ahead with the user's actual task and never runs the command — so nothing
+ * ever seeds. Fix: the hook does the seeding itself. There is nothing left for the agent to decide
+ * or execute for seeding, so no shell command (and no shell-escaping) is needed anymore.
  *
  * Tri-state cold check: a boolean "is it cold?" would collapse "cold" and "server unreachable"
  * into the same outcome, which is wrong here — a transient outage must not get treated the same
- * as "already seeded" and silently suppress the offer forever. So `buildSessionOffer` calls
+ * as "already seeded" and silently suppress seeding forever. So `buildSessionStartContext` calls
  * `client.listDocumentIds` directly so it can tell the three cases apart:
- *   - throws (server unreachable)      -> no offer, no state written  (ask again next session)
- *   - non-empty set (warm/pre-seeded)  -> no offer, seededAt written  (remember, skip enumerating)
- *   - empty set (cold)                 -> return the offer string
+ *   - throws (server unreachable)      -> no seed, no state written  (try again next session)
+ *   - non-empty set (warm/pre-seeded)  -> no seed, seededAt written  (remember, skip enumerating)
+ *   - empty set (cold)                 -> start the background seed, seededAt written, note added
  */
 import { readFileSync } from "node:fs";
 import { hasGitHistory } from "./git";
-import { readSeedState, writeSeedState } from "./seed";
+import { readSeedState, writeSeedState, startBackgroundSeed } from "./seed";
 import { loadConfig } from "./config";
+import type { Config } from "./config";
 import { deriveBankId } from "./bank";
 import { diag } from "./diag";
 import type { ClientOpts } from "./hindsight";
 import { HindsightClient } from "./hindsight";
 
-/** Minimal client shape `buildSessionOffer` needs. */
-interface SeedOfferClient {
+/** Minimal client shape `buildSessionStartContext` needs. */
+interface SeedContextClient {
   listDocumentIds(tag: string): Promise<Set<string>>;
 }
 
-/** POSIX single-quote a string so it's safe to paste into a shell command. */
-function shq(s: string): string {
-  return "'" + s.replace(/'/g, "'\\''") + "'";
-}
-
-function offerText(cwd: string, pluginRoot: string): string {
-  // Single-quote (not double) the interpolated paths: the agent runs these commands verbatim in
-  // a plain shell, and cwd/pluginRoot are not trusted input (e.g. a checkout dir named from an
-  // untrusted branch could contain a `"` and break out of double-quoting into arbitrary shell
-  // execution). Inside single quotes the shell treats everything literally, so this is safe.
-  const seedJs = shq(pluginRoot + "/dist/hindsight-seed.js");
-  const seedCmd = `node ${seedJs} seed --repo ${shq(cwd)}`;
-  const declineCmd = `node ${seedJs} decline --repo ${shq(cwd)}`;
-  return `🧠 Hindsight has no memory of this repository yet.
-
-Before continuing, ask the user one yes/no question:
-"Want me to have Hindsight learn this repo from its git history so I can recall past decisions? It runs in the background and won't interrupt your work. (Repo: ${cwd})"
-
-- If YES, run exactly this once (it starts a background seed and returns immediately):
-  ${seedCmd}
-  then tell the user Hindsight is learning in the background, and continue with their task.
-- If NO or "not now", run:
-  ${declineCmd}
-  so you are not asked again for this repo.
-
-Ask this only once, at the very start of the session.`;
-}
+/** Injected every session so the agent consults + curates the repo's Hindsight knowledge pages
+ *  (the agent_knowledge_* MCP tools). This is what makes pages a living wiki rather than a one-time dump. */
+export const KNOWLEDGE_MISSION =
+  "<hindsight_knowledge>\n" +
+  "This repository has a Hindsight knowledge base — durable engineering knowledge kept as pages. " +
+  "Use the agent_knowledge_* tools:\n" +
+  "- Before substantial work, call agent_knowledge_list_pages and read the relevant ones " +
+  "(agent_knowledge_get_page) to ground yourself in the repo's architecture, conventions, and past decisions.\n" +
+  "- When you learn something durable that will matter across sessions — architecture decisions, conventions, " +
+  "gotchas, where things live, how subsystems wire together, recurring bug patterns — capture it with " +
+  "agent_knowledge_create_page (or update an existing page with agent_knowledge_update_page) instead of letting it evaporate.\n" +
+  "Keep pages focused and factual; they are the human-readable view of this repo's memory.\n" +
+  "</hindsight_knowledge>";
 
 /**
- * Pure-ish offer builder: given a bank/client/cwd, decide whether to offer to seed and return the
- * additionalContext string (or undefined). See module doc for the tri-state cold check.
+ * Build this session's additionalContext: (maybe) kick off a background auto-seed of a cold repo
+ * and (always, unless the hook is disabled) append the knowledge-page bank mission. See module doc
+ * for the tri-state cold check. Never throws.
  */
-export async function buildSessionOffer(args: {
+export async function buildSessionStartContext(args: {
   cwd: string;
   bankId: string;
-  pluginRoot: string;
-  client: SeedOfferClient;
+  cfg: Config;
+  client: SeedContextClient;
   stateDir?: string;
   hasGit?: (dir: string) => boolean;
+  startSeed?: (repoDir: string, opts?: { limit?: number }) => void;
 }): Promise<string | undefined> {
-  const { cwd, bankId, pluginRoot, client, stateDir } = args;
+  const { cwd, bankId, cfg, client, stateDir } = args;
+  const hasGit = args.hasGit ?? hasGitHistory;
+  const startSeed = args.startSeed ?? startBackgroundSeed;
 
-  if (!(args.hasGit ?? hasGitHistory)(cwd)) return undefined;
+  const parts: string[] = [];
 
-  const state = readSeedState(bankId, stateDir);
-  if (state.declined || state.seededAt) return undefined;
+  if (cfg.autoSeed !== false) {
+    if (hasGit(cwd)) {
+      const state = readSeedState(bankId, stateDir);
+      if (!state.declined && !state.seededAt) {
+        let docIds: Set<string> | undefined;
+        try {
+          docIds = await client.listDocumentIds("source:git");
+        } catch {
+          docIds = undefined; // server unreachable: transient — don't write state, try again next session
+        }
 
-  let docIds: Set<string>;
-  try {
-    docIds = await client.listDocumentIds("source:git");
-  } catch {
-    return undefined; // server unreachable: transient — don't write state, ask again next session
+        if (docIds !== undefined) {
+          if (docIds.size > 0) {
+            // Warm (or already seeded by another path): remember, so we don't re-enumerate every session.
+            writeSeedState(bankId, { seededAt: new Date().toISOString() }, stateDir);
+          } else {
+            // Cold: start the background seed now, deterministically — no agent involvement.
+            startSeed(cwd, { limit: cfg.seedLimit });
+            writeSeedState(bankId, { seededAt: new Date().toISOString() }, stateDir);
+            diag("claude-code", "seed_started", { bank: bankId });
+            parts.push(
+              `> 🧠 Hindsight is learning \`${bankId}\` from this repo's git history in the background — ` +
+                `recalled memories and knowledge pages will appear as it processes. No action needed.`
+            );
+          }
+        }
+      }
+    }
   }
 
-  if (docIds.size > 0) {
-    // Warm (or already seeded by another path): remember, so we don't re-enumerate every session.
-    writeSeedState(bankId, { seededAt: new Date().toISOString() }, stateDir);
-    return undefined;
-  }
+  parts.push(KNOWLEDGE_MISSION);
 
-  return offerText(cwd, pluginRoot);
+  return parts.length ? parts.join("\n\n") : undefined;
 }
 
 /** Run one SessionStart hook invocation: stdin event in, (maybe) an additionalContext object on stdout. */
 export async function runSessionStartHook(
-  makeClient: (opts: ClientOpts) => SeedOfferClient = (o) => new HindsightClient(o)
+  makeClient: (opts: ClientOpts) => SeedContextClient = (o) => new HindsightClient(o)
 ): Promise<void> {
   // Whole-body try/catch (unlike runHook/runRetainHook, which only guard individual steps): a
   // throw here happens during session bootstrap, before the agent has done anything — more
@@ -105,20 +120,16 @@ export async function runSessionStartHook(
     const cfg = loadConfig({ harness: "claude-code", projectDir: cwd });
     if (cfg.disabled) return;
 
-    const pluginRoot = process.env.CLAUDE_PLUGIN_ROOT;
-    if (!pluginRoot) return; // can't form the commands without it
-
     const bankId = deriveBankId(cfg, cwd, "claude-code");
     const client = makeClient({ apiUrl: cfg.apiUrl, apiToken: cfg.apiToken, bank: bankId });
 
-    const offer = await buildSessionOffer({ cwd, bankId, pluginRoot, client });
-    if (offer) {
+    const ctx = await buildSessionStartContext({ cwd, bankId, cfg, client });
+    if (ctx) {
       process.stdout.write(
         JSON.stringify({
-          hookSpecificOutput: { hookEventName: "SessionStart", additionalContext: offer },
+          hookSpecificOutput: { hookEventName: "SessionStart", additionalContext: ctx },
         })
       );
-      diag("claude-code", "seed_offer", { bank: bankId });
     }
   } catch {
     /* SessionStart must never throw and break the session */

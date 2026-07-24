@@ -19,6 +19,7 @@
 import { readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
+import { DEFAULT_SEED_LIMIT } from "./seed";
 
 /** Default config-file path: ~/.hindsight/coding-agent.json */
 export const CONFIG_PATH = join(homedir(), ".hindsight", "coding-agent.json");
@@ -47,6 +48,8 @@ export interface RawConfig {
   reflectTimeoutMs?: number; // reflect timeout (default 120000)
   recallMaxTokens?: number; // per-turn recall token budget (default 1024)
   recallTimeoutMs?: number; // per-turn recall timeout (default 10000)
+  autoSeed?: boolean; // SessionStart: auto-seed a cold repo's bank from git history (default true)
+  seedLimit?: number; // SessionStart auto-seed: most-recent-N-commits cap (default 300)
   gitSync?: GitSyncConfig;
   /** Per-harness overrides of any of the fields above, keyed by harness name ("opencode",
    *  "claude-code", ...). Lets one config file give each agent its own bank/settings. */
@@ -69,6 +72,8 @@ export interface Config {
   reflectTimeoutMs: number;
   recallMaxTokens: number;
   recallTimeoutMs: number;
+  autoSeed: boolean;
+  seedLimit: number;
   gitSync: Required<GitSyncConfig>;
 }
 
@@ -90,6 +95,8 @@ export function resolveConfig(raw: RawConfig = {}): Config {
     reflectTimeoutMs: raw.reflectTimeoutMs || 120000,
     recallMaxTokens: raw.recallMaxTokens || 1024,
     recallTimeoutMs: raw.recallTimeoutMs || 10000,
+    autoSeed: raw.autoSeed ?? true,
+    seedLimit: raw.seedLimit || DEFAULT_SEED_LIMIT,
     gitSync: {
       enabled: gs.enabled ?? false, // opt-in: off unless explicitly enabled in config
       ref: gs.ref ?? "origin/main",

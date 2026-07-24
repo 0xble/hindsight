@@ -1,9 +1,10 @@
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { buildSessionOffer } from "./session-start";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { buildSessionStartContext, KNOWLEDGE_MISSION } from "./session-start";
 import { readSeedState, writeSeedState } from "./seed";
+import { resolveConfig } from "./config";
 
 let stateDir: string;
 
@@ -15,145 +16,162 @@ afterEach(() => {
   rmSync(stateDir, { recursive: true, force: true });
 });
 
-describe("buildSessionOffer", () => {
-  it("cold repo + git repo + no prior state -> returns the offer string", async () => {
+describe("buildSessionStartContext", () => {
+  it("cold git repo + autoSeed on -> starts the seed, writes seededAt, returns note + mission", async () => {
     const client = { listDocumentIds: async () => new Set<string>() };
-    const offer = await buildSessionOffer({
+    const startSeed = vi.fn();
+    const ctx = await buildSessionStartContext({
       cwd: "/repo/dir",
       bankId: "bank-1",
-      pluginRoot: "/plugin/root",
+      cfg: resolveConfig(),
       client,
       stateDir,
       hasGit: () => true,
+      startSeed,
     });
-    expect(offer).toBeDefined();
-    expect(offer).toContain("/repo/dir");
-    expect(offer).toContain("node '/plugin/root/dist/hindsight-seed.js' seed --repo '/repo/dir'");
-    expect(offer).toContain(
-      "node '/plugin/root/dist/hindsight-seed.js' decline --repo '/repo/dir'"
-    );
-    expect(offer).toContain("/plugin/root");
-  });
-
-  it("non-git dir -> undefined, client not called", async () => {
-    let called = false;
-    const client = {
-      listDocumentIds: async () => {
-        called = true;
-        return new Set<string>();
-      },
-    };
-    const offer = await buildSessionOffer({
-      cwd: "/repo/dir",
-      bankId: "bank-1",
-      pluginRoot: "/plugin/root",
-      client,
-      stateDir,
-      hasGit: () => false,
-    });
-    expect(offer).toBeUndefined();
-    expect(called).toBe(false);
-  });
-
-  it("declined state -> undefined, client not called", async () => {
-    writeSeedState("bank-1", { declined: true }, stateDir);
-    let called = false;
-    const client = {
-      listDocumentIds: async () => {
-        called = true;
-        return new Set<string>();
-      },
-    };
-    const offer = await buildSessionOffer({
-      cwd: "/repo/dir",
-      bankId: "bank-1",
-      pluginRoot: "/plugin/root",
-      client,
-      stateDir,
-      hasGit: () => true,
-    });
-    expect(offer).toBeUndefined();
-    expect(called).toBe(false);
-  });
-
-  it("already-seeded state -> undefined, client not called", async () => {
-    writeSeedState("bank-1", { seededAt: "2026-01-01T00:00:00Z" }, stateDir);
-    let called = false;
-    const client = {
-      listDocumentIds: async () => {
-        called = true;
-        return new Set<string>();
-      },
-    };
-    const offer = await buildSessionOffer({
-      cwd: "/repo/dir",
-      bankId: "bank-1",
-      pluginRoot: "/plugin/root",
-      client,
-      stateDir,
-      hasGit: () => true,
-    });
-    expect(offer).toBeUndefined();
-    expect(called).toBe(false);
-  });
-
-  it("warm bank (non-empty doc set) -> undefined AND writes seededAt so we don't re-enumerate", async () => {
-    const client = { listDocumentIds: async () => new Set(["git:abc"]) };
-    const offer = await buildSessionOffer({
-      cwd: "/repo/dir",
-      bankId: "bank-1",
-      pluginRoot: "/plugin/root",
-      client,
-      stateDir,
-      hasGit: () => true,
-    });
-    expect(offer).toBeUndefined();
+    expect(startSeed).toHaveBeenCalledWith("/repo/dir", { limit: 300 });
     const state = readSeedState("bank-1", stateDir);
     expect(typeof state.seededAt).toBe("string");
     expect(state.seededAt).not.toBe("");
+    expect(ctx).toBeDefined();
+    expect(ctx).toContain("bank-1");
+    expect(ctx).toContain("🧠");
+    expect(ctx).toContain(KNOWLEDGE_MISSION);
+    expect(ctx).toContain("<hindsight_knowledge>");
   });
 
-  it("shell-escapes a malicious cwd so it can't break out of the quoted --repo argument", async () => {
-    const maliciousCwd = '/tmp/x" ; touch /tmp/PWNED ; echo "';
-    const client = { listDocumentIds: async () => new Set<string>() };
-    const offer = await buildSessionOffer({
-      cwd: maliciousCwd,
+  it("non-git dir -> no seed, client not called, mission only (no learning note)", async () => {
+    const startSeed = vi.fn();
+    let called = false;
+    const client = {
+      listDocumentIds: async () => {
+        called = true;
+        return new Set<string>();
+      },
+    };
+    const ctx = await buildSessionStartContext({
+      cwd: "/repo/dir",
       bankId: "bank-1",
-      pluginRoot: "/plugin/root",
+      cfg: resolveConfig(),
+      client,
+      stateDir,
+      hasGit: () => false,
+      startSeed,
+    });
+    expect(startSeed).not.toHaveBeenCalled();
+    expect(called).toBe(false);
+    expect(ctx).toContain(KNOWLEDGE_MISSION);
+    expect(ctx).not.toContain("🧠");
+  });
+
+  it("already-seeded state -> no seed, mission only", async () => {
+    writeSeedState("bank-1", { seededAt: "2026-01-01T00:00:00Z" }, stateDir);
+    const startSeed = vi.fn();
+    let called = false;
+    const client = {
+      listDocumentIds: async () => {
+        called = true;
+        return new Set<string>();
+      },
+    };
+    const ctx = await buildSessionStartContext({
+      cwd: "/repo/dir",
+      bankId: "bank-1",
+      cfg: resolveConfig(),
       client,
       stateDir,
       hasGit: () => true,
+      startSeed,
     });
-    expect(offer).toBeDefined();
-    // Only the two actual shell command lines matter for injection safety — the human-readable
-    // question line above them intentionally echoes the raw cwd as plain text, never executed.
-    const commandLines = offer!.split("\n").filter((l) => l.trim().startsWith("node "));
-    expect(commandLines).toHaveLength(2);
-    for (const line of commandLines) {
-      // The cwd must be wrapped in POSIX-safe single quotes, as the LAST token on the line — i.e.
-      // nothing after it breaks out to run `touch /tmp/PWNED` unquoted.
-      expect(line.trim().endsWith(`--repo '/tmp/x" ; touch /tmp/PWNED ; echo "'`)).toBe(true);
-      // No unquoted `;` after the closing quote of --repo's argument.
-      const afterRepoArg = line.split(`--repo '/tmp/x" ; touch /tmp/PWNED ; echo "'`)[1] ?? "";
-      expect(afterRepoArg.trim()).toBe("");
-    }
+    expect(startSeed).not.toHaveBeenCalled();
+    expect(called).toBe(false);
+    expect(ctx).toBe(KNOWLEDGE_MISSION);
   });
 
-  it("server unreachable (client throws) -> undefined AND no state is written (transient outage)", async () => {
+  it("declined state -> no seed, mission only", async () => {
+    writeSeedState("bank-1", { declined: true }, stateDir);
+    const startSeed = vi.fn();
+    let called = false;
+    const client = {
+      listDocumentIds: async () => {
+        called = true;
+        return new Set<string>();
+      },
+    };
+    const ctx = await buildSessionStartContext({
+      cwd: "/repo/dir",
+      bankId: "bank-1",
+      cfg: resolveConfig(),
+      client,
+      stateDir,
+      hasGit: () => true,
+      startSeed,
+    });
+    expect(startSeed).not.toHaveBeenCalled();
+    expect(called).toBe(false);
+    expect(ctx).toBe(KNOWLEDGE_MISSION);
+  });
+
+  it("warm bank (non-empty doc set) -> no seed, writes seededAt, mission only", async () => {
+    const startSeed = vi.fn();
+    const client = { listDocumentIds: async () => new Set(["git:abc"]) };
+    const ctx = await buildSessionStartContext({
+      cwd: "/repo/dir",
+      bankId: "bank-1",
+      cfg: resolveConfig(),
+      client,
+      stateDir,
+      hasGit: () => true,
+      startSeed,
+    });
+    expect(startSeed).not.toHaveBeenCalled();
+    const state = readSeedState("bank-1", stateDir);
+    expect(typeof state.seededAt).toBe("string");
+    expect(state.seededAt).not.toBe("");
+    expect(ctx).toBe(KNOWLEDGE_MISSION);
+  });
+
+  it("listDocumentIds throws (server unreachable) -> no seed, NO state written, mission only", async () => {
+    const startSeed = vi.fn();
     const client = {
       listDocumentIds: async () => {
         throw new Error("network down");
       },
     };
-    const offer = await buildSessionOffer({
+    const ctx = await buildSessionStartContext({
       cwd: "/repo/dir",
       bankId: "bank-1",
-      pluginRoot: "/plugin/root",
+      cfg: resolveConfig(),
       client,
       stateDir,
       hasGit: () => true,
+      startSeed,
     });
-    expect(offer).toBeUndefined();
+    expect(startSeed).not.toHaveBeenCalled();
     expect(readSeedState("bank-1", stateDir)).toEqual({});
+    expect(ctx).toBe(KNOWLEDGE_MISSION);
+  });
+
+  it("autoSeed:false -> skips the whole seed branch (no client call), mission only", async () => {
+    const startSeed = vi.fn();
+    let called = false;
+    const client = {
+      listDocumentIds: async () => {
+        called = true;
+        return new Set<string>();
+      },
+    };
+    const ctx = await buildSessionStartContext({
+      cwd: "/repo/dir",
+      bankId: "bank-1",
+      cfg: resolveConfig({ autoSeed: false }),
+      client,
+      stateDir,
+      hasGit: () => true,
+      startSeed,
+    });
+    expect(startSeed).not.toHaveBeenCalled();
+    expect(called).toBe(false);
+    expect(ctx).toBe(KNOWLEDGE_MISSION);
   });
 });
