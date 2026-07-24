@@ -5,16 +5,26 @@
  * Bank resolution MUST mirror the hooks exactly (loadConfig + deriveBankId, harness
  * "claude-code") so knowledge pages, recall, and retain all land in ONE per-repo bank — this is
  * why this is a native TS server and not a reuse of the Python MCP (whose bank derivation
- * differs). `HINDSIGHT_MCP_PROJECT_CWD` lets the launching host tell us which project directory
- * to resolve the bank for, since an MCP server's own `process.cwd()` isn't guaranteed to be the
- * user's project directory.
+ * differs). MCP servers launch with the project dir as cwd; the env override is an optional
+ * escape hatch (not currently set by the plugin).
  */
+import { fileURLToPath } from "node:url";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
-import { loadConfig } from "./core/config";
+import { loadConfig, type Config } from "./core/config";
 import { deriveBankId } from "./core/bank";
 import { HindsightClient } from "./core/hindsight";
-import { buildKnowledgeTools } from "./core/knowledge-tools";
+import { buildKnowledgeTools, type ToolSpec } from "./core/knowledge-tools";
+
+/**
+ * Which tools this server should expose for a given config. Pure + SDK-free so the
+ * disabled-flag behavior is unit-testable without spinning up a real MCP host: a disabled
+ * Hindsight (mirrors the hooks' `cfg.disabled` check) exposes NO tools — the server still
+ * connects, it just has nothing registered.
+ */
+export function selectTools(cfg: Config, client: HindsightClient, bankId: string): ToolSpec[] {
+  return cfg.disabled ? [] : buildKnowledgeTools(client, bankId);
+}
 
 async function main() {
   const cwd = process.env.HINDSIGHT_MCP_PROJECT_CWD || process.cwd();
@@ -23,14 +33,18 @@ async function main() {
   const client = new HindsightClient({ apiUrl: cfg.apiUrl, apiToken: cfg.apiToken, bank: bankId });
 
   const server = new McpServer({ name: "hindsight", version: "0.1.0" });
-  for (const t of buildKnowledgeTools(client, bankId)) {
+  for (const t of selectTools(cfg, client, bankId)) {
     server.tool(t.name, t.description, t.inputSchema, t.handler);
   }
 
   await server.connect(new StdioServerTransport());
 }
 
-main().catch((e) => {
-  console.error("hindsight mcp-server failed:", e);
-  process.exit(1);
-});
+// Only auto-run when this file is executed directly (e.g. `node dist/mcp-server.js`) — importing
+// it (as src/mcp-server.test.ts does) must not start a real server.
+if (process.argv[1] && process.argv[1] === fileURLToPath(import.meta.url)) {
+  main().catch((e) => {
+    console.error("hindsight mcp-server failed:", e);
+    process.exit(1);
+  });
+}
