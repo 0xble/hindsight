@@ -24,6 +24,11 @@ describe("getHarness", () => {
   it("resolves the opencode adapter by name", async () => {
     const adapter = await getHarness("opencode");
     expect(adapter.name).toBe("opencode");
+    // Deliberate invariant: opencode via the registry is a no-runtime adapter (same shape as the
+    // hook harnesses) — the real opencode runtime is built by src/index.ts importing opencodeAdapter
+    // directly, bypassing this registry. Lock it so a future change can't silently make this look
+    // functional.
+    expect(() => adapter.createRuntime({} as never)).toThrow();
   });
 
   it("rejects unknown harness names", async () => {
