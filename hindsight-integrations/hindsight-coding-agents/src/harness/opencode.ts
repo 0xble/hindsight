@@ -4,11 +4,11 @@
  * Maps opencode's plugin hooks onto the shared RuntimeCore, and reads opencode sessions for backfill.
  * This is the only opencode-specific file; everything it uses is in ../core.
  */
-import { readFileSync } from "node:fs";
 import { tool } from "@opencode-ai/plugin";
 import type { RuntimeCore } from "../core/runtime";
-import type { HarnessAdapter, ChatReader, ChatSession } from "../core/types";
+import type { HarnessAdapter } from "../core/types";
 import type { TransportTurn } from "../core/chat";
+import { jsonChatReader } from "./registry";
 
 // opencode part/message shapes (structurally typed — avoids a hard dep on the plugin types here).
 type Part = { type?: string; text?: string };
@@ -25,16 +25,11 @@ const textOf = (parts: Part[]) =>
     .trim();
 
 // ── backfill: read opencode's past sessions ─────────────────────────────────────
-const chatReader: ChatReader = {
-  describe:
-    "opencode sessions via a normalized JSON export " +
-    "(--conversations file: [{ id, turns:[{role,text,timestamp?}] }])",
-  async read(opts): Promise<ChatSession[]> {
-    // Sessions are consumed as a normalized JSON export (the interchange format any exporter can emit).
-    if (!opts.conversations) return [];
-    return JSON.parse(readFileSync(opts.conversations, "utf8")) as ChatSession[];
-  },
-};
+// Same normalized JSON export every harness uses — kept here only so a real opencodeAdapter (used
+// by index.ts) is a complete HarnessAdapter; the registry never routes through this file to get it
+// (see harness/registry.ts's getHarness("opencode")), so this line pulling in "./registry" never
+// drags @opencode-ai/plugin along for backfill's sake.
+const chatReader = jsonChatReader("opencode");
 
 // ── runtime: opencode plugin hooks wired to the RuntimeCore ──────────────────────
 function createRuntime(core: RuntimeCore) {

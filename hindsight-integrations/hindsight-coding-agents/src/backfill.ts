@@ -64,7 +64,7 @@ if (!REPO || !BANK) {
 const log = (m: string) => console.log(m);
 
 async function main() {
-  const harness = getHarness(HARNESS); // throws with the available list on an unknown name
+  const harness = await getHarness(HARNESS); // throws with the available list on an unknown name
   const client = new HindsightClient({ apiUrl: API_URL, apiToken: API_TOKEN, bank: BANK!, log });
   console.log(`hindsight-coding-backfill -> ${client.apiUrl} bank=${BANK} harness=${harness.name}`);
 
