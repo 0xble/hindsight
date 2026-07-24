@@ -16,7 +16,14 @@ execSync("npm run build", { cwd: core, stdio: "inherit" });
 // leftover from a previous build) can't linger and get shipped by accident.
 rmSync(distDir, { recursive: true, force: true });
 mkdirSync(distDir, { recursive: true });
-const bundleFiles = ["claude-hook.js", "claude-stop-hook.js", "mcp-server.js"];
+const bundleFiles = [
+  "claude-hook.js",
+  "claude-stop-hook.js",
+  "mcp-server.js",
+  "claude-sessionstart-hook.js",
+  "hindsight-seed.js",
+  "backfill.js",
+];
 for (const f of bundleFiles) {
   cpSync(join(core, "dist", f), join(distDir, f));
   console.log(`[build] copied ${f} -> claude-code-v2/dist/${f}`);

@@ -6,6 +6,7 @@ export default defineConfig({
     backfill: "src/backfill.ts",
     "claude-hook": "src/claude-hook.ts",
     "claude-stop-hook": "src/claude-stop-hook.ts",
+    "claude-sessionstart-hook": "src/claude-sessionstart-hook.ts",
     "cursor-hook": "src/cursor-hook.ts",
     "codex-hook": "src/codex-hook.ts",
     "mcp-server": "src/mcp-server.ts",
