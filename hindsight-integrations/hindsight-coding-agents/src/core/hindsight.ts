@@ -195,7 +195,7 @@ export class HindsightClient {
       updates: { retain_strategies: RETAIN_STRATEGIES, retain_default_strategy: "git" },
     });
     this.log(
-      `[bank] configured ${this.bank}: reflect mission, observations ON, strategies {git, chat}`
+      `[bank] configured ${this.bank}: reflect mission, observations ON, strategies {git, gitlog, chat}`
     );
   }
 

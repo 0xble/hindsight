@@ -91,7 +91,7 @@ export const RETAIN_STRATEGIES = {
 
 // Knowledge PAGES (OKF pages = mental models) = a developer's durable mental model of the codebase,
 // CONSOLIDATED from the ingested MEMORY (commit history + past conversations) — NOT mirrored from the
-// current source (which would need constant re-sync). A universal 4-page taxonomy that generalizes to
+// current source (which would need constant re-sync). A universal 5-page taxonomy that generalizes to
 // any repo; the curator populates each from history+chats and can spawn per-component sub-pages.
 export const PAGES = [
   {

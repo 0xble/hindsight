@@ -12,10 +12,13 @@ in front of the agent at the moment it starts working.
 
 ## How it works
 
-1. **Backfill (once per repo).** `hindsight-coding-backfill --repo .` ingests every git commit
-   (message + diff) and, optionally, past developer conversations into the repo's bank, under two
-   retain strategies tuned per content type (`git`: verbose decision extraction; `chat`: at most two
-   coherent facts per conversation — the final decision and the notable rejected alternative). It
+1. **Backfill (once per repo).** By default `hindsight-coding-backfill --repo .` aggregates the last
+   N commit **messages** into a single cheap document (`gitlog` strategy — one extraction op, feeds
+   the "Initiatives and enhancements" page) and, optionally, ingests past developer conversations
+   into the repo's bank. Pass `--diffs` to instead ingest **every commit's full message + diff**
+   (`git` strategy: verbose per-commit decision extraction — much more tokens; opt-in). The `chat`
+   strategy keeps at most two coherent facts per conversation — the final decision and the notable
+   rejected alternative. It
    then synthesizes **knowledge pages** (a codebase mental map) and tags every item with a
    `REF-ID` so any surfaced fact traces back to its commit or session.
 2. **Reflect once per session.** On the session's first task message, the entry point sends that
