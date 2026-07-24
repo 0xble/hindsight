@@ -233,24 +233,34 @@ export class HindsightClient {
     );
   }
 
-  /** List knowledge pages (ids + names only — no synthesized content). */
+  /**
+   * List knowledge pages (ids + names only — no synthesized content).
+   * detail=metadata (not the full/content default) keeps list payloads small: pages can carry
+   * up to ~100KB of synthesized content each, which callers don't need just to enumerate them.
+   */
   async listPages(): Promise<unknown> {
     const r = await this.req("GET", this.bankUrl("/mental-models?detail=metadata"));
     return await r.json();
   }
 
-  /** Read one knowledge page's synthesized content by id. */
+  /**
+   * Read one knowledge page's synthesized content by id.
+   * detail=content (not detail=full) — full additionally includes `reflect_response`, the
+   * internal trace metadata used to build the page, which is 70-95% of the response bytes and
+   * can blow past an MCP host's per-tool-result token cap.
+   */
   async getPage(pageId: string): Promise<unknown> {
     const r = await this.req(
       "GET",
       this.bankUrl(`/mental-models/${encodeURIComponent(pageId)}?detail=content`)
     );
+    if (r.status === 404) throw new Error(`knowledge page not found: ${pageId}`);
     return await r.json();
   }
 
   /**
    * Create ONE custom knowledge page (user/tool-invoked, via `agent_knowledge_*` MCP tools).
-   * NOT the same as `createPages()` above, which batch-synthesizes the fixed `PAGES` set at
+   * NOT the same as `createPages()` below, which batch-synthesizes the fixed `PAGES` set at
    * backfill time from extracted facts — this creates a single page from a caller-chosen
    * `sourceQuery`, re-run on each consolidation.
    */
@@ -286,6 +296,7 @@ export class HindsightClient {
       this.bankUrl(`/mental-models/${encodeURIComponent(pageId)}`),
       body
     );
+    if (r.status === 404) throw new Error(`knowledge page not found: ${pageId}`);
     return await r.json();
   }
 
@@ -295,6 +306,7 @@ export class HindsightClient {
       "DELETE",
       this.bankUrl(`/mental-models/${encodeURIComponent(pageId)}`)
     );
+    if (r.status === 404) throw new Error(`knowledge page not found: ${pageId}`);
     try {
       return await r.json();
     } catch {

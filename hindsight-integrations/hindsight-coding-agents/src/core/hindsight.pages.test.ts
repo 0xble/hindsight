@@ -131,4 +131,33 @@ describe("HindsightClient knowledge-page CRUD", () => {
     await c.getPage("p 1/x");
     expect(calls[0].url).toContain(`/mental-models/${encodeURIComponent("p 1/x")}?detail=content`);
   });
+
+  function stub404() {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(
+        async () => ({ ok: false, status: 404, json: async () => ({ detail: "not found" }) }) as any
+      )
+    );
+  }
+
+  it("getPage throws on 404 instead of returning the error envelope", async () => {
+    stub404();
+    const c = new HindsightClient({ apiUrl: "http://x", bank: "repo-a" });
+    await expect(c.getPage("missing")).rejects.toThrow("knowledge page not found: missing");
+  });
+
+  it("updatePage throws on 404 instead of returning the error envelope", async () => {
+    stub404();
+    const c = new HindsightClient({ apiUrl: "http://x", bank: "repo-a" });
+    await expect(c.updatePage("missing", { name: "New" })).rejects.toThrow(
+      "knowledge page not found: missing"
+    );
+  });
+
+  it("deletePage throws on 404 instead of returning { ok: true }", async () => {
+    stub404();
+    const c = new HindsightClient({ apiUrl: "http://x", bank: "repo-a" });
+    await expect(c.deletePage("missing")).rejects.toThrow("knowledge page not found: missing");
+  });
 });
