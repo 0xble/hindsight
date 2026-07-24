@@ -95,4 +95,58 @@ describe("buildHookOutput", () => {
     expect(result).toContain("MEM_R");
     expect(JSON.parse(readFileSync(cacheFile, "utf8"))).toEqual({ answer: "" });
   });
+
+  it("reflect still injects if recall rejects", async () => {
+    const cfg = resolveConfig({});
+    const result = await buildHookOutput({
+      harness: "claude-code",
+      prompt: "hello",
+      cfg,
+      client: {
+        reflect: async () => "R_ANS",
+        recall: async () => {
+          throw new Error("recall boom");
+        },
+      },
+      cacheFile,
+    });
+    expect(result).toContain("R_ANS");
+    expect(result).toContain("PRECISELY");
+    expect(result).not.toContain("<hindsight_memories>");
+  });
+
+  it("both reflect and recall reject -> undefined, no throw", async () => {
+    const cfg = resolveConfig({});
+    const result = await buildHookOutput({
+      harness: "claude-code",
+      prompt: "hello",
+      cfg,
+      client: {
+        reflect: async () => {
+          throw new Error("reflect boom");
+        },
+        recall: async () => {
+          throw new Error("recall boom");
+        },
+      },
+      cacheFile,
+    });
+    expect(result).toBeUndefined();
+  });
+
+  it("threads recallMaxTokens/recallTimeoutMs config into recall", async () => {
+    const cfg = resolveConfig({ recallMaxTokens: 512, recallTimeoutMs: 7000 });
+    const recallSpy = vi.fn(async () => [{ text: "MEM" }]);
+    await buildHookOutput({
+      harness: "claude-code",
+      prompt: "the prompt",
+      cfg,
+      client: {
+        reflect: async () => "R",
+        recall: recallSpy,
+      },
+      cacheFile,
+    });
+    expect(recallSpy).toHaveBeenCalledWith("the prompt", { maxTokens: 512, timeoutMs: 7000 });
+  });
 });

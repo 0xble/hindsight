@@ -18,8 +18,10 @@ import { appendFileSync, mkdirSync, readFileSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { deriveBankId } from "./bank";
-import { Config, loadConfig } from "./config";
-import { ClientOpts, HindsightClient, RecallResult } from "./hindsight";
+import type { Config } from "./config";
+import { loadConfig } from "./config";
+import type { ClientOpts, RecallResult } from "./hindsight";
+import { HindsightClient } from "./hindsight";
 import { buildSystemInjection } from "./inject";
 import { formatMemories } from "./recall";
 
@@ -110,12 +112,21 @@ export async function buildHookOutput(args: {
     reflectBlock = answer ? buildSystemInjection(answer) : "";
   }
 
-  const results = await recallP;
-  diag(harness, results.length ? "recall_ok" : "recall_empty", {
-    ms: Date.now() - tRecall,
-    count: results.length,
-    query: prompt.slice(0, 80),
-  });
+  let results: RecallResult[] = [];
+  try {
+    results = await recallP;
+    diag(harness, results.length ? "recall_ok" : "recall_empty", {
+      ms: Date.now() - tRecall,
+      count: results.length,
+      query: prompt.slice(0, 80),
+    });
+  } catch (e) {
+    diag(harness, "recall_failed", {
+      ms: Date.now() - tRecall,
+      error: String((e as Error)?.message || e).slice(0, 200),
+      query: prompt.slice(0, 80),
+    });
+  }
   const memBlock = formatMemories(results);
 
   const blocks = [reflectBlock, memBlock].filter(Boolean);
