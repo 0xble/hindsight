@@ -14,6 +14,14 @@ export const GIT_MISSION =
   "literal values verbatim. Preserve the 'REF-ID: <token>' marker verbatim in every fact. Capture " +
   "both WHAT changed and WHY.";
 
+export const GITLOG_MISSION =
+  "You are ingesting an aggregated block of git commit MESSAGES ONLY (no diffs) — the project's " +
+  "recent commit-message history, newest first. Extract the project's INITIATIVES, FEATURES, " +
+  "ENHANCEMENTS, and notable changes or THEMES over time — what the project has been working on and " +
+  "how it has evolved. Do NOT extract per-line code detail (there is no diff to draw it from). Group " +
+  "related commits into a coherent initiative/theme where the messages make that clear; preserve exact " +
+  "identifiers and literal values verbatim when quoting a subject line.";
+
 export const CHAT_MISSION =
   "You are ingesting a raw developer conversation (a JSON user/assistant transcript). Extract the " +
   "FEWEST facts that capture the OUTCOME — do NOT emit one fact per message, per intermediate " +
@@ -63,6 +71,13 @@ export const CHAT_CUSTOM_INSTRUCTIONS =
 
 export const RETAIN_STRATEGIES = {
   git: { retain_mission: GIT_MISSION, retain_extraction_mode: "verbose" },
+  // ONE big aggregated document (last N commit messages, no diffs) -> a larger chunk size so it stays
+  // in as few chunks as possible and the extractor sees the whole history arc at once.
+  gitlog: {
+    retain_mission: GITLOG_MISSION,
+    retain_extraction_mode: "verbose",
+    retain_chunk_size: 12000,
+  },
   // chunk big enough to hold a WHOLE typical chat in ONE chunk (these run ~2.5k tokens / ~10k chars;
   // the 3000 default was SPLITTING them -> per-chunk fragments). ~12k stays well under a 16k-context
   // model, so the custom "≤2 facts" prompt sees the full proposal→revision arc and emits the final
@@ -106,5 +121,11 @@ export const PAGES = [
       "What are the significant technical decisions made in this project and the rationale " +
       "behind them — the durable 'why we do it this way' a developer should know? Summarize the " +
       "decisions and their reasoning from the commit rationales and past conversations.",
+  },
+  {
+    name: "Initiatives and enhancements",
+    source_query:
+      "Based on this repository's commit history, what are the major initiatives, features, and " +
+      "enhancements the project has worked on? Summarize the themes and notable changes over time.",
   },
 ];

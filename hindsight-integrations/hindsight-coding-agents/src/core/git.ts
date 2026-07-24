@@ -1,9 +1,16 @@
-/** Harness-agnostic git ingestion: every commit (full message + full diff) under the `git` strategy. */
+/**
+ * Harness-agnostic git ingestion. Two paths:
+ *  - `ingestGit`/`retainCommit`: per-commit, full message + full diff (opt-in, `--diffs`). Expensive
+ *    (one extraction op per commit).
+ *  - `ingestGitLog`/`gitLogText`: the last N commit MESSAGES ONLY, aggregated into ONE document
+ *    (default). Cheap (one extraction op total).
+ */
 import { execFileSync } from "node:child_process";
 import type { HindsightClient } from "./hindsight";
 import { pool } from "./util";
 
 const US = "\x1f";
+const RS = "\x1e"; // record separator between commits in gitLogText
 
 function git(repo: string, ...args: string[]): string {
   return execFileSync("git", ["-C", repo, ...args], { encoding: "utf8", maxBuffer: 1 << 28 });
@@ -92,4 +99,75 @@ export async function ingestGit(
   );
   log(`[git] done: ${shas.length} commits ingested under strategy 'git'`);
   return failures;
+}
+
+/**
+ * The last `limit` commits as an aggregated MESSAGES-ONLY block (no diffs) — one record per commit:
+ * "<shortsha> <date> <author>\n<subject>\n\n<body>", newest first, separated by a divider line.
+ * Thin wrapper over `git log`; empty repo (no commits) -> "".
+ */
+export function gitLogText(repo: string, limit: number): string {
+  let raw: string;
+  try {
+    raw = git(
+      repo,
+      "log",
+      `-n`,
+      String(limit),
+      "--no-merges",
+      "--date=short",
+      `--format=%h${US}%ad${US}%an${US}%s${US}%b${RS}`
+    );
+  } catch {
+    return ""; // no commits yet (or not a git repo) — caller handles empty
+  }
+  return raw
+    .split(RS)
+    .map((rec) => rec.trim())
+    .filter(Boolean)
+    .map((rec) => {
+      const [sha, date, author, subj, body] = rec.split(US);
+      const header = `${sha} ${date} ${author}`;
+      const msg = subj + (body?.trim() ? "\n\n" + body.trim() : "");
+      return `${header}\n${msg}`;
+    })
+    .join("\n\n---\n\n");
+}
+
+/**
+ * Ingest the aggregated commit-message history (last `opts.limit` commits, no diffs) as ONE document —
+ * a single retain/extraction op, orders of magnitude cheaper than per-commit full-diff ingestion. The
+ * document_id is `gitlog:<repoName>` so a re-seed replaces it (idempotent) rather than duplicating.
+ * Tags keep `source:git` (alongside `source:git-log`) so the cold-repo check (`listDocumentIds("source:git")`)
+ * still sees the bank as warm after a default (message-only) seed.
+ */
+export async function ingestGitLog(
+  client: HindsightClient,
+  repo: string,
+  opts: { limit: number; log?: (m: string) => void } = { limit: 300 }
+): Promise<number> {
+  const log = opts.log ?? (() => {});
+  const text = gitLogText(repo, opts.limit);
+  if (!text) {
+    log("[gitlog] no commits found — skipping");
+    return 0;
+  }
+  const repoName = repoNameOf(repo);
+  const n = text.split("\n\n---\n\n").length;
+  log(`[gitlog] ingesting last ${n} commit messages for ${repoName} as ONE document …`);
+  try {
+    await client.retain(
+      text,
+      `git commit-message history (last ${n}) for ${repoName}`,
+      `gitlog:${repoName}`,
+      ["source:git", "source:git-log"],
+      "gitlog",
+      { async: true }
+    );
+    log(`[gitlog] done: ${n} commit messages ingested as 1 document under strategy 'gitlog'`);
+    return 0;
+  } catch (e) {
+    log(`  ! gitlog ingest failed: ${(e as Error).message?.slice(0, 120)}`);
+    return 1;
+  }
 }

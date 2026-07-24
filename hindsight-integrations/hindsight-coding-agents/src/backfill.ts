@@ -3,28 +3,33 @@
  * hindsight-coding-backfill — one-shot setup + ingest of a repo's history into a Hindsight bank,
  * for the reflect-only coding-agents plugin.
  *
- * It (1) configures the bank (reflect mission, observations on, `git`+`chat` retain strategies),
- * (2) ingests EVERY git commit (full message + full diff) under the `git` strategy, (3) reads the
- * chosen HARNESS's past sessions and ingests each RAW as a JSON transcript under the `chat` strategy,
- * and (4) synthesizes generic codebase knowledge pages. Every item carries a REF-ID tracer.
+ * It (1) configures the bank (reflect mission, observations on, retain strategies), (2) ingests git
+ * history, (3) reads the chosen HARNESS's past sessions and ingests each RAW as a JSON transcript
+ * under the `chat` strategy, and (4) synthesizes generic codebase knowledge pages. Every item carries
+ * a REF-ID tracer.
+ *
+ * Git ingest is CHEAP by default: the last N commit MESSAGES (no diffs) aggregated into ONE document
+ * under the `gitlog` strategy — a single extraction op regardless of N. Pass `--diffs` to instead
+ * ingest EVERY commit individually with its full message + full diff under the `git` strategy — one
+ * extraction op PER commit, much more expensive, opt-in only.
  *
  * The only harness-specific step is (3): --harness selects how past sessions are read. Git ingest,
  * strategies, missions, and pages are identical across agents.
  *
  * Shared connection/bank settings (api-url, api-token, bank, harness) come from the JSON config
  * ~/.hindsight/coding-agent.json — the SAME file the runtime plugin reads; the matching --flags below
- * override it. Operation flags (--repo, --conversations, --limit, --reset, --no-pages, --concurrency)
- * are CLI-only.
+ * override it. Operation flags (--repo, --conversations, --limit, --reset, --no-pages, --concurrency,
+ * --diffs) are CLI-only.
  *
  * Usage:
  *   hindsight-coding-backfill --repo <path> [--bank <id>] [--harness opencode] \
  *       [--conversations <sessions.json>] [--api-url http://localhost:8888] [--api-token X] \
- *       [--config <path>] [--limit N] [--reset] [--no-pages] [--concurrency 8]
+ *       [--config <path>] [--limit N] [--reset] [--no-pages] [--concurrency 8] [--diffs]
  */
 import { deriveBankId } from "./core/bank";
 import { loadConfig } from "./core/config";
 import { HindsightClient } from "./core/hindsight";
-import { ingestGit } from "./core/git";
+import { ingestGit, ingestGitLog } from "./core/git";
 import { ingestChats } from "./core/chat";
 import { getHarness, HARNESS_NAMES } from "./harness/registry";
 
@@ -57,12 +62,18 @@ const LIMIT = arg("limit") ? Number(arg("limit")) : undefined;
 const RESET = process.argv.includes("--reset");
 const NO_PAGES = process.argv.includes("--no-pages");
 const CONCURRENCY = Number(arg("concurrency", "8"));
+// Default: cheap aggregated commit-message history (ONE doc). --diffs opts into the expensive
+// per-commit full-message + full-diff ingestion instead.
+const DIFFS = process.argv.includes("--diffs");
 
 if (!REPO || !BANK) {
   console.error(
     "usage: hindsight-coding-backfill --repo <path> [--bank <id>] [--harness <name>] " +
-      "[--conversations f.json] [--api-url U] [--config path] [--limit N] [--reset] [--no-pages] [--concurrency N]\n" +
+      "[--conversations f.json] [--api-url U] [--config path] [--limit N] [--reset] [--no-pages] " +
+      "[--concurrency N] [--diffs]\n" +
       "shared settings default from ~/.hindsight/coding-agent.json; --bank is required there or via --bank.\n" +
+      "--diffs: ingest every commit individually with its full diff (expensive, opt-in); default is " +
+      "a cheap aggregated commit-message-only history (one document).\n" +
       `harnesses: ${HARNESS_NAMES.join(", ")}`
   );
   process.exit(1);
@@ -81,7 +92,9 @@ async function main() {
   // before the (large) git flood keeps them from being starved in the server's extraction queue.
   const sessions = await harness.chatReader.read({ conversations: CONV, repo: REPO });
   const chatFails = await ingestChats(client, sessions, { concurrency: CONCURRENCY, log });
-  const gitFails = await ingestGit(client, REPO!, { limit: LIMIT, concurrency: CONCURRENCY, log });
+  const gitFails = DIFFS
+    ? await ingestGit(client, REPO!, { limit: LIMIT, concurrency: CONCURRENCY, log })
+    : await ingestGitLog(client, REPO!, { limit: LIMIT ?? 300, log });
 
   await client.drain(client.opIds, "extraction");
 
