@@ -11,7 +11,9 @@ set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 WRAPPER_DIR="$(cd "${HERE}/.." && pwd)"
 PLUGIN_NAME="hindsight-memory-v2"
-PLUGIN_VERSION="0.1.0"
+# Read the version from the manifest itself so this can never drift from what's
+# actually installed (no hardcoded duplicate to forget to bump).
+PLUGIN_VERSION="$(node -p "require('${WRAPPER_DIR}/.claude-plugin/plugin.json').version")"
 MARKETPLACE="hindsight"
 INSTALL_DIR="${HOME}/.claude/plugins/cache/${MARKETPLACE}/${PLUGIN_NAME}/${PLUGIN_VERSION}"
 
