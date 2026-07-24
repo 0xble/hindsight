@@ -9,10 +9,7 @@ export function buildSystemInjection(memory: string): string {
     "or literal values (specific strings, numbers, set members, mappings), apply them PRECISELY as " +
     "given — do not substitute a different but plausible choice of your own. " +
     "Verify against the current code before editing.\n\n" +
-    // Visible attribution — show Hindsight working. Whenever this memory is relevant to the answer
-    // you're about to give (it drove your reasoning, supplied context, or saved you a question),
-    // surface it with this exact markdown header at the top of the relevant section:
-    //   > 🧠 **Using Hindsight Memories** — {summary naming the specific facts you're drawing on}
+    // Visible-attribution directive lives in attribution.ts (ATTRIBUTION_PREAMBLE).
     ATTRIBUTION_PREAMBLE +
     "\n\n" +
     memory
