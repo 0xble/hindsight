@@ -17,7 +17,7 @@ afterEach(() => {
 });
 
 describe("readClaudeTranscript", () => {
-  it("extracts normalized text turns, dropping non-message/isMeta/text-less lines and tolerating malformed lines", () => {
+  it("extracts normalized text turns, dropping non-message/isMeta/isSidechain/text-less lines and tolerating malformed or non-object JSON lines", () => {
     const lines = [
       // non-message line: dropped
       JSON.stringify({ type: "last-prompt", leafUuid: "x" }),
@@ -55,8 +55,18 @@ describe("readClaudeTranscript", () => {
         isMeta: true,
         message: { role: "user", content: "<system-injected>" },
       }),
+      // dropped: isSidechain (subagent/Task turn, not the main conversation)
+      JSON.stringify({
+        type: "assistant",
+        isSidechain: true,
+        message: { role: "assistant", content: "subagent output" },
+      }),
       // malformed line: must not throw
       "{ not json",
+      // JSON.parse succeeds but yields a non-object value: must not throw
+      "null",
+      "42",
+      "[]",
       // blank line: must be skipped
       "",
     ];
@@ -72,5 +82,26 @@ describe("readClaudeTranscript", () => {
 
   it("fails open (returns []) when the file cannot be read", () => {
     expect(readClaudeTranscript(join(root, "does-not-exist.jsonl"))).toEqual([]);
+  });
+
+  it("joins multiple text blocks in a single message with newlines", () => {
+    writeFileSync(
+      file,
+      JSON.stringify({
+        type: "assistant",
+        message: {
+          role: "assistant",
+          content: [
+            { type: "text", text: "First paragraph." },
+            { type: "thinking", thinking: "irrelevant" },
+            { type: "text", text: "Second paragraph." },
+          ],
+        },
+      })
+    );
+
+    const result = readClaudeTranscript(file);
+
+    expect(result).toEqual([{ role: "assistant", content: "First paragraph.\nSecond paragraph." }]);
   });
 });
