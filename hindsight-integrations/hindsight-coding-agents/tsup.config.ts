@@ -5,6 +5,7 @@ export default defineConfig({
     index: "src/index.ts",
     backfill: "src/backfill.ts",
     "claude-hook": "src/claude-hook.ts",
+    "claude-stop-hook": "src/claude-stop-hook.ts",
     "cursor-hook": "src/cursor-hook.ts",
     "codex-hook": "src/codex-hook.ts",
   },

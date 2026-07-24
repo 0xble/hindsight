@@ -40,7 +40,7 @@ export interface HookSpec {
   emit(context: string): unknown;
 }
 
-function diag(harness: string, event: string, extra: Record<string, unknown> = {}): void {
+export function diag(harness: string, event: string, extra: Record<string, unknown> = {}): void {
   try {
     appendFileSync(
       process.env.HINDSIGHT_DIAG_FILE || "/tmp/hindsight-plugin.log",
