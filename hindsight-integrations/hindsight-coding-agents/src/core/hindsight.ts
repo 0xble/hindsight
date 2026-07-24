@@ -233,6 +233,75 @@ export class HindsightClient {
     );
   }
 
+  /** List knowledge pages (ids + names only — no synthesized content). */
+  async listPages(): Promise<unknown> {
+    const r = await this.req("GET", this.bankUrl("/mental-models?detail=metadata"));
+    return await r.json();
+  }
+
+  /** Read one knowledge page's synthesized content by id. */
+  async getPage(pageId: string): Promise<unknown> {
+    const r = await this.req(
+      "GET",
+      this.bankUrl(`/mental-models/${encodeURIComponent(pageId)}?detail=content`)
+    );
+    return await r.json();
+  }
+
+  /**
+   * Create ONE custom knowledge page (user/tool-invoked, via `agent_knowledge_*` MCP tools).
+   * NOT the same as `createPages()` above, which batch-synthesizes the fixed `PAGES` set at
+   * backfill time from extracted facts — this creates a single page from a caller-chosen
+   * `sourceQuery`, re-run on each consolidation.
+   */
+  async createPage(pageId: string, name: string, sourceQuery: string): Promise<unknown> {
+    const r = await this.req("POST", this.bankUrl("/mental-models"), {
+      id: pageId,
+      name,
+      source_query: sourceQuery,
+      max_tokens: 4096,
+      trigger: {
+        mode: "delta",
+        refresh_after_consolidation: true,
+        fact_types: ["observation"],
+        exclude_mental_models: true,
+      },
+    });
+    return await r.json();
+  }
+
+  /** Update a page's name and/or source query. No-op (no request) if neither is provided. */
+  async updatePage(
+    pageId: string,
+    updates: { name?: string; sourceQuery?: string }
+  ): Promise<unknown> {
+    const body: Record<string, string> = {};
+    if (updates.name) body.name = updates.name;
+    if (updates.sourceQuery) body.source_query = updates.sourceQuery;
+    if (Object.keys(body).length === 0) {
+      return { error: "Provide name or sourceQuery to update" };
+    }
+    const r = await this.req(
+      "PATCH",
+      this.bankUrl(`/mental-models/${encodeURIComponent(pageId)}`),
+      body
+    );
+    return await r.json();
+  }
+
+  /** Permanently delete a knowledge page. */
+  async deletePage(pageId: string): Promise<unknown> {
+    const r = await this.req(
+      "DELETE",
+      this.bankUrl(`/mental-models/${encodeURIComponent(pageId)}`)
+    );
+    try {
+      return await r.json();
+    } catch {
+      return { ok: true };
+    }
+  }
+
   /** Knowledge pages — synthesized from the EXTRACTED facts, so call AFTER the retain drain. */
   async createPages(): Promise<void> {
     this.log(`[pages] creating ${PAGES.length} knowledge pages …`);
