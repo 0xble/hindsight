@@ -6,10 +6,10 @@
  *   { "hooks": { "UserPromptSubmit": [ { "hooks": [
  *       { "type": "command", "command": "hindsight-claude-hook" } ] } ] } }
  *
- * Behavior (shared hook runtime, core/hook.ts): reflect once per Claude session on the first
- * prompt, cache, re-inject on later prompts; reflect outcomes recorded in the diagnostic file.
- * Config: the layered files (~/.hindsight/coding-agent.json + nearest project file), harness
- * name "claude-code".
+ * Behavior (shared hook runtime, core/hook.ts): recall every prompt; reflect once per Claude
+ * session on the first prompt and cache the outcome so later prompts recall only. Reflect
+ * outcomes recorded in the diagnostic file. Config: the layered files (~/.hindsight/coding-agent.json
+ * + nearest project file), harness name "claude-code".
  */
 import { runHook } from "./core/hook";
 

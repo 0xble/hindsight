@@ -45,6 +45,8 @@ export interface RawConfig {
   retainSessions?: boolean; // enable live write-back (default false)
   retainEveryTurns?: number; // write-back cadence in user turns (default 5)
   reflectTimeoutMs?: number; // reflect timeout (default 120000)
+  recallMaxTokens?: number; // per-turn recall token budget (default 1024)
+  recallTimeoutMs?: number; // per-turn recall timeout (default 10000)
   gitSync?: GitSyncConfig;
   /** Per-harness overrides of any of the fields above, keyed by harness name ("opencode",
    *  "claude-code", ...). Lets one config file give each agent its own bank/settings. */
@@ -65,6 +67,8 @@ export interface Config {
   retainSessions: boolean;
   retainEveryTurns: number;
   reflectTimeoutMs: number;
+  recallMaxTokens: number;
+  recallTimeoutMs: number;
   gitSync: Required<GitSyncConfig>;
 }
 
@@ -84,6 +88,8 @@ export function resolveConfig(raw: RawConfig = {}): Config {
     retainSessions: raw.retainSessions ?? false,
     retainEveryTurns: raw.retainEveryTurns || 5,
     reflectTimeoutMs: raw.reflectTimeoutMs || 120000,
+    recallMaxTokens: raw.recallMaxTokens || 1024,
+    recallTimeoutMs: raw.recallTimeoutMs || 10000,
     gitSync: {
       enabled: gs.enabled ?? false, // opt-in: off unless explicitly enabled in config
       ref: gs.ref ?? "origin/main",

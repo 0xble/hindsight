@@ -10,9 +10,9 @@
  *   { "continue": true, "additional_context": "..." }
  * — `continue` is always true: a memory failure must never block the user's prompt.
  *
- * Behavior (shared hook runtime, core/hook.ts): reflect once per conversation, cache, re-inject;
- * reflect outcomes recorded in the diagnostic file. Config: the layered files, harness name
- * "cursor-cli".
+ * Behavior (shared hook runtime, core/hook.ts): recall every prompt; reflect once per
+ * conversation on the first prompt and cache the outcome so later prompts recall only. Reflect
+ * outcomes recorded in the diagnostic file. Config: the layered files, harness name "cursor-cli".
  */
 import { runHook } from "./core/hook";
 

@@ -10,9 +10,9 @@
  *   { "hooks": { "UserPromptSubmit": [ { "hooks": [
  *       { "type": "command", "command": "hindsight-codex-hook" } ] } ] } }
  *
- * Behavior (shared hook runtime, core/hook.ts): reflect once per session, cache, re-inject;
- * reflect outcomes recorded in the diagnostic file. Config: the layered files, harness name
- * "codex".
+ * Behavior (shared hook runtime, core/hook.ts): recall every prompt; reflect once per session on
+ * the first prompt and cache the outcome so later prompts recall only. Reflect outcomes recorded
+ * in the diagnostic file. Config: the layered files, harness name "codex".
  */
 import { runHook } from "./core/hook";
 
