@@ -94,14 +94,14 @@ describe("buildSessionStartContext", () => {
     expect(out.systemMessage).toBeUndefined();
   });
 
-  it("already-seeded state -> no seed, roster preamble only", async () => {
+  it("cold-check-wins: stale seededAt but EMPTY bank -> reseeds (consults the live bank, ignores seededAt)", async () => {
     writeSeedState("bank-1", { seededAt: "2026-01-01T00:00:00Z" }, stateDir);
     const startSeed = vi.fn();
     let called = false;
     const client = {
       listDocumentIds: async () => {
         called = true;
-        return new Set<string>();
+        return new Set<string>(); // bank is empty (user cleared it)
       },
       listPages: listPagesOk,
     };
@@ -114,10 +114,28 @@ describe("buildSessionStartContext", () => {
       hasGit: () => true,
       startSeed,
     });
+    // The live bank is consulted despite the stored seededAt, and an empty bank reseeds.
+    expect(called).toBe(true);
+    expect(startSeed).toHaveBeenCalledWith("/repo/dir", { limit: 300 });
+    expect(out.systemMessage).toContain("🧠");
+  });
+
+  it("cold-check-wins: stale seededAt but WARM bank -> no seed (only an empty bank reseeds)", async () => {
+    writeSeedState("bank-1", { seededAt: "2026-01-01T00:00:00Z" }, stateDir);
+    const startSeed = vi.fn();
+    const client = { listDocumentIds: async () => new Set(["git:abc"]), listPages: listPagesOk };
+    const out = await buildSessionStartContext({
+      cwd: "/repo/dir",
+      bankId: "bank-1",
+      cfg: resolveConfig(),
+      client,
+      stateDir,
+      hasGit: () => true,
+      startSeed,
+    });
     expect(startSeed).not.toHaveBeenCalled();
-    expect(called).toBe(false);
-    expect(out.additionalContext).toContain("- Component map (p1)");
     expect(out.systemMessage).toBeUndefined();
+    expect(out.additionalContext).toContain("- Component map (p1)");
   });
 
   it("declined state -> no seed, roster preamble only", async () => {
@@ -138,7 +156,7 @@ describe("buildSessionStartContext", () => {
     expect(out.systemMessage).toBeUndefined();
   });
 
-  it("warm bank (non-empty doc set) -> no seed, writes seededAt, roster preamble only", async () => {
+  it("warm bank (non-empty doc set) -> no seed, no note", async () => {
     const startSeed = vi.fn();
     const client = { listDocumentIds: async () => new Set(["git:abc"]), listPages: listPagesOk };
     const out = await buildSessionStartContext({
@@ -151,8 +169,6 @@ describe("buildSessionStartContext", () => {
       startSeed,
     });
     expect(startSeed).not.toHaveBeenCalled();
-    const state = readSeedState("bank-1", stateDir);
-    expect(typeof state.seededAt).toBe("string");
     expect(out.additionalContext).toContain("- Component map (p1)");
     expect(out.systemMessage).toBeUndefined();
   });

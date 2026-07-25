@@ -70,31 +70,32 @@ export async function buildSessionStartContext(args: {
   if (cfg.autoSeed !== false) {
     if (hasGit(cwd)) {
       const state = readSeedState(bankId, stateDir);
-      if (!state.declined && !state.seededAt) {
+      // Only `declined` hard-opts-out. We DON'T gate on a stored `seededAt`: the LIVE bank is the
+      // source of truth (cold-check-wins). A stale `seededAt` from an earlier seed must not suppress
+      // re-seeding after the user has cleared the bank — otherwise "delete the bank + restart" never
+      // re-seeds. Cost: one `listDocumentIds` per session start (cheap; usually a single page).
+      if (!state.declined) {
         let docIds: Set<string> | undefined;
         try {
           docIds = await client.listDocumentIds("source:git");
         } catch {
-          docIds = undefined; // server unreachable: transient — don't write state, try again next session
+          docIds = undefined; // server unreachable: transient — do nothing, try again next session
         }
 
-        if (docIds !== undefined) {
-          if (docIds.size > 0) {
-            // Warm (or already seeded by another path): remember, so we don't re-enumerate every session.
-            writeSeedState(bankId, { seededAt: new Date().toISOString() }, stateDir);
-          } else {
-            // Cold: start the background seed now, deterministically — no agent involvement.
-            startSeed(cwd, { limit: cfg.seedLimit });
-            if (cfg.codebaseSurvey !== false) {
-              startSurvey(cwd, { model: cfg.surveyModel, budgetUsd: cfg.surveyBudgetUsd });
-            }
-            writeSeedState(bankId, { seededAt: new Date().toISOString() }, stateDir);
-            diag("claude-code", "seed_started", { bank: bankId });
-            systemMessage =
-              `🧠 Hindsight is learning ${bankId} from this repo's git history in the background, ` +
-              `and surveying the codebase structure to build knowledge pages — recalled memories will ` +
-              `appear as it processes. No action needed.`;
+        // Cold iff the bank has zero source:git docs. An undefined result (server error) is NOT
+        // treated as cold — we only seed on a confirmed-empty bank.
+        if (docIds !== undefined && docIds.size === 0) {
+          startSeed(cwd, { limit: cfg.seedLimit });
+          if (cfg.codebaseSurvey !== false) {
+            startSurvey(cwd, { model: cfg.surveyModel, budgetUsd: cfg.surveyBudgetUsd });
           }
+          // Record the seed time (informational — no longer a gate).
+          writeSeedState(bankId, { seededAt: new Date().toISOString() }, stateDir);
+          diag("claude-code", "seed_started", { bank: bankId });
+          systemMessage =
+            `🧠 Hindsight is learning ${bankId} from this repo's git history in the background, ` +
+            `and surveying the codebase structure to build knowledge pages — recalled memories will ` +
+            `appear as it processes. No action needed.`;
         }
       }
     }
