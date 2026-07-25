@@ -341,19 +341,30 @@ export class HindsightClient {
     summary: string;
     relatesToPageId?: string;
   }): Promise<{ page_id: string }> {
-    const pageId = args.relatesToPageId ?? `initiative-${this.slugify(args.title)}`;
-    if (!args.relatesToPageId) {
+    // `/knowledge-base/pages` mints its OWN page id (kp-…); we can't set it. So for a new initiative
+    // we create the page first and adopt the server-assigned id — that id is what the return value
+    // and the marker's `relatedPageId` tag must use, or `read_knowledge_page(id)` 404s and the
+    // `[[page:<id>]]` link points at nothing.
+    let pageId = args.relatesToPageId;
+    if (!pageId) {
       const folderId = await this.ensureFolder("Initiatives");
-      await this.req("POST", this.bankUrl("/knowledge-base/pages"), {
+      const r = await this.req("POST", this.bankUrl("/knowledge-base/pages"), {
         name: args.title,
         source_query: `Summarize the "${args.title}" initiative: what is being built or changed and why, and its current state — drawn from the project's memory.`,
         parent_id: folderId,
-        tags: ["knowledge:feature-work", `relatedPageId:${pageId}`],
+        tags: ["knowledge:feature-work"],
         trigger: {
           fact_types: ["world", "experience", "observation"],
           refresh_after_consolidation: true,
         },
       });
+      try {
+        const j = (await r.json()) as { page_id?: string; id?: string };
+        pageId = j.page_id ?? j.id;
+      } catch {
+        /* fall through to the slug fallback below */
+      }
+      pageId ||= `initiative-${this.slugify(args.title)}`; // last resort if the response lacked an id
     }
     const verb = args.relatesToPageId ? "Enhancement to an existing initiative" : "New initiative";
     const content = `${verb}: ${args.title}. ${args.summary}`;

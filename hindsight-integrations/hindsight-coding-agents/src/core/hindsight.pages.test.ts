@@ -293,32 +293,34 @@ describe("HindsightClient.captureInitiative", () => {
       summary: "Add exponential backoff so transient upload failures retry.",
     });
 
-    const expectedPageId = "initiative-retry-backoff-for-the-uploader";
-    expect(result).toEqual({ page_id: expectedPageId });
+    // The returned id is the SERVER-ASSIGNED page id ("pg" from the mock), NOT the derived slug —
+    // the /knowledge-base/pages endpoint mints its own id.
+    expect(result).toEqual({ page_id: "pg" });
 
-    // Page POST: name = title, nested under the Initiatives folder, tagged relatedPageId:<pageId>
+    // Page POST: name = title, nested under the Initiatives folder. The page itself is NOT tagged
+    // with a (self-referential) relatedPageId — only the tier tag.
     const pagePost = calls.find(
       (k) => k.method === "POST" && k.url.endsWith("/knowledge-base/pages")
     );
     expect(pagePost).toBeDefined();
     expect(pagePost.body.name).toBe("Retry backoff for the uploader");
     expect(pagePost.body.parent_id).toBe("folder-abc");
-    expect(pagePost.body.tags).toContain("knowledge:feature-work");
-    expect(pagePost.body.tags).toContain(`relatedPageId:${expectedPageId}`);
+    expect(pagePost.body.tags).toEqual(["knowledge:feature-work"]);
+    expect(pagePost.body.tags.some((t: string) => t.startsWith("relatedPageId:"))).toBe(false);
 
-    // Marker retain POST to /memories, same relatedPageId + knowledge:feature-work
+    // Marker retain POST to /memories: relatedPageId points at the REAL server page id ("pg").
     const memPost = calls.find((k) => k.method === "POST" && k.url.endsWith("/memories"));
     expect(memPost).toBeDefined();
     const item = memPost.body.items[0];
     expect(item.tags).toContain("knowledge:feature-work");
-    expect(item.tags).toContain(`relatedPageId:${expectedPageId}`);
+    expect(item.tags).toContain("relatedPageId:pg");
     expect(item.strategy).toBe("document");
     expect(memPost.body.async).toBe(true);
     // Unique per-marker document id (NOT the page id) so repeated captures accrue.
-    expect(item.document_id).not.toBe(expectedPageId);
+    expect(item.document_id).not.toBe("pg");
     expect(item.document_id).toContain("initiative-marker-retry-backoff-for-the-uploader-");
 
-    // The returned page id and the tag's id must be identical.
+    // The returned page id and the marker tag's id must be identical (the real page node id).
     const tagId = item.tags
       .find((t: string) => t.startsWith("relatedPageId:"))
       .slice("relatedPageId:".length);
