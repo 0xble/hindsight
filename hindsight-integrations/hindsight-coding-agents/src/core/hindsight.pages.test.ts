@@ -161,3 +161,32 @@ describe("HindsightClient knowledge-page CRUD", () => {
     await expect(c.deletePage("missing")).rejects.toThrow("knowledge page not found: missing");
   });
 });
+
+describe("HindsightClient.configureBank entity_labels wiring", () => {
+  it("PATCHes /config with the knowledge entity_labels tier and free-form entities on", async () => {
+    const calls: any[] = [];
+    stubFetch(calls, async () => ({ ok: true }));
+    const c = new HindsightClient({ apiUrl: "http://x", bank: "repo-a" });
+    await c.configureBank();
+
+    const configCall = calls.find((c) => c.method === "PATCH" && c.url.endsWith("/config"));
+    expect(configCall).toBeDefined();
+    const updates = configCall.body.updates;
+
+    expect(Array.isArray(updates.entity_labels)).toBe(true);
+    const group = updates.entity_labels[0];
+    expect(group.key).toBe("knowledge");
+    expect(group.tag).toBe(true);
+    expect(group.type).toBe("multi-values");
+    expect(group.values).toHaveLength(5);
+    expect(group.values.map((v: any) => v.value)).toEqual([
+      "feature-work",
+      "decision",
+      "convention",
+      "component",
+      "concept",
+    ]);
+
+    expect(updates.entities_allow_free_form).toBe(true);
+  });
+});

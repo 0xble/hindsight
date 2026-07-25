@@ -50,6 +50,17 @@ export const DOCUMENT_MISSION =
   "You are ingesting a standalone document (notes, docs, or structural findings). Extract the " +
   "concrete facts, concepts, and structure it describes.";
 
+export const SESSION_MISSION =
+  "You are ingesting a developer's LIVE coding-agent session: a markdown transcript of the user's " +
+  "requests, the assistant's narration, and the concrete ACTIONS it took (file edits, commands run, " +
+  "and their results, marked with '**Tool**' and '↳'). Unlike a short decision chat, a work session " +
+  "usually contains SEVERAL durable facts — capture them. Extract: the DECISIONS made and their " +
+  "rationale; the concrete CHANGES to specific code entities (files, functions, identifiers — quote " +
+  "them VERBATIM); problems encountered and how they were resolved; and any conventions, invariants, " +
+  "or constraints established. Consolidate related steps into coherent facts (do NOT emit one fact " +
+  "per message or per tool call), and when the session revised its approach, record only the FINAL, " +
+  "settled state as what is in effect. Preserve the 'REF-ID: <token>' marker verbatim in every fact.";
+
 export const OBSERVATIONS_MISSION =
   "Consolidate durable knowledge about THIS codebase — recurring patterns, conventions, module " +
   "responsibilities, and how components relate — from the ingested commits and conversations. " +
@@ -99,7 +110,83 @@ export const RETAIN_STRATEGIES = {
     retain_extraction_mode: "verbose",
     retain_chunk_size: 12000,
   },
+  // LIVE coding-agent session write-back (core/retain-hook.ts, runtime.ts). A full work session is
+  // NOT a short decision convo — the `chat` strategy's aggressive "≤2 facts" custom extraction would
+  // throw away most of what the session produced. Verbose extraction over a big chunk captures the
+  // several durable decisions/changes a real session makes. Distinct from `chat` (backfilled past
+  // conversations, which ARE short decision logs and keep the ≤2-fact custom extractor).
+  session: {
+    retain_mission: SESSION_MISSION,
+    retain_extraction_mode: "verbose",
+    retain_chunk_size: 12000,
+  },
 } as const;
+
+// ── passive tier tagging (entity_labels) ───────────────────────────────────────
+// A single hierarchical bank-config group set by `configureBank` at seed time. `tag: true` makes the
+// extractor copy each selected `knowledge:<value>` onto the fact's tags (via `_inject_label_tags`),
+// so the seeded tier PAGES can scope their synthesis by tag with no extra query infra. The vocabulary
+// is FIXED (not per-feature) because tag matching is exact set-ops with no wildcards.
+export interface EntityLabelValue {
+  value: string;
+  description: string;
+}
+
+export interface EntityLabelGroup {
+  key: string;
+  type: "multi-values";
+  optional: boolean;
+  tag: boolean;
+  description: string;
+  values: EntityLabelValue[];
+}
+
+export const KNOWLEDGE_LABELS: EntityLabelGroup = {
+  key: "knowledge",
+  type: "multi-values", // 0, 1, or several — empty is normal
+  optional: true,
+  tag: true, // emits knowledge:<value> onto the fact's tags
+  description:
+    "Routing labels for this project's Hindsight KNOWLEDGE PAGES — curated, human-readable summaries " +
+    "of the repo's DURABLE engineering knowledge (architecture, key decisions, conventions, ongoing " +
+    "initiatives), each page rebuilt automatically from the facts labeled for it. Mark a fact only when " +
+    "it is durable, reusable knowledge a developer would still want surfaced in future sessions. " +
+    "IMPORTANT: leave this EMPTY for routine, transient, or operational facts — a passing test, a " +
+    "one-off command, a status update, a debugging dead-end. MOST facts should get no label here. " +
+    "Assign more than one value only when the fact genuinely fits several.",
+  values: [
+    {
+      value: "feature-work",
+      description:
+        "A new feature, initiative, or enhancement being planned or built — the capability being added " +
+        "and the intent behind it. Not routine bug-fixes or chores.",
+    },
+    {
+      value: "decision",
+      description:
+        "A technical decision that will constrain future work, with its rationale — why this approach " +
+        "was chosen over alternatives, or a rule deliberately adopted.",
+    },
+    {
+      value: "convention",
+      description:
+        "An established way this project does things — naming, structure, testing, error handling, or " +
+        "another recurring pattern a contributor is expected to follow.",
+    },
+    {
+      value: "component",
+      description:
+        "What a specific module, file, service, or subsystem is responsible for, or how components " +
+        "depend on and connect to one another.",
+    },
+    {
+      value: "concept",
+      description:
+        "A domain concept, key abstraction, or piece of project vocabulary a new contributor must " +
+        "understand to work effectively.",
+    },
+  ],
+};
 
 // Knowledge PAGES (OKF pages = mental models) = a developer's durable mental model of the codebase,
 // CONSOLIDATED from the ingested MEMORY (commit history + past conversations) — NOT mirrored from the

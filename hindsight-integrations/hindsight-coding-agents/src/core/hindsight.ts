@@ -10,6 +10,7 @@ import {
   REFLECT_MISSION,
   OBSERVATIONS_MISSION,
   RETAIN_STRATEGIES,
+  KNOWLEDGE_LABELS,
   PAGES,
 } from "./missions";
 import { sleep } from "./util";
@@ -192,10 +193,15 @@ export class HindsightClient {
       retain_extraction_mode: "verbose",
     });
     await this.req("PATCH", this.bankUrl("/config"), {
-      updates: { retain_strategies: RETAIN_STRATEGIES, retain_default_strategy: "git" },
+      updates: {
+        retain_strategies: RETAIN_STRATEGIES,
+        retain_default_strategy: "git",
+        entity_labels: [KNOWLEDGE_LABELS],
+        entities_allow_free_form: true,
+      },
     });
     this.log(
-      `[bank] configured ${this.bank}: reflect mission, observations ON, strategies {git, gitlog, chat}`
+      `[bank] configured ${this.bank}: reflect mission, observations ON, entity_labels {knowledge}, strategies {git, gitlog, chat, document, session}`
     );
   }
 
