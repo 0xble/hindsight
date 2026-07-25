@@ -50,6 +50,8 @@ export interface RawConfig {
   recallTimeoutMs?: number; // per-turn recall timeout (default 10000)
   autoSeed?: boolean; // SessionStart: auto-seed a cold repo's bank from git history (default true)
   seedLimit?: number; // SessionStart auto-seed: most-recent-N-commits cap (default 300)
+  codebaseSurvey?: boolean; // SessionStart: spawn a headless claude to survey a cold repo's structure (default true)
+  surveyModel?: string; // model passed to the headless survey's `claude -p --model` (default "sonnet")
   gitSync?: GitSyncConfig;
   /** Per-harness overrides of any of the fields above, keyed by harness name ("opencode",
    *  "claude-code", ...). Lets one config file give each agent its own bank/settings. */
@@ -74,6 +76,8 @@ export interface Config {
   recallTimeoutMs: number;
   autoSeed: boolean;
   seedLimit: number;
+  codebaseSurvey: boolean;
+  surveyModel: string;
   gitSync: Required<GitSyncConfig>;
 }
 
@@ -97,6 +101,8 @@ export function resolveConfig(raw: RawConfig = {}): Config {
     recallTimeoutMs: raw.recallTimeoutMs || 10000,
     autoSeed: raw.autoSeed ?? true,
     seedLimit: raw.seedLimit || DEFAULT_SEED_LIMIT,
+    codebaseSurvey: raw.codebaseSurvey ?? true,
+    surveyModel: raw.surveyModel || "sonnet",
     gitSync: {
       enabled: gs.enabled ?? false, // opt-in: off unless explicitly enabled in config
       ref: gs.ref ?? "origin/main",

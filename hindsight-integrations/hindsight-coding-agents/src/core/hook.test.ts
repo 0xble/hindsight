@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { resolveConfig } from "./config";
-import { buildHookOutput } from "./hook";
+import { buildHookOutput, runHook } from "./hook";
 
 let root: string;
 let cacheFile: string;
@@ -183,5 +183,24 @@ describe("buildHookOutput", () => {
       cacheFile,
     });
     expect(reflectSpy).toHaveBeenCalledWith("the prompt", { budget: "high", timeoutMs: 3000 });
+  });
+});
+
+describe("runHook anti-recursion guard", () => {
+  const ORIGINAL = process.env.HINDSIGHT_DISABLE_HOOKS;
+
+  afterEach(() => {
+    if (ORIGINAL === undefined) delete process.env.HINDSIGHT_DISABLE_HOOKS;
+    else process.env.HINDSIGHT_DISABLE_HOOKS = ORIGINAL;
+  });
+
+  it("HINDSIGHT_DISABLE_HOOKS set -> returns immediately, never reads stdin or builds a client", async () => {
+    process.env.HINDSIGHT_DISABLE_HOOKS = "1";
+    const makeClient = vi.fn();
+    // No stdin is provided/mocked here — if the guard didn't return before `readFileSync(0, ...)`,
+    // this call would attempt to read the real process stdin. The fact this resolves at all (let
+    // alone without calling makeClient) proves the guard fired first.
+    await runHook({ harness: "claude-code", parse: () => ({}), emit: (c) => ({ c }) }, makeClient);
+    expect(makeClient).not.toHaveBeenCalled();
   });
 });

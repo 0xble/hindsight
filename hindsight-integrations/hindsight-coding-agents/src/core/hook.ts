@@ -136,6 +136,10 @@ export async function runHook(
   spec: HookSpec,
   makeClient: (opts: ClientOpts) => HookClient = (o) => new HindsightClient(o)
 ): Promise<void> {
+  // Anti-recursion: the codebase survey's own headless claude session (core/survey.ts) sets this
+  // so its hooks are a no-op — it must not recall/inject into its own survey turns.
+  if (process.env.HINDSIGHT_DISABLE_HOOKS) return;
+
   let ev: Record<string, unknown> = {};
   try {
     ev = JSON.parse(readFileSync(0, "utf8")) as Record<string, unknown>;

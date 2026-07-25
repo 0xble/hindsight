@@ -13,7 +13,7 @@ describe("selectTools", () => {
     expect(selectTools(cfg, stubClient, "b")).toEqual([]);
   });
 
-  it("returns the 7 agent_knowledge_* tool specs when enabled", () => {
+  it("returns the 8 agent_knowledge_* tool specs when enabled", () => {
     const cfg = resolveConfig({});
     const tools = selectTools(cfg, stubClient, "b");
     expect(tools.map((t) => t.name).sort()).toEqual(
@@ -25,6 +25,7 @@ describe("selectTools", () => {
         "agent_knowledge_update_page",
         "agent_knowledge_delete_page",
         "agent_knowledge_recall",
+        "agent_knowledge_ingest",
       ].sort()
     );
   });

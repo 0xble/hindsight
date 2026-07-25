@@ -2,7 +2,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { buildSessionStartContext, KNOWLEDGE_MISSION } from "./session-start";
+import { buildSessionStartContext, runSessionStartHook, KNOWLEDGE_MISSION } from "./session-start";
 import { readSeedState, writeSeedState } from "./seed";
 import { resolveConfig } from "./config";
 
@@ -17,9 +17,10 @@ afterEach(() => {
 });
 
 describe("buildSessionStartContext", () => {
-  it("cold git repo + autoSeed on -> starts the seed, writes seededAt, returns note + mission", async () => {
+  it("cold git repo + autoSeed on -> starts the seed + survey, writes seededAt, returns note + mission", async () => {
     const client = { listDocumentIds: async () => new Set<string>() };
     const startSeed = vi.fn();
+    const startSurvey = vi.fn();
     const ctx = await buildSessionStartContext({
       cwd: "/repo/dir",
       bankId: "bank-1",
@@ -28,8 +29,10 @@ describe("buildSessionStartContext", () => {
       stateDir,
       hasGit: () => true,
       startSeed,
+      startSurvey,
     });
     expect(startSeed).toHaveBeenCalledWith("/repo/dir", { limit: 300 });
+    expect(startSurvey).toHaveBeenCalledWith("/repo/dir", { model: "sonnet" });
     const state = readSeedState("bank-1", stateDir);
     expect(typeof state.seededAt).toBe("string");
     expect(state.seededAt).not.toBe("");
@@ -38,6 +41,25 @@ describe("buildSessionStartContext", () => {
     expect(ctx).toContain("🧠");
     expect(ctx).toContain(KNOWLEDGE_MISSION);
     expect(ctx).toContain("<hindsight_knowledge>");
+  });
+
+  it("cold git repo + codebaseSurvey:false -> starts the seed but NOT the survey", async () => {
+    const client = { listDocumentIds: async () => new Set<string>() };
+    const startSeed = vi.fn();
+    const startSurvey = vi.fn();
+    const ctx = await buildSessionStartContext({
+      cwd: "/repo/dir",
+      bankId: "bank-1",
+      cfg: resolveConfig({ codebaseSurvey: false }),
+      client,
+      stateDir,
+      hasGit: () => true,
+      startSeed,
+      startSurvey,
+    });
+    expect(startSeed).toHaveBeenCalledWith("/repo/dir", { limit: 300 });
+    expect(startSurvey).not.toHaveBeenCalled();
+    expect(ctx).toBeDefined();
   });
 
   it("non-git dir -> no seed, client not called, mission only (no learning note)", async () => {
@@ -173,5 +195,24 @@ describe("buildSessionStartContext", () => {
     expect(startSeed).not.toHaveBeenCalled();
     expect(called).toBe(false);
     expect(ctx).toBe(KNOWLEDGE_MISSION);
+  });
+});
+
+describe("runSessionStartHook anti-recursion guard", () => {
+  const ORIGINAL = process.env.HINDSIGHT_DISABLE_HOOKS;
+
+  afterEach(() => {
+    if (ORIGINAL === undefined) delete process.env.HINDSIGHT_DISABLE_HOOKS;
+    else process.env.HINDSIGHT_DISABLE_HOOKS = ORIGINAL;
+  });
+
+  it("HINDSIGHT_DISABLE_HOOKS set -> returns immediately, never reads stdin or builds a client", async () => {
+    process.env.HINDSIGHT_DISABLE_HOOKS = "1";
+    const makeClient = vi.fn();
+    // No stdin is provided/mocked here — if the guard didn't return before `readFileSync(0, ...)`,
+    // this call would attempt to read the real process stdin. Resolving without calling makeClient
+    // proves the guard fired first.
+    await runSessionStartHook(makeClient);
+    expect(makeClient).not.toHaveBeenCalled();
   });
 });

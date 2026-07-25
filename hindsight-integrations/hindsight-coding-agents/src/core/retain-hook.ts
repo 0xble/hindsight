@@ -71,6 +71,10 @@ export async function runRetainHook(
   spec: RetainHookSpec,
   makeClient: (opts: ClientOpts) => RetainClient = (o) => new HindsightClient(o)
 ): Promise<void> {
+  // Anti-recursion: the codebase survey's own headless claude session (core/survey.ts) sets this
+  // so its hooks are a no-op — it must not retain its own survey session's transcript.
+  if (process.env.HINDSIGHT_DISABLE_HOOKS) return;
+
   let ev: Record<string, unknown> = {};
   try {
     ev = JSON.parse(readFileSync(0, "utf8")) as Record<string, unknown>;

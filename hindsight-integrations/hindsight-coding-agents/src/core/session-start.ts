@@ -20,6 +20,7 @@
 import { readFileSync } from "node:fs";
 import { hasGitHistory } from "./git";
 import { readSeedState, writeSeedState, startBackgroundSeed } from "./seed";
+import { startCodebaseSurvey } from "./survey";
 import { loadConfig } from "./config";
 import type { Config } from "./config";
 import { deriveBankId } from "./bank";
@@ -59,10 +60,12 @@ export async function buildSessionStartContext(args: {
   stateDir?: string;
   hasGit?: (dir: string) => boolean;
   startSeed?: (repoDir: string, opts?: { limit?: number }) => void;
+  startSurvey?: (repoDir: string, opts?: { model?: string }) => void;
 }): Promise<string | undefined> {
   const { cwd, bankId, cfg, client, stateDir } = args;
   const hasGit = args.hasGit ?? hasGitHistory;
   const startSeed = args.startSeed ?? startBackgroundSeed;
+  const startSurvey = args.startSurvey ?? startCodebaseSurvey;
 
   const parts: string[] = [];
 
@@ -84,11 +87,15 @@ export async function buildSessionStartContext(args: {
           } else {
             // Cold: start the background seed now, deterministically — no agent involvement.
             startSeed(cwd, { limit: cfg.seedLimit });
+            if (cfg.codebaseSurvey !== false) {
+              startSurvey(cwd, { model: cfg.surveyModel });
+            }
             writeSeedState(bankId, { seededAt: new Date().toISOString() }, stateDir);
             diag("claude-code", "seed_started", { bank: bankId });
             parts.push(
-              `> 🧠 Hindsight is learning \`${bankId}\` from this repo's git history in the background — ` +
-                `recalled memories and knowledge pages will appear as it processes. No action needed.`
+              `> 🧠 Hindsight is learning \`${bankId}\` from this repo's git history in the background, ` +
+                `and surveying the codebase structure to build knowledge pages — recalled memories will ` +
+                `appear as it processes. No action needed.`
             );
           }
         }
@@ -105,6 +112,10 @@ export async function buildSessionStartContext(args: {
 export async function runSessionStartHook(
   makeClient: (opts: ClientOpts) => SeedContextClient = (o) => new HindsightClient(o)
 ): Promise<void> {
+  // Anti-recursion: the codebase survey's own headless claude session (core/survey.ts) sets this
+  // so its hooks are a no-op — it must not re-seed/re-survey its own survey session.
+  if (process.env.HINDSIGHT_DISABLE_HOOKS) return;
+
   // Whole-body try/catch (unlike runHook/runRetainHook, which only guard individual steps): a
   // throw here happens during session bootstrap, before the agent has done anything — more
   // disruptive than a failure mid-prompt — so nothing in this function may ever escape it.

@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { HindsightClient } from "./hindsight";
-import { buildRetain } from "./retain-hook";
+import { buildRetain, runRetainHook } from "./retain-hook";
 
 let root: string;
 let file: string;
@@ -101,5 +101,24 @@ describe("buildRetain", () => {
         client,
       })
     ).resolves.toBeUndefined();
+  });
+});
+
+describe("runRetainHook anti-recursion guard", () => {
+  const ORIGINAL = process.env.HINDSIGHT_DISABLE_HOOKS;
+
+  afterEach(() => {
+    if (ORIGINAL === undefined) delete process.env.HINDSIGHT_DISABLE_HOOKS;
+    else process.env.HINDSIGHT_DISABLE_HOOKS = ORIGINAL;
+  });
+
+  it("HINDSIGHT_DISABLE_HOOKS set -> returns immediately, never reads stdin or builds a client", async () => {
+    process.env.HINDSIGHT_DISABLE_HOOKS = "1";
+    const makeClient = vi.fn();
+    // No stdin is provided/mocked here — if the guard didn't return before `readFileSync(0, ...)`,
+    // this call would attempt to read the real process stdin. Resolving without calling makeClient
+    // proves the guard fired first.
+    await runRetainHook({ harness: "claude-code", parse: () => ({}) }, makeClient);
+    expect(makeClient).not.toHaveBeenCalled();
   });
 });

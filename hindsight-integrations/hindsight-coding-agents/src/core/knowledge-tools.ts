@@ -6,8 +6,9 @@
  * throws — a thrown client error is caught and turned into an `isError:true` text result so the
  * calling LLM sees the failure instead of the process crashing.
  *
- * NOTE: `agent_knowledge_ingest` / `agent_knowledge_ingest_file` (raw-content retain) are NOT
- * implemented here yet — follow-up task once the ingest flow is designed for MCP.
+ * NOTE: `agent_knowledge_ingest_file` (upload-from-disk) is NOT implemented here yet — follow-up
+ * task once that flow is designed for MCP. `agent_knowledge_ingest` (raw-content retain) IS
+ * implemented below — it backs the codebase survey (core/survey.ts).
  */
 import { z } from "zod";
 import type { ZodRawShape } from "zod";
@@ -115,6 +116,21 @@ export function buildKnowledgeTools(client: HindsightClient, bankId: string): To
       handler: guarded(async ({ query, max_tokens }) =>
         client.recall(query, { maxTokens: max_tokens })
       ),
+    },
+    {
+      name: "agent_knowledge_ingest",
+      description:
+        "Upload text content into this repo's memory bank as a document (title becomes the id; " +
+        "re-ingesting the same title replaces it). Use for structural notes, docs, or findings " +
+        "you want remembered.",
+      inputSchema: { title: z.string(), content: z.string() },
+      handler: guarded(async ({ title, content }) => {
+        const docId = title.toLowerCase().replace(/\s+/g, "-");
+        await client.retain(content, "ingested document", docId, ["source:upload"], "chat", {
+          async: true,
+        });
+        return { ok: true, doc_id: docId };
+      }),
     },
   ];
 }
