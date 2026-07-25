@@ -59,8 +59,19 @@ describe("startCodebaseSurvey", () => {
     expect(argv).toContain("Glob");
     expect(argv).toContain("Grep");
     expect(argv).toContain("mcp__hindsight__agent_knowledge_ingest");
-    expect(argv).toContain("--permission-mode");
-    expect(argv).toContain("bypassPermissions");
+
+    // Sandbox: no bypassPermissions (it defeats --allowedTools — empirically verified against the
+    // live `claude` binary), and a --disallowedTools deny-list covering every dangerous tool.
+    expect(argv).not.toContain("--permission-mode");
+    expect(argv).not.toContain("bypassPermissions");
+    expect(argv).toContain("--disallowedTools");
+    for (const t of ["Bash", "Write", "Edit", "NotebookEdit", "WebFetch", "WebSearch", "Task"]) {
+      expect(argv).toContain(t);
+    }
+
+    // Spend cap.
+    expect(argv).toContain("--max-budget-usd");
+    expect(argv).toContain("0.5");
 
     const mcpConfigIdx = argv.indexOf("--mcp-config");
     const mcpConfigJson = argv[mcpConfigIdx + 1];
@@ -91,6 +102,31 @@ describe("startCodebaseSurvey", () => {
     const argv = spawn.mock.calls[0][1];
     const modelIdx = argv.indexOf("--model");
     expect(argv[modelIdx + 1]).toBe("sonnet");
+  });
+
+  it("defaults --max-budget-usd to 0.5 when opts.budgetUsd is omitted", () => {
+    const spawn = fakeSpawn();
+    startCodebaseSurvey("/repo", {
+      mcpServerPath: "/x/mcp-server.js",
+      claudeBin: "/bin/claude",
+      spawn,
+    });
+    const argv = spawn.mock.calls[0][1];
+    const idx = argv.indexOf("--max-budget-usd");
+    expect(argv[idx + 1]).toBe("0.5");
+  });
+
+  it("passes a custom opts.budgetUsd through as --max-budget-usd", () => {
+    const spawn = fakeSpawn();
+    startCodebaseSurvey("/repo", {
+      mcpServerPath: "/x/mcp-server.js",
+      claudeBin: "/bin/claude",
+      budgetUsd: 2,
+      spawn,
+    });
+    const argv = spawn.mock.calls[0][1];
+    const idx = argv.indexOf("--max-budget-usd");
+    expect(argv[idx + 1]).toBe("2");
   });
 
   it("resolves mcpServerPath as a sibling of this module by default", () => {

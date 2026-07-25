@@ -112,7 +112,7 @@ describe("buildKnowledgeTools", () => {
     expect(client.recall).toHaveBeenCalledWith("q", { maxTokens: undefined });
   });
 
-  it("agent_knowledge_ingest slugifies the title and calls client.retain(...)", async () => {
+  it("agent_knowledge_ingest slugifies the title and calls client.retain(...) with the 'document' strategy", async () => {
     const client = stubClient();
     const tools = buildKnowledgeTools(client, "repo-a");
     const tool = findTool(tools, "agent_knowledge_ingest");
@@ -122,7 +122,7 @@ describe("buildKnowledgeTools", () => {
       "ingested document",
       "my-title",
       ["source:upload"],
-      "chat",
+      "document",
       { async: true }
     );
     expect(JSON.parse(result.content[0].text)).toEqual({ ok: true, doc_id: "my-title" });
@@ -138,7 +138,37 @@ describe("buildKnowledgeTools", () => {
       "ingested document",
       "repo-core-concepts",
       ["source:upload"],
-      "chat",
+      "document",
+      { async: true }
+    );
+  });
+
+  it("agent_knowledge_ingest strips punctuation from the title into a safe slug", async () => {
+    const client = stubClient();
+    const tools = buildKnowledgeTools(client, "repo-a");
+    const tool = findTool(tools, "agent_knowledge_ingest");
+    await tool.handler({ title: "Repo: Component Map! (v2/final)", content: "x" });
+    expect(client.retain).toHaveBeenCalledWith(
+      "x",
+      "ingested document",
+      "repo-component-map-v2-final",
+      ["source:upload"],
+      "document",
+      { async: true }
+    );
+  });
+
+  it("agent_knowledge_ingest falls back to 'doc' when the title has no safe characters", async () => {
+    const client = stubClient();
+    const tools = buildKnowledgeTools(client, "repo-a");
+    const tool = findTool(tools, "agent_knowledge_ingest");
+    await tool.handler({ title: "!!!///???", content: "x" });
+    expect(client.retain).toHaveBeenCalledWith(
+      "x",
+      "ingested document",
+      "doc",
+      ["source:upload"],
+      "document",
       { async: true }
     );
   });

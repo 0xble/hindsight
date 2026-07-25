@@ -51,12 +51,33 @@ export const SURVEY_PROMPT =
   "notable features the project provides.\n" +
   "Keep each a few hundred words. When done, stop.";
 
+/**
+ * Tools the survey session must NEVER be able to invoke, no matter what a prompt injection in a
+ * repo file (README, source comment, commit message, etc.) tries to talk it into. This is a
+ * deny-list, not an allow-list gap: `--allowedTools` alone does not reliably block unlisted tools
+ * in headless `-p` mode (empirically verified against `claude` v2.1.218 — the session had full
+ * Bash/Write access despite `--allowedTools` omitting them, because `--permission-mode
+ * bypassPermissions` overrides the allow-list). `--disallowedTools` DOES reliably block, with or
+ * without a permission-mode flag, so it — not bypassPermissions — is the actual sandbox boundary
+ * here. See survey.test.ts / the live acceptance test for the empirical verification.
+ */
+const SURVEY_DISALLOWED_TOOLS = [
+  "Bash",
+  "Write",
+  "Edit",
+  "NotebookEdit",
+  "WebFetch",
+  "WebSearch",
+  "Task",
+];
+
 /** Spawn a DETACHED headless `claude` to survey `repoDir` and ingest structural findings via the
  *  `agent_knowledge_ingest` MCP tool. Fire-and-forget; never throws. */
 export function startCodebaseSurvey(
   repoDir: string,
   opts: {
     model?: string;
+    budgetUsd?: number;
     mcpServerPath?: string;
     claudeBin?: string;
     spawn?: typeof realSpawn;
@@ -91,8 +112,15 @@ export function startCodebaseSurvey(
         "Glob",
         "Grep",
         "mcp__hindsight__agent_knowledge_ingest",
-        "--permission-mode",
-        "bypassPermissions",
+        "--disallowedTools",
+        ...SURVEY_DISALLOWED_TOOLS,
+        "--max-budget-usd",
+        String(opts.budgetUsd ?? 0.5),
+        // Deliberately NO --permission-mode: default headless mode + --disallowedTools blocks the
+        // dangerous tools outright (no permission prompt, no hang) while still letting the allowed
+        // read-only tools + the ingest MCP tool run unattended. bypassPermissions must NOT be used
+        // here — it defeats --allowedTools, and (per the empirical test) the read-only tools work
+        // fine without it.
       ],
       {
         cwd: repoDir,

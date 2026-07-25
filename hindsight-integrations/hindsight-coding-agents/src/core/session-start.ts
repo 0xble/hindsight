@@ -60,7 +60,7 @@ export async function buildSessionStartContext(args: {
   stateDir?: string;
   hasGit?: (dir: string) => boolean;
   startSeed?: (repoDir: string, opts?: { limit?: number }) => void;
-  startSurvey?: (repoDir: string, opts?: { model?: string }) => void;
+  startSurvey?: (repoDir: string, opts?: { model?: string; budgetUsd?: number }) => void;
 }): Promise<string | undefined> {
   const { cwd, bankId, cfg, client, stateDir } = args;
   const hasGit = args.hasGit ?? hasGitHistory;
@@ -88,7 +88,7 @@ export async function buildSessionStartContext(args: {
             // Cold: start the background seed now, deterministically — no agent involvement.
             startSeed(cwd, { limit: cfg.seedLimit });
             if (cfg.codebaseSurvey !== false) {
-              startSurvey(cwd, { model: cfg.surveyModel });
+              startSurvey(cwd, { model: cfg.surveyModel, budgetUsd: cfg.surveyBudgetUsd });
             }
             writeSeedState(bankId, { seededAt: new Date().toISOString() }, stateDir);
             diag("claude-code", "seed_started", { bank: bankId });

@@ -32,7 +32,7 @@ describe("buildSessionStartContext", () => {
       startSurvey,
     });
     expect(startSeed).toHaveBeenCalledWith("/repo/dir", { limit: 300 });
-    expect(startSurvey).toHaveBeenCalledWith("/repo/dir", { model: "sonnet" });
+    expect(startSurvey).toHaveBeenCalledWith("/repo/dir", { model: "sonnet", budgetUsd: 0.5 });
     const state = readSeedState("bank-1", stateDir);
     expect(typeof state.seededAt).toBe("string");
     expect(state.seededAt).not.toBe("");

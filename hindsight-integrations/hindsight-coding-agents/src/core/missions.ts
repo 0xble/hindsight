@@ -46,6 +46,10 @@ export const REFLECT_MISSION =
   "no longer in effect, and never present it as the fix. Name the function/file to change and " +
   "cite the REF-ID(s).";
 
+export const DOCUMENT_MISSION =
+  "You are ingesting a standalone document (notes, docs, or structural findings). Extract the " +
+  "concrete facts, concepts, and structure it describes.";
+
 export const OBSERVATIONS_MISSION =
   "Consolidate durable knowledge about THIS codebase — recurring patterns, conventions, module " +
   "responsibilities, and how components relate — from the ingested commits and conversations. " +
@@ -85,6 +89,14 @@ export const RETAIN_STRATEGIES = {
   chat: {
     retain_extraction_mode: "custom",
     retain_custom_instructions: CHAT_CUSTOM_INSTRUCTIONS,
+    retain_chunk_size: 12000,
+  },
+  // Structural documents (e.g. the codebase survey's ingested findings) aren't dialogue — the
+  // chat strategy's "final decision vs rejected proposal" extraction doesn't apply. Verbose mode
+  // with a bigger chunk size (documents can run long) captures the concrete facts/structure instead.
+  document: {
+    retain_mission: DOCUMENT_MISSION,
+    retain_extraction_mode: "verbose",
     retain_chunk_size: 12000,
   },
 } as const;

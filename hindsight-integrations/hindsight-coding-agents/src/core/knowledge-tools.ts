@@ -125,8 +125,12 @@ export function buildKnowledgeTools(client: HindsightClient, bankId: string): To
         "you want remembered.",
       inputSchema: { title: z.string(), content: z.string() },
       handler: guarded(async ({ title, content }) => {
-        const docId = title.toLowerCase().replace(/\s+/g, "-");
-        await client.retain(content, "ingested document", docId, ["source:upload"], "chat", {
+        const docId =
+          title
+            .toLowerCase()
+            .replace(/[^a-z0-9]+/g, "-")
+            .replace(/^-+|-+$/g, "") || "doc";
+        await client.retain(content, "ingested document", docId, ["source:upload"], "document", {
           async: true,
         });
         return { ok: true, doc_id: docId };
