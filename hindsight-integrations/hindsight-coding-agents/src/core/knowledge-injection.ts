@@ -43,14 +43,25 @@ export function buildKnowledgePreamble(pages: PageRef[]): string {
   );
 }
 
-/** Periodic UserPromptSubmit refresh — compact, or undefined when there's nothing to show. */
-export function buildRosterRefresh(pages: PageRef[]): string | undefined {
-  if (!pages.length) return undefined;
+/**
+ * Periodic UserPromptSubmit refresh. ALWAYS emits (never undefined) so the tool + capture reminder
+ * keeps re-appearing in context even on a fresh repo with no pages yet — precisely when the agent is
+ * building its first features. The page roster is included only when pages exist; the reminder that
+ * the Hindsight tools exist and WHEN to call them is unconditional (registering tools isn't enough —
+ * the agent needs to be told, repeatedly, that they're there and when to use them).
+ */
+export function buildRosterRefresh(pages: PageRef[]): string {
+  const rosterBlock = pages.length
+    ? `Current Hindsight knowledge pages (may have changed):\n${roster(pages)}\n` +
+      "Ground yourself by reading the relevant ones with hindsight_read_knowledge_page(page_id).\n"
+    : "";
   return (
     "<hindsight_knowledge_refresh>\n" +
-    `Current Hindsight knowledge pages (may have changed):\n${roster(pages)}\n` +
-    "Read any with hindsight_read_knowledge_page(page_id). If you've begun a major new feature/initiative this " +
-    "session and haven't recorded it, call hindsight_capture_initiative(title, summary).\n" +
+    rosterBlock +
+    "Reminder — this repo's Hindsight tools are available: hindsight_list_knowledge_pages and " +
+    "hindsight_read_knowledge_page to ground yourself in prior decisions/conventions, and " +
+    "hindsight_capture_initiative(title, summary) to record a MAJOR new feature or initiative you've begun " +
+    "this session so it becomes a tracked page (skip routine bug fixes, tweaks, and chores).\n" +
     "</hindsight_knowledge_refresh>"
   );
 }

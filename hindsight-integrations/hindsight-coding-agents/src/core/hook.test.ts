@@ -252,7 +252,7 @@ describe("buildHookOutput", () => {
     expect(t2).toContain("<hindsight_memories>");
   });
 
-  it("listPages rejection is fail-open on a cadence turn (recall/injection intact, no throw)", async () => {
+  it("listPages rejection on a cadence turn still injects the tool+capture reminder (no roster), recall intact, no throw", async () => {
     const cfg = resolveConfig({ pageRefreshEveryTurns: 2 });
     // Seed the cache so this is turn 2 (a cadence turn) without needing a first turn.
     mkdirSync(join(root, "cache"), { recursive: true });
@@ -274,7 +274,11 @@ describe("buildHookOutput", () => {
     });
     expect(result).toContain("<hindsight_memories>");
     expect(result).toContain("MEM_KEEP");
-    expect(result).not.toContain("hindsight_knowledge_refresh");
+    // The reminder re-injects even when listPages fails (empty roster fallback) — the nudge
+    // must not depend on a page existing.
+    expect(result).toContain("<hindsight_knowledge_refresh>");
+    expect(result).toContain("hindsight_capture_initiative");
+    expect(result).not.toContain("Current Hindsight knowledge pages");
     // turns still advanced despite the listPages failure
     expect(JSON.parse(readFileSync(cacheFile, "utf8")).turns).toBe(2);
   });

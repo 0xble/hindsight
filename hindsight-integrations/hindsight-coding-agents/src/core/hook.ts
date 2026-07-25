@@ -145,12 +145,10 @@ export async function buildHookOutput(args: {
 
   const blocks = [reflectBlock, memBlock];
   if (refreshDue && pagesPromise) {
-    try {
-      const refresh = buildRosterRefresh(parsePageList(await pagesPromise));
-      if (refresh) blocks.push(refresh);
-    } catch {
-      /* fail-open: a listPages failure must never break the turn */
-    }
+    // A listPages failure must not swallow the reminder — fall back to an empty roster so the
+    // tool + capture nudge still re-injects (it doesn't depend on any page existing).
+    const pages = parsePageList(await pagesPromise.catch(() => null));
+    blocks.push(buildRosterRefresh(pages));
   }
   const kept = blocks.filter(Boolean);
   return kept.length ? kept.join("\n\n") : undefined;

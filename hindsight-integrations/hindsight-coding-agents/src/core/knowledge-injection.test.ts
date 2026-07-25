@@ -44,7 +44,11 @@ describe("buildRosterRefresh", () => {
     expect(out).toContain("p1");
     expect(out).toContain("hindsight_capture_initiative");
   });
-  it("returns undefined when there are no pages (nothing to refresh)", () => {
-    expect(buildRosterRefresh([])).toBeUndefined();
+  it("still emits the tool + capture reminder when there are no pages yet (no roster, but the nudge persists)", () => {
+    const out = buildRosterRefresh([]);
+    expect(out).toContain("<hindsight_knowledge_refresh>");
+    expect(out).toContain("hindsight_capture_initiative");
+    // No roster block when there are no pages.
+    expect(out).not.toContain("Current Hindsight knowledge pages");
   });
 });
