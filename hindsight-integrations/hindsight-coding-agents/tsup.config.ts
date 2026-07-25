@@ -10,6 +10,7 @@ export default defineConfig({
     "cursor-hook": "src/cursor-hook.ts",
     "codex-hook": "src/codex-hook.ts",
     "codex-sessionstart-hook": "src/codex-sessionstart-hook.ts",
+    "codex-stop-hook": "src/codex-stop-hook.ts",
     "mcp-server": "src/mcp-server.ts",
     "hindsight-seed": "src/hindsight-seed.ts",
   },

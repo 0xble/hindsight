@@ -19,6 +19,7 @@ import { diag } from "./diag";
 import type { ClientOpts } from "./hindsight";
 import { HindsightClient } from "./hindsight";
 import { readClaudeTranscript } from "./transcript";
+import type { TransportTurn } from "./chat";
 
 export interface RetainHookEventFields {
   sessionId?: string;
@@ -26,11 +27,17 @@ export interface RetainHookEventFields {
   cwd?: string;
 }
 
+/** Read a harness's transcript file into normalized turns. Claude and Codex use different JSONL
+ *  schemas, so each harness supplies its own reader (default: Claude). */
+export type TranscriptReader = (path: string) => TransportTurn[];
+
 export interface RetainHookSpec {
   /** Harness name — config `harnesses.<name>` section, {harness} template field, diag records. */
   harness: string;
   /** Read the fields out of the harness's stdin event (shapes differ per harness). */
   parse(event: Record<string, unknown>): RetainHookEventFields;
+  /** Harness-specific transcript parser. Defaults to the Claude JSONL reader. */
+  readTranscript?: TranscriptReader;
 }
 
 /** Minimal client shape `buildRetain` needs — `HindsightClient` satisfies it structurally. */
@@ -48,10 +55,12 @@ export async function buildRetain(args: {
   sessionId: string;
   transcriptPath: string;
   client: RetainClient;
+  readTranscript?: TranscriptReader;
 }): Promise<void> {
   const { harness, sessionId, transcriptPath, client } = args;
+  const readTranscript = args.readTranscript ?? readClaudeTranscript;
 
-  const turns = readClaudeTranscript(transcriptPath);
+  const turns = readTranscript(transcriptPath);
   if (turns.length === 0) return;
 
   const startTs = turns[0]?.timestamp ?? new Date().toISOString();
@@ -100,5 +109,6 @@ export async function runRetainHook(
     sessionId: sessionId || "no-session",
     transcriptPath,
     client,
+    readTranscript: spec.readTranscript,
   });
 }

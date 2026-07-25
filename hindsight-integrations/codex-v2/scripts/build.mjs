@@ -16,12 +16,11 @@ execSync("npm run build", { cwd: core, stdio: "inherit" });
 rmSync(distDir, { recursive: true, force: true });
 mkdirSync(distDir, { recursive: true });
 
-// Codex v1: SessionStart (seed) + UserPromptSubmit (recall) + MCP tools. The Stop write-back is a
-// fast-follow (needs a Codex transcript reader; Codex's rollout JSONL differs from Claude's), so
-// codex-stop-hook.js is intentionally NOT bundled yet.
+// Full Codex integration: SessionStart (seed) + UserPromptSubmit (recall) + Stop (write-back) + MCP.
 const bundleFiles = [
   "codex-hook.js",
   "codex-sessionstart-hook.js",
+  "codex-stop-hook.js",
   "mcp-server.js",
   "hindsight-seed.js",
   "backfill.js",

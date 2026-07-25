@@ -21,7 +21,7 @@ if [ -f "${HOOKS_JSON}" ]; then
   echo "[dev-install] backed up existing hooks.json -> hooks.json.bak"
 fi
 
-# v1: SessionStart (seed) + UserPromptSubmit (recall). Stop write-back is a fast-follow.
+# SessionStart (seed) + UserPromptSubmit (recall) + Stop (write-back).
 cat > "${HOOKS_JSON}" <<JSON
 {
   "hooks": {
@@ -30,6 +30,9 @@ cat > "${HOOKS_JSON}" <<JSON
     ],
     "UserPromptSubmit": [
       { "hooks": [ { "type": "command", "command": "node \"${DIST}/codex-hook.js\"", "timeout": 15 } ] }
+    ],
+    "Stop": [
+      { "hooks": [ { "type": "command", "command": "node \"${DIST}/codex-stop-hook.js\"", "timeout": 30 } ] }
     ]
   }
 }
@@ -58,7 +61,6 @@ echo " If you previously installed the Python Codex integration, its"
 echo " hooks.json was backed up to hooks.json.bak (this one replaces it so"
 echo " memory isn't injected twice)."
 echo ""
-echo " NOTE: this v1 does SessionStart seed + per-turn recall + MCP tools."
-echo " The Stop write-back (sessions compounding into memory) is the next"
-echo " step — it needs a Codex-transcript reader."
+echo " Full integration: SessionStart seed + per-turn recall + Stop"
+echo " write-back (sessions compound into memory) + MCP tools."
 echo "=================================================================="

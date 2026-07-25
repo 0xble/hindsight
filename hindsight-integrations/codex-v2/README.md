@@ -3,18 +3,20 @@
 Codex CLI wrapper for Hindsight memory, on the shared `hindsight-coding-agents` core — the Codex
 sibling of `claude-code-v2`. Same core, same bank, thin Codex-specific packaging.
 
-## What it does (v1)
+## What it does
 
 - **SessionStart** → on a cold repo, deterministically starts a background seed (aggregated git-log
   + Haiku codebase survey) and injects the knowledge-page roster + tool guide.
 - **UserPromptSubmit** → per-turn recall (≤750 tokens) injected with the attribution + user-feedback
   block, plus a periodic page-roster/tool-guide refresh.
+- **Stop** → write-back: the session's rollout transcript is parsed (`transcript-codex.ts`) and
+  retained under the verbose `session` strategy, so Codex sessions compound into memory.
 - **MCP tools** (`hindsight_*`) → `list_knowledge_pages`, `read_knowledge_page`, `search_memory`,
   `capture_initiative`, `ingest_document`, wired via `~/.codex/config.toml [mcp_servers.hindsight]`
   with `HINDSIGHT_MCP_HARNESS=codex`.
 
-**Not yet:** the `Stop` write-back (live sessions compounding into memory) — Codex's rollout JSONL
-transcript differs from Claude's, so it needs its own transcript reader. Fast-follow.
+Full parity with `claude-code-v2` (Codex fires the same three lifecycle events). The only
+Codex-specific piece is the rollout-JSONL transcript reader for the Stop write-back.
 
 ## Install (dev)
 

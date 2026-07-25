@@ -16,6 +16,7 @@
  */
 import { readFileSync } from "node:fs";
 import type { TransportTurn } from "./chat";
+import { stripInjectedMemory, truncate } from "./transcript-util";
 
 interface ContentBlock {
   type?: string;
@@ -33,21 +34,6 @@ interface TranscriptLine {
   message?: {
     content?: string | ContentBlock[];
   };
-}
-
-/** Cap on any single rendered tool input or tool result, mirroring v1's 2000-char tool_result cap:
- *  captures small edits/commands verbatim while bounding a giant Write/output. */
-const TOOL_TEXT_CAP = 2000;
-
-/** Injected recall context — stripped from retained text so a write-back never re-ingests memory. */
-const MEMORY_TAG_RE = /<(hindsight_memories|hindsight_bank|relevant_memories)\b[\s\S]*?<\/\1>/g;
-
-function stripInjectedMemory(s: string): string {
-  return s.replace(MEMORY_TAG_RE, "");
-}
-
-function truncate(s: string, max = TOOL_TEXT_CAP): string {
-  return s.length > max ? `${s.slice(0, max)}… (truncated)` : s;
 }
 
 /** Compact JSON of a tool input; empty string if it can't be serialized (e.g. a cycle). */
