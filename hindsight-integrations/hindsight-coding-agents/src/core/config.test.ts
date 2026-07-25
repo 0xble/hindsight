@@ -99,4 +99,13 @@ describe("loadConfig layering", () => {
     writeJson(globalCfg, { bankId: "legacy" });
     expect(loadConfig(globalCfg).bankId).toBe("legacy");
   });
+
+  it("pageRefreshEveryTurns defaults to 10", () => {
+    expect(loadConfig({ harness: "claude-code", projectDir: process.cwd() }).pageRefreshEveryTurns).toBe(10);
+  });
+
+  it("pageRefreshEveryTurns override wins over the default", () => {
+    writeJson(globalCfg, { pageRefreshEveryTurns: 25 });
+    expect(loadConfig({ path: globalCfg }).pageRefreshEveryTurns).toBe(25);
+  });
 });

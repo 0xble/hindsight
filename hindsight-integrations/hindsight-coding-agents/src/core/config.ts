@@ -48,6 +48,7 @@ export interface RawConfig {
   reflectTimeoutMs?: number; // reflect timeout (default 120000)
   recallMaxTokens?: number; // per-turn recall token budget (default 1024)
   recallTimeoutMs?: number; // per-turn recall timeout (default 10000)
+  pageRefreshEveryTurns?: number; // knowledge-page refresh cadence in user turns (default 10)
   autoSeed?: boolean; // SessionStart: auto-seed a cold repo's bank from git history (default true)
   seedLimit?: number; // SessionStart auto-seed: most-recent-N-commits cap (default 300)
   codebaseSurvey?: boolean; // SessionStart: spawn a headless claude to survey a cold repo's structure (default true)
@@ -75,6 +76,7 @@ export interface Config {
   reflectTimeoutMs: number;
   recallMaxTokens: number;
   recallTimeoutMs: number;
+  pageRefreshEveryTurns: number;
   autoSeed: boolean;
   seedLimit: number;
   codebaseSurvey: boolean;
@@ -101,6 +103,7 @@ export function resolveConfig(raw: RawConfig = {}): Config {
     reflectTimeoutMs: raw.reflectTimeoutMs || 120000,
     recallMaxTokens: raw.recallMaxTokens || 1024,
     recallTimeoutMs: raw.recallTimeoutMs || 10000,
+    pageRefreshEveryTurns: raw.pageRefreshEveryTurns || 10,
     autoSeed: raw.autoSeed ?? true,
     seedLimit: raw.seedLimit || DEFAULT_SEED_LIMIT,
     codebaseSurvey: raw.codebaseSurvey ?? true,
