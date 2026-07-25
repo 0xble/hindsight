@@ -120,7 +120,7 @@ export function startCodebaseSurvey(
         "--disallowedTools",
         ...SURVEY_DISALLOWED_TOOLS,
         "--max-budget-usd",
-        String(opts.budgetUsd ?? 0.5),
+        String(opts.budgetUsd ?? 2),
         // Deliberately NO --permission-mode: default headless mode + --disallowedTools blocks the
         // dangerous tools outright (no permission prompt, no hang) while still letting the allowed
         // read-only tools + the ingest MCP tool run unattended. bypassPermissions must NOT be used

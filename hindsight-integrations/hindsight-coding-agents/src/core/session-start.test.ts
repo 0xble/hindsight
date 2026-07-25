@@ -35,7 +35,7 @@ describe("buildSessionStartContext", () => {
       startSurvey,
     });
     expect(startSeed).toHaveBeenCalledWith("/repo/dir", { limit: 300 });
-    expect(startSurvey).toHaveBeenCalledWith("/repo/dir", { model: "haiku", budgetUsd: 0.5 });
+    expect(startSurvey).toHaveBeenCalledWith("/repo/dir", { model: "haiku", budgetUsd: 2 });
     const state = readSeedState("bank-1", stateDir);
     expect(typeof state.seededAt).toBe("string");
     expect(state.seededAt).not.toBe("");

@@ -71,7 +71,7 @@ describe("startCodebaseSurvey", () => {
 
     // Spend cap.
     expect(argv).toContain("--max-budget-usd");
-    expect(argv).toContain("0.5");
+    expect(argv).toContain("2");
 
     const mcpConfigIdx = argv.indexOf("--mcp-config");
     const mcpConfigJson = argv[mcpConfigIdx + 1];
@@ -104,7 +104,7 @@ describe("startCodebaseSurvey", () => {
     expect(argv[modelIdx + 1]).toBe("haiku");
   });
 
-  it("defaults --max-budget-usd to 0.5 when opts.budgetUsd is omitted", () => {
+  it("defaults --max-budget-usd to 2 when opts.budgetUsd is omitted", () => {
     const spawn = fakeSpawn();
     startCodebaseSurvey("/repo", {
       mcpServerPath: "/x/mcp-server.js",
@@ -113,7 +113,7 @@ describe("startCodebaseSurvey", () => {
     });
     const argv = spawn.mock.calls[0][1];
     const idx = argv.indexOf("--max-budget-usd");
-    expect(argv[idx + 1]).toBe("0.5");
+    expect(argv[idx + 1]).toBe("2");
   });
 
   it("passes a custom opts.budgetUsd through as --max-budget-usd", () => {
@@ -121,12 +121,12 @@ describe("startCodebaseSurvey", () => {
     startCodebaseSurvey("/repo", {
       mcpServerPath: "/x/mcp-server.js",
       claudeBin: "/bin/claude",
-      budgetUsd: 2,
+      budgetUsd: 5,
       spawn,
     });
     const argv = spawn.mock.calls[0][1];
     const idx = argv.indexOf("--max-budget-usd");
-    expect(argv[idx + 1]).toBe("2");
+    expect(argv[idx + 1]).toBe("5");
   });
 
   it("resolves mcpServerPath as a sibling of this module by default", () => {
