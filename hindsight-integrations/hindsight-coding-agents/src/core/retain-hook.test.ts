@@ -47,23 +47,29 @@ describe("buildRetain", () => {
     });
 
     expect(retainSpy).toHaveBeenCalledTimes(1);
-    const [content, , documentId] = retainSpy.mock.calls[0];
+    const [content, , documentId, tags, strategy] = retainSpy.mock.calls[0];
     expect(documentId).toBe("conversation:sess-1");
+    // A readable markdown transcript (## User / ## Assistant), not a JSON.stringify blob.
+    expect(content).toContain("## User");
+    expect(content).toContain("## Assistant");
     expect(content).toContain("we use zod for validation");
     expect(content).toContain("noted, zod it is");
+    expect(content).not.toContain('[{"role"'); // not the old JSON array form
+    // Verbose `session` extraction, not the ≤2-fact `chat` extractor.
+    expect(strategy).toBe("session");
+    expect(tags).toEqual(["source:chat"]);
   });
 
   it("empty transcript -> no retain", async () => {
     const lines = [
-      JSON.stringify({
-        type: "assistant",
-        message: { role: "assistant", content: [{ type: "tool_use", name: "Bash", input: {} }] },
-      }),
+      // isMeta line: dropped
       JSON.stringify({
         type: "user",
         isMeta: true,
         message: { role: "user", content: "<system-injected>" },
       }),
+      // non-message summary line: dropped
+      JSON.stringify({ type: "summary", summary: "…" }),
     ];
     writeFileSync(file, lines.join("\n"));
 

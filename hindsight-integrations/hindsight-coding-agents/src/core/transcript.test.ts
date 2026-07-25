@@ -17,7 +17,7 @@ afterEach(() => {
 });
 
 describe("readClaudeTranscript", () => {
-  it("extracts normalized text turns, dropping non-message/isMeta/isSidechain/text-less lines and tolerating malformed or non-object JSON lines", () => {
+  it("captures text + tool_use + tool_result, dropping non-message/isMeta/isSidechain/thinking/empty lines and tolerating malformed or non-object JSON lines", () => {
     const lines = [
       // non-message line: dropped
       JSON.stringify({ type: "last-prompt", leafUuid: "x" }),
@@ -39,15 +39,18 @@ describe("readClaudeTranscript", () => {
           ],
         },
       }),
-      // dropped: no text block (tool_use only)
+      // kept: a tool_use-only assistant line — the engineering action IS the substance
       JSON.stringify({
         type: "assistant",
-        message: { role: "assistant", content: [{ type: "tool_use", name: "Bash", input: {} }] },
+        message: {
+          role: "assistant",
+          content: [{ type: "tool_use", name: "Bash", input: { command: "npm test" } }],
+        },
       }),
-      // dropped: no text block (tool_result only)
+      // kept: a tool_result-only user line is reclassified role "tool" (it's an env return)
       JSON.stringify({
         type: "user",
-        message: { role: "user", content: [{ type: "tool_result", content: "..." }] },
+        message: { role: "user", content: [{ type: "tool_result", content: "12 passed" }] },
       }),
       // dropped: isMeta
       JSON.stringify({
@@ -77,7 +80,67 @@ describe("readClaudeTranscript", () => {
     expect(result).toEqual([
       { role: "user", content: "how do we validate input?", timestamp: "2026-01-01T00:00:00Z" },
       { role: "assistant", content: "We use zod.", timestamp: "2026-01-01T00:00:01Z" },
+      { role: "assistant", content: '**Bash** {"command":"npm test"}' },
+      { role: "tool", content: "↳ 12 passed" },
     ]);
+  });
+
+  it("renders a tool_use call with its input, and truncates a very long tool_result", () => {
+    const bigResult = "x".repeat(5000);
+    const lines = [
+      JSON.stringify({
+        type: "assistant",
+        message: {
+          role: "assistant",
+          content: [
+            { type: "text", text: "Editing the uploader." },
+            {
+              type: "tool_use",
+              name: "Edit",
+              input: { file_path: "uploader.ts", old_string: "a" },
+            },
+          ],
+        },
+      }),
+      JSON.stringify({
+        type: "user",
+        message: { role: "user", content: [{ type: "tool_result", content: bigResult }] },
+      }),
+    ];
+    writeFileSync(file, lines.join("\n"));
+
+    const result = readClaudeTranscript(file);
+
+    expect(result[0].role).toBe("assistant");
+    expect(result[0].content).toContain("Editing the uploader.");
+    expect(result[0].content).toContain("**Edit**");
+    expect(result[0].content).toContain("uploader.ts");
+    // tool_result truncated to the 2000-char cap + marker (not the full 5000 chars)
+    expect(result[1].role).toBe("tool");
+    expect(result[1].content.startsWith("↳ ")).toBe(true);
+    expect(result[1].content).toContain("… (truncated)");
+    expect(result[1].content.length).toBeLessThan(2100);
+  });
+
+  it("strips injected recall context so retained turns can't feed memory back into the bank", () => {
+    writeFileSync(
+      file,
+      JSON.stringify({
+        type: "user",
+        message: {
+          role: "user",
+          content:
+            "<hindsight_memories>\nsecret prior fact\n</hindsight_memories>\nWhy does upload retry?",
+        },
+      })
+    );
+
+    const result = readClaudeTranscript(file);
+
+    expect(result).toHaveLength(1);
+    expect(result[0].content).toContain("Why does upload retry?");
+    expect(result[0].content).not.toContain("secret prior fact");
+    expect(result[0].content).not.toContain("hindsight_memories");
   });
 
   it("fails open (returns []) when the file cannot be read", () => {
