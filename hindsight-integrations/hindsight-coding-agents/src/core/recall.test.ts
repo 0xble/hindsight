@@ -15,6 +15,16 @@ describe("formatMemories", () => {
     expect(out).toContain("- we use zod for validation\n- retry policy is 3x");
   });
 
+  it("leads with a labeled user-feedback section, ABOVE the memories block, naming both frustrations", () => {
+    const out = formatMemories([{ text: "some fact" }]);
+    expect(out).toContain("<user_feedback>");
+    expect(out).toContain("USER FEEDBACK AND PREFERENCES");
+    expect(out).toContain("hindsight_capture_initiative");
+    expect(out).toContain("🧠 Using Hindsight Memories");
+    // The feedback section comes BEFORE the memories block.
+    expect(out.indexOf("<user_feedback>")).toBeLessThan(out.indexOf("<hindsight_memories>"));
+  });
+
   it("returns empty string for no results", () => {
     expect(formatMemories([])).toBe("");
   });
