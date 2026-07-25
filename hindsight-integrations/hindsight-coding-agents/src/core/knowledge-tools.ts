@@ -108,8 +108,8 @@ export function buildKnowledgeTools(client: HindsightClient, bankId: string): To
       description:
         "Record a new feature or initiative as a tracked knowledge page, so future sessions know it " +
         "exists and can build on it.\n\n" +
-        "WHEN TO CALL: as soon as you begin real work on a new feature the user asked you to build. " +
-        "Call it ONCE, EARLY — don't wait until the feature is finished.\n\n" +
+        "WHEN TO CALL: right after the user approves a plan or finishes brainstorming a new feature/" +
+        "capability and you are about to start implementing — BEFORE you write any code. Call it ONCE, EARLY.\n\n" +
         "WHEN TO SKIP: bug fixes, small tweaks, refactors, and chores are not initiatives — skip " +
         "them.\n\n" +
         "- title: short, specific name (e.g. 'Newsletter refinement chat').\n" +

@@ -32,9 +32,9 @@ const TOOL_GUIDE =
   "of re-deriving them from the code; follow any [[page:<id>]] links you see.\n" +
   "- hindsight_search_memory(query) — when a page is too high-level for your question, search the raw memory for a " +
   "specific past decision and its rationale, why some code is the way it is, or prior discussion of a problem.\n" +
-  "- hindsight_capture_initiative(title, summary) — as soon as you begin real work on a new feature the user asked " +
-  "you to build, call this ONCE to record it as a tracked page. Do it early, not after it's done. Skip bug fixes, " +
-  "small tweaks, and chores.\n" +
+  "- hindsight_capture_initiative(title, summary) — right after the user approves a plan or finishes brainstorming a " +
+  "new feature/capability and you are about to start implementing (BEFORE you write any code), call this ONCE to " +
+  "record it as a tracked page. Skip bug fixes, small tweaks, and chores.\n" +
   "- hindsight_ingest_document(title, content) — save an external document or durable notes/findings you want " +
   "remembered (not the current conversation — that is captured automatically at session end).";
 

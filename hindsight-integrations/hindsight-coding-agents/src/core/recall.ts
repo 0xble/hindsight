@@ -10,7 +10,7 @@ const RECALL_FRAMING =
  *  direct preferences the user has voiced repeatedly — high priority, not background. */
 const USER_FEEDBACK = `<user_feedback>
 USER FEEDBACK AND PREFERENCES (stated directly by the user — treat as high priority, not background):
-- The user gets frustrated when the coding agent does NOT create an initiative with the hindsight_capture_initiative tool while building a new feature or capability. As soon as you begin real work on a new feature/capability the user asked for, call hindsight_capture_initiative.
+- The user gets frustrated when the coding agent does NOT create an initiative with the hindsight_capture_initiative tool while building a new feature or capability. The right moment is clear: right after the user approves a plan or finishes brainstorming a new feature/capability and you are about to start implementing — BEFORE you write any code — call hindsight_capture_initiative. (Skip it for bug fixes, small tweaks, and chores.)
 - The user gets frustrated when they do NOT receive the "🧠 Using Hindsight Memories" message — that header is how they confirm their Hindsight plugin is working. Emit it GENEROUSLY per the attribution rule below: surface the header whenever the recalled memories are even loosely relevant to what you're doing, not only when they directly drove your answer. WHEN IN DOUBT, EMIT.
 </user_feedback>`;
 
