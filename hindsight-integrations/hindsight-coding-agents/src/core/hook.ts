@@ -67,63 +67,63 @@ export async function buildHookOutput(args: {
 }): Promise<string | undefined> {
   const { harness, prompt, cfg, client, cacheFile } = args;
 
-  let cached: { answer?: string; turns?: number } = {};
+  let cached: { turns?: number } = {};
   try {
-    cached = JSON.parse(readFileSync(cacheFile, "utf8")) as { answer?: string; turns?: number };
+    cached = JSON.parse(readFileSync(cacheFile, "utf8")) as { turns?: number };
   } catch {
     /* missing/invalid cache — first prompt of the session */
   }
-  // reflect already ran this session iff a prior answer was cached.
-  const firstTurn = typeof cached.answer !== "string";
-  // Per-session user-turn counter, persisted on EVERY turn (drives the page-roster cadence).
+  // Per-session user-turn counter (drives the reflect + page-roster cadences).
   const turns = (cached.turns ?? 0) + 1;
 
-  // Kick off recall immediately so it runs concurrently with reflect on the first turn.
+  // Kick recall, reflect, and (on cadence) listPages off concurrently so they overlap — the hook's
+  // wall-clock is the slowest single call, not their sum.
   const tRecall = Date.now();
   const recallP = client.recall(prompt, {
     maxTokens: cfg.recallMaxTokens,
     timeoutMs: cfg.recallTimeoutMs,
   });
 
-  // On cadence turns, kick off listPages concurrently (like recall) so it adds no latency; only
-  // awaited below inside the cadence branch. Off-cadence turns never touch it (no wasted call, no
-  // orphan rejection).
+  // Reflect runs EVERY turn by default (reflectEveryTurns = 1) — a fresh, prompt-specific synthesis
+  // for THIS message, not one stale answer from the session's first prompt. Capped so it can never
+  // blow the hook's wall-clock timeout; a slow/failed reflect degrades to recall-only for that turn.
+  const reflectDue = cfg.reflectEveryTurns > 0 && turns % cfg.reflectEveryTurns === 0;
+  const tReflect = Date.now();
+  const reflectP = reflectDue
+    ? client.reflect(prompt, {
+        budget: "high",
+        timeoutMs: Math.min(cfg.reflectTimeoutMs, HOOK_REFLECT_CAP_MS),
+      })
+    : undefined;
+
   const refreshDue = cfg.pageRefreshEveryTurns > 0 && turns % cfg.pageRefreshEveryTurns === 0;
   const pagesPromise = refreshDue ? client.listPages() : undefined;
 
-  // The answer carried into the cache: reflect's result on the first turn, else the cached answer
-  // (preserved so `firstTurn` stays false and reflect never re-runs mid-session).
-  let answer = cached.answer ?? "";
+  // Persist the turn counter (best-effort).
+  try {
+    mkdirSync(dirname(cacheFile), { recursive: true });
+    writeFileSync(cacheFile, JSON.stringify({ turns }));
+  } catch {
+    /* cache is best-effort */
+  }
+
   let reflectBlock = "";
-  if (firstTurn) {
-    const t0 = Date.now();
-    answer = "";
+  if (reflectP) {
     try {
-      answer = await client.reflect(prompt, {
-        budget: "high",
-        timeoutMs: Math.min(cfg.reflectTimeoutMs, HOOK_REFLECT_CAP_MS),
-      });
+      const answer = await reflectP;
       diag(harness, answer ? "reflect_ok" : "reflect_empty", {
-        ms: Date.now() - t0,
+        ms: Date.now() - tReflect,
         chars: answer.length,
         query: prompt.slice(0, 80),
       });
+      reflectBlock = answer ? buildSystemInjection(answer) : "";
     } catch (e) {
       diag(harness, "reflect_failed", {
-        ms: Date.now() - t0,
+        ms: Date.now() - tReflect,
         error: String((e as Error)?.message || e).slice(0, 200),
         query: prompt.slice(0, 80),
       });
     }
-    reflectBlock = answer ? buildSystemInjection(answer) : "";
-  }
-
-  // Persist the turn counter (and answer) on EVERY turn, not just the first.
-  try {
-    mkdirSync(dirname(cacheFile), { recursive: true });
-    writeFileSync(cacheFile, JSON.stringify({ answer, turns }));
-  } catch {
-    /* cache is best-effort; worst case we reflect again next prompt */
   }
 
   let results: RecallResult[] = [];

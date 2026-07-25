@@ -36,18 +36,14 @@ describe("buildHookOutput", () => {
     expect(result).toContain("<hindsight_memories>");
     expect(result).toContain("MEM_ONE");
     expect(existsSync(cacheFile)).toBe(true);
-    expect(JSON.parse(readFileSync(cacheFile, "utf8"))).toEqual({
-      answer: "REFLECT_ANSWER",
-      turns: 1,
-    });
+    // Cache holds only the turn counter now — reflect is no longer cached/reused across turns.
+    expect(JSON.parse(readFileSync(cacheFile, "utf8"))).toEqual({ turns: 1 });
   });
 
-  it("later turn: recall only, reflect NOT called", async () => {
+  it("later turn: reflect runs AGAIN (fresh, prompt-specific) — not once-per-session", async () => {
     mkdirSync(join(root, "cache"), { recursive: true });
-    writeFileSync(cacheFile, JSON.stringify({ answer: "OLD_REFLECT" }));
-    const reflectSpy = vi.fn(async () => {
-      throw new Error("reflect must not be called on a later turn");
-    });
+    writeFileSync(cacheFile, JSON.stringify({ turns: 3 }));
+    const reflectSpy = vi.fn(async () => "FRESH_REFLECT");
     const cfg = resolveConfig({});
     const result = await buildHookOutput({
       harness: "claude-code",
@@ -62,8 +58,29 @@ describe("buildHookOutput", () => {
     });
     expect(result).toContain("<hindsight_memories>");
     expect(result).toContain("MEM_TWO");
-    expect(result).not.toContain("OLD_REFLECT");
+    // Reflect fires on this later turn with the CURRENT prompt and its fresh answer is injected.
+    expect(reflectSpy).toHaveBeenCalledWith("hello again", { budget: "high", timeoutMs: 8000 });
+    expect(result).toContain("FRESH_REFLECT");
+    expect(JSON.parse(readFileSync(cacheFile, "utf8"))).toEqual({ turns: 4 });
+  });
+
+  it("reflectEveryTurns:0 disables reflect entirely", async () => {
+    const cfg = resolveConfig({ reflectEveryTurns: 0 });
+    const reflectSpy = vi.fn(async () => "SHOULD_NOT_RUN");
+    const result = await buildHookOutput({
+      harness: "claude-code",
+      prompt: "hello",
+      cfg,
+      client: {
+        reflect: reflectSpy,
+        recall: async () => [{ text: "MEM_ONLY" }],
+        listPages: async () => ({ items: [] }),
+      },
+      cacheFile,
+    });
     expect(reflectSpy).not.toHaveBeenCalled();
+    expect(result).toContain("MEM_ONLY");
+    expect(result).not.toContain("SHOULD_NOT_RUN");
   });
 
   it("both empty -> undefined", async () => {
@@ -80,7 +97,7 @@ describe("buildHookOutput", () => {
       cacheFile,
     });
     expect(result).toBeUndefined();
-    expect(JSON.parse(readFileSync(cacheFile, "utf8"))).toEqual({ answer: "", turns: 1 });
+    expect(JSON.parse(readFileSync(cacheFile, "utf8"))).toEqual({ turns: 1 });
   });
 
   it("recall still injects if reflect rejects", async () => {
@@ -100,7 +117,7 @@ describe("buildHookOutput", () => {
     });
     expect(result).toContain("<hindsight_memories>");
     expect(result).toContain("MEM_R");
-    expect(JSON.parse(readFileSync(cacheFile, "utf8"))).toEqual({ answer: "", turns: 1 });
+    expect(JSON.parse(readFileSync(cacheFile, "utf8"))).toEqual({ turns: 1 });
   });
 
   it("reflect still injects if recall rejects", async () => {
@@ -211,13 +228,8 @@ describe("buildHookOutput", () => {
         },
         cacheFile,
       });
-      const cached = JSON.parse(readFileSync(cacheFile, "utf8")) as {
-        answer?: string;
-        turns?: number;
-      };
+      const cached = JSON.parse(readFileSync(cacheFile, "utf8")) as { turns?: number };
       expect(cached.turns).toBe(n);
-      // Reflect runs only on the first turn; its answer persists across later turns.
-      expect(cached.answer).toBe("R");
     }
   });
 
