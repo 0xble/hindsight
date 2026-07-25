@@ -106,23 +106,17 @@ export function buildKnowledgeTools(client: HindsightClient, bankId: string): To
     {
       name: "hindsight_capture_initiative",
       description:
-        "Record that a MAJOR new feature, initiative, or substantial enhancement is being worked " +
-        "on, so it becomes a first-class, trackable page in this project's knowledge base that " +
-        "future sessions can pick up.\n\n" +
-        "Call this when: the user asks you to build a significant new capability; you start or make " +
-        "real progress on a feature worth remembering across sessions; or a meaningful enhancement " +
-        "is made to an existing initiative.\n\n" +
-        "Do NOT call this for: routine bug fixes, small tweaks, refactors, chores, or anything a " +
-        "teammate wouldn't want summarized weeks later. When in doubt, it is probably not an " +
-        "initiative — skip it.\n\n" +
-        "- title: short, specific name (e.g. 'Retry backoff for the uploader').\n" +
-        "- summary: 2-4 sentences on WHAT is being built/changed and WHY — the intent, not a code " +
-        "diff.\n" +
-        "- relates_to_page_id: OMIT for a brand-new initiative. To log an enhancement to an " +
-        "initiative that already has a page, pass that page's id (from " +
-        "hindsight_list_knowledge_pages) so this attaches to it instead of creating a duplicate.\n\n" +
-        "Returns the initiative's page id. You never format a page yourself — that's handled for " +
-        "you.",
+        "Record a new feature or initiative as a tracked knowledge page, so future sessions know it " +
+        "exists and can build on it.\n\n" +
+        "WHEN TO CALL: as soon as you begin real work on a new feature the user asked you to build. " +
+        "Call it ONCE, EARLY — don't wait until the feature is finished.\n\n" +
+        "WHEN TO SKIP: bug fixes, small tweaks, refactors, and chores are not initiatives — skip " +
+        "them.\n\n" +
+        "- title: short, specific name (e.g. 'Newsletter refinement chat').\n" +
+        "- summary: 2-3 sentences on what you're building and why (the intent, not a code diff).\n" +
+        "- relates_to_page_id: leave empty for a new initiative. Set it only to attach to an " +
+        "initiative that already has a page — pass that page's id from hindsight_list_knowledge_pages.\n\n" +
+        "Returns the page id. The page is generated for you — you never format one yourself.",
       inputSchema: {
         title: z.string(),
         summary: z.string(),
