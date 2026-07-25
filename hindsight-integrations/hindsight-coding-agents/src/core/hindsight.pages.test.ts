@@ -245,9 +245,9 @@ describe("HindsightClient.ensureFolder", () => {
     const c = new HindsightClient({ apiUrl: "http://x", bank: "repo-a" });
     const id = await c.ensureFolder("Initiatives");
     expect(id).toBe("existing-1");
-    expect(calls.some((k) => k.method === "POST" && k.url.endsWith("/knowledge-base/folders"))).toBe(
-      false
-    );
+    expect(
+      calls.some((k) => k.method === "POST" && k.url.endsWith("/knowledge-base/folders"))
+    ).toBe(false);
   });
 
   it("creates the folder and returns its new id when the tree has no match", async () => {
@@ -262,8 +262,101 @@ describe("HindsightClient.ensureFolder", () => {
     const c = new HindsightClient({ apiUrl: "http://x", bank: "repo-a" });
     const id = await c.ensureFolder("Initiatives");
     expect(id).toBe("new-folder");
-    const post = calls.find((k) => k.method === "POST" && k.url.endsWith("/knowledge-base/folders"));
+    const post = calls.find(
+      (k) => k.method === "POST" && k.url.endsWith("/knowledge-base/folders")
+    );
     expect(post.body).toEqual({ name: "Initiatives" });
+  });
+});
+
+describe("HindsightClient.captureInitiative", () => {
+  it("new initiative: POSTs a per-initiative page + a marker retain sharing the same relatedPageId", async () => {
+    const calls: any[] = [];
+    stubFetchRouted(calls, [
+      { match: (m, u) => m === "GET" && u.endsWith("/knowledge-base/tree"), json: { roots: [] } },
+      {
+        match: (m, u) => m === "POST" && u.endsWith("/knowledge-base/folders"),
+        json: { id: "folder-abc" },
+      },
+      {
+        match: (m, u) => m === "POST" && u.endsWith("/knowledge-base/pages"),
+        json: { page_id: "pg" },
+      },
+      {
+        match: (m, u) => m === "POST" && u.endsWith("/memories"),
+        json: { operation_id: "op-1" },
+      },
+    ]);
+    const c = new HindsightClient({ apiUrl: "http://x", bank: "repo-a" });
+    const result = await c.captureInitiative({
+      title: "Retry backoff for the uploader",
+      summary: "Add exponential backoff so transient upload failures retry.",
+    });
+
+    const expectedPageId = "initiative-retry-backoff-for-the-uploader";
+    expect(result).toEqual({ page_id: expectedPageId });
+
+    // Page POST: name = title, nested under the Initiatives folder, tagged relatedPageId:<pageId>
+    const pagePost = calls.find(
+      (k) => k.method === "POST" && k.url.endsWith("/knowledge-base/pages")
+    );
+    expect(pagePost).toBeDefined();
+    expect(pagePost.body.name).toBe("Retry backoff for the uploader");
+    expect(pagePost.body.parent_id).toBe("folder-abc");
+    expect(pagePost.body.tags).toContain("knowledge:feature-work");
+    expect(pagePost.body.tags).toContain(`relatedPageId:${expectedPageId}`);
+
+    // Marker retain POST to /memories, same relatedPageId + knowledge:feature-work
+    const memPost = calls.find((k) => k.method === "POST" && k.url.endsWith("/memories"));
+    expect(memPost).toBeDefined();
+    const item = memPost.body.items[0];
+    expect(item.tags).toContain("knowledge:feature-work");
+    expect(item.tags).toContain(`relatedPageId:${expectedPageId}`);
+    expect(item.strategy).toBe("document");
+    expect(memPost.body.async).toBe(true);
+    // Unique per-marker document id (NOT the page id) so repeated captures accrue.
+    expect(item.document_id).not.toBe(expectedPageId);
+    expect(item.document_id).toContain("initiative-marker-retry-backoff-for-the-uploader-");
+
+    // The returned page id and the tag's id must be identical.
+    const tagId = item.tags
+      .find((t: string) => t.startsWith("relatedPageId:"))
+      .slice("relatedPageId:".length);
+    expect(tagId).toBe(result.page_id);
+  });
+
+  it("enhancement (relatesToPageId): NO page POST; marker tagged the existing page id", async () => {
+    const calls: any[] = [];
+    stubFetchRouted(calls, [
+      {
+        match: (m, u) => m === "POST" && u.endsWith("/memories"),
+        json: { operation_id: "op-1" },
+      },
+    ]);
+    const c = new HindsightClient({ apiUrl: "http://x", bank: "repo-a" });
+    const result = await c.captureInitiative({
+      title: "More backoff tuning",
+      summary: "Tweak the jitter window.",
+      relatesToPageId: "initiative-x",
+    });
+
+    expect(result).toEqual({ page_id: "initiative-x" });
+
+    // No new page created for enhancements.
+    expect(
+      calls.some((k) => k.method === "POST" && k.url.endsWith("/knowledge-base/pages"))
+    ).toBe(false);
+    // No folder lookup/creation either.
+    expect(
+      calls.some((k) => k.method === "GET" && k.url.endsWith("/knowledge-base/tree"))
+    ).toBe(false);
+
+    const memPost = calls.find((k) => k.method === "POST" && k.url.endsWith("/memories"));
+    expect(memPost).toBeDefined();
+    const item = memPost.body.items[0];
+    expect(item.tags).toContain("knowledge:feature-work");
+    expect(item.tags).toContain("relatedPageId:initiative-x");
+    expect(item.content).toContain("Enhancement to an existing initiative");
   });
 });
 

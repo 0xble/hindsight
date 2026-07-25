@@ -320,12 +320,62 @@ export class HindsightClient {
     }
   }
 
+  /** URL/id-safe slug: lowercase, non-alphanumerics → "-", trim dashes, cap length; fallback "initiative". */
+  private slugify(s: string): string {
+    return (
+      s
+        .toLowerCase()
+        .replace(/[^a-z0-9]+/g, "-")
+        .replace(/^-+|-+$/g, "")
+        .slice(0, 60) || "initiative"
+    );
+  }
+
+  /**
+   * Active-path capture: register a major feature as a per-initiative page + a tagged marker memory.
+   * New initiative → creates a page under the Initiatives folder tagged `relatedPageId:<pageId>`.
+   * Enhancement (relatesToPageId) → no new page; only a marker accruing to the existing page.
+   */
+  async captureInitiative(args: {
+    title: string;
+    summary: string;
+    relatesToPageId?: string;
+  }): Promise<{ page_id: string }> {
+    const pageId = args.relatesToPageId ?? `initiative-${this.slugify(args.title)}`;
+    if (!args.relatesToPageId) {
+      const folderId = await this.ensureFolder("Initiatives");
+      await this.req("POST", this.bankUrl("/knowledge-base/pages"), {
+        name: args.title,
+        source_query: `Summarize the "${args.title}" initiative: what is being built or changed and why, and its current state — drawn from the project's memory.`,
+        parent_id: folderId,
+        tags: ["knowledge:feature-work", `relatedPageId:${pageId}`],
+        trigger: {
+          fact_types: ["world", "experience", "observation"],
+          refresh_after_consolidation: true,
+        },
+      });
+    }
+    const verb = args.relatesToPageId ? "Enhancement to an existing initiative" : "New initiative";
+    const content = `${verb}: ${args.title}. ${args.summary}`;
+    // Unique marker document id (NOT pageId) so repeated captures accrue instead of replacing.
+    const markerId = `initiative-marker-${this.slugify(args.title)}-${Date.now()}`;
+    await this.retain(
+      content,
+      "initiative marker",
+      markerId,
+      ["knowledge:feature-work", `relatedPageId:${pageId}`],
+      "document",
+      { async: true }
+    );
+    return { page_id: pageId };
+  }
+
   /** Find a root folder by name (case-insensitive) or create it; returns its id. Fail-open to undefined. */
   async ensureFolder(name: string): Promise<string | undefined> {
     try {
-      const tree = (await (
-        await this.req("GET", this.bankUrl("/knowledge-base/tree"))
-      ).json()) as { roots?: { id?: string; kind?: string; name?: string }[] };
+      const tree = (await (await this.req("GET", this.bankUrl("/knowledge-base/tree"))).json()) as {
+        roots?: { id?: string; kind?: string; name?: string }[];
+      };
       const hit = (tree.roots || []).find(
         (n) => n.kind === "folder" && (n.name || "").toLowerCase() === name.toLowerCase()
       );
