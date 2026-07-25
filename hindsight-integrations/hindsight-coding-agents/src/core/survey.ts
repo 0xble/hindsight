@@ -103,7 +103,7 @@ export function startCodebaseSurvey(
         "-p",
         SURVEY_PROMPT,
         "--model",
-        opts.model ?? "sonnet",
+        opts.model ?? "haiku",
         "--mcp-config",
         mcpConfig,
         "--strict-mcp-config",

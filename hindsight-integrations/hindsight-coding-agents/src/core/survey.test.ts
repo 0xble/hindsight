@@ -92,7 +92,7 @@ describe("startCodebaseSurvey", () => {
     expect(child.unref).toHaveBeenCalled();
   });
 
-  it("defaults model to 'sonnet' when opts.model is omitted", () => {
+  it("defaults model to 'haiku' when opts.model is omitted", () => {
     const spawn = fakeSpawn();
     startCodebaseSurvey("/repo", {
       mcpServerPath: "/x/mcp-server.js",
@@ -101,7 +101,7 @@ describe("startCodebaseSurvey", () => {
     });
     const argv = spawn.mock.calls[0][1];
     const modelIdx = argv.indexOf("--model");
-    expect(argv[modelIdx + 1]).toBe("sonnet");
+    expect(argv[modelIdx + 1]).toBe("haiku");
   });
 
   it("defaults --max-budget-usd to 0.5 when opts.budgetUsd is omitted", () => {

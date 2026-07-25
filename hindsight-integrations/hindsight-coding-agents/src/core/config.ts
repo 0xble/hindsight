@@ -51,7 +51,7 @@ export interface RawConfig {
   autoSeed?: boolean; // SessionStart: auto-seed a cold repo's bank from git history (default true)
   seedLimit?: number; // SessionStart auto-seed: most-recent-N-commits cap (default 300)
   codebaseSurvey?: boolean; // SessionStart: spawn a headless claude to survey a cold repo's structure (default true)
-  surveyModel?: string; // model passed to the headless survey's `claude -p --model` (default "sonnet")
+  surveyModel?: string; // model passed to the headless survey's `claude -p --model` (default "haiku")
   surveyBudgetUsd?: number; // spend cap passed to the headless survey's `claude -p --max-budget-usd` (default 0.5)
   gitSync?: GitSyncConfig;
   /** Per-harness overrides of any of the fields above, keyed by harness name ("opencode",
@@ -104,7 +104,7 @@ export function resolveConfig(raw: RawConfig = {}): Config {
     autoSeed: raw.autoSeed ?? true,
     seedLimit: raw.seedLimit || DEFAULT_SEED_LIMIT,
     codebaseSurvey: raw.codebaseSurvey ?? true,
-    surveyModel: raw.surveyModel || "sonnet",
+    surveyModel: raw.surveyModel || "haiku",
     surveyBudgetUsd: raw.surveyBudgetUsd || 0.5,
     gitSync: {
       enabled: gs.enabled ?? false, // opt-in: off unless explicitly enabled in config
