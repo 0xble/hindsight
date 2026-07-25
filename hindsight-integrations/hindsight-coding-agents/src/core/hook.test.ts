@@ -27,6 +27,7 @@ describe("buildHookOutput", () => {
       client: {
         reflect: async () => "REFLECT_ANSWER",
         recall: async () => [{ text: "MEM_ONE" }],
+        listPages: async () => ({ items: [] }),
       },
       cacheFile,
     });
@@ -35,7 +36,10 @@ describe("buildHookOutput", () => {
     expect(result).toContain("<hindsight_memories>");
     expect(result).toContain("MEM_ONE");
     expect(existsSync(cacheFile)).toBe(true);
-    expect(JSON.parse(readFileSync(cacheFile, "utf8"))).toEqual({ answer: "REFLECT_ANSWER" });
+    expect(JSON.parse(readFileSync(cacheFile, "utf8"))).toEqual({
+      answer: "REFLECT_ANSWER",
+      turns: 1,
+    });
   });
 
   it("later turn: recall only, reflect NOT called", async () => {
@@ -52,6 +56,7 @@ describe("buildHookOutput", () => {
       client: {
         reflect: reflectSpy,
         recall: async () => [{ text: "MEM_TWO" }],
+        listPages: async () => ({ items: [] }),
       },
       cacheFile,
     });
@@ -70,11 +75,12 @@ describe("buildHookOutput", () => {
       client: {
         reflect: async () => "",
         recall: async () => [],
+        listPages: async () => ({ items: [] }),
       },
       cacheFile,
     });
     expect(result).toBeUndefined();
-    expect(JSON.parse(readFileSync(cacheFile, "utf8"))).toEqual({ answer: "" });
+    expect(JSON.parse(readFileSync(cacheFile, "utf8"))).toEqual({ answer: "", turns: 1 });
   });
 
   it("recall still injects if reflect rejects", async () => {
@@ -88,12 +94,13 @@ describe("buildHookOutput", () => {
           throw new Error("boom");
         },
         recall: async () => [{ text: "MEM_R" }],
+        listPages: async () => ({ items: [] }),
       },
       cacheFile,
     });
     expect(result).toContain("<hindsight_memories>");
     expect(result).toContain("MEM_R");
-    expect(JSON.parse(readFileSync(cacheFile, "utf8"))).toEqual({ answer: "" });
+    expect(JSON.parse(readFileSync(cacheFile, "utf8"))).toEqual({ answer: "", turns: 1 });
   });
 
   it("reflect still injects if recall rejects", async () => {
@@ -107,6 +114,7 @@ describe("buildHookOutput", () => {
         recall: async () => {
           throw new Error("recall boom");
         },
+        listPages: async () => ({ items: [] }),
       },
       cacheFile,
     });
@@ -128,6 +136,7 @@ describe("buildHookOutput", () => {
         recall: async () => {
           throw new Error("recall boom");
         },
+        listPages: async () => ({ items: [] }),
       },
       cacheFile,
     });
@@ -144,6 +153,7 @@ describe("buildHookOutput", () => {
       client: {
         reflect: async () => "R",
         recall: recallSpy,
+        listPages: async () => ({ items: [] }),
       },
       cacheFile,
     });
@@ -163,6 +173,7 @@ describe("buildHookOutput", () => {
       client: {
         reflect: reflectSpy,
         recall: async () => [],
+        listPages: async () => ({ items: [] }),
       },
       cacheFile,
     });
@@ -179,10 +190,93 @@ describe("buildHookOutput", () => {
       client: {
         reflect: reflectSpy,
         recall: async () => [],
+        listPages: async () => ({ items: [] }),
       },
       cacheFile,
     });
     expect(reflectSpy).toHaveBeenCalledWith("the prompt", { budget: "high", timeoutMs: 3000 });
+  });
+
+  it("persists and increments turns each call, round-tripping {answer, turns}", async () => {
+    const cfg = resolveConfig({ pageRefreshEveryTurns: 3 });
+    for (let n = 1; n <= 4; n++) {
+      await buildHookOutput({
+        harness: "claude-code",
+        prompt: `turn ${n}`,
+        cfg,
+        client: {
+          reflect: async () => "R",
+          recall: async () => [],
+          listPages: async () => ({ items: [{ id: "p1", name: "Component map" }] }),
+        },
+        cacheFile,
+      });
+      const cached = JSON.parse(readFileSync(cacheFile, "utf8")) as {
+        answer?: string;
+        turns?: number;
+      };
+      expect(cached.turns).toBe(n);
+      // Reflect runs only on the first turn; its answer persists across later turns.
+      expect(cached.answer).toBe("R");
+    }
+  });
+
+  it("injects the page-roster refresh only on cadence turns", async () => {
+    const cfg = resolveConfig({ pageRefreshEveryTurns: 2 });
+    const client = {
+      reflect: async () => "R",
+      recall: async () => [{ text: "MEM" }],
+      listPages: async () => ({ items: [{ id: "p1", name: "Component map" }] }),
+    };
+    // turn 1: not a multiple of 2 -> no refresh
+    const t1 = await buildHookOutput({
+      harness: "claude-code",
+      prompt: "one",
+      cfg,
+      client,
+      cacheFile,
+    });
+    expect(t1).not.toContain("Component map");
+    expect(t1).not.toContain("hindsight_knowledge_refresh");
+    // turn 2: multiple of 2 -> refresh injected
+    const t2 = await buildHookOutput({
+      harness: "claude-code",
+      prompt: "two",
+      cfg,
+      client,
+      cacheFile,
+    });
+    expect(t2).toContain("hindsight_knowledge_refresh");
+    expect(t2).toContain("Component map");
+    // memories still present alongside the refresh block
+    expect(t2).toContain("<hindsight_memories>");
+  });
+
+  it("listPages rejection is fail-open on a cadence turn (recall/injection intact, no throw)", async () => {
+    const cfg = resolveConfig({ pageRefreshEveryTurns: 2 });
+    // Seed the cache so this is turn 2 (a cadence turn) without needing a first turn.
+    mkdirSync(join(root, "cache"), { recursive: true });
+    writeFileSync(cacheFile, JSON.stringify({ answer: "OLD", turns: 1 }));
+    const result = await buildHookOutput({
+      harness: "claude-code",
+      prompt: "two",
+      cfg,
+      client: {
+        reflect: async () => {
+          throw new Error("reflect must not run on a later turn");
+        },
+        recall: async () => [{ text: "MEM_KEEP" }],
+        listPages: async () => {
+          throw new Error("listPages boom");
+        },
+      },
+      cacheFile,
+    });
+    expect(result).toContain("<hindsight_memories>");
+    expect(result).toContain("MEM_KEEP");
+    expect(result).not.toContain("hindsight_knowledge_refresh");
+    // turns still advanced despite the listPages failure
+    expect(JSON.parse(readFileSync(cacheFile, "utf8")).turns).toBe(2);
   });
 });
 

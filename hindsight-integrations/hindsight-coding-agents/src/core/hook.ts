@@ -24,6 +24,7 @@ import { diag } from "./diag";
 import type { ClientOpts, RecallResult } from "./hindsight";
 import { HindsightClient } from "./hindsight";
 import { buildSystemInjection } from "./inject";
+import { buildRosterRefresh, parsePageList } from "./knowledge-injection";
 import { formatMemories } from "./recall";
 
 export interface HookEventFields {
@@ -45,6 +46,7 @@ export interface HookSpec {
 interface HookClient {
   reflect(query: string, opts: { budget?: string; timeoutMs?: number }): Promise<string>;
   recall(query: string, opts: { maxTokens?: number; timeoutMs?: number }): Promise<RecallResult[]>;
+  listPages(): Promise<unknown>;
 }
 
 /** Hook processes are killed by the host at a fixed wall-clock timeout (Claude Code UserPromptSubmit = 15s).
@@ -65,13 +67,16 @@ export async function buildHookOutput(args: {
 }): Promise<string | undefined> {
   const { harness, prompt, cfg, client, cacheFile } = args;
 
-  let firstTurn = true;
+  let cached: { answer?: string; turns?: number } = {};
   try {
-    const cached = JSON.parse(readFileSync(cacheFile, "utf8")) as { answer?: string };
-    if (typeof cached.answer === "string") firstTurn = false; // reflect already ran this session
+    cached = JSON.parse(readFileSync(cacheFile, "utf8")) as { answer?: string; turns?: number };
   } catch {
     /* missing/invalid cache — first prompt of the session */
   }
+  // reflect already ran this session iff a prior answer was cached.
+  const firstTurn = typeof cached.answer !== "string";
+  // Per-session user-turn counter, persisted on EVERY turn (drives the page-roster cadence).
+  const turns = (cached.turns ?? 0) + 1;
 
   // Kick off recall immediately so it runs concurrently with reflect on the first turn.
   const tRecall = Date.now();
@@ -80,10 +85,19 @@ export async function buildHookOutput(args: {
     timeoutMs: cfg.recallTimeoutMs,
   });
 
+  // On cadence turns, kick off listPages concurrently (like recall) so it adds no latency; only
+  // awaited below inside the cadence branch. Off-cadence turns never touch it (no wasted call, no
+  // orphan rejection).
+  const refreshDue = cfg.pageRefreshEveryTurns > 0 && turns % cfg.pageRefreshEveryTurns === 0;
+  const pagesPromise = refreshDue ? client.listPages() : undefined;
+
+  // The answer carried into the cache: reflect's result on the first turn, else the cached answer
+  // (preserved so `firstTurn` stays false and reflect never re-runs mid-session).
+  let answer = cached.answer ?? "";
   let reflectBlock = "";
   if (firstTurn) {
     const t0 = Date.now();
-    let answer = "";
+    answer = "";
     try {
       answer = await client.reflect(prompt, {
         budget: "high",
@@ -101,13 +115,15 @@ export async function buildHookOutput(args: {
         query: prompt.slice(0, 80),
       });
     }
-    try {
-      mkdirSync(dirname(cacheFile), { recursive: true });
-      writeFileSync(cacheFile, JSON.stringify({ answer }));
-    } catch {
-      /* cache is best-effort; worst case we reflect again next prompt */
-    }
     reflectBlock = answer ? buildSystemInjection(answer) : "";
+  }
+
+  // Persist the turn counter (and answer) on EVERY turn, not just the first.
+  try {
+    mkdirSync(dirname(cacheFile), { recursive: true });
+    writeFileSync(cacheFile, JSON.stringify({ answer, turns }));
+  } catch {
+    /* cache is best-effort; worst case we reflect again next prompt */
   }
 
   let results: RecallResult[] = [];
@@ -127,8 +143,17 @@ export async function buildHookOutput(args: {
   }
   const memBlock = formatMemories(results);
 
-  const blocks = [reflectBlock, memBlock].filter(Boolean);
-  return blocks.length ? blocks.join("\n\n") : undefined;
+  const blocks = [reflectBlock, memBlock];
+  if (refreshDue && pagesPromise) {
+    try {
+      const refresh = buildRosterRefresh(parsePageList(await pagesPromise));
+      if (refresh) blocks.push(refresh);
+    } catch {
+      /* fail-open: a listPages failure must never break the turn */
+    }
+  }
+  const kept = blocks.filter(Boolean);
+  return kept.length ? kept.join("\n\n") : undefined;
 }
 
 /** Run one hook invocation: stdin event in, (maybe) an injection object on stdout. */
