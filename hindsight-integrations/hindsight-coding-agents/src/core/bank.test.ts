@@ -18,24 +18,33 @@ describe("deriveBankId", () => {
     vi.clearAllMocks();
   });
 
-  it("defaults to the directory basename outside git", () => {
-    expect(deriveBankId({}, "/home/me/scratch")).toBe("scratch");
+  // The default template is harness-neutral `coding-agent::{gitProject}` (every coding agent shares
+  // one bank per repo), so the default cases below carry that prefix.
+  it("defaults to coding-agent::<directory basename> outside git", () => {
+    expect(deriveBankId({}, "/home/me/scratch")).toBe("coding-agent::scratch");
   });
 
   it("resolves the MAIN worktree root inside git (worktrees share one bank)", () => {
     mockExec.mockReturnValue("/home/me/dev/myrepo/.git\n");
-    expect(deriveBankId({}, "/home/me/dev/myrepo-feature-wt")).toBe("myrepo");
+    expect(deriveBankId({}, "/home/me/dev/myrepo-feature-wt")).toBe("coding-agent::myrepo");
   });
 
   it("uses the bare-repo directory name when common-dir is not .git", () => {
     mockExec.mockReturnValue("/srv/git/myrepo.git\n");
-    expect(deriveBankId({}, "/srv/git/myrepo.git")).toBe("myrepo.git");
+    expect(deriveBankId({}, "/srv/git/myrepo.git")).toBe("coding-agent::myrepo.git");
   });
 
   it("resolveWorktrees=false skips git and uses the directory basename", () => {
     mockExec.mockReturnValue("/home/me/dev/myrepo/.git\n");
-    expect(deriveBankId({ resolveWorktrees: false }, "/home/me/dev/myrepo-wt")).toBe("myrepo-wt");
+    expect(deriveBankId({ resolveWorktrees: false }, "/home/me/dev/myrepo-wt")).toBe(
+      "coding-agent::myrepo-wt"
+    );
     expect(mockExec).not.toHaveBeenCalled();
+  });
+
+  it("the default bank is harness-neutral — same id regardless of the harness arg", () => {
+    expect(deriveBankId({}, "/home/me/scratch", "claude-code")).toBe("coding-agent::scratch");
+    expect(deriveBankId({}, "/home/me/scratch", "codex")).toBe("coding-agent::scratch");
   });
 
   it("explicit bankId means static", () => {
@@ -43,7 +52,9 @@ describe("deriveBankId", () => {
   });
 
   it("dynamicBankId=true overrides an explicit bankId", () => {
-    expect(deriveBankId({ bankId: "pinned", dynamicBankId: true }, "/home/me/proj")).toBe("proj");
+    expect(deriveBankId({ bankId: "pinned", dynamicBankId: true }, "/home/me/proj")).toBe(
+      "coding-agent::proj"
+    );
   });
 
   it("dynamicBankId=false without bankId falls back to the default name", () => {
@@ -96,7 +107,7 @@ describe("deriveBankId", () => {
 
     it("does not match sibling directories sharing a name prefix", () => {
       expect(deriveBankId({ directoryBankMap: { [WT]: "mapped" } }, `${WT}-other`)).toBe(
-        "myrepo-other"
+        "coding-agent::myrepo-other"
       );
     });
 

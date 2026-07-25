@@ -37,7 +37,7 @@ export interface RawConfig {
   apiToken?: string; // bearer token (optional)
   bankId?: string; // EXPLICIT memory bank id — set = static bank; unset = per-repo dynamic (core/bank.ts)
   dynamicBankId?: boolean; // force dynamic resolution even when bankId is set (default: dynamic iff no bankId)
-  bankIdTemplate?: string; // dynamic bank id format, e.g. "hindsight-{gitProject}" (default "{gitProject}") —
+  bankIdTemplate?: string; // dynamic bank id format (default "coding-agent::{gitProject}" — harness-neutral) —
   //   placeholders: {gitProject} {project} {harness} {channel} {user} (see core/bank.ts)
   directoryBankMap?: Record<string, string>; // absolute path -> bank; longest prefix wins; overrides everything
   resolveWorktrees?: boolean; // {gitProject}: worktrees share the main repo's bank (default true)

@@ -11,14 +11,14 @@
  *      Overrides everything, including an explicit bankId.
  *   2. static — when `dynamicBankId` is false, or left unset WITH an explicit `bankId`
  *      (the benchmark harness and single-bank setups).
- *   3. dynamic — `bankIdTemplate` (default "{gitProject}") with placeholders:
+ *   3. dynamic — `bankIdTemplate` (default "coding-agent::{gitProject}") with placeholders:
  *        {gitProject}  worktree-aware repo name (all worktrees share it; non-git: dir basename)
  *        {project}     working-directory basename (no git involved)
  *        {harness}     the entry point asking ("opencode", "claude-code", ...)
  *        {channel}     $HINDSIGHT_CHANNEL_ID or "default"
  *        {user}        $HINDSIGHT_USER_ID or "anonymous"
  *      e.g. "hindsight-{gitProject}" or "{harness}-{gitProject}" to split per agent. The default
- *      is plain "{gitProject}" so opencode and claude share ONE memory per repo.
+ *      is harness-neutral "coding-agent::{gitProject}" so every coding agent shares ONE memory per repo.
  */
 import { execFileSync } from "node:child_process";
 import { basename, dirname, normalize, sep } from "node:path";
@@ -32,7 +32,11 @@ export interface BankConfig {
 }
 
 const DEFAULT_BANK_NAME = "coding";
-const DEFAULT_TEMPLATE = "{gitProject}";
+// Harness-NEUTRAL default so every coding agent (Claude, Codex, Cursor, opencode) shares ONE bank
+// per repo — switch agents, keep your memory. Namespaced with `coding-agent::` to identify these
+// banks and avoid collisions with other Hindsight banks. Deliberately NOT `{harness}::…` (that would
+// split memory per agent, defeating cross-agent sharing).
+const DEFAULT_TEMPLATE = "coding-agent::{gitProject}";
 const PLACEHOLDER = /\{([a-zA-Z]+)\}/g;
 
 /** Main-worktree root for a directory inside a git repo (worktree- and bare-repo-aware), else null. */
