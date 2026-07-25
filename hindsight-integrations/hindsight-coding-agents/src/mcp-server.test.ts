@@ -13,19 +13,17 @@ describe("selectTools", () => {
     expect(selectTools(cfg, stubClient, "b")).toEqual([]);
   });
 
-  it("returns the 8 agent_knowledge_* tool specs when enabled", () => {
+  it("returns the six hindsight_* tool specs when enabled", () => {
     const cfg = resolveConfig({});
     const tools = selectTools(cfg, stubClient, "b");
     expect(tools.map((t) => t.name).sort()).toEqual(
       [
-        "agent_knowledge_get_current_bank",
-        "agent_knowledge_list_pages",
-        "agent_knowledge_get_page",
-        "agent_knowledge_create_page",
-        "agent_knowledge_update_page",
-        "agent_knowledge_delete_page",
-        "agent_knowledge_recall",
-        "agent_knowledge_ingest",
+        "hindsight_get_current_bank",
+        "hindsight_list_knowledge_pages",
+        "hindsight_read_knowledge_page",
+        "hindsight_search_memory",
+        "hindsight_capture_initiative",
+        "hindsight_ingest_document",
       ].sort()
     );
   });

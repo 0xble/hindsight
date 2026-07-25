@@ -6,9 +6,11 @@
  * throws — a thrown client error is caught and turned into an `isError:true` text result so the
  * calling LLM sees the failure instead of the process crashing.
  *
- * NOTE: `agent_knowledge_ingest_file` (upload-from-disk) is NOT implemented here yet — follow-up
- * task once that flow is designed for MCP. `agent_knowledge_ingest` (raw-content retain) IS
- * implemented below — it backs the codebase survey (core/survey.ts).
+ * The agent-facing surface is intentionally curated: grounding + capture only. Raw page CRUD
+ * (create/update/delete) is deliberately NOT exposed — agents never author page structure; they
+ * capture initiatives (`hindsight_capture_initiative`) and pages are synthesized/maintained by the
+ * server. `hindsight_ingest_document` (raw-content retain) also backs the codebase survey
+ * (core/survey.ts).
  */
 import { z } from "zod";
 import type { ZodRawShape } from "zod";
@@ -54,61 +56,45 @@ function guarded(fn: (args: any) => Promise<unknown>): (args: any) => Promise<To
 export function buildKnowledgeTools(client: HindsightClient, bankId: string): ToolSpec[] {
   return [
     {
-      name: "agent_knowledge_get_current_bank",
+      name: "hindsight_get_current_bank",
       description:
-        "Get the memory bank id this MCP server (and the recall/retain hooks) resolved for the " +
-        "current repo/worktree. All knowledge-page and recall operations here share this one bank.",
+        "Get the memory bank id this MCP server resolved for the current repo/worktree. All " +
+        "knowledge-page and memory operations here share this one bank.",
       inputSchema: {},
       handler: async (_args: Record<string, never>) => ok({ bank_id: bankId }),
     },
     {
-      name: "agent_knowledge_list_pages",
-      description: "List knowledge pages (ids + names). Use get_page for full content.",
+      name: "hindsight_list_knowledge_pages",
+      description:
+        "List this repository's Hindsight knowledge pages — curated, continuously-updated " +
+        "summaries of the project's durable knowledge (architecture, components, conventions, key " +
+        "decisions, and in-flight initiatives). Returns each page's id, title, and a one-line " +
+        "description of what it covers. Call this at the start of any non-trivial task, and again " +
+        "periodically in long sessions, to see what the project already knows before you read code " +
+        "or ask the user. The list changes as work is captured, so re-check it occasionally.",
       inputSchema: {},
       handler: guarded(async () => client.listPages()),
     },
     {
-      name: "agent_knowledge_get_page",
-      description: "Get one knowledge page's synthesized content by id.",
+      name: "hindsight_read_knowledge_page",
+      description:
+        "Read the full content of one knowledge page by its id (from " +
+        "hindsight_list_knowledge_pages). Call this whenever a listed page is relevant to what " +
+        "you're about to do — e.g. read Conventions before writing new code, Component map before " +
+        "changing a subsystem, or an initiative's page before continuing that feature. A page may " +
+        "contain [[page:<id>]] links to related pages; follow one by calling this tool again with " +
+        "that id. Prefer reading a page over re-deriving the same understanding from source.",
       inputSchema: { page_id: z.string() },
       handler: guarded(async ({ page_id }) => client.getPage(page_id)),
     },
     {
-      name: "agent_knowledge_create_page",
+      name: "hindsight_search_memory",
       description:
-        "Create a new knowledge page. source_query is a question that gets re-asked against the " +
-        "bank after every consolidation to rebuild the page's content — pages auto-update over " +
-        "time as new conversations/facts accrue, no manual refresh needed.",
-      inputSchema: {
-        page_id: z.string(),
-        name: z.string(),
-        source_query: z.string(),
-      },
-      handler: guarded(async ({ page_id, name, source_query }) =>
-        client.createPage(page_id, name, source_query)
-      ),
-    },
-    {
-      name: "agent_knowledge_update_page",
-      description: "Update a knowledge page's name and/or source_query.",
-      inputSchema: {
-        page_id: z.string(),
-        name: z.string().optional(),
-        source_query: z.string().optional(),
-      },
-      handler: guarded(async ({ page_id, name, source_query }) =>
-        client.updatePage(page_id, { name, sourceQuery: source_query })
-      ),
-    },
-    {
-      name: "agent_knowledge_delete_page",
-      description: "Permanently delete a knowledge page.",
-      inputSchema: { page_id: z.string() },
-      handler: guarded(async ({ page_id }) => client.deletePage(page_id)),
-    },
-    {
-      name: "agent_knowledge_recall",
-      description: "Recall (search) memories in the current bank for a query.",
+        "Search the repository's raw memory (facts from git history, past sessions, and captured " +
+        "notes) for specifics a knowledge page doesn't cover — a particular past decision and its " +
+        "rationale, why some code is the way it is, prior discussion of a bug, or the detail behind " +
+        "an initiative. Use when the pages are too high-level for your question, or to pull the " +
+        "underlying facts behind something a page mentions.",
       inputSchema: {
         query: z.string(),
         max_tokens: z.number().optional(),
@@ -118,11 +104,41 @@ export function buildKnowledgeTools(client: HindsightClient, bankId: string): To
       ),
     },
     {
-      name: "agent_knowledge_ingest",
+      name: "hindsight_capture_initiative",
       description:
-        "Upload text content into this repo's memory bank as a document (title becomes the id; " +
-        "re-ingesting the same title replaces it). Use for structural notes, docs, or findings " +
-        "you want remembered.",
+        "Record that a MAJOR new feature, initiative, or substantial enhancement is being worked " +
+        "on, so it becomes a first-class, trackable page in this project's knowledge base that " +
+        "future sessions can pick up.\n\n" +
+        "Call this when: the user asks you to build a significant new capability; you start or make " +
+        "real progress on a feature worth remembering across sessions; or a meaningful enhancement " +
+        "is made to an existing initiative.\n\n" +
+        "Do NOT call this for: routine bug fixes, small tweaks, refactors, chores, or anything a " +
+        "teammate wouldn't want summarized weeks later. When in doubt, it is probably not an " +
+        "initiative — skip it.\n\n" +
+        "- title: short, specific name (e.g. 'Retry backoff for the uploader').\n" +
+        "- summary: 2-4 sentences on WHAT is being built/changed and WHY — the intent, not a code " +
+        "diff.\n" +
+        "- relates_to_page_id: OMIT for a brand-new initiative. To log an enhancement to an " +
+        "initiative that already has a page, pass that page's id (from " +
+        "hindsight_list_knowledge_pages) so this attaches to it instead of creating a duplicate.\n\n" +
+        "Returns the initiative's page id. You never format a page yourself — that's handled for " +
+        "you.",
+      inputSchema: {
+        title: z.string(),
+        summary: z.string(),
+        relates_to_page_id: z.string().optional(),
+      },
+      handler: guarded(async ({ title, summary, relates_to_page_id }) =>
+        client.captureInitiative({ title, summary, relatesToPageId: relates_to_page_id })
+      ),
+    },
+    {
+      name: "hindsight_ingest_document",
+      description:
+        "Save an external document or a block of durable notes/findings into this repository's " +
+        "memory so it informs future recall and pages. Use for design notes, research, or " +
+        "reference material you want remembered — not for the conversation you're already in " +
+        "(that's captured automatically at session end).",
       inputSchema: { title: z.string(), content: z.string() },
       handler: guarded(async ({ title, content }) => {
         const docId =
