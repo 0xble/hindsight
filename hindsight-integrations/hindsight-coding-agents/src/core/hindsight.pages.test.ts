@@ -343,13 +343,13 @@ describe("HindsightClient.captureInitiative", () => {
     expect(result).toEqual({ page_id: "initiative-x" });
 
     // No new page created for enhancements.
-    expect(
-      calls.some((k) => k.method === "POST" && k.url.endsWith("/knowledge-base/pages"))
-    ).toBe(false);
+    expect(calls.some((k) => k.method === "POST" && k.url.endsWith("/knowledge-base/pages"))).toBe(
+      false
+    );
     // No folder lookup/creation either.
-    expect(
-      calls.some((k) => k.method === "GET" && k.url.endsWith("/knowledge-base/tree"))
-    ).toBe(false);
+    expect(calls.some((k) => k.method === "GET" && k.url.endsWith("/knowledge-base/tree"))).toBe(
+      false
+    );
 
     const memPost = calls.find((k) => k.method === "POST" && k.url.endsWith("/memories"));
     expect(memPost).toBeDefined();

@@ -101,7 +101,9 @@ describe("loadConfig layering", () => {
   });
 
   it("pageRefreshEveryTurns defaults to 10", () => {
-    expect(loadConfig({ harness: "claude-code", projectDir: process.cwd() }).pageRefreshEveryTurns).toBe(10);
+    expect(
+      loadConfig({ harness: "claude-code", projectDir: process.cwd() }).pageRefreshEveryTurns
+    ).toBe(10);
   });
 
   it("pageRefreshEveryTurns override wins over the default", () => {
