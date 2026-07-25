@@ -22,14 +22,17 @@ describe("parsePageList", () => {
 });
 
 describe("buildKnowledgePreamble", () => {
-  it("includes guidance, a roster of pages, a read tool, and the capture-initiative nudge", () => {
+  it("lists the pages and gives a when-to-call guide for the FULL tool suite", () => {
     const out = buildKnowledgePreamble([{ id: "p1", title: "Component map" }]);
     expect(out).toContain("<hindsight_knowledge>");
     expect(out).toContain("Component map");
     expect(out).toContain("p1");
-    expect(out).toMatch(/hindsight_read_knowledge_page/);
-    // Must nudge the agent to RECORD major features, not just read pages.
+    // Every meaningful tool must be named with a when-to-call, not just pages.
+    expect(out).toContain("hindsight_list_knowledge_pages");
+    expect(out).toContain("hindsight_read_knowledge_page");
+    expect(out).toContain("hindsight_search_memory");
     expect(out).toContain("hindsight_capture_initiative");
+    expect(out).toContain("hindsight_ingest_document");
   });
   it("has an empty-state line when there are no pages", () => {
     const out = buildKnowledgePreamble([]);
@@ -38,16 +41,26 @@ describe("buildKnowledgePreamble", () => {
 });
 
 describe("buildRosterRefresh", () => {
-  it("is a compact 'current pages' block listing ids+titles, with a capture reminder", () => {
+  it("lists current pages and re-states the full tool guide", () => {
     const out = buildRosterRefresh([{ id: "p1", title: "Component map" }]);
     expect(out).toContain("Component map");
     expect(out).toContain("p1");
-    expect(out).toContain("hindsight_capture_initiative");
+    for (const tool of [
+      "hindsight_list_knowledge_pages",
+      "hindsight_read_knowledge_page",
+      "hindsight_search_memory",
+      "hindsight_capture_initiative",
+      "hindsight_ingest_document",
+    ]) {
+      expect(out).toContain(tool);
+    }
   });
-  it("still emits the tool + capture reminder when there are no pages yet (no roster, but the nudge persists)", () => {
+  it("still emits the full tool guide when there are no pages yet (no roster, but the guide persists)", () => {
     const out = buildRosterRefresh([]);
     expect(out).toContain("<hindsight_knowledge_refresh>");
     expect(out).toContain("hindsight_capture_initiative");
+    expect(out).toContain("hindsight_search_memory");
+    expect(out).toContain("hindsight_ingest_document");
     // No roster block when there are no pages.
     expect(out).not.toContain("Current Hindsight knowledge pages");
   });
