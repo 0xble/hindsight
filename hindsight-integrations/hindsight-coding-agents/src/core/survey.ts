@@ -38,6 +38,11 @@ export const SURVEY_PROMPT =
   "architecture: the directory layout, entry points, package manifests (package.json / " +
   "pyproject.toml / Cargo.toml / go.mod), the README, and a few representative source files per " +
   "major area.\n" +
+  "IMPORTANT — DO NOT read, quote, summarize, or ingest agent-instruction files: CLAUDE.md, " +
+  "AGENTS.md, GEMINI.md, .cursorrules, .cursor/rules/*, or .github/copilot-instructions.md. These " +
+  "are live, user-controlled instructions (not repository knowledge); capturing them as memory " +
+  "would let a stale copy override the user's current instructions. Exclude them entirely from " +
+  "your survey and from every ingested document.\n" +
   "Then use the agent_knowledge_ingest tool to save what you learned as separate documents (one " +
   "call each), with these titles and factual, developer-oriented content grounded in what you " +
   "actually saw:\n" +
