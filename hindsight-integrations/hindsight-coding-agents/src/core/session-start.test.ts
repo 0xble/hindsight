@@ -20,11 +20,11 @@ afterEach(() => {
 const listPagesOk = async () => ({ items: [{ id: "p1", name: "Component map" }] });
 
 describe("buildSessionStartContext", () => {
-  it("cold git repo + autoSeed on -> starts the seed + survey, writes seededAt, returns note + roster preamble", async () => {
+  it("cold git repo + autoSeed on -> seeds + surveys, writes seededAt, note in systemMessage (user-visible) + roster in additionalContext (model)", async () => {
     const client = { listDocumentIds: async () => new Set<string>(), listPages: listPagesOk };
     const startSeed = vi.fn();
     const startSurvey = vi.fn();
-    const ctx = await buildSessionStartContext({
+    const out = await buildSessionStartContext({
       cwd: "/repo/dir",
       bankId: "bank-1",
       cfg: resolveConfig(),
@@ -39,20 +39,22 @@ describe("buildSessionStartContext", () => {
     const state = readSeedState("bank-1", stateDir);
     expect(typeof state.seededAt).toBe("string");
     expect(state.seededAt).not.toBe("");
-    expect(ctx).toBeDefined();
-    expect(ctx).toContain("bank-1");
-    expect(ctx).toContain("🧠");
-    // New: the knowledge preamble lists live pages by name, not the old static mission text.
-    expect(ctx).toContain("<hindsight_knowledge>");
-    expect(ctx).toContain("- Component map (p1)");
-    expect(ctx).not.toContain("agent_knowledge_list_pages");
+    // The learning note is USER-VISIBLE (systemMessage), not buried in model context.
+    expect(out.systemMessage).toContain("🧠");
+    expect(out.systemMessage).toContain("bank-1");
+    // The knowledge preamble is model context, lists live pages, and drops the old static mission.
+    expect(out.additionalContext).toContain("<hindsight_knowledge>");
+    expect(out.additionalContext).toContain("- Component map (p1)");
+    expect(out.additionalContext).not.toContain("agent_knowledge_list_pages");
+    // The note must NOT be duplicated into model context.
+    expect(out.additionalContext).not.toContain("🧠");
   });
 
   it("cold git repo + codebaseSurvey:false -> starts the seed but NOT the survey", async () => {
     const client = { listDocumentIds: async () => new Set<string>(), listPages: listPagesOk };
     const startSeed = vi.fn();
     const startSurvey = vi.fn();
-    const ctx = await buildSessionStartContext({
+    const out = await buildSessionStartContext({
       cwd: "/repo/dir",
       bankId: "bank-1",
       cfg: resolveConfig({ codebaseSurvey: false }),
@@ -64,7 +66,7 @@ describe("buildSessionStartContext", () => {
     });
     expect(startSeed).toHaveBeenCalledWith("/repo/dir", { limit: 300 });
     expect(startSurvey).not.toHaveBeenCalled();
-    expect(ctx).toBeDefined();
+    expect(out.systemMessage).toContain("🧠");
   });
 
   it("non-git dir -> no seed, listDocumentIds not called, roster preamble only (no learning note)", async () => {
@@ -77,7 +79,7 @@ describe("buildSessionStartContext", () => {
       },
       listPages: listPagesOk,
     };
-    const ctx = await buildSessionStartContext({
+    const out = await buildSessionStartContext({
       cwd: "/repo/dir",
       bankId: "bank-1",
       cfg: resolveConfig(),
@@ -88,9 +90,8 @@ describe("buildSessionStartContext", () => {
     });
     expect(startSeed).not.toHaveBeenCalled();
     expect(called).toBe(false);
-    expect(ctx).toContain("<hindsight_knowledge>");
-    expect(ctx).toContain("- Component map (p1)");
-    expect(ctx).not.toContain("🧠");
+    expect(out.additionalContext).toContain("- Component map (p1)");
+    expect(out.systemMessage).toBeUndefined();
   });
 
   it("already-seeded state -> no seed, roster preamble only", async () => {
@@ -104,7 +105,7 @@ describe("buildSessionStartContext", () => {
       },
       listPages: listPagesOk,
     };
-    const ctx = await buildSessionStartContext({
+    const out = await buildSessionStartContext({
       cwd: "/repo/dir",
       bankId: "bank-1",
       cfg: resolveConfig(),
@@ -115,23 +116,15 @@ describe("buildSessionStartContext", () => {
     });
     expect(startSeed).not.toHaveBeenCalled();
     expect(called).toBe(false);
-    expect(ctx).toContain("<hindsight_knowledge>");
-    expect(ctx).toContain("- Component map (p1)");
-    expect(ctx).not.toContain("🧠");
+    expect(out.additionalContext).toContain("- Component map (p1)");
+    expect(out.systemMessage).toBeUndefined();
   });
 
   it("declined state -> no seed, roster preamble only", async () => {
     writeSeedState("bank-1", { declined: true }, stateDir);
     const startSeed = vi.fn();
-    let called = false;
-    const client = {
-      listDocumentIds: async () => {
-        called = true;
-        return new Set<string>();
-      },
-      listPages: listPagesOk,
-    };
-    const ctx = await buildSessionStartContext({
+    const client = { listDocumentIds: async () => new Set<string>(), listPages: listPagesOk };
+    const out = await buildSessionStartContext({
       cwd: "/repo/dir",
       bankId: "bank-1",
       cfg: resolveConfig(),
@@ -141,16 +134,14 @@ describe("buildSessionStartContext", () => {
       startSeed,
     });
     expect(startSeed).not.toHaveBeenCalled();
-    expect(called).toBe(false);
-    expect(ctx).toContain("<hindsight_knowledge>");
-    expect(ctx).toContain("- Component map (p1)");
-    expect(ctx).not.toContain("🧠");
+    expect(out.additionalContext).toContain("- Component map (p1)");
+    expect(out.systemMessage).toBeUndefined();
   });
 
   it("warm bank (non-empty doc set) -> no seed, writes seededAt, roster preamble only", async () => {
     const startSeed = vi.fn();
     const client = { listDocumentIds: async () => new Set(["git:abc"]), listPages: listPagesOk };
-    const ctx = await buildSessionStartContext({
+    const out = await buildSessionStartContext({
       cwd: "/repo/dir",
       bankId: "bank-1",
       cfg: resolveConfig(),
@@ -162,10 +153,8 @@ describe("buildSessionStartContext", () => {
     expect(startSeed).not.toHaveBeenCalled();
     const state = readSeedState("bank-1", stateDir);
     expect(typeof state.seededAt).toBe("string");
-    expect(state.seededAt).not.toBe("");
-    expect(ctx).toContain("<hindsight_knowledge>");
-    expect(ctx).toContain("- Component map (p1)");
-    expect(ctx).not.toContain("🧠");
+    expect(out.additionalContext).toContain("- Component map (p1)");
+    expect(out.systemMessage).toBeUndefined();
   });
 
   it("listDocumentIds throws (server unreachable) -> no seed, NO state written, roster preamble only", async () => {
@@ -176,7 +165,7 @@ describe("buildSessionStartContext", () => {
       },
       listPages: listPagesOk,
     };
-    const ctx = await buildSessionStartContext({
+    const out = await buildSessionStartContext({
       cwd: "/repo/dir",
       bankId: "bank-1",
       cfg: resolveConfig(),
@@ -187,12 +176,11 @@ describe("buildSessionStartContext", () => {
     });
     expect(startSeed).not.toHaveBeenCalled();
     expect(readSeedState("bank-1", stateDir)).toEqual({});
-    expect(ctx).toContain("<hindsight_knowledge>");
-    expect(ctx).toContain("- Component map (p1)");
-    expect(ctx).not.toContain("🧠");
+    expect(out.additionalContext).toContain("- Component map (p1)");
+    expect(out.systemMessage).toBeUndefined();
   });
 
-  it("listPages rejects -> fail-open: empty-state preamble, seed still starts (cold repo)", async () => {
+  it("listPages rejects -> fail-open: empty-state preamble, seed still starts, note still visible (cold repo)", async () => {
     const startSeed = vi.fn();
     const client = {
       listDocumentIds: async () => new Set<string>(),
@@ -200,7 +188,7 @@ describe("buildSessionStartContext", () => {
         throw new Error("pages endpoint down");
       },
     };
-    const ctx = await buildSessionStartContext({
+    const out = await buildSessionStartContext({
       cwd: "/repo/dir",
       bankId: "bank-1",
       cfg: resolveConfig(),
@@ -211,14 +199,12 @@ describe("buildSessionStartContext", () => {
     });
     // Seeding is unaffected by a listPages failure.
     expect(startSeed).toHaveBeenCalledWith("/repo/dir", { limit: 300 });
-    expect(ctx).toBeDefined();
     // Empty-state roster preamble still renders (no page names, no throw).
-    expect(ctx).toContain("<hindsight_knowledge>");
-    expect(ctx).toContain("No knowledge pages yet");
-    // No roster entry (the page-id marker only appears when a page is listed).
-    expect(ctx).not.toContain("(p1)");
-    // The background-learning note is still present.
-    expect(ctx).toContain("🧠");
+    expect(out.additionalContext).toContain("<hindsight_knowledge>");
+    expect(out.additionalContext).toContain("No knowledge pages yet");
+    expect(out.additionalContext).not.toContain("(p1)");
+    // The background-learning note is still user-visible.
+    expect(out.systemMessage).toContain("🧠");
   });
 
   it("autoSeed:false -> skips the whole seed branch (no listDocumentIds call), roster preamble only", async () => {
@@ -231,7 +217,7 @@ describe("buildSessionStartContext", () => {
       },
       listPages: listPagesOk,
     };
-    const ctx = await buildSessionStartContext({
+    const out = await buildSessionStartContext({
       cwd: "/repo/dir",
       bankId: "bank-1",
       cfg: resolveConfig({ autoSeed: false }),
@@ -242,9 +228,8 @@ describe("buildSessionStartContext", () => {
     });
     expect(startSeed).not.toHaveBeenCalled();
     expect(called).toBe(false);
-    expect(ctx).toContain("<hindsight_knowledge>");
-    expect(ctx).toContain("- Component map (p1)");
-    expect(ctx).not.toContain("🧠");
+    expect(out.additionalContext).toContain("- Component map (p1)");
+    expect(out.systemMessage).toBeUndefined();
   });
 });
 

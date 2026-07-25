@@ -35,6 +35,13 @@ interface SeedContextClient {
   listPages(): Promise<unknown>;
 }
 
+/** Split SessionStart output: `systemMessage` renders in the terminal (user-visible);
+ *  `additionalContext` is injected into the model's context only. */
+export interface SessionStartOutput {
+  systemMessage?: string;
+  additionalContext?: string;
+}
+
 /**
  * Build this session's additionalContext: (maybe) kick off a background auto-seed of a cold repo
  * and (always, unless the hook is disabled) append the knowledge-page bank mission. See module doc
@@ -49,13 +56,16 @@ export async function buildSessionStartContext(args: {
   hasGit?: (dir: string) => boolean;
   startSeed?: (repoDir: string, opts?: { limit?: number }) => void;
   startSurvey?: (repoDir: string, opts?: { model?: string; budgetUsd?: number }) => void;
-}): Promise<string | undefined> {
+}): Promise<SessionStartOutput> {
   const { cwd, bankId, cfg, client, stateDir } = args;
   const hasGit = args.hasGit ?? hasGitHistory;
   const startSeed = args.startSeed ?? startBackgroundSeed;
   const startSurvey = args.startSurvey ?? startCodebaseSurvey;
 
-  const parts: string[] = [];
+  // The cold-seed note is USER-FACING and must ride `systemMessage` (the only hook field Claude
+  // Code renders in the terminal); `additionalContext` is model-only and would show the human
+  // nothing. The knowledge preamble is model context and stays in `additionalContext`.
+  let systemMessage: string | undefined;
 
   if (cfg.autoSeed !== false) {
     if (hasGit(cwd)) {
@@ -80,11 +90,10 @@ export async function buildSessionStartContext(args: {
             }
             writeSeedState(bankId, { seededAt: new Date().toISOString() }, stateDir);
             diag("claude-code", "seed_started", { bank: bankId });
-            parts.push(
-              `> 🧠 Hindsight is learning \`${bankId}\` from this repo's git history in the background, ` +
-                `and surveying the codebase structure to build knowledge pages — recalled memories will ` +
-                `appear as it processes. No action needed.`
-            );
+            systemMessage =
+              `🧠 Hindsight is learning ${bankId} from this repo's git history in the background, ` +
+              `and surveying the codebase structure to build knowledge pages — recalled memories will ` +
+              `appear as it processes. No action needed.`;
           }
         }
       }
@@ -94,9 +103,9 @@ export async function buildSessionStartContext(args: {
   // Inject the live knowledge-page roster + guidance preamble. Fail-open: a listPages rejection
   // yields an empty roster (empty-state preamble) and never disturbs the seed logic above.
   const pages = parsePageList(await client.listPages().catch(() => null));
-  parts.push(buildKnowledgePreamble(pages));
+  const additionalContext = buildKnowledgePreamble(pages);
 
-  return parts.length ? parts.join("\n\n") : undefined;
+  return { systemMessage, additionalContext };
 }
 
 /** Run one SessionStart hook invocation: stdin event in, (maybe) an additionalContext object on stdout. */
@@ -125,13 +134,17 @@ export async function runSessionStartHook(
     const bankId = deriveBankId(cfg, cwd, "claude-code");
     const client = makeClient({ apiUrl: cfg.apiUrl, apiToken: cfg.apiToken, bank: bankId });
 
-    const ctx = await buildSessionStartContext({ cwd, bankId, cfg, client });
-    if (ctx) {
-      process.stdout.write(
-        JSON.stringify({
-          hookSpecificOutput: { hookEventName: "SessionStart", additionalContext: ctx },
-        })
-      );
+    const out = await buildSessionStartContext({ cwd, bankId, cfg, client });
+    // `systemMessage` is top-level (Claude Code renders it to the USER); `additionalContext`
+    // nests under hookSpecificOutput (model context only).
+    const payload: {
+      systemMessage?: string;
+      hookSpecificOutput: { hookEventName: string; additionalContext?: string };
+    } = { hookSpecificOutput: { hookEventName: "SessionStart" } };
+    if (out.systemMessage) payload.systemMessage = out.systemMessage;
+    if (out.additionalContext) payload.hookSpecificOutput.additionalContext = out.additionalContext;
+    if (out.systemMessage || out.additionalContext) {
+      process.stdout.write(JSON.stringify(payload));
     }
   } catch {
     /* SessionStart must never throw and break the session */
