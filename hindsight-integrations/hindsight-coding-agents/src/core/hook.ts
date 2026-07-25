@@ -143,7 +143,9 @@ export async function buildHookOutput(args: {
   }
   const memBlock = formatMemories(results);
 
-  const blocks = [reflectBlock, memBlock];
+  // memBlock (the memories + attribution directive) goes FIRST so the visible-attribution
+  // instruction leads the injected context instead of being buried under the reflect answer.
+  const blocks = [memBlock, reflectBlock];
   if (refreshDue && pagesPromise) {
     // A listPages failure must not swallow the reminder — fall back to an empty roster so the
     // tool + capture nudge still re-injects (it doesn't depend on any page existing).
