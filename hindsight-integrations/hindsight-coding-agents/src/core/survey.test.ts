@@ -58,7 +58,7 @@ describe("startCodebaseSurvey", () => {
     expect(argv).toContain("Read");
     expect(argv).toContain("Glob");
     expect(argv).toContain("Grep");
-    expect(argv).toContain("mcp__hindsight__agent_knowledge_ingest");
+    expect(argv).toContain("mcp__hindsight__hindsight_ingest_document");
 
     // Sandbox: no bypassPermissions (it defeats --allowedTools — empirically verified against the
     // live `claude` binary), and a --disallowedTools deny-list covering every dangerous tool.

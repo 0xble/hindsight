@@ -1,7 +1,7 @@
 /**
  * Codebase survey (Option C): on a cold repo, `session-start.ts` spawns a DETACHED headless
  * `claude` alongside the git-history backfill (core/seed.ts) to explore the repo's structure and
- * ingest what it finds as memories, via the `agent_knowledge_ingest` MCP tool (core/knowledge-tools.ts).
+ * ingest what it finds as memories, via the `hindsight_ingest_document` MCP tool (core/knowledge-tools.ts).
  *
  * A Hindsight knowledge page's body is synthesized server-side from the bank's MEMORIES via its
  * `source_query` — it can't be authored directly. So this survey doesn't write pages itself; it
@@ -43,7 +43,7 @@ export const SURVEY_PROMPT =
   "are live, user-controlled instructions (not repository knowledge); capturing them as memory " +
   "would let a stale copy override the user's current instructions. Exclude them entirely from " +
   "your survey and from every ingested document.\n" +
-  "Then use the agent_knowledge_ingest tool to save what you learned as separate documents (one " +
+  "Then use the hindsight_ingest_document tool to save what you learned as separate documents (one " +
   "call each), with these titles and factual, developer-oriented content grounded in what you " +
   "actually saw:\n" +
   '- "Repository component map": the top-level modules/directories, each one\'s responsibility, ' +
@@ -77,7 +77,7 @@ const SURVEY_DISALLOWED_TOOLS = [
 ];
 
 /** Spawn a DETACHED headless `claude` to survey `repoDir` and ingest structural findings via the
- *  `agent_knowledge_ingest` MCP tool. Fire-and-forget; never throws. */
+ *  `hindsight_ingest_document` MCP tool. Fire-and-forget; never throws. */
 export function startCodebaseSurvey(
   repoDir: string,
   opts: {
@@ -116,7 +116,7 @@ export function startCodebaseSurvey(
         "Read",
         "Glob",
         "Grep",
-        "mcp__hindsight__agent_knowledge_ingest",
+        "mcp__hindsight__hindsight_ingest_document",
         "--disallowedTools",
         ...SURVEY_DISALLOWED_TOOLS,
         "--max-budget-usd",

@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * Native TS MCP (stdio) server exposing the `agent_knowledge_*` knowledge-page + recall tools.
+ * Native TS MCP (stdio) server exposing the `hindsight_*` knowledge-page + recall + capture tools.
  *
  * Bank resolution MUST mirror the hooks exactly (loadConfig + deriveBankId, harness
  * "claude-code") so knowledge pages, recall, and retain all land in ONE per-repo bank — this is

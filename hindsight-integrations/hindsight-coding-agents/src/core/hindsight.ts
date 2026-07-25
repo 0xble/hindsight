@@ -265,7 +265,7 @@ export class HindsightClient {
   }
 
   /**
-   * Create ONE custom knowledge page (user/tool-invoked, via `agent_knowledge_*` MCP tools).
+   * Create ONE custom knowledge page (used by seeding + captureInitiative; not exposed as an agent MCP tool).
    * NOT the same as `createPages()` below, which batch-synthesizes the fixed `PAGES` set at
    * backfill time from extracted facts — this creates a single page from a caller-chosen
    * `sourceQuery`, re-run on each consolidation.
