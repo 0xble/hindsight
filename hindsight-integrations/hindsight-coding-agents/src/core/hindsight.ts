@@ -320,21 +320,50 @@ export class HindsightClient {
     }
   }
 
+  /** Find a root folder by name (case-insensitive) or create it; returns its id. Fail-open to undefined. */
+  async ensureFolder(name: string): Promise<string | undefined> {
+    try {
+      const tree = (await (
+        await this.req("GET", this.bankUrl("/knowledge-base/tree"))
+      ).json()) as { roots?: { id?: string; kind?: string; name?: string }[] };
+      const hit = (tree.roots || []).find(
+        (n) => n.kind === "folder" && (n.name || "").toLowerCase() === name.toLowerCase()
+      );
+      if (hit?.id) return hit.id;
+    } catch {
+      /* fall through to create */
+    }
+    try {
+      const r = await this.req("POST", this.bankUrl("/knowledge-base/folders"), { name });
+      return ((await r.json()) as { id?: string }).id;
+    } catch {
+      return undefined;
+    }
+  }
+
   /** Knowledge pages — synthesized from the EXTRACTED facts, so call AFTER the retain drain. */
   async createPages(): Promise<void> {
     this.log(`[pages] creating ${PAGES.length} knowledge pages …`);
+    // Initiatives get their own folder so per-initiative sub-pages (captureInitiative) nest under it.
+    const initiativesFolderId = await this.ensureFolder("Initiatives");
     const pageOps: string[] = [];
     for (const p of PAGES) {
       try {
         // fact_types = ALL (world+experience+observation) so a page draws from raw facts AND
-        // consolidated observations; refresh after consolidation keeps it a living document.
-        const body = {
-          ...p,
+        // consolidated observations; refresh after consolidation keeps it a living document. Page-level
+        // `tags` scopes synthesis to one knowledge:<tier> (exact set-ops). Only the feature-work
+        // (Initiatives) page nests under the Initiatives folder; the rest are root pages.
+        const isInitiatives = p.tags.includes("knowledge:feature-work");
+        const body: Record<string, unknown> = {
+          name: p.name,
+          source_query: p.source_query,
+          tags: p.tags,
           trigger: {
             fact_types: ["world", "experience", "observation"],
             refresh_after_consolidation: true,
           },
         };
+        if (isInitiatives) body.parent_id = initiativesFolderId;
         const r = await this.req("POST", this.bankUrl("/knowledge-base/pages"), body);
         const j = (await r.json()) as { operation_id?: string; page_id?: string };
         if (j.operation_id) pageOps.push(j.operation_id);

@@ -162,6 +162,111 @@ describe("HindsightClient knowledge-page CRUD", () => {
   });
 });
 
+/** Route JSON responses by (method, url-substring) so multi-call flows can return distinct bodies. */
+function stubFetchRouted(
+  calls: any[],
+  routes: { match: (method: string, url: string) => boolean; json: unknown }[]
+) {
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(async (url: string, init: any) => {
+      const method = init?.method;
+      calls.push({ url, method, body: init?.body ? JSON.parse(init.body) : undefined });
+      const route = routes.find((r) => r.match(method, url));
+      return { ok: true, status: 200, json: async () => route?.json ?? { ok: true } } as any;
+    })
+  );
+}
+
+describe("HindsightClient.createPages tag-scoping + Initiatives folder", () => {
+  const TIER_BY_NAME: Record<string, string> = {
+    "Component map": "knowledge:component",
+    "Core concepts": "knowledge:concept",
+    "Conventions and patterns": "knowledge:convention",
+    "Key decisions and rationale": "knowledge:decision",
+    "Initiatives and enhancements": "knowledge:feature-work",
+  };
+
+  it("each seeded page POST carries the mapped knowledge:<tier> tag", async () => {
+    const calls: any[] = [];
+    stubFetch(calls, async () => ({})); // no operation_id -> drain no-ops
+    const c = new HindsightClient({ apiUrl: "http://x", bank: "repo-a" });
+    await c.createPages();
+
+    const pagePosts = calls.filter(
+      (k) => k.method === "POST" && k.url.endsWith("/knowledge-base/pages")
+    );
+    expect(pagePosts.length).toBe(5);
+    for (const post of pagePosts) {
+      const tier = TIER_BY_NAME[post.body.name];
+      expect(tier).toBeDefined();
+      expect(post.body.tags).toEqual([tier]);
+    }
+  });
+
+  it("parents ONLY the Initiatives page under the folder id returned by POST /knowledge-base/folders", async () => {
+    const calls: any[] = [];
+    stubFetchRouted(calls, [
+      { match: (m, u) => m === "GET" && u.endsWith("/knowledge-base/tree"), json: { roots: [] } },
+      {
+        match: (m, u) => m === "POST" && u.endsWith("/knowledge-base/folders"),
+        json: { id: "folder-123" },
+      },
+      {
+        match: (m, u) => m === "POST" && u.endsWith("/knowledge-base/pages"),
+        json: { page_id: "p" },
+      },
+    ]);
+    const c = new HindsightClient({ apiUrl: "http://x", bank: "repo-a" });
+    await c.createPages();
+
+    const pagePosts = calls.filter(
+      (k) => k.method === "POST" && k.url.endsWith("/knowledge-base/pages")
+    );
+    const initiatives = pagePosts.find((k) => k.body.name === "Initiatives and enhancements");
+    expect(initiatives.body.parent_id).toBe("folder-123");
+    for (const post of pagePosts) {
+      if (post.body.name !== "Initiatives and enhancements") {
+        expect(post.body.parent_id).toBeUndefined();
+      }
+    }
+  });
+});
+
+describe("HindsightClient.ensureFolder", () => {
+  it("returns an existing root folder's id (case-insensitive) and does NOT POST a duplicate", async () => {
+    const calls: any[] = [];
+    stubFetchRouted(calls, [
+      {
+        match: (m, u) => m === "GET" && u.endsWith("/knowledge-base/tree"),
+        json: { roots: [{ id: "existing-1", kind: "folder", name: "initiatives" }] },
+      },
+    ]);
+    const c = new HindsightClient({ apiUrl: "http://x", bank: "repo-a" });
+    const id = await c.ensureFolder("Initiatives");
+    expect(id).toBe("existing-1");
+    expect(calls.some((k) => k.method === "POST" && k.url.endsWith("/knowledge-base/folders"))).toBe(
+      false
+    );
+  });
+
+  it("creates the folder and returns its new id when the tree has no match", async () => {
+    const calls: any[] = [];
+    stubFetchRouted(calls, [
+      { match: (m, u) => m === "GET" && u.endsWith("/knowledge-base/tree"), json: { roots: [] } },
+      {
+        match: (m, u) => m === "POST" && u.endsWith("/knowledge-base/folders"),
+        json: { id: "new-folder" },
+      },
+    ]);
+    const c = new HindsightClient({ apiUrl: "http://x", bank: "repo-a" });
+    const id = await c.ensureFolder("Initiatives");
+    expect(id).toBe("new-folder");
+    const post = calls.find((k) => k.method === "POST" && k.url.endsWith("/knowledge-base/folders"));
+    expect(post.body).toEqual({ name: "Initiatives" });
+  });
+});
+
 describe("HindsightClient.configureBank entity_labels wiring", () => {
   it("PATCHes /config with the knowledge entity_labels tier and free-form entities on", async () => {
     const calls: any[] = [];
