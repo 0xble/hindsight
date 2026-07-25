@@ -1,7 +1,7 @@
 /**
  * Claude Code `SessionStart` hook: deterministically auto-seeds a cold repo's bank from its git
- * history (in the background, non-blocking) and injects a short visible note plus a standing
- * "bank mission" that tells the agent to consult and curate the repo's knowledge pages.
+ * history (in the background, non-blocking) and injects a short visible note plus the live
+ * knowledge-page roster + guidance preamble that tells the agent to consult the repo's pages.
  *
  * Earlier design injected an instruction asking the AGENT to pose a y/n question to the user and
  * then run a seed command itself. Live testing showed that doesn't work: the model surfaces the
@@ -25,27 +25,15 @@ import { loadConfig } from "./config";
 import type { Config } from "./config";
 import { deriveBankId } from "./bank";
 import { diag } from "./diag";
+import { parsePageList, buildKnowledgePreamble } from "./knowledge-injection";
 import type { ClientOpts } from "./hindsight";
 import { HindsightClient } from "./hindsight";
 
 /** Minimal client shape `buildSessionStartContext` needs. */
 interface SeedContextClient {
   listDocumentIds(tag: string): Promise<Set<string>>;
+  listPages(): Promise<unknown>;
 }
-
-/** Injected every session so the agent consults + curates the repo's Hindsight knowledge pages
- *  (the agent_knowledge_* MCP tools). This is what makes pages a living wiki rather than a one-time dump. */
-export const KNOWLEDGE_MISSION =
-  "<hindsight_knowledge>\n" +
-  "This repository has a Hindsight knowledge base — durable engineering knowledge kept as pages. " +
-  "Use the agent_knowledge_* tools:\n" +
-  "- Before substantial work, call agent_knowledge_list_pages and read the relevant ones " +
-  "(agent_knowledge_get_page) to ground yourself in the repo's architecture, conventions, and past decisions.\n" +
-  "- When you learn something durable that will matter across sessions — architecture decisions, conventions, " +
-  "gotchas, where things live, how subsystems wire together, recurring bug patterns — capture it with " +
-  "agent_knowledge_create_page (or update an existing page with agent_knowledge_update_page) instead of letting it evaporate.\n" +
-  "Keep pages focused and factual; they are the human-readable view of this repo's memory.\n" +
-  "</hindsight_knowledge>";
 
 /**
  * Build this session's additionalContext: (maybe) kick off a background auto-seed of a cold repo
@@ -103,7 +91,10 @@ export async function buildSessionStartContext(args: {
     }
   }
 
-  parts.push(KNOWLEDGE_MISSION);
+  // Inject the live knowledge-page roster + guidance preamble. Fail-open: a listPages rejection
+  // yields an empty roster (empty-state preamble) and never disturbs the seed logic above.
+  const pages = parsePageList(await client.listPages().catch(() => null));
+  parts.push(buildKnowledgePreamble(pages));
 
   return parts.length ? parts.join("\n\n") : undefined;
 }
