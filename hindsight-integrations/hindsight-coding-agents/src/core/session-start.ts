@@ -52,12 +52,14 @@ export async function buildSessionStartContext(args: {
   bankId: string;
   cfg: Config;
   client: SeedContextClient;
+  harness?: string;
   stateDir?: string;
   hasGit?: (dir: string) => boolean;
   startSeed?: (repoDir: string, opts?: { limit?: number }) => void;
   startSurvey?: (repoDir: string, opts?: { model?: string; budgetUsd?: number }) => void;
 }): Promise<SessionStartOutput> {
   const { cwd, bankId, cfg, client, stateDir } = args;
+  const harness = args.harness ?? "claude-code";
   const hasGit = args.hasGit ?? hasGitHistory;
   const startSeed = args.startSeed ?? startBackgroundSeed;
   const startSurvey = args.startSurvey ?? startCodebaseSurvey;
@@ -91,7 +93,7 @@ export async function buildSessionStartContext(args: {
           }
           // Record the seed time (informational — no longer a gate).
           writeSeedState(bankId, { seededAt: new Date().toISOString() }, stateDir);
-          diag("claude-code", "seed_started", { bank: bankId });
+          diag(harness, "seed_started", { bank: bankId });
           systemMessage =
             `🧠 Hindsight is learning ${bankId} from this repo's git history in the background, ` +
             `and surveying the codebase structure to build knowledge pages — recalled memories will ` +
@@ -111,6 +113,7 @@ export async function buildSessionStartContext(args: {
 
 /** Run one SessionStart hook invocation: stdin event in, (maybe) an additionalContext object on stdout. */
 export async function runSessionStartHook(
+  harness = "claude-code",
   makeClient: (opts: ClientOpts) => SeedContextClient = (o) => new HindsightClient(o)
 ): Promise<void> {
   // Anti-recursion: the codebase survey's own headless claude session (core/survey.ts) sets this
@@ -129,13 +132,13 @@ export async function runSessionStartHook(
     }
     const cwd = (ev.cwd as string) || process.cwd();
 
-    const cfg = loadConfig({ harness: "claude-code", projectDir: cwd });
+    const cfg = loadConfig({ harness, projectDir: cwd });
     if (cfg.disabled) return;
 
-    const bankId = deriveBankId(cfg, cwd, "claude-code");
+    const bankId = deriveBankId(cfg, cwd, harness);
     const client = makeClient({ apiUrl: cfg.apiUrl, apiToken: cfg.apiToken, bank: bankId });
 
-    const out = await buildSessionStartContext({ cwd, bankId, cfg, client });
+    const out = await buildSessionStartContext({ cwd, bankId, cfg, client, harness });
     // `systemMessage` is top-level (Claude Code renders it to the USER); `additionalContext`
     // nests under hookSpecificOutput (model context only).
     const payload: {

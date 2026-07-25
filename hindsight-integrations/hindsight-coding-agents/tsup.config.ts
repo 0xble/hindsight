@@ -9,6 +9,7 @@ export default defineConfig({
     "claude-sessionstart-hook": "src/claude-sessionstart-hook.ts",
     "cursor-hook": "src/cursor-hook.ts",
     "codex-hook": "src/codex-hook.ts",
+    "codex-sessionstart-hook": "src/codex-sessionstart-hook.ts",
     "mcp-server": "src/mcp-server.ts",
     "hindsight-seed": "src/hindsight-seed.ts",
   },

@@ -28,8 +28,11 @@ export function selectTools(cfg: Config, client: HindsightClient, bankId: string
 
 async function main() {
   const cwd = process.env.HINDSIGHT_MCP_PROJECT_CWD || process.cwd();
-  const cfg = loadConfig({ harness: "claude-code", projectDir: cwd });
-  const bankId = deriveBankId(cfg, cwd, "claude-code");
+  // Harness is set per wrapper (Claude default; codex sets HINDSIGHT_MCP_HARNESS=codex) so bank
+  // resolution mirrors that harness's hooks — config `harnesses.<name>` section + `{harness}` template.
+  const harness = process.env.HINDSIGHT_MCP_HARNESS || "claude-code";
+  const cfg = loadConfig({ harness, projectDir: cwd });
+  const bankId = deriveBankId(cfg, cwd, harness);
   const client = new HindsightClient({ apiUrl: cfg.apiUrl, apiToken: cfg.apiToken, bank: bankId });
 
   const server = new McpServer({ name: "hindsight", version: "0.1.0" });

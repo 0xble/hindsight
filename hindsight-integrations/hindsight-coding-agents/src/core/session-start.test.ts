@@ -263,7 +263,7 @@ describe("runSessionStartHook anti-recursion guard", () => {
     // No stdin is provided/mocked here — if the guard didn't return before `readFileSync(0, ...)`,
     // this call would attempt to read the real process stdin. Resolving without calling makeClient
     // proves the guard fired first.
-    await runSessionStartHook(makeClient);
+    await runSessionStartHook("claude-code", makeClient);
     expect(makeClient).not.toHaveBeenCalled();
   });
 });
