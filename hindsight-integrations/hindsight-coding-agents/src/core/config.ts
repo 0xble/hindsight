@@ -33,7 +33,7 @@ export interface GitSyncConfig {
 
 /** The config file's shape — every field optional; omitted fields take the documented default. */
 export interface RawConfig {
-  apiUrl?: string; // Hindsight API base URL (default http://localhost:8888)
+  apiUrl?: string; // Hindsight API base URL (default https://api.hindsight.vectorize.io — Cloud; set to http://localhost:8888 for a local server)
   apiToken?: string; // bearer token (optional)
   bankId?: string; // EXPLICIT memory bank id — set = static bank; unset = per-repo dynamic (core/bank.ts)
   dynamicBankId?: boolean; // force dynamic resolution even when bankId is set (default: dynamic iff no bankId)
@@ -89,7 +89,7 @@ export interface Config {
 export function resolveConfig(raw: RawConfig = {}): Config {
   const gs = raw.gitSync ?? {};
   return {
-    apiUrl: raw.apiUrl ?? "http://localhost:8888",
+    apiUrl: raw.apiUrl ?? "https://api.hindsight.vectorize.io",
     apiToken: raw.apiToken || undefined,
     bankId: raw.bankId,
     dynamicBankId: raw.dynamicBankId,
