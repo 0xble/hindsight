@@ -46,10 +46,9 @@ export interface RawConfig {
   retainSessions?: boolean; // opencode plugin only; the Stop hook always writes back unless disabled (default false)
   retainEveryTurns?: number; // write-back cadence in user turns (default 5)
   reflectTimeoutMs?: number; // reflect timeout (default 120000)
-  recallMaxTokens?: number; // per-turn recall token budget (default 1024)
+  recallMaxTokens?: number; // per-turn recall token budget (default 750)
   recallTimeoutMs?: number; // per-turn recall timeout (default 10000)
   pageRefreshEveryTurns?: number; // knowledge-page refresh cadence in user turns (default 10)
-  reflectEveryTurns?: number; // run reflect every N user turns (default 1 = every turn; 0 disables)
   autoSeed?: boolean; // SessionStart: auto-seed a cold repo's bank from git history (default true)
   seedLimit?: number; // SessionStart auto-seed: most-recent-N-commits cap (default 300)
   codebaseSurvey?: boolean; // SessionStart: spawn a headless claude to survey a cold repo's structure (default true)
@@ -75,7 +74,6 @@ export interface Config {
   retainSessions: boolean;
   retainEveryTurns: number;
   reflectTimeoutMs: number;
-  reflectEveryTurns: number;
   recallMaxTokens: number;
   recallTimeoutMs: number;
   pageRefreshEveryTurns: number;
@@ -103,8 +101,7 @@ export function resolveConfig(raw: RawConfig = {}): Config {
     retainSessions: raw.retainSessions ?? false,
     retainEveryTurns: raw.retainEveryTurns || 5,
     reflectTimeoutMs: raw.reflectTimeoutMs || 120000,
-    reflectEveryTurns: raw.reflectEveryTurns ?? 1, // ?? so an explicit 0 (disable) is respected
-    recallMaxTokens: raw.recallMaxTokens || 1024,
+    recallMaxTokens: raw.recallMaxTokens || 750,
     recallTimeoutMs: raw.recallTimeoutMs || 10000,
     pageRefreshEveryTurns: raw.pageRefreshEveryTurns || 10,
     autoSeed: raw.autoSeed ?? true,

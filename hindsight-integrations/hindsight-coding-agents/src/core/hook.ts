@@ -2,12 +2,10 @@
  * Shared runtime for HOOK-based harnesses (Claude Code, Cursor CLI, ...).
  *
  * Persistent-plugin harnesses (opencode) get a long-lived RuntimeCore; hook harnesses invoke a
- * fresh process per prompt. Every prompt runs `recall` and injects a `<hindsight_memories>` block.
- * On top of that, the session's FIRST prompt also runs `reflect` and injects its answer; the
- * outcome (even an empty one) is cached in tmp so later prompts in the same session recall only
- * and don't repeat reflect. A failed reflect never breaks the agent, never blocks recall, and is
- * always recorded in the diagnostic file, so a silently memory-less session can't masquerade as a
- * memory session.
+ * fresh process per prompt. Every prompt runs `recall` and injects a `<hindsight_memories>` block
+ * (with the visible-attribution directive). A failed recall never breaks the agent and is recorded
+ * in the diagnostic file, so a silently memory-less session can't masquerade as a memory session.
+ * A per-session turn counter (cached in tmp) drives the periodic knowledge-page roster refresh.
  *
  * A harness plugs in with a HookSpec: its name, how to read (prompt, cwd, sessionId) from its
  * stdin event, and how to wrap injected context in its native output schema. The pure logic lives
@@ -23,7 +21,6 @@ import { loadConfig } from "./config";
 import { diag } from "./diag";
 import type { ClientOpts, RecallResult } from "./hindsight";
 import { HindsightClient } from "./hindsight";
-import { buildSystemInjection } from "./inject";
 import { buildRosterRefresh, parsePageList } from "./knowledge-injection";
 import { formatMemories } from "./recall";
 
@@ -44,15 +41,9 @@ export interface HookSpec {
 
 /** Minimal client shape `buildHookOutput` needs — `HindsightClient` satisfies it structurally. */
 interface HookClient {
-  reflect(query: string, opts: { budget?: string; timeoutMs?: number }): Promise<string>;
   recall(query: string, opts: { maxTokens?: number; timeoutMs?: number }): Promise<RecallResult[]>;
   listPages(): Promise<unknown>;
 }
-
-/** Hook processes are killed by the host at a fixed wall-clock timeout (Claude Code UserPromptSubmit = 15s).
- *  Cap reflect so it always aborts and lets the cache write + recall injection complete before that kill,
- *  degrading to recall-only on a slow reflect instead of failing the whole turn (repeatedly). */
-const HOOK_REFLECT_CAP_MS = 8000;
 
 /**
  * Pure hook logic: recall every turn; reflect (and cache the outcome) only on the session's first
@@ -76,25 +67,12 @@ export async function buildHookOutput(args: {
   // Per-session user-turn counter (drives the reflect + page-roster cadences).
   const turns = (cached.turns ?? 0) + 1;
 
-  // Kick recall, reflect, and (on cadence) listPages off concurrently so they overlap — the hook's
-  // wall-clock is the slowest single call, not their sum.
+  // Kick recall and (on cadence) listPages off concurrently so they overlap.
   const tRecall = Date.now();
   const recallP = client.recall(prompt, {
     maxTokens: cfg.recallMaxTokens,
     timeoutMs: cfg.recallTimeoutMs,
   });
-
-  // Reflect runs EVERY turn by default (reflectEveryTurns = 1) — a fresh, prompt-specific synthesis
-  // for THIS message, not one stale answer from the session's first prompt. Capped so it can never
-  // blow the hook's wall-clock timeout; a slow/failed reflect degrades to recall-only for that turn.
-  const reflectDue = cfg.reflectEveryTurns > 0 && turns % cfg.reflectEveryTurns === 0;
-  const tReflect = Date.now();
-  const reflectP = reflectDue
-    ? client.reflect(prompt, {
-        budget: "high",
-        timeoutMs: Math.min(cfg.reflectTimeoutMs, HOOK_REFLECT_CAP_MS),
-      })
-    : undefined;
 
   const refreshDue = cfg.pageRefreshEveryTurns > 0 && turns % cfg.pageRefreshEveryTurns === 0;
   const pagesPromise = refreshDue ? client.listPages() : undefined;
@@ -105,25 +83,6 @@ export async function buildHookOutput(args: {
     writeFileSync(cacheFile, JSON.stringify({ turns }));
   } catch {
     /* cache is best-effort */
-  }
-
-  let reflectBlock = "";
-  if (reflectP) {
-    try {
-      const answer = await reflectP;
-      diag(harness, answer ? "reflect_ok" : "reflect_empty", {
-        ms: Date.now() - tReflect,
-        chars: answer.length,
-        query: prompt.slice(0, 80),
-      });
-      reflectBlock = answer ? buildSystemInjection(answer) : "";
-    } catch (e) {
-      diag(harness, "reflect_failed", {
-        ms: Date.now() - tReflect,
-        error: String((e as Error)?.message || e).slice(0, 200),
-        query: prompt.slice(0, 80),
-      });
-    }
   }
 
   let results: RecallResult[] = [];
@@ -143,9 +102,7 @@ export async function buildHookOutput(args: {
   }
   const memBlock = formatMemories(results);
 
-  // memBlock (the memories + attribution directive) goes FIRST so the visible-attribution
-  // instruction leads the injected context instead of being buried under the reflect answer.
-  const blocks = [memBlock, reflectBlock];
+  const blocks = [memBlock];
   if (refreshDue && pagesPromise) {
     // A listPages failure must not swallow the reminder — fall back to an empty roster so the
     // tool + capture nudge still re-injects (it doesn't depend on any page existing).

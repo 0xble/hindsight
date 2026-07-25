@@ -18,138 +18,45 @@ afterEach(() => {
 });
 
 describe("buildHookOutput", () => {
-  it("first turn injects BOTH reflect and memories", async () => {
+  it("injects the memories block (recall-only, no reflect)", async () => {
     const cfg = resolveConfig({});
     const result = await buildHookOutput({
       harness: "claude-code",
       prompt: "hello",
       cfg,
       client: {
-        reflect: async () => "REFLECT_ANSWER",
         recall: async () => [{ text: "MEM_ONE" }],
         listPages: async () => ({ items: [] }),
       },
       cacheFile,
     });
-    expect(result).toContain("REFLECT_ANSWER");
-    expect(result).toContain("PRECISELY");
     expect(result).toContain("<hindsight_memories>");
     expect(result).toContain("MEM_ONE");
+    expect(result).toContain("SHOW HINDSIGHT WORKING"); // the attribution directive leads the block
     expect(existsSync(cacheFile)).toBe(true);
-    // Cache holds only the turn counter now — reflect is no longer cached/reused across turns.
     expect(JSON.parse(readFileSync(cacheFile, "utf8"))).toEqual({ turns: 1 });
   });
 
-  it("later turn: reflect runs AGAIN (fresh, prompt-specific) — not once-per-session", async () => {
-    mkdirSync(join(root, "cache"), { recursive: true });
-    writeFileSync(cacheFile, JSON.stringify({ turns: 3 }));
-    const reflectSpy = vi.fn(async () => "FRESH_REFLECT");
-    const cfg = resolveConfig({});
-    const result = await buildHookOutput({
-      harness: "claude-code",
-      prompt: "hello again",
-      cfg,
-      client: {
-        reflect: reflectSpy,
-        recall: async () => [{ text: "MEM_TWO" }],
-        listPages: async () => ({ items: [] }),
-      },
-      cacheFile,
-    });
-    expect(result).toContain("<hindsight_memories>");
-    expect(result).toContain("MEM_TWO");
-    // Reflect fires on this later turn with the CURRENT prompt and its fresh answer is injected.
-    expect(reflectSpy).toHaveBeenCalledWith("hello again", { budget: "high", timeoutMs: 8000 });
-    expect(result).toContain("FRESH_REFLECT");
-    expect(JSON.parse(readFileSync(cacheFile, "utf8"))).toEqual({ turns: 4 });
-  });
-
-  it("reflectEveryTurns:0 disables reflect entirely", async () => {
-    const cfg = resolveConfig({ reflectEveryTurns: 0 });
-    const reflectSpy = vi.fn(async () => "SHOULD_NOT_RUN");
-    const result = await buildHookOutput({
-      harness: "claude-code",
-      prompt: "hello",
-      cfg,
-      client: {
-        reflect: reflectSpy,
-        recall: async () => [{ text: "MEM_ONLY" }],
-        listPages: async () => ({ items: [] }),
-      },
-      cacheFile,
-    });
-    expect(reflectSpy).not.toHaveBeenCalled();
-    expect(result).toContain("MEM_ONLY");
-    expect(result).not.toContain("SHOULD_NOT_RUN");
-  });
-
-  it("both empty -> undefined", async () => {
+  it("empty recall -> undefined", async () => {
     const cfg = resolveConfig({});
     const result = await buildHookOutput({
       harness: "claude-code",
       prompt: "hello",
       cfg,
-      client: {
-        reflect: async () => "",
-        recall: async () => [],
-        listPages: async () => ({ items: [] }),
-      },
+      client: { recall: async () => [], listPages: async () => ({ items: [] }) },
       cacheFile,
     });
     expect(result).toBeUndefined();
     expect(JSON.parse(readFileSync(cacheFile, "utf8"))).toEqual({ turns: 1 });
   });
 
-  it("recall still injects if reflect rejects", async () => {
+  it("recall rejects -> undefined, no throw, turn still counted", async () => {
     const cfg = resolveConfig({});
     const result = await buildHookOutput({
       harness: "claude-code",
       prompt: "hello",
       cfg,
       client: {
-        reflect: async () => {
-          throw new Error("boom");
-        },
-        recall: async () => [{ text: "MEM_R" }],
-        listPages: async () => ({ items: [] }),
-      },
-      cacheFile,
-    });
-    expect(result).toContain("<hindsight_memories>");
-    expect(result).toContain("MEM_R");
-    expect(JSON.parse(readFileSync(cacheFile, "utf8"))).toEqual({ turns: 1 });
-  });
-
-  it("reflect still injects if recall rejects", async () => {
-    const cfg = resolveConfig({});
-    const result = await buildHookOutput({
-      harness: "claude-code",
-      prompt: "hello",
-      cfg,
-      client: {
-        reflect: async () => "R_ANS",
-        recall: async () => {
-          throw new Error("recall boom");
-        },
-        listPages: async () => ({ items: [] }),
-      },
-      cacheFile,
-    });
-    expect(result).toContain("R_ANS");
-    expect(result).toContain("PRECISELY");
-    expect(result).not.toContain("<hindsight_memories>");
-  });
-
-  it("both reflect and recall reject -> undefined, no throw", async () => {
-    const cfg = resolveConfig({});
-    const result = await buildHookOutput({
-      harness: "claude-code",
-      prompt: "hello",
-      cfg,
-      client: {
-        reflect: async () => {
-          throw new Error("reflect boom");
-        },
         recall: async () => {
           throw new Error("recall boom");
         },
@@ -158,6 +65,7 @@ describe("buildHookOutput", () => {
       cacheFile,
     });
     expect(result).toBeUndefined();
+    expect(JSON.parse(readFileSync(cacheFile, "utf8"))).toEqual({ turns: 1 });
   });
 
   it("threads recallMaxTokens/recallTimeoutMs config into recall", async () => {
@@ -167,54 +75,26 @@ describe("buildHookOutput", () => {
       harness: "claude-code",
       prompt: "the prompt",
       cfg,
-      client: {
-        reflect: async () => "R",
-        recall: recallSpy,
-        listPages: async () => ({ items: [] }),
-      },
+      client: { recall: recallSpy, listPages: async () => ({ items: [] }) },
       cacheFile,
     });
     expect(recallSpy).toHaveBeenCalledWith("the prompt", { maxTokens: 512, timeoutMs: 7000 });
   });
 
-  it("caps reflect's timeoutMs to the hook kill window even when cfg.reflectTimeoutMs is huge", async () => {
-    // Claude Code's UserPromptSubmit hook is killed at 15s; cfg.reflectTimeoutMs defaults to
-    // 120000 for the opencode RuntimeCore path. The hook must cap it so reflect always
-    // resolves/aborts before the external kill (see HOOK_REFLECT_CAP_MS in hook.ts).
-    const cfg = resolveConfig({ reflectTimeoutMs: 120000 });
-    const reflectSpy = vi.fn(async () => "R");
+  it("defaults the recall token budget to 750", async () => {
+    const cfg = resolveConfig({});
+    const recallSpy = vi.fn(async () => [{ text: "MEM" }]);
     await buildHookOutput({
       harness: "claude-code",
       prompt: "the prompt",
       cfg,
-      client: {
-        reflect: reflectSpy,
-        recall: async () => [],
-        listPages: async () => ({ items: [] }),
-      },
+      client: { recall: recallSpy, listPages: async () => ({ items: [] }) },
       cacheFile,
     });
-    expect(reflectSpy).toHaveBeenCalledWith("the prompt", { budget: "high", timeoutMs: 8000 });
+    expect(recallSpy).toHaveBeenCalledWith("the prompt", { maxTokens: 750, timeoutMs: 10000 });
   });
 
-  it("uses cfg.reflectTimeoutMs as-is when it's already below the hook cap", async () => {
-    const cfg = resolveConfig({ reflectTimeoutMs: 3000 });
-    const reflectSpy = vi.fn(async () => "R");
-    await buildHookOutput({
-      harness: "claude-code",
-      prompt: "the prompt",
-      cfg,
-      client: {
-        reflect: reflectSpy,
-        recall: async () => [],
-        listPages: async () => ({ items: [] }),
-      },
-      cacheFile,
-    });
-    expect(reflectSpy).toHaveBeenCalledWith("the prompt", { budget: "high", timeoutMs: 3000 });
-  });
-
-  it("persists and increments turns each call, round-tripping {answer, turns}", async () => {
+  it("persists and increments the turn counter each call", async () => {
     const cfg = resolveConfig({ pageRefreshEveryTurns: 3 });
     for (let n = 1; n <= 4; n++) {
       await buildHookOutput({
@@ -222,7 +102,6 @@ describe("buildHookOutput", () => {
         prompt: `turn ${n}`,
         cfg,
         client: {
-          reflect: async () => "R",
           recall: async () => [],
           listPages: async () => ({ items: [{ id: "p1", name: "Component map" }] }),
         },
@@ -236,7 +115,6 @@ describe("buildHookOutput", () => {
   it("injects the page-roster refresh only on cadence turns", async () => {
     const cfg = resolveConfig({ pageRefreshEveryTurns: 2 });
     const client = {
-      reflect: async () => "R",
       recall: async () => [{ text: "MEM" }],
       listPages: async () => ({ items: [{ id: "p1", name: "Component map" }] }),
     };
@@ -268,15 +146,12 @@ describe("buildHookOutput", () => {
     const cfg = resolveConfig({ pageRefreshEveryTurns: 2 });
     // Seed the cache so this is turn 2 (a cadence turn) without needing a first turn.
     mkdirSync(join(root, "cache"), { recursive: true });
-    writeFileSync(cacheFile, JSON.stringify({ answer: "OLD", turns: 1 }));
+    writeFileSync(cacheFile, JSON.stringify({ turns: 1 }));
     const result = await buildHookOutput({
       harness: "claude-code",
       prompt: "two",
       cfg,
       client: {
-        reflect: async () => {
-          throw new Error("reflect must not run on a later turn");
-        },
         recall: async () => [{ text: "MEM_KEEP" }],
         listPages: async () => {
           throw new Error("listPages boom");
