@@ -22,12 +22,14 @@ describe("parsePageList", () => {
 });
 
 describe("buildKnowledgePreamble", () => {
-  it("includes guidance, a roster of pages, and a refresh note", () => {
+  it("includes guidance, a roster of pages, a read tool, and the capture-initiative nudge", () => {
     const out = buildKnowledgePreamble([{ id: "p1", title: "Component map" }]);
     expect(out).toContain("<hindsight_knowledge>");
     expect(out).toContain("Component map");
     expect(out).toContain("p1");
     expect(out).toMatch(/hindsight_read_knowledge_page/);
+    // Must nudge the agent to RECORD major features, not just read pages.
+    expect(out).toContain("hindsight_capture_initiative");
   });
   it("has an empty-state line when there are no pages", () => {
     const out = buildKnowledgePreamble([]);
@@ -36,10 +38,11 @@ describe("buildKnowledgePreamble", () => {
 });
 
 describe("buildRosterRefresh", () => {
-  it("is a compact 'current pages' block listing ids+titles", () => {
+  it("is a compact 'current pages' block listing ids+titles, with a capture reminder", () => {
     const out = buildRosterRefresh([{ id: "p1", title: "Component map" }]);
     expect(out).toContain("Component map");
     expect(out).toContain("p1");
+    expect(out).toContain("hindsight_capture_initiative");
   });
   it("returns undefined when there are no pages (nothing to refresh)", () => {
     expect(buildRosterRefresh([])).toBeUndefined();

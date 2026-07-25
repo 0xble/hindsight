@@ -35,6 +35,10 @@ export function buildKnowledgePreamble(pages: PageRef[]): string {
     `${body}\n` +
     "Read one with hindsight_read_knowledge_page(page_id). Follow any [[page:<id>]] links you see. The list is " +
     "re-injected for you periodically as it changes.\n" +
+    "CAPTURE new work: when you start (or make substantial progress on) a MAJOR new feature, initiative, or " +
+    "enhancement, call hindsight_capture_initiative(title, summary) so it becomes a tracked page future sessions can " +
+    "pick up. Do this for real features worth remembering across sessions — NOT for routine bug fixes, small tweaks, " +
+    "or chores.\n" +
     "</hindsight_knowledge>"
   );
 }
@@ -45,7 +49,8 @@ export function buildRosterRefresh(pages: PageRef[]): string | undefined {
   return (
     "<hindsight_knowledge_refresh>\n" +
     `Current Hindsight knowledge pages (may have changed):\n${roster(pages)}\n` +
-    "Read any with hindsight_read_knowledge_page(page_id).\n" +
+    "Read any with hindsight_read_knowledge_page(page_id). If you've begun a major new feature/initiative this " +
+    "session and haven't recorded it, call hindsight_capture_initiative(title, summary).\n" +
     "</hindsight_knowledge_refresh>"
   );
 }
