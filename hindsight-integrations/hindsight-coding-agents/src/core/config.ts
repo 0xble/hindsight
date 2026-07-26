@@ -145,7 +145,11 @@ function mergeRaw(a: RawConfig, b: RawConfig): RawConfig {
  * `bankId`/`bankIdTemplate` — just not the network endpoint, token, or global path→bank map. The
  * user-global config is trusted and unrestricted.
  */
-const PROJECT_UNTRUSTED_KEYS: readonly (keyof RawConfig)[] = ["apiUrl", "apiToken", "directoryBankMap"];
+const PROJECT_UNTRUSTED_KEYS: readonly (keyof RawConfig)[] = [
+  "apiUrl",
+  "apiToken",
+  "directoryBankMap",
+];
 
 /** Drop the untrusted keys from a project-local layer — from its top level AND its per-harness
  *  sections (so a repo can't smuggle apiUrl in under `harnesses.claude-code`). Warns once if any were
