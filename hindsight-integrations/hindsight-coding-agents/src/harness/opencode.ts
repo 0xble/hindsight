@@ -11,6 +11,7 @@
 import { tool } from "@opencode-ai/plugin";
 import type { RuntimeCore } from "../core/runtime";
 import type { HarnessAdapter } from "../core/types";
+import { diag } from "../core/diag";
 import type { ToolSpec } from "../core/knowledge-tools";
 import {
   readOpencodeMessages,
@@ -70,13 +71,18 @@ function createRuntime(core: RuntimeCore) {
     },
     // Push this turn's injection (recalled memories + attribution/user-feedback framing, plus the
     // knowledge preamble on turn 1 and the roster refresh on cadence) into the system prompt every
-    // turn, so it survives interventions.
+    // turn. opencode fires this hook with NO sessionId (input is just `{model}`), so getInjection
+    // falls back to the most recent turn's block (see RuntimeCore.getInjection).
     "experimental.chat.system.transform": async (
       input: { sessionID?: string },
       output: { system: string[] }
     ) => {
       const inj = core.getInjection(input.sessionID);
       if (inj) output.system.push(inj);
+      diag("opencode", inj ? "inject_ok" : "inject_empty", {
+        chars: inj?.length ?? 0,
+        hasSession: !!input.sessionID,
+      });
     },
     // Write-back (on by default): normalize the live transcript to rich turns (text + tool calls +
     // their inline output) and hand it to core, which upserts every N user turns.

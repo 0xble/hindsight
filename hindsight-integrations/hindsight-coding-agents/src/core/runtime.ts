@@ -29,6 +29,7 @@ export class RuntimeCore {
   private readonly injection = new Map<string, string>(); // sessionId -> this turn's injection block
   private readonly turnCount = new Map<string, number>(); // sessionId -> user-turn counter (cadence)
   private readonly sessionState = new Map<string, { startTs: string; retainedUsers: number }>();
+  private lastInjection = ""; // most recent turn's injection block, keyed by nothing (see getInjection)
   private preamble = ""; // SessionStart-equivalent knowledge preamble, computed once at seedIfCold
   private gitSyncStarted = false; // once-per-process guard for syncGitOnce
 
@@ -126,12 +127,21 @@ export class RuntimeCore {
       const pages = parsePageList(await pagesP.catch(() => null));
       blocks.push(buildRosterRefresh(pages));
     }
-    this.injection.set(sessionId, blocks.filter(Boolean).join("\n\n"));
+    const block = blocks.filter(Boolean).join("\n\n");
+    this.injection.set(sessionId, block);
+    this.lastInjection = block; // for consumers that can't supply a sessionId (see getInjection)
   }
 
-  /** The system-prompt text to inject this turn (built by the preceding onPrompt), or undefined. */
+  /**
+   * The system-prompt text to inject this turn (built by the preceding onPrompt), or undefined.
+   * opencode's `experimental.chat.system.transform` hook fires with NO sessionId (input is just
+   * `{model}`), so a session-keyed lookup returns nothing there — fall back to the most recent
+   * turn's block (`lastInjection`). The completion's system.transform fires right after that
+   * session's `chat.message`/onPrompt, so `lastInjection` is this turn's block.
+   */
   getInjection(sessionId: string | undefined): string | undefined {
-    return sessionId ? this.injection.get(sessionId) : undefined;
+    const keyed = sessionId ? this.injection.get(sessionId) : undefined;
+    return keyed ?? this.lastInjection ?? undefined;
   }
 
   /**
