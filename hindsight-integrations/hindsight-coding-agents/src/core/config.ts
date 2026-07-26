@@ -43,9 +43,8 @@ export interface RawConfig {
   resolveWorktrees?: boolean; // {gitProject}: worktrees share the main repo's bank (default true)
   harness?: string; // runtime adapter (default "opencode")
   disabled?: boolean; // hard off-switch — inert plugin, for a no-memory baseline (default false)
-  retainSessions?: boolean; // opencode plugin only; the Stop hook always writes back unless disabled (default false)
+  retainSessions?: boolean; // opencode plugin write-back (default true; set false to opt out). Hook harnesses always write back on Stop and ignore this flag.
   retainEveryTurns?: number; // write-back cadence in user turns (default 5)
-  reflectTimeoutMs?: number; // reflect timeout (default 120000)
   recallMaxTokens?: number; // per-turn recall token budget (default 750)
   recallTimeoutMs?: number; // per-turn recall timeout (default 10000)
   pageRefreshEveryTurns?: number; // knowledge-page refresh cadence in user turns (default 10)
@@ -73,7 +72,6 @@ export interface Config {
   disabled: boolean;
   retainSessions: boolean;
   retainEveryTurns: number;
-  reflectTimeoutMs: number;
   recallMaxTokens: number;
   recallTimeoutMs: number;
   pageRefreshEveryTurns: number;
@@ -98,9 +96,8 @@ export function resolveConfig(raw: RawConfig = {}): Config {
     resolveWorktrees: raw.resolveWorktrees,
     harness: raw.harness ?? "opencode",
     disabled: raw.disabled ?? false,
-    retainSessions: raw.retainSessions ?? false,
+    retainSessions: raw.retainSessions ?? true, // opencode: write back by default (parity with hook-harness Stop)
     retainEveryTurns: raw.retainEveryTurns || 5,
-    reflectTimeoutMs: raw.reflectTimeoutMs || 120000,
     recallMaxTokens: raw.recallMaxTokens || 750,
     recallTimeoutMs: raw.recallTimeoutMs || 10000,
     pageRefreshEveryTurns: raw.pageRefreshEveryTurns || 10,

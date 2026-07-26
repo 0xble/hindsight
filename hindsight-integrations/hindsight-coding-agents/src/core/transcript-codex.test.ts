@@ -43,8 +43,14 @@ describe("readCodexTranscript", () => {
         type: "message",
         role: "user",
         content: [
-          { type: "input_text", text: "# AGENTS.md instructions for /repo\n<INSTRUCTIONS>x</INSTRUCTIONS>" },
-          { type: "input_text", text: "<environment_context>\n<cwd>/repo</cwd>\n</environment_context>" },
+          {
+            type: "input_text",
+            text: "# AGENTS.md instructions for /repo\n<INSTRUCTIONS>x</INSTRUCTIONS>",
+          },
+          {
+            type: "input_text",
+            text: "<environment_context>\n<cwd>/repo</cwd>\n</environment_context>",
+          },
         ],
       }),
       // real user prompt: kept
@@ -102,7 +108,10 @@ describe("readCodexTranscript", () => {
         type: "message",
         role: "user",
         content: [
-          { type: "input_text", text: "<hindsight_memories>\nleak\n</hindsight_memories>\nWhy retry?" },
+          {
+            type: "input_text",
+            text: "<hindsight_memories>\nleak\n</hindsight_memories>\nWhy retry?",
+          },
         ],
       })
     );

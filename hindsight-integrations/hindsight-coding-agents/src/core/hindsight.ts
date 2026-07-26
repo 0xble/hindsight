@@ -71,28 +71,6 @@ export class HindsightClient {
     return r;
   }
 
-  /** Reflect: synthesized, root-cause answer over the bank. Bounded so a slow server never hangs a caller. */
-  async reflect(
-    query: string,
-    opts: { budget?: string; timeoutMs?: number } = {}
-  ): Promise<string> {
-    const ctrl = new AbortController();
-    const timer = setTimeout(() => ctrl.abort(), opts.timeoutMs ?? 120000);
-    try {
-      const resp = await fetch(this.bankUrl("/reflect"), {
-        method: "POST",
-        headers: this.headers(),
-        body: JSON.stringify({ query, budget: opts.budget ?? "high" }),
-        signal: ctrl.signal,
-      });
-      if (!resp.ok) throw new Error(`reflect ${resp.status}`);
-      const data = (await resp.json()) as { text?: string };
-      return (data.text || "").trim();
-    } finally {
-      clearTimeout(timer);
-    }
-  }
-
   /** Recall (search) memories for a query. Fail-open: returns [] on any error so a turn never breaks. */
   async recall(
     query: string,

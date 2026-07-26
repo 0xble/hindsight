@@ -1,21 +1,26 @@
 /**
- * opencode harness adapter.
+ * opencode harness adapter — full v2 parity with the hook harnesses (Claude Code / Codex).
  *
- * Maps opencode's plugin hooks onto the shared RuntimeCore, and reads opencode sessions for backfill.
+ * Maps opencode's persistent-plugin hooks onto the shared RuntimeCore, and reads opencode sessions
+ * for backfill. opencode is the cleanest platform of the lot: a real per-turn event, a working
+ * system-prompt injection channel, transcript access, and NATIVE tool registration — so the whole
+ * v2 surface (per-turn recall + attribution/user-feedback injection, the hindsight_* knowledge
+ * tools, cold-check auto-seed, rich write-back) rides these four hooks with no MCP server needed.
  * This is the only opencode-specific file; everything it uses is in ../core.
  */
 import { tool } from "@opencode-ai/plugin";
 import type { RuntimeCore } from "../core/runtime";
 import type { HarnessAdapter } from "../core/types";
-import type { TransportTurn } from "../core/chat";
+import type { ToolSpec } from "../core/knowledge-tools";
+import {
+  readOpencodeMessages,
+  opencodeSessionId,
+  type OcMessage,
+} from "../core/transcript-opencode";
 import { jsonChatReader } from "./registry";
 
-// opencode part/message shapes (structurally typed — avoids a hard dep on the plugin types here).
+// opencode message part shape for the per-turn prompt (structurally typed).
 type Part = { type?: string; text?: string };
-type OcMessage = {
-  info?: { role?: string; sessionID?: string; time?: { created?: number } };
-  parts: Part[];
-};
 
 const textOf = (parts: Part[]) =>
   (parts || [])
@@ -31,37 +36,41 @@ const textOf = (parts: Part[]) =>
 // drags @opencode-ai/plugin along for backfill's sake.
 const chatReader = jsonChatReader("opencode");
 
+/**
+ * Adapt a harness-agnostic ToolSpec (the MCP-shaped spec every harness shares) to an opencode native
+ * tool(). The spec's Zod raw shape IS opencode's `args` shape (both zod v4); its handler returns an
+ * MCP `{content:[{text}]}` result which never throws, so we surface the joined text to opencode.
+ */
+function toOpencodeTool(spec: ToolSpec) {
+  return tool({
+    description: spec.description,
+    // @opencode-ai/plugin bundles its own zod (v4.1.x); the project uses zod v4.4.x. The two are
+    // runtime-compatible (same major), but their $ZodType brands differ, so TS rejects the
+    // cross-instance assignment. Cast the raw shape to the plugin's expected `args` type — opencode
+    // validates the args with its own zod at call time regardless.
+    args: spec.inputSchema as unknown as Parameters<typeof tool>[0]["args"],
+    async execute(args: Record<string, unknown>) {
+      const r = await spec.handler(args);
+      return r.content?.map((c) => c.text).join("\n") || "";
+    },
+  });
+}
+
 // ── runtime: opencode plugin hooks wired to the RuntimeCore ──────────────────────
 function createRuntime(core: RuntimeCore) {
+  // Register the full hindsight_* knowledge + recall suite natively (no MCP server needed).
+  const tools: Record<string, ReturnType<typeof tool>> = {};
+  for (const spec of core.toolSpecs()) tools[spec.name] = toOpencodeTool(spec);
+
   return {
-    // On-demand memory: the agent can query project memory itself, mid-task, for any symptom/question —
-    // the same synthesized reflect that's auto-injected on the first message, but callable at will.
-    tool: {
-      memory_reflect: tool({
-        description:
-          "Query this project's long-term memory about why the code is the way it is. Given a bug " +
-          "symptom, error, or design question, returns a synthesized root-cause answer drawn from THIS " +
-          "repository's git history and past developer conversations, including exact rules/values and " +
-          "REF-ID citations. Use it whenever you need the project's own rationale or a precise past " +
-          "decision — not general knowledge. Phrase the query as the concrete problem you are facing.",
-        args: {
-          query: tool.schema
-            .string()
-            .describe(
-              "The symptom, error, or question to reflect on, phrased as the problem you face."
-            ),
-        },
-        async execute(args: { query: string }) {
-          const ans = await core.reflectNow(args.query);
-          return ans || "No relevant project memory found for that query.";
-        },
-      }),
-    },
-    // First task message: reflect on its symptom once; the surfaced decision is injected every turn.
+    tool: tools,
+    // Each user turn: recall on the prompt; the injection it builds is pushed by system.transform.
     "chat.message": async (input: { sessionID?: string }, output: { parts: Part[] }) => {
-      if (input.sessionID) await core.onTask(input.sessionID, textOf(output.parts));
+      await core.onPrompt(input.sessionID, textOf(output.parts));
     },
-    // Push the surfaced decision into the system prompt (every turn, so it survives interventions).
+    // Push this turn's injection (recalled memories + attribution/user-feedback framing, plus the
+    // knowledge preamble on turn 1 and the roster refresh on cadence) into the system prompt every
+    // turn, so it survives interventions.
     "experimental.chat.system.transform": async (
       input: { sessionID?: string },
       output: { system: string[] }
@@ -69,29 +78,17 @@ function createRuntime(core: RuntimeCore) {
       const inj = core.getInjection(input.sessionID);
       if (inj) output.system.push(inj);
     },
-    // Opt-in write-back: normalize the transcript to user/assistant text turns and hand it to core.
+    // Write-back (on by default): normalize the live transcript to rich turns (text + tool calls +
+    // their inline output) and hand it to core, which upserts every N user turns.
     "experimental.chat.messages.transform": async (
       _input: unknown,
       output: { messages: OcMessage[] }
     ) => {
       if (!core.writeBackEnabled) return;
       const msgs = output.messages || [];
-      const sid = msgs.find((m) => m.info?.sessionID)?.info?.sessionID;
+      const sid = opencodeSessionId(msgs);
       if (!sid) return;
-      const turns: TransportTurn[] = [];
-      for (const m of msgs) {
-        const role = m.info?.role;
-        if (role !== "user" && role !== "assistant") continue; // drop non-conversational roles
-        const text = textOf(m.parts); // text parts only => drops tool calls/comments
-        if (!text) continue;
-        const created = m.info?.time?.created; // per-turn timestamp (Unix ms) -> ISO
-        turns.push({
-          role,
-          content: text,
-          ...(created ? { timestamp: new Date(created).toISOString() } : {}),
-        });
-      }
-      await core.onTranscript(sid, turns);
+      await core.onTranscript(sid, readOpencodeMessages(msgs));
     },
   };
 }

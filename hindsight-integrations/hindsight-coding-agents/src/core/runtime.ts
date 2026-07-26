@@ -1,146 +1,177 @@
 /**
- * Harness-agnostic runtime: the reflect-once → inject → (opt-in) write-back state machine.
+ * Harness-agnostic runtime for PERSISTENT-PLUGIN harnesses (opencode): the recall → inject →
+ * write-back state machine, held in memory across a long-lived process. It is the plugin-side
+ * sibling of core/hook.ts (which drives the fresh-process HOOK harnesses); both share the same core
+ * primitives — `formatMemories`, `buildKnowledgePreamble`/`buildRosterRefresh`, `buildKnowledgeTools`,
+ * `buildSessionStartContext` — so opencode reaches full v2 parity with Claude Code / Codex.
  *
- * A harness adapter feeds it three normalized events and reads one value back:
- *   - onTask(sessionId, query)      : first task message -> reflect once, cache the answer
+ * A harness adapter feeds it three normalized events and reads two values back:
+ *   - seedIfCold(repoPath)          : plugin load -> cold-check auto-seed + compute the page preamble
+ *   - onPrompt(sessionId, prompt)   : each user turn -> recall + build this turn's injection
  *   - getInjection(sessionId)       : the system-prompt text to inject this turn (or undefined)
- *   - onTranscript(sessionId, turns): full user/assistant transcript -> maybe write back
- * No opencode/claude-code specifics live here — only the memory logic.
+ *   - toolSpecs()                   : the hindsight_* knowledge/recall tools to register natively
+ *   - onTranscript(sessionId, turns): full transcript -> write back every N turns (on by default)
+ * No opencode/claude specifics live here — only the memory logic.
  */
-import type { HindsightClient } from "./hindsight";
-import { appendFileSync } from "node:fs";
-import { buildSystemInjection } from "./inject";
+import type { Config } from "./config";
+import { diag } from "./diag";
+import type { HindsightClient, RecallResult } from "./hindsight";
+import { buildRosterRefresh, parsePageList } from "./knowledge-injection";
+import { buildKnowledgeTools, type ToolSpec } from "./knowledge-tools";
+import { formatMemories } from "./recall";
 import { retainLiveSession, type TransportTurn } from "./chat";
+import { buildSessionStartContext } from "./session-start";
 import { syncGit } from "./sync";
 
-export interface RuntimeOpts {
-  retainSessions?: boolean; // enable live write-back (off by default: don't pollute a backfilled bank)
-  retainEveryTurns?: number; // upsert every N user turns (default 5)
-  reflectTimeoutMs?: number;
-  gitSync?: boolean; // keep the bank current with new commits on load (default off: opt-in)
-  gitSyncRef?: string; // target ref for sync (default origin/main; falls back to HEAD)
-  gitSyncFetch?: boolean; // git fetch the ref before diffing (default off: no network side effect)
-}
+const HARNESS = "opencode";
 
 export class RuntimeCore {
-  private readonly memory = new Map<string, string>(); // sessionId -> surfaced decision
-  private readonly reflected = new Set<string>(); // sessions we've already reflected for
+  private readonly injection = new Map<string, string>(); // sessionId -> this turn's injection block
+  private readonly turnCount = new Map<string, number>(); // sessionId -> user-turn counter (cadence)
   private readonly sessionState = new Map<string, { startTs: string; retainedUsers: number }>();
-  private readonly retainSessions: boolean;
-  private readonly retainEvery: number;
-  private readonly reflectTimeoutMs: number;
-  private readonly gitSync: boolean;
-  private readonly gitSyncRef: string;
-  private readonly gitSyncFetch: boolean;
+  private preamble = ""; // SessionStart-equivalent knowledge preamble, computed once at seedIfCold
   private gitSyncStarted = false; // once-per-process guard for syncGitOnce
 
   constructor(
     private readonly client: HindsightClient,
-    opts: RuntimeOpts = {}
-  ) {
-    this.retainSessions = !!opts.retainSessions;
-    this.retainEvery = opts.retainEveryTurns || 5;
-    this.reflectTimeoutMs = opts.reflectTimeoutMs || 120000;
-    this.gitSync = !!opts.gitSync; // default off: opt-in
-    this.gitSyncRef = opts.gitSyncRef || "origin/main";
-    this.gitSyncFetch = !!opts.gitSyncFetch;
+    private readonly bankId: string,
+    private readonly cfg: Config
+  ) {}
+
+  /** The hindsight_* knowledge + recall tools, bound to this bank, for the harness to register natively. */
+  toolSpecs(): ToolSpec[] {
+    return buildKnowledgeTools(this.client, this.bankId);
   }
 
   get writeBackEnabled(): boolean {
-    return this.retainSessions;
+    return this.cfg.retainSessions;
   }
 
   /**
-   * On-demand reflect: the SAME synthesized, root-cause answer the plugin injects automatically, but for
-   * an explicit query the agent asks at any point. Best-effort: returns "" on error/timeout so a caller
-   * (e.g. a harness tool) can degrade gracefully rather than surface a failure to the model.
+   * Plugin load (SessionStart-equivalent): on a cold repo, deterministically start the background
+   * git-log seed + codebase survey, and compute the knowledge-page preamble (tool guide + roster)
+   * that onPrompt injects on the session's first turn. Reuses the exact hook-harness logic
+   * (`buildSessionStartContext`) so opencode seeds identically. Never throws.
    */
-  async reflectNow(query: string): Promise<string> {
-    if (!query.trim()) return "";
+  async seedIfCold(repoPath: string | undefined): Promise<void> {
+    // Anti-recursion: a headless survey session runs the agent (which loads this plugin) with
+    // HINDSIGHT_DISABLE_HOOKS=1 — the tools stay registered (toolSpecs, so the survey can ingest),
+    // but seeding/recall/write-back must no-op or the survey would re-seed itself (see core/survey.ts).
+    if (process.env.HINDSIGHT_DISABLE_HOOKS) return;
     try {
-      return await this.client.reflect(query, { budget: "high", timeoutMs: this.reflectTimeoutMs });
+      const out = await buildSessionStartContext({
+        cwd: repoPath || process.cwd(),
+        bankId: this.bankId,
+        cfg: this.cfg,
+        client: this.client,
+        harness: HARNESS,
+      });
+      // The seed note is user-facing; opencode has no visible-system channel at load, so surface it
+      // on stderr (shows in the plugin log / console) rather than dropping it.
+      if (out.systemMessage) console.error(out.systemMessage);
+      this.preamble = out.additionalContext ?? "";
     } catch {
-      return "";
+      /* seeding + preamble are best-effort — a cold-check failure never breaks the agent */
     }
   }
 
   /**
-   * Once per process: async-retain any commits on the target ref not yet in the bank, keeping memory
-   * current with the repo since the backfill (or the last run). Fire-and-forget and best-effort — a sync
-   * failure never blocks or breaks the agent. `repoPath` comes from the harness's plugin context.
+   * Each user turn: recall on the prompt and build this turn's injection block. Mirrors core/hook.ts's
+   * `buildHookOutput`, but state lives in memory (persistent plugin) instead of a tmp cache file:
+   *   - turn 1: prepend the knowledge preamble (the SessionStart-equivalent tool guide + page roster)
+   *   - every turn: the recalled `<hindsight_memories>` block (attribution + user-feedback framing)
+   *   - every pageRefreshEveryTurns: append the page-roster refresh so the tool guide keeps re-appearing
    */
-  async syncGitOnce(repoPath: string | undefined): Promise<void> {
-    if (!this.gitSync || !repoPath || this.gitSyncStarted) return;
-    this.gitSyncStarted = true;
-    try {
-      const r = await syncGit(this.client, repoPath, {
-        ref: this.gitSyncRef,
-        fetch: this.gitSyncFetch,
-      });
-      if (r.ingested)
-        console.error(`hindsight: git-sync retained ${r.ingested} new commit(s) from ${r.ref}`);
-    } catch {
-      /* best-effort — memory sync never breaks the agent */
-    }
-  }
+  async onPrompt(sessionId: string | undefined, prompt: string): Promise<void> {
+    if (process.env.HINDSIGHT_DISABLE_HOOKS) return; // anti-recursion (see seedIfCold)
+    if (!sessionId || !prompt.trim()) return;
+    const turns = (this.turnCount.get(sessionId) ?? 0) + 1;
+    this.turnCount.set(sessionId, turns);
 
-  /** First task message of a session: reflect on the symptom once, cache the root-cause answer. */
-  async onTask(sessionId: string, query: string): Promise<void> {
-    if (!sessionId || this.reflected.has(sessionId) || !query.trim()) return;
-    this.reflected.add(sessionId);
-    const t0 = Date.now();
+    // Kick recall and (on cadence) listPages off concurrently so they overlap.
+    const tRecall = Date.now();
+    const recallP = this.client.recall(prompt, {
+      maxTokens: this.cfg.recallMaxTokens,
+      timeoutMs: this.cfg.recallTimeoutMs,
+    });
+    const refreshDue =
+      this.cfg.pageRefreshEveryTurns > 0 && turns % this.cfg.pageRefreshEveryTurns === 0;
+    const pagesP = refreshDue ? this.client.listPages() : undefined;
+
+    let results: RecallResult[] = [];
     try {
-      const ans = await this.client.reflect(query, {
-        budget: "high",
-        timeoutMs: this.reflectTimeoutMs,
-      });
-      if (ans) this.memory.set(sessionId, ans);
-      this.diag(ans ? "reflect_ok" : "reflect_empty", {
-        ms: Date.now() - t0,
-        chars: ans.length,
-        query: query.slice(0, 80),
+      results = await recallP;
+      diag(HARNESS, results.length ? "recall_ok" : "recall_empty", {
+        ms: Date.now() - tRecall,
+        count: results.length,
+        query: prompt.slice(0, 80),
       });
     } catch (e) {
-      /* memory is best-effort — never break the agent; but never fail silently either: a memory
-         run whose reflect quietly failed is indistinguishable from a no-memory run without this. */
-      this.diag("reflect_failed", {
-        ms: Date.now() - t0,
+      diag(HARNESS, "recall_failed", {
+        ms: Date.now() - tRecall,
         error: String((e as Error)?.message || e).slice(0, 200),
-        query: query.slice(0, 80),
+        query: prompt.slice(0, 80),
       });
     }
-  }
 
-  /** Append a reflect-outcome record to the diagnostics file (default /tmp/hindsight-plugin.log). */
-  private diag(event: string, extra: Record<string, unknown> = {}): void {
-    try {
-      appendFileSync(
-        process.env.HINDSIGHT_DIAG_FILE || "/tmp/hindsight-plugin.log",
-        JSON.stringify({ ts: new Date().toISOString(), event, ...extra }) + "\n"
-      );
-    } catch {
-      /* diagnostics must not break the agent either */
+    const blocks: string[] = [];
+    // The preamble is the SessionStart-equivalent; inject it once, on the first turn (later turns get
+    // the periodic refresh below). Empty until seedIfCold resolves — if the first prompt races ahead
+    // of plugin-load seeding, the roster refresh still delivers the tool guide on cadence.
+    if (turns === 1 && this.preamble) blocks.push(this.preamble);
+    blocks.push(formatMemories(results));
+    if (refreshDue && pagesP) {
+      // A listPages failure must not swallow the reminder — fall back to an empty roster so the
+      // tool + capture nudge still re-injects (it doesn't depend on any page existing).
+      const pages = parsePageList(await pagesP.catch(() => null));
+      blocks.push(buildRosterRefresh(pages));
     }
+    this.injection.set(sessionId, blocks.filter(Boolean).join("\n\n"));
   }
 
-  /** The system-prompt text to inject this turn (persisted across interventions), or undefined. */
+  /** The system-prompt text to inject this turn (built by the preceding onPrompt), or undefined. */
   getInjection(sessionId: string | undefined): string | undefined {
-    const mem = sessionId ? this.memory.get(sessionId) : undefined;
-    return mem ? buildSystemInjection(mem) : undefined;
+    return sessionId ? this.injection.get(sessionId) : undefined;
   }
 
-  /** Full normalized transcript (user/assistant turns): upsert every N user turns when enabled. */
+  /**
+   * Full normalized transcript (rich: user/assistant text + tool calls/outputs): upsert every N user
+   * turns when enabled. On by default for opencode (parity with the hook harnesses' Stop write-back),
+   * so opencode sessions compound into memory; a user can opt out with `retainSessions: false`.
+   */
   async onTranscript(sessionId: string, turns: TransportTurn[]): Promise<void> {
-    if (!this.retainSessions || !sessionId || !turns.length) return;
+    if (process.env.HINDSIGHT_DISABLE_HOOKS) return; // anti-recursion (see seedIfCold)
+    if (!this.writeBackEnabled || !sessionId || !turns.length) return;
     const users = turns.filter((t) => t.role === "user").length;
     let st = this.sessionState.get(sessionId);
     if (!st) {
       st = { startTs: new Date().toISOString(), retainedUsers: 0 };
       this.sessionState.set(sessionId, st);
     }
-    if (users - st.retainedUsers >= this.retainEvery) {
+    if (users - st.retainedUsers >= this.cfg.retainEveryTurns) {
       st.retainedUsers = users;
       void retainLiveSession(this.client, sessionId, turns, st.startTs).catch(() => {});
+    }
+  }
+
+  /**
+   * Once per process: async-retain any commits on the target ref not yet in the bank, keeping memory
+   * current with the repo since the backfill (or the last run). Fire-and-forget and best-effort — a
+   * sync failure never blocks or breaks the agent. `repoPath` comes from the harness's plugin context.
+   */
+  async syncGitOnce(repoPath: string | undefined): Promise<void> {
+    if (process.env.HINDSIGHT_DISABLE_HOOKS) return; // anti-recursion (see seedIfCold)
+    if (!this.cfg.gitSync.enabled || !repoPath || this.gitSyncStarted) return;
+    this.gitSyncStarted = true;
+    try {
+      const r = await syncGit(this.client, repoPath, {
+        ref: this.cfg.gitSync.ref,
+        fetch: this.cfg.gitSync.fetch,
+      });
+      if (r.ingested)
+        console.error(`hindsight: git-sync retained ${r.ingested} new commit(s) from ${r.ref}`);
+    } catch {
+      /* best-effort — memory sync never breaks the agent */
     }
   }
 }
