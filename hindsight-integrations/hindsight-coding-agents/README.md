@@ -102,31 +102,31 @@ hook by Codex...), so one shared config serves several agents side by side:
 
 ### Reference
 
-| field                   | default                              | meaning                                                                           |
-| ----------------------- | ------------------------------------ | --------------------------------------------------------------------------------- |
-| `apiUrl`                | `https://api.hindsight.vectorize.io` | Hindsight API base URL (set to `http://localhost:8888` for a local server)        |
-| `apiToken`              | —                                    | bearer token (Hindsight Cloud)                                                    |
-| `bankId`                | —                                    | **explicit static bank**; unset ⇒ per-repo dynamic resolution (below)             |
-| `dynamicBankId`         | dynamic iff no `bankId`              | force dynamic (`true`) or static (`false`) resolution                             |
-| `bankIdTemplate`        | `"coding-agent::{gitProject}"`       | dynamic bank id format; the default makes every agent share one bank per repo     |
-| `directoryBankMap`      | —                                    | absolute path → bank; **longest prefix wins**; overrides everything               |
-| `resolveWorktrees`      | `true`                               | `{gitProject}`: linked worktrees share the main repo's bank                       |
-| `disabled`              | `false`                              | hard off-switch (inert plugin/hook — a no-memory baseline)                        |
-| `recallMaxTokens`       | `750`                                | per-turn recall token budget                                                      |
-| `recallTimeoutMs`       | `10000`                              | per-turn recall timeout; on timeout the turn runs without memory (recorded)       |
-| `pageRefreshEveryTurns` | `10`                                 | re-inject the knowledge-page roster + tool guide every N user turns               |
-| `autoSeed`              | `true`                               | SessionStart: auto-seed a cold repo's bank from git history                       |
-| `seedLimit`             | `300`                                | auto-seed: most-recent-N-commits cap                                              |
+| field                   | default                              | meaning                                                                                                                                                               |
+| ----------------------- | ------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `apiUrl`                | `https://api.hindsight.vectorize.io` | Hindsight API base URL (set to `http://localhost:8888` for a local server)                                                                                            |
+| `apiToken`              | —                                    | bearer token (Hindsight Cloud)                                                                                                                                        |
+| `bankId`                | —                                    | **explicit static bank**; unset ⇒ per-repo dynamic resolution (below)                                                                                                 |
+| `dynamicBankId`         | dynamic iff no `bankId`              | force dynamic (`true`) or static (`false`) resolution                                                                                                                 |
+| `bankIdTemplate`        | `"coding-agent::{gitProject}"`       | dynamic bank id format; the default makes every agent share one bank per repo                                                                                         |
+| `directoryBankMap`      | —                                    | absolute path → bank; **longest prefix wins**; overrides everything                                                                                                   |
+| `resolveWorktrees`      | `true`                               | `{gitProject}`: linked worktrees share the main repo's bank                                                                                                           |
+| `disabled`              | `false`                              | hard off-switch (inert plugin/hook — a no-memory baseline)                                                                                                            |
+| `recallMaxTokens`       | `750`                                | per-turn recall token budget                                                                                                                                          |
+| `recallTimeoutMs`       | `10000`                              | per-turn recall timeout; on timeout the turn runs without memory (recorded)                                                                                           |
+| `pageRefreshEveryTurns` | `10`                                 | re-inject the knowledge-page roster + tool guide every N user turns                                                                                                   |
+| `autoSeed`              | `true`                               | SessionStart: auto-seed a cold repo's bank from git history                                                                                                           |
+| `seedLimit`             | `300`                                | auto-seed: most-recent-N-commits cap                                                                                                                                  |
 | `codebaseSurvey`        | `true`                               | SessionStart: headless survey of a cold repo's structure, run under the current harness's own CLI (claude/codex/gemini/opencode), falling back to any available agent |
-| `surveyModel`           | `haiku`                              | model for the survey — Claude recipe only (`claude -p --model`); other agents use their configured default |
-| `surveyBudgetUsd`       | `2`                                  | survey spend cap — Claude recipe only (`claude -p --max-budget-usd`); other agents rely on their read-only sandbox |
-| `retainSessions`        | `true`                               | opencode write-back (set `false` to opt out; hook harnesses always write on Stop) |
-| `retainEveryTurns`      | `5`                                  | opencode write-back cadence (user turns)                                          |
-| `gitSync.enabled`       | `false`                              | opencode only: on load, retain commits new since the seed                         |
-| `gitSync.ref`           | `origin/main`                        | git-sync target ref (falls back to `HEAD`)                                        |
-| `gitSync.fetch`         | `false`                              | `git fetch` the ref before diffing                                                |
-| `harnesses.<name>`      | —                                    | per-harness override of any field above                                           |
-| `harness`               | `opencode`                           | **backfill only**: which session format `--conversations` is read as              |
+| `surveyModel`           | `haiku`                              | model for the survey — Claude recipe only (`claude -p --model`); other agents use their configured default                                                            |
+| `surveyBudgetUsd`       | `2`                                  | survey spend cap — Claude recipe only (`claude -p --max-budget-usd`); other agents rely on their read-only sandbox                                                    |
+| `retainSessions`        | `true`                               | opencode write-back (set `false` to opt out; hook harnesses always write on Stop)                                                                                     |
+| `retainEveryTurns`      | `5`                                  | opencode write-back cadence (user turns)                                                                                                                              |
+| `gitSync.enabled`       | `false`                              | opencode only: on load, retain commits new since the seed                                                                                                             |
+| `gitSync.ref`           | `origin/main`                        | git-sync target ref (falls back to `HEAD`)                                                                                                                            |
+| `gitSync.fetch`         | `false`                              | `git fetch` the ref before diffing                                                                                                                                    |
+| `harnesses.<name>`      | —                                    | per-harness override of any field above                                                                                                                               |
+| `harness`               | `opencode`                           | **backfill only**: which session format `--conversations` is read as                                                                                                  |
 
 ### Bank resolution
 
