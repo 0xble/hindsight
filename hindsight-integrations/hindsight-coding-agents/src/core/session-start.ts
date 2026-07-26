@@ -20,7 +20,7 @@
 import { readFileSync } from "node:fs";
 import { hasGitHistory } from "./git";
 import { readSeedState, writeSeedState, startBackgroundSeed } from "./seed";
-import { startCodebaseSurvey } from "./survey";
+import { startCodebaseSurvey, type SurveyHarness } from "./survey";
 import { loadConfig } from "./config";
 import type { Config } from "./config";
 import { deriveBankId } from "./bank";
@@ -56,7 +56,10 @@ export async function buildSessionStartContext(args: {
   stateDir?: string;
   hasGit?: (dir: string) => boolean;
   startSeed?: (repoDir: string, opts?: { limit?: number }) => void;
-  startSurvey?: (repoDir: string, opts?: { model?: string; budgetUsd?: number }) => void;
+  startSurvey?: (
+    repoDir: string,
+    opts?: { harness?: SurveyHarness; model?: string; budgetUsd?: number }
+  ) => void;
 }): Promise<SessionStartOutput> {
   const { cwd, bankId, cfg, client, stateDir } = args;
   const harness = args.harness ?? "claude-code";
@@ -89,7 +92,12 @@ export async function buildSessionStartContext(args: {
         if (docIds !== undefined && docIds.size === 0) {
           startSeed(cwd, { limit: cfg.seedLimit });
           if (cfg.codebaseSurvey !== false) {
-            startSurvey(cwd, { model: cfg.surveyModel, budgetUsd: cfg.surveyBudgetUsd });
+            // Run the survey under the current harness's own CLI (falls back to any available agent).
+            startSurvey(cwd, {
+              harness: harness as SurveyHarness,
+              model: cfg.surveyModel,
+              budgetUsd: cfg.surveyBudgetUsd,
+            });
           }
           // Record the seed time (informational — no longer a gate).
           writeSeedState(bankId, { seededAt: new Date().toISOString() }, stateDir);

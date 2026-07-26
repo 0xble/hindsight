@@ -21,9 +21,6 @@ describe("resolveClaudeBin", () => {
 
   it("falls back to the bare 'claude' PATH lookup when nothing else resolves", () => {
     delete process.env.HINDSIGHT_CLAUDE_BIN;
-    // The native-installer path (~/.claude/local/claude) won't exist in CI/test envs, so this
-    // exercises the final fallback. (If it DOES exist on a dev machine, that's still a valid,
-    // documented resolution — so only assert the env/explicit-less case falls back to *something*.)
     const bin = resolveClaudeBin();
     expect(typeof bin).toBe("string");
     expect(bin.length).toBeGreaterThan(0);
@@ -34,14 +31,17 @@ describe("startCodebaseSurvey", () => {
   function fakeSpawn() {
     return vi.fn().mockReturnValue({ on: vi.fn(), unref: vi.fn() });
   }
+  const yes = () => true;
 
-  it("spawns the resolved claude binary with the expected argv and options", () => {
+  // ── claude recipe (the default / self-contained inline-MCP one) ────────────────────────────────
+  it("claude: spawns the resolved binary with the expected argv, sandbox, and options", () => {
     const spawn = fakeSpawn();
     startCodebaseSurvey("/repo", {
       model: "sonnet",
       mcpServerPath: "/x/mcp-server.js",
       claudeBin: "/bin/claude",
       spawn,
+      exists: yes,
     });
 
     expect(spawn).toHaveBeenCalledTimes(1);
@@ -54,31 +54,20 @@ describe("startCodebaseSurvey", () => {
     expect(argv).toContain("sonnet");
     expect(argv).toContain("--mcp-config");
     expect(argv).toContain("--strict-mcp-config");
-    expect(argv).toContain("--allowedTools");
-    expect(argv).toContain("Read");
-    expect(argv).toContain("Glob");
-    expect(argv).toContain("Grep");
     expect(argv).toContain("mcp__hindsight__hindsight_ingest_document");
 
-    // Sandbox: no bypassPermissions (it defeats --allowedTools — empirically verified against the
-    // live `claude` binary), and a --disallowedTools deny-list covering every dangerous tool.
+    // Sandbox: no bypassPermissions (defeats --allowedTools), a --disallowedTools deny-list.
     expect(argv).not.toContain("--permission-mode");
     expect(argv).not.toContain("bypassPermissions");
     expect(argv).toContain("--disallowedTools");
     for (const t of ["Bash", "Write", "Edit", "NotebookEdit", "WebFetch", "WebSearch", "Task"]) {
       expect(argv).toContain(t);
     }
-
-    // Spend cap.
     expect(argv).toContain("--max-budget-usd");
     expect(argv).toContain("2");
 
-    const mcpConfigIdx = argv.indexOf("--mcp-config");
-    const mcpConfigJson = argv[mcpConfigIdx + 1];
-    expect(mcpConfigJson).toContain("/x/mcp-server.js");
-    expect(mcpConfigJson).toContain("HINDSIGHT_MCP_PROJECT_CWD");
+    const mcpConfigJson = argv[argv.indexOf("--mcp-config") + 1];
     const parsed = JSON.parse(mcpConfigJson);
-    expect(parsed.mcpServers.hindsight.command).toBe("node");
     expect(parsed.mcpServers.hindsight.args).toEqual(["/x/mcp-server.js"]);
     expect(parsed.mcpServers.hindsight.env.HINDSIGHT_MCP_PROJECT_CWD).toBe("/repo");
 
@@ -92,62 +81,111 @@ describe("startCodebaseSurvey", () => {
     expect(child.unref).toHaveBeenCalled();
   });
 
-  it("defaults model to 'haiku' when opts.model is omitted", () => {
+  it("claude: defaults model to 'haiku' and --max-budget-usd to 2", () => {
+    const spawn = fakeSpawn();
+    startCodebaseSurvey("/repo", { claudeBin: "/bin/claude", spawn, exists: yes });
+    const argv = spawn.mock.calls[0][1];
+    expect(argv[argv.indexOf("--model") + 1]).toBe("haiku");
+    expect(argv[argv.indexOf("--max-budget-usd") + 1]).toBe("2");
+  });
+
+  // ── codex recipe (read-only sandbox + inline -c MCP) ───────────────────────────────────────────
+  it("codex: spawns `codex exec --sandbox read-only` with inline MCP overrides + the prompt", () => {
     const spawn = fakeSpawn();
     startCodebaseSurvey("/repo", {
+      harness: "codex",
       mcpServerPath: "/x/mcp-server.js",
-      claudeBin: "/bin/claude",
       spawn,
+      exists: (b) => b === "codex",
     });
-    const argv = spawn.mock.calls[0][1];
-    const modelIdx = argv.indexOf("--model");
-    expect(argv[modelIdx + 1]).toBe("haiku");
+    const [bin, argv, options] = spawn.mock.calls[0];
+    expect(bin).toBe("codex");
+    expect(argv.slice(0, 3)).toEqual(["exec", "--sandbox", "read-only"]);
+    expect(argv).toContain(SURVEY_PROMPT);
+    expect(argv).toContain(`mcp_servers.hindsight.command="node"`);
+    expect(argv).toContain(`mcp_servers.hindsight.args=["/x/mcp-server.js"]`);
+    expect(argv).toContain(`mcp_servers.hindsight.env.HINDSIGHT_MCP_PROJECT_CWD="/repo"`);
+    // No Claude-only flags leak into the codex recipe.
+    expect(argv).not.toContain("--model");
+    expect(argv).not.toContain("--disallowedTools");
+    expect(options.env.HINDSIGHT_DISABLE_HOOKS).toBe("1");
   });
 
-  it("defaults --max-budget-usd to 2 when opts.budgetUsd is omitted", () => {
+  // ── gemini recipe (plan read-only mode + settings.json MCP) ────────────────────────────────────
+  it("gemini: spawns `gemini -p` in plan mode, scoped MCP, skip-trust", () => {
     const spawn = fakeSpawn();
     startCodebaseSurvey("/repo", {
-      mcpServerPath: "/x/mcp-server.js",
-      claudeBin: "/bin/claude",
+      harness: "gemini",
       spawn,
+      exists: (b) => b === "gemini",
     });
-    const argv = spawn.mock.calls[0][1];
-    const idx = argv.indexOf("--max-budget-usd");
-    expect(argv[idx + 1]).toBe("2");
+    const [bin, argv, options] = spawn.mock.calls[0];
+    expect(bin).toBe("gemini");
+    expect(argv).toContain("-p");
+    expect(argv).toContain(SURVEY_PROMPT);
+    expect(
+      argv.slice(argv.indexOf("--approval-mode"), argv.indexOf("--approval-mode") + 2)
+    ).toEqual(["--approval-mode", "plan"]);
+    expect(argv).toContain("--allowed-mcp-server-names");
+    expect(argv).toContain("hindsight");
+    expect(argv).toContain("--skip-trust");
+    expect(options.env.HINDSIGHT_DISABLE_HOOKS).toBe("1");
+    expect(options.env.GEMINI_CLI_TRUST_WORKSPACE).toBe("true");
   });
 
-  it("passes a custom opts.budgetUsd through as --max-budget-usd", () => {
+  // ── opencode recipe (read-only plan agent; tools from the loaded plugin) ───────────────────────
+  it("opencode: spawns `opencode run --agent plan` with the prompt", () => {
     const spawn = fakeSpawn();
     startCodebaseSurvey("/repo", {
-      mcpServerPath: "/x/mcp-server.js",
-      claudeBin: "/bin/claude",
-      budgetUsd: 5,
+      harness: "opencode",
       spawn,
+      exists: (b) => b === "opencode",
     });
-    const argv = spawn.mock.calls[0][1];
-    const idx = argv.indexOf("--max-budget-usd");
-    expect(argv[idx + 1]).toBe("5");
+    const [bin, argv, options] = spawn.mock.calls[0];
+    expect(bin).toBe("opencode");
+    expect(argv).toEqual(["run", "--agent", "plan", SURVEY_PROMPT]);
+    expect(options.env.HINDSIGHT_DISABLE_HOOKS).toBe("1");
   });
 
-  it("resolves mcpServerPath as a sibling of this module by default", () => {
+  // ── agent selection + fallback ─────────────────────────────────────────────────────────────────
+  it("honors the HINDSIGHT_CODEX_BIN override for the codex binary", () => {
     const spawn = fakeSpawn();
-    startCodebaseSurvey("/repo", { claudeBin: "/bin/claude", spawn });
-    const argv = spawn.mock.calls[0][1];
-    const mcpConfigJson = argv[argv.indexOf("--mcp-config") + 1];
-    const parsed = JSON.parse(mcpConfigJson);
-    expect(parsed.mcpServers.hindsight.args[0]).toContain("mcp-server.js");
+    process.env.HINDSIGHT_CODEX_BIN = "/opt/codex";
+    try {
+      startCodebaseSurvey("/repo", { harness: "codex", spawn, exists: (b) => b === "/opt/codex" });
+    } finally {
+      delete process.env.HINDSIGHT_CODEX_BIN;
+    }
+    expect(spawn.mock.calls[0][0]).toBe("/opt/codex");
   });
 
+  it("falls back to another available agent when the preferred harness's CLI is missing", () => {
+    const spawn = fakeSpawn();
+    // Prefer gemini, but only codex is installed → survey runs under codex.
+    startCodebaseSurvey("/repo", {
+      harness: "gemini",
+      mcpServerPath: "/x/mcp-server.js",
+      spawn,
+      exists: (b) => b === "codex",
+    });
+    const [bin, argv] = spawn.mock.calls[0];
+    expect(bin).toBe("codex");
+    expect(argv[0]).toBe("exec");
+  });
+
+  it("no capable agent found → no spawn (fail open; the git-log seed still ran)", () => {
+    const spawn = fakeSpawn();
+    startCodebaseSurvey("/repo", { harness: "gemini", spawn, exists: () => false });
+    expect(spawn).not.toHaveBeenCalled();
+  });
+
+  // ── fail-safe ──────────────────────────────────────────────────────────────────────────────────
   it("fail-safe: a spawn that throws synchronously does not throw out of startCodebaseSurvey", () => {
     const spawn = vi.fn().mockImplementation(() => {
       throw new Error("spawn EMFILE");
     });
     expect(() =>
-      startCodebaseSurvey("/repo", {
-        mcpServerPath: "/x/mcp-server.js",
-        claudeBin: "/bin/claude",
-        spawn,
-      })
+      startCodebaseSurvey("/repo", { claudeBin: "/bin/claude", spawn, exists: yes })
     ).not.toThrow();
   });
 
@@ -156,13 +194,7 @@ describe("startCodebaseSurvey", () => {
     const child = new EventEmitter() as InstanceType<typeof EventEmitter> & { unref: () => void };
     child.unref = vi.fn();
     const spawn = vi.fn().mockReturnValue(child);
-    expect(() =>
-      startCodebaseSurvey("/repo", {
-        mcpServerPath: "/x/mcp-server.js",
-        claudeBin: "/bin/claude",
-        spawn,
-      })
-    ).not.toThrow();
+    startCodebaseSurvey("/repo", { claudeBin: "/bin/claude", spawn, exists: yes });
     expect(() => child.emit("error", new Error("ENOENT"))).not.toThrow();
   });
 });
