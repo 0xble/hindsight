@@ -149,8 +149,9 @@ export class RuntimeCore {
     const excerpt = q.length > 48 ? `${q.slice(0, 48)}…` : q;
     const pageTitles = [...new Set(sections.map((s) => s.pageTitle))];
     console.error(
-      `${brandWord()} ${reflectAnswer ? "applying this repo's past decisions" : "learning this repo"}` +
-        (pageTitles.length ? ` · “${excerpt}” → ${pageTitles.join(", ")}` : "")
+      pageTitles.length
+        ? `${brandWord()} · “${excerpt}” → ${pageTitles.join(", ")}`
+        : `${brandWord()} · memory warming up`
     );
     if (refreshDue) {
       blocks.push(buildRosterRefresh(this.pagesCache.map((p) => ({ id: p.id, title: p.title }))));

@@ -44,7 +44,7 @@ describe("buildSessionStartContext", () => {
     expect(typeof state.seededAt).toBe("string");
     expect(state.seededAt).not.toBe("");
     // The learning note is USER-VISIBLE (systemMessage), not buried in model context.
-    expect(out.systemMessage).toContain("Hindsight is learning");
+    expect(out.systemMessage).toContain("is learning");
     expect(out.systemMessage).toContain("bank-1");
     // The knowledge preamble is model context, lists live pages, and drops the old static mission.
     expect(out.additionalContext).toContain("<hindsight_knowledge>");
@@ -70,7 +70,7 @@ describe("buildSessionStartContext", () => {
     });
     expect(startSeed).toHaveBeenCalledWith("/repo/dir", { limit: 300 });
     expect(startSurvey).not.toHaveBeenCalled();
-    expect(out.systemMessage).toContain("Hindsight is learning");
+    expect(out.systemMessage).toContain("is learning");
   });
 
   it("non-git dir -> no seed, listDocumentIds not called, roster preamble only (no learning note)", async () => {
@@ -122,7 +122,7 @@ describe("buildSessionStartContext", () => {
     // The live bank is consulted despite the stored seededAt, and an empty bank reseeds.
     expect(called).toBe(true);
     expect(startSeed).toHaveBeenCalledWith("/repo/dir", { limit: 300 });
-    expect(out.systemMessage).toContain("Hindsight is learning");
+    expect(out.systemMessage).toContain("is learning");
   });
 
   it("stale seededAt + WARM bank -> deepen engine still fires (idempotent), but no cold-only note/state churn", async () => {
@@ -237,7 +237,7 @@ describe("buildSessionStartContext", () => {
     expect(out.additionalContext).toContain("No knowledge pages yet");
     expect(out.additionalContext).not.toContain("(p1)");
     // The background-learning note is still user-visible.
-    expect(out.systemMessage).toContain("Hindsight is learning");
+    expect(out.systemMessage).toContain("is learning");
   });
 
   it("autoSeed:false -> skips the whole seed branch (no listDocumentIds call), roster preamble only", async () => {

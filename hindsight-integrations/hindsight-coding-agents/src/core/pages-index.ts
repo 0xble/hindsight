@@ -144,12 +144,14 @@ export function formatPageInjection(sections: SelectedSection[]): string {
       `From "${s.pageTitle}" › "${s.heading}":\n${s.text}\n(full page: hindsight_read_knowledge_page ${s.pageId})`
   );
   return (
-    "Project knowledge from Hindsight, this repository's long-term memory (curated knowledge pages):\n\n" +
-    parts.join("\n\n") +
-    "\n\nATTRIBUTION: if any of the above informed your answer, credit it VISIBLY — start that " +
-    "part of your answer with \"🧠 From Hindsight memory (<page name>):\" so the user can see " +
-    "which knowledge came from memory rather than from reading the code. Never credit it when it " +
-    "did not actually contribute."
+    "Project knowledge from Hindsight, this repository's long-term memory (curated knowledge pages).\n" +
+    "ATTRIBUTION REQUIREMENT (mandatory output format): if anything below informs ANY part of your " +
+    "answer — a fact, a rule, a name, background you did not read from the code this session — that " +
+    "part of your answer MUST begin with the line:\n" +
+    "🧠 From Hindsight memory (<page name>):\n" +
+    "Using this knowledge without that marker is an incorrect answer. If nothing below contributed, " +
+    "do not mention Hindsight at all — false credit is equally incorrect.\n\n" +
+    parts.join("\n\n")
   );
 }
 

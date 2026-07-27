@@ -96,7 +96,6 @@ export async function buildHookOutput(args: {
 
   // ── reflect: once per session, on the first prompt ────────────────────────────
   let reflectAnswer = cached.reflectAnswer;
-  let reflectNote: string;
   if (reflectAnswer === undefined) {
     const t0 = Date.now();
     try {
@@ -109,22 +108,14 @@ export async function buildHookOutput(args: {
         chars: reflectAnswer.length,
         query: prompt.slice(0, 80),
       });
-      reflectNote = reflectAnswer
-        ? "applying this repo's past decisions"
-        : "learning this repo — no history for this task yet";
     } catch (e) {
       reflectAnswer = ""; // ran and failed — don't retry every turn; the diag trail records it
-      reflectNote = "memory offline this session";
       diag(harness, "reflect_failed", {
         ms: Date.now() - t0,
         error: String((e as Error)?.message || e).slice(0, 200),
         query: prompt.slice(0, 80),
       });
     }
-  } else {
-    reflectNote = reflectAnswer
-      ? "applying this repo's past decisions"
-      : "learning this repo — no history for this task yet";
   }
 
   // ── knowledge pages: fetched on the roster cadence, matched locally every turn ─
@@ -169,14 +160,13 @@ export async function buildHookOutput(args: {
   }
   const kept = blocks.filter(Boolean);
 
-  // The per-turn user-facing notice: what Hindsight actually delivered this turn, including the
-  // match query (the prompt drives the local section matching) and the pages it returned.
+  // The per-turn user-facing notice: the brand plus what went into context this turn.
   const q = prompt.replace(/\s+/g, " ").trim();
   const excerpt = q.length > 48 ? `${q.slice(0, 48)}…` : q;
   const pageTitles = [...new Set(sections.map((s) => s.pageTitle))];
-  const notice =
-    `${brandWord()} ${reflectNote}` +
-    (pageTitles.length ? ` · “${excerpt}” → ${pageTitles.join(", ")}` : "");
+  const notice = pageTitles.length
+    ? `${brandWord()} · “${excerpt}” → ${pageTitles.join(", ")}`
+    : `${brandWord()} · memory warming up`;
 
   return { context: kept.length ? kept.join("\n\n") : undefined, notice };
 }

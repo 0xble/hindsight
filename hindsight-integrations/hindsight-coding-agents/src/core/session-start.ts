@@ -25,6 +25,7 @@ import { startCodebaseSurvey, type SurveyHarness } from "./survey";
 import { loadConfig } from "./config";
 import type { Config } from "./config";
 import { deriveBankId } from "./bank";
+import { brandWord } from "./brand";
 import { diag } from "./diag";
 import { parsePageList, buildKnowledgePreamble } from "./knowledge-injection";
 import type { ClientOpts } from "./hindsight";
@@ -37,24 +38,12 @@ interface SeedContextClient {
 }
 
 /**
- * The Hindsight LOGO — the API server's startup pixel art (hindsight_api/banner.py) re-rendered
- * FOREGROUND-ONLY: the server original paints half its pixels with ANSI background colors, which
- * Claude Code's TUI strips, deleting half the logo. Same pixel grid, same gradient — each cell is
- * a fg-colored ▀/▄/█ instead of a fg/bg pair, so it renders identically wherever fg colors work.
- */
-const LOGO =
-  "  \x1b[38;2;9;127;184m\u2584\x1b[0m\x1b[38;2;6;131;182m\u2588\x1b[0m       \x1b[38;2;10;143;162m\u2588\x1b[0m\x1b[38;2;7;140;156m\u2584\x1b[0m\n \x1b[38;2;8;125;192m\u2584\x1b[0m \x1b[38;2;3;132;191m\u2580\x1b[0m\x1b[38;2;2;133;192m\u2584\x1b[0m \x1b[38;2;3;132;180m\u2584\x1b[0m\x1b[38;2;1;137;184m\u2584\x1b[0m\x1b[38;2;3;133;174m\u2584\x1b[0m \x1b[38;2;3;142;176m\u2584\x1b[0m\x1b[38;2;4;142;169m\u2580\x1b[0m \x1b[38;2;10;144;164m\u2584\x1b[0m\n\x1b[38;2;6;121;195m\u2580\x1b[0m\x1b[38;2;5;128;203m\u2580\x1b[0m\x1b[38;2;4;124;197m\u2588\x1b[0m\x1b[38;2;2;126;196m\u2584\x1b[0m\x1b[38;2;2;129;192m\u2588\x1b[0m\x1b[38;2;1;141;205m\u2588\x1b[0m\x1b[38;2;1;141;196m\u2580\x1b[0m\x1b[38;2;1;135;183m\u2580\x1b[0m\x1b[38;2;1;148;198m\u2580\x1b[0m\x1b[38;2;1;145;191m\u2588\x1b[0m\x1b[38;2;2;135;173m\u2588\x1b[0m\x1b[38;2;3;138;173m\u2584\x1b[0m\x1b[38;2;4;138;167m\u2588\x1b[0m\x1b[38;2;7;144;169m\u2580\x1b[0m\x1b[38;2;7;139;158m\u2580\x1b[0m\n   \x1b[38;2;2;126;201m\u2588\x1b[0m\x1b[38;2;0;132;206m\u2588\x1b[0m\x1b[38;2;2;128;196m\u2584\x1b[0m \x1b[38;2;4;140;201m\u2588\x1b[0m \x1b[38;2;1;135;186m\u2584\x1b[0m\x1b[38;2;1;143;190m\u2588\x1b[0m\x1b[38;2;2;136;176m\u2588\x1b[0m\n \x1b[38;2;8;119;204m\u2588\x1b[0m\x1b[38;2;3;121;203m\u2580\x1b[0m \x1b[38;2;3;122;192m\u2580\x1b[0m\x1b[38;2;1;138;216m\u2580\x1b[0m\x1b[38;2;1;133;204m\u2588\x1b[0m\x1b[38;2;1;128;193m\u2588\x1b[0m\x1b[38;2;1;137;199m\u2588\x1b[0m\x1b[38;2;1;140;196m\u2580\x1b[0m  \x1b[38;2;4;134;175m\u2580\x1b[0m\x1b[38;2;10;135;170m\u2588\x1b[0m";
-
-/**
- * The session banner: one plain line naming the repo's bank, then the server's logo. Shown on
- * EVERY session start — Hindsight's presence should be visible, not inferred. The text goes FIRST:
- * the host TUI prefixes the message's first line (e.g. Claude Code's "SessionStart:startup says:"),
- * which would displace the logo's first row and break the pixel alignment — the text line absorbs
- * the prefix so every logo row starts at column 0. Wording reads "learning" on a cold repo (first
- * ingest running) and "remembering" once the bank is warm.
+ * The session banner: one line — the gradient "Hindsight" wordmark (same colors as the API
+ * server's banner) plus the repo's bank. Shown on EVERY session start; "learning" on a cold
+ * repo (first ingest running), "remembering" once the bank is warm.
  */
 export function buildSeedBanner(bankId: string, cold = true): string {
-  return `Hindsight is ${cold ? "learning" : "remembering"} this repo → memory bank “${bankId}”\n\n${LOGO}`;
+  return `${brandWord()} is ${cold ? "learning" : "remembering"} this repo → memory bank “${bankId}”`;
 }
 
 /** Split SessionStart output: `systemMessage` renders in the terminal (user-visible);
