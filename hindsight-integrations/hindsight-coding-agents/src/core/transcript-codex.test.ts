@@ -18,7 +18,7 @@ afterEach(() => {
 const item = (payload: unknown) => JSON.stringify({ type: "response_item", payload });
 
 describe("readCodexTranscript", () => {
-  it("keeps user/assistant text + function calls/outputs; drops developer/synthetic/reasoning/injected", () => {
+  it("keeps user/assistant text + compact action turns; drops developer/synthetic/reasoning/outputs/injected", () => {
     const lines = [
       // non-response_item line: dropped
       JSON.stringify({ type: "session_meta", payload: { cwd: "/repo" } }),
@@ -68,14 +68,14 @@ describe("readCodexTranscript", () => {
         phase: "commentary",
         content: [{ type: "output_text", text: "I'll add exponential backoff." }],
       }),
-      // tool call: kept
+      // tool call: kept as a compact role:"action" turn (name + primary target, no args)
       item({
         type: "function_call",
         name: "exec_command",
-        arguments: '{"cmd":"npm test"}',
+        arguments: '{"command":"npm test"}',
         call_id: "call_1",
       }),
-      // tool result: kept, role "tool"
+      // tool result: dropped — outputs are mechanical noise for extraction
       item({ type: "function_call_output", call_id: "call_1", output: "12 passed" }),
       // assistant final answer: kept
       item({
@@ -95,8 +95,7 @@ describe("readCodexTranscript", () => {
     expect(turns).toEqual([
       { role: "user", content: "add retry backoff to the uploader" },
       { role: "assistant", content: "I'll add exponential backoff." },
-      { role: "assistant", content: '**exec_command** {"cmd":"npm test"}' },
-      { role: "tool", content: "↳ 12 passed" },
+      { role: "action", content: "exec_command npm test" },
       { role: "assistant", content: "Done — backoff added, tests pass." },
     ]);
   });
@@ -119,16 +118,17 @@ describe("readCodexTranscript", () => {
     expect(turns).toEqual([{ role: "user", content: "Why retry?" }]);
   });
 
-  it("truncates a very long function_call_output to the 2000-char cap", () => {
+  it("a function_call with unparsable arguments still yields the bare tool name", () => {
+    writeFileSync(file, item({ type: "function_call", name: "shell", arguments: "not json" }));
+    expect(readCodexTranscript(file)).toEqual([{ role: "action", content: "shell" }]);
+  });
+
+  it("drops function_call_output entirely — even a huge one produces no turn", () => {
     writeFileSync(
       file,
       item({ type: "function_call_output", call_id: "c", output: "x".repeat(5000) })
     );
-    const turns = readCodexTranscript(file);
-    expect(turns).toHaveLength(1);
-    expect(turns[0].role).toBe("tool");
-    expect(turns[0].content).toContain("… (truncated)");
-    expect(turns[0].content.length).toBeLessThan(2100);
+    expect(readCodexTranscript(file)).toEqual([]);
   });
 
   it("fails open (returns []) when the file cannot be read", () => {

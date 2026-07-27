@@ -16,7 +16,7 @@ afterEach(() => {
 });
 
 describe("readGeminiTranscript", () => {
-  it("reconstructs the mutation log: user text + assistant string + tool result; drops synthetic/reasoning", () => {
+  it("reconstructs the mutation log: user text + assistant string; drops synthetic/reasoning/tool results", () => {
     const lines = [
       // header line: dropped
       JSON.stringify({ kind: "main", sessionId: "s1", projectHash: "h", startTime: "t" }),
@@ -50,7 +50,7 @@ describe("readGeminiTranscript", () => {
         content: "Let me check.",
         thoughts: [{ subject: "x" }],
       }),
-      // tool result: a user message whose content is a functionResponse → role "tool"
+      // tool result: a user message whose content is a functionResponse → dropped entirely
       JSON.stringify({
         id: "t1",
         type: "user",
@@ -66,12 +66,11 @@ describe("readGeminiTranscript", () => {
     expect(readGeminiTranscript(file)).toEqual([
       { role: "user", content: "how many files are here?" },
       { role: "assistant", content: "Let me check." },
-      { role: "tool", content: "↳ list_directory: 47 items" },
       { role: "assistant", content: "There are 47 files." },
     ]);
   });
 
-  it("renders a functionCall part (when present) as **name** {args}", () => {
+  it("renders a functionCall part as a compact role:'action' turn (name + primary target, no args)", () => {
     const lines = [
       JSON.stringify({ id: "u1", type: "user", content: [{ text: "list files" }] }),
       JSON.stringify({
@@ -83,7 +82,7 @@ describe("readGeminiTranscript", () => {
     writeFileSync(file, lines.join("\n"));
     expect(readGeminiTranscript(file)).toEqual([
       { role: "user", content: "list files" },
-      { role: "assistant", content: '**run_shell_command** {"command":"ls"}' },
+      { role: "action", content: "run_shell_command ls" },
     ]);
   });
 
@@ -99,7 +98,7 @@ describe("readGeminiTranscript", () => {
     expect(readGeminiTranscript(file)).toEqual([{ role: "user", content: "Why retry?" }]);
   });
 
-  it("truncates a very long tool output to the shared cap", () => {
+  it("drops functionResponse tool outputs entirely — even a huge one produces no turn", () => {
     writeFileSync(
       file,
       JSON.stringify({
@@ -110,11 +109,7 @@ describe("readGeminiTranscript", () => {
         ],
       })
     );
-    const turns = readGeminiTranscript(file);
-    expect(turns).toHaveLength(1);
-    expect(turns[0].role).toBe("tool");
-    expect(turns[0].content).toContain("… (truncated)");
-    expect(turns[0].content.length).toBeLessThan(2100);
+    expect(readGeminiTranscript(file)).toEqual([]);
   });
 
   it("fails open (returns []) when the file cannot be read", () => {

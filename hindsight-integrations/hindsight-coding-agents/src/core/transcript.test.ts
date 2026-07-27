@@ -17,7 +17,7 @@ afterEach(() => {
 });
 
 describe("readClaudeTranscript", () => {
-  it("captures text + tool_use + tool_result, dropping non-message/isMeta/isSidechain/thinking/empty lines and tolerating malformed or non-object JSON lines", () => {
+  it("captures text + compact action turns, dropping tool_result/non-message/isMeta/isSidechain/thinking/empty lines and tolerating malformed or non-object JSON lines", () => {
     const lines = [
       // non-message line: dropped
       JSON.stringify({ type: "last-prompt", leafUuid: "x" }),
@@ -39,7 +39,7 @@ describe("readClaudeTranscript", () => {
           ],
         },
       }),
-      // kept: a tool_use-only assistant line — the engineering action IS the substance
+      // kept: a tool_use-only assistant line becomes a compact role:"action" turn (name + target)
       JSON.stringify({
         type: "assistant",
         message: {
@@ -47,7 +47,7 @@ describe("readClaudeTranscript", () => {
           content: [{ type: "tool_use", name: "Bash", input: { command: "npm test" } }],
         },
       }),
-      // kept: a tool_result-only user line is reclassified role "tool" (it's an env return)
+      // dropped: a tool_result-only user line — outputs are mechanical noise for extraction
       JSON.stringify({
         type: "user",
         message: { role: "user", content: [{ type: "tool_result", content: "12 passed" }] },
@@ -80,16 +80,15 @@ describe("readClaudeTranscript", () => {
     expect(result).toEqual([
       { role: "user", content: "how do we validate input?", timestamp: "2026-01-01T00:00:00Z" },
       { role: "assistant", content: "We use zod.", timestamp: "2026-01-01T00:00:01Z" },
-      { role: "assistant", content: '**Bash** {"command":"npm test"}' },
-      { role: "tool", content: "↳ 12 passed" },
+      { role: "action", content: "Bash npm test" },
     ]);
   });
 
-  it("renders a tool_use call with its input, and truncates a very long tool_result", () => {
-    const bigResult = "x".repeat(5000);
+  it("splits a mixed text + tool_use message into a prose turn plus an action turn; drops the tool_result", () => {
     const lines = [
       JSON.stringify({
         type: "assistant",
+        timestamp: "2026-01-01T00:00:02Z",
         message: {
           role: "assistant",
           content: [
@@ -104,22 +103,45 @@ describe("readClaudeTranscript", () => {
       }),
       JSON.stringify({
         type: "user",
-        message: { role: "user", content: [{ type: "tool_result", content: bigResult }] },
+        message: { role: "user", content: [{ type: "tool_result", content: "x".repeat(5000) }] },
       }),
     ];
     writeFileSync(file, lines.join("\n"));
 
     const result = readClaudeTranscript(file);
 
-    expect(result[0].role).toBe("assistant");
-    expect(result[0].content).toContain("Editing the uploader.");
-    expect(result[0].content).toContain("**Edit**");
-    expect(result[0].content).toContain("uploader.ts");
-    // tool_result truncated to the 2000-char cap + marker (not the full 5000 chars)
-    expect(result[1].role).toBe("tool");
-    expect(result[1].content.startsWith("↳ ")).toBe(true);
-    expect(result[1].content).toContain("… (truncated)");
-    expect(result[1].content.length).toBeLessThan(2100);
+    expect(result).toEqual([
+      { role: "assistant", content: "Editing the uploader.", timestamp: "2026-01-01T00:00:02Z" },
+      // Action line: tool name + primary target only — no arguments, no output.
+      { role: "action", content: "Edit uploader.ts", timestamp: "2026-01-01T00:00:02Z" },
+    ]);
+  });
+
+  it("caps a very long action target at 100 chars, and falls back to the bare tool name when the input has no target key", () => {
+    const longCmd = "echo " + "y".repeat(200);
+    const lines = [
+      JSON.stringify({
+        type: "assistant",
+        message: {
+          role: "assistant",
+          content: [{ type: "tool_use", name: "Bash", input: { command: longCmd } }],
+        },
+      }),
+      JSON.stringify({
+        type: "assistant",
+        message: {
+          role: "assistant",
+          content: [{ type: "tool_use", name: "TodoWrite", input: { todos: [] } }],
+        },
+      }),
+    ];
+    writeFileSync(file, lines.join("\n"));
+
+    const result = readClaudeTranscript(file);
+
+    expect(result[0].role).toBe("action");
+    expect(result[0].content).toBe(`Bash ${longCmd.slice(0, 100)}…`);
+    expect(result[1]).toEqual({ role: "action", content: "TodoWrite" });
   });
 
   it("strips injected recall context so retained turns can't feed memory back into the bank", () => {

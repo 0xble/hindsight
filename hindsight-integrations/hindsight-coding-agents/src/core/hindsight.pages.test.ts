@@ -178,16 +178,8 @@ function stubFetchRouted(
   );
 }
 
-describe("HindsightClient.createPages tag-scoping + Initiatives folder", () => {
-  const TIER_BY_NAME: Record<string, string> = {
-    "Component map": "knowledge:component",
-    "Core concepts": "knowledge:concept",
-    "Conventions and patterns": "knowledge:convention",
-    "Key decisions and rationale": "knowledge:decision",
-    "Initiatives and enhancements": "knowledge:feature-work",
-  };
-
-  it("each seeded page POST carries the mapped knowledge:<tier> tag", async () => {
+describe("HindsightClient.createPages Initiatives folder (unscoped pages, no tags)", () => {
+  it("each seeded page POST is UNSCOPED: name + source_query + trigger, NO tags field", async () => {
     const calls: any[] = [];
     stubFetch(calls, async () => ({})); // no operation_id -> drain no-ops
     const c = new HindsightClient({ apiUrl: "http://x", bank: "repo-a" });
@@ -198,9 +190,13 @@ describe("HindsightClient.createPages tag-scoping + Initiatives folder", () => {
     );
     expect(pagePosts.length).toBe(5);
     for (const post of pagePosts) {
-      const tier = TIER_BY_NAME[post.body.name];
-      expect(tier).toBeDefined();
-      expect(post.body.tags).toEqual([tier]);
+      expect(typeof post.body.name).toBe("string");
+      expect(typeof post.body.source_query).toBe("string");
+      expect(post.body.trigger).toEqual({
+        fact_types: ["world", "experience", "observation"],
+        refresh_after_consolidation: true,
+      });
+      expect(post.body).not.toHaveProperty("tags");
     }
   });
 
@@ -297,23 +293,22 @@ describe("HindsightClient.captureInitiative", () => {
     // the /knowledge-base/pages endpoint mints its own id.
     expect(result).toEqual({ page_id: "pg" });
 
-    // Page POST: name = title, nested under the Initiatives folder. The page itself is NOT tagged
-    // with a (self-referential) relatedPageId — only the tier tag.
+    // Page POST: name = title, nested under the Initiatives folder. The page itself carries NO
+    // tags field at all (no tag taxonomy to maintain).
     const pagePost = calls.find(
       (k) => k.method === "POST" && k.url.endsWith("/knowledge-base/pages")
     );
     expect(pagePost).toBeDefined();
     expect(pagePost.body.name).toBe("Retry backoff for the uploader");
     expect(pagePost.body.parent_id).toBe("folder-abc");
-    expect(pagePost.body.tags).toEqual(["knowledge:feature-work"]);
-    expect(pagePost.body.tags.some((t: string) => t.startsWith("relatedPageId:"))).toBe(false);
+    expect(pagePost.body).not.toHaveProperty("tags");
 
-    // Marker retain POST to /memories: relatedPageId points at the REAL server page id ("pg").
+    // Marker retain POST to /memories: the ONLY tag is relatedPageId, pointing at the REAL
+    // server-assigned page id ("pg").
     const memPost = calls.find((k) => k.method === "POST" && k.url.endsWith("/memories"));
     expect(memPost).toBeDefined();
     const item = memPost.body.items[0];
-    expect(item.tags).toContain("knowledge:feature-work");
-    expect(item.tags).toContain("relatedPageId:pg");
+    expect(item.tags).toEqual(["relatedPageId:pg"]);
     expect(item.strategy).toBe("document");
     expect(memPost.body.async).toBe(true);
     // Unique per-marker document id (NOT the page id) so repeated captures accrue.
@@ -356,14 +351,13 @@ describe("HindsightClient.captureInitiative", () => {
     const memPost = calls.find((k) => k.method === "POST" && k.url.endsWith("/memories"));
     expect(memPost).toBeDefined();
     const item = memPost.body.items[0];
-    expect(item.tags).toContain("knowledge:feature-work");
-    expect(item.tags).toContain("relatedPageId:initiative-x");
+    expect(item.tags).toEqual(["relatedPageId:initiative-x"]);
     expect(item.content).toContain("Enhancement to an existing initiative");
   });
 });
 
-describe("HindsightClient.configureBank entity_labels wiring", () => {
-  it("PATCHes /config with the knowledge entity_labels tier and free-form entities on", async () => {
+describe("HindsightClient.configureBank config PATCH", () => {
+  it("PATCHes /config with the retain strategies only — NO entity_labels, NO free-form entities", async () => {
     const calls: any[] = [];
     stubFetch(calls, async () => ({ ok: true }));
     const c = new HindsightClient({ apiUrl: "http://x", bank: "repo-a" });
@@ -373,20 +367,11 @@ describe("HindsightClient.configureBank entity_labels wiring", () => {
     expect(configCall).toBeDefined();
     const updates = configCall.body.updates;
 
-    expect(Array.isArray(updates.entity_labels)).toBe(true);
-    const group = updates.entity_labels[0];
-    expect(group.key).toBe("knowledge");
-    expect(group.tag).toBe(true);
-    expect(group.type).toBe("multi-values");
-    expect(group.values).toHaveLength(5);
-    expect(group.values.map((v: any) => v.value)).toEqual([
-      "feature-work",
-      "decision",
-      "convention",
-      "component",
-      "concept",
-    ]);
-
-    expect(updates.entities_allow_free_form).toBe(true);
+    expect(updates).not.toHaveProperty("entity_labels");
+    expect(updates).not.toHaveProperty("entities_allow_free_form");
+    expect(updates.retain_default_strategy).toBe("git");
+    expect(Object.keys(updates.retain_strategies)).toEqual(
+      expect.arrayContaining(["git", "gitlog", "chat", "document", "session"])
+    );
   });
 });

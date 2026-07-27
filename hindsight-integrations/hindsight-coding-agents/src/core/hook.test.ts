@@ -17,94 +17,232 @@ afterEach(() => {
   rmSync(root, { recursive: true, force: true });
 });
 
+/** One page whose "Retry backoff" section overlaps upload/retry/backoff prompts (score >= floor). */
+const PAGE_CONTENT =
+  "Preamble prose about this page.\n\n" +
+  "## Retry backoff\n" +
+  "Uploads retry with exponential backoff and a 200ms jitter window.\n\n" +
+  "## Auth tokens\n" +
+  "Tokens rotate daily via the auth service.\n";
+
+/** A prompt whose terms hit the "Retry backoff" section's heading terms. */
+const MATCHING_PROMPT = "why does the upload retry backoff fail?";
+/** A prompt matching nothing in the page (below the score floor). */
+const UNRELATED_PROMPT = "completely unrelated banana smoothie question";
+
+function makeClient(overrides: Partial<{
+  reflect: (query: string, opts: { budget?: string; timeoutMs?: number }) => Promise<string>;
+  listPages: () => Promise<unknown>;
+  getPage: (pageId: string) => Promise<unknown>;
+}> = {}) {
+  return {
+    reflect: vi.fn(async () => "REFLECT_ANSWER"),
+    listPages: vi.fn(async () => ({ items: [{ id: "p1", name: "Uploader guide" }] })),
+    getPage: vi.fn(async () => ({ content: PAGE_CONTENT })),
+    ...overrides,
+  };
+}
+
 describe("buildHookOutput", () => {
-  it("injects the memories block (recall-only, no reflect)", async () => {
+  it("turn 1: injects the reflect answer wrapped in the system-injection preamble", async () => {
     const cfg = resolveConfig({});
+    const client = makeClient();
     const result = await buildHookOutput({
       harness: "claude-code",
-      prompt: "hello",
+      prompt: UNRELATED_PROMPT,
       cfg,
-      client: {
-        recall: async () => [{ text: "MEM_ONE" }],
-        listPages: async () => ({ items: [] }),
-      },
+      client,
       cacheFile,
     });
-    expect(result).toContain("<hindsight_memories>");
-    expect(result).toContain("MEM_ONE");
-    expect(result).toContain("SHOW HINDSIGHT WORKING"); // the attribution directive leads the block
+    expect(result).toContain("Relevant project memory");
+    expect(result).toContain("REFLECT_ANSWER");
     expect(existsSync(cacheFile)).toBe(true);
-    expect(JSON.parse(readFileSync(cacheFile, "utf8"))).toEqual({ turns: 1 });
+    const cached = JSON.parse(readFileSync(cacheFile, "utf8"));
+    expect(cached.turns).toBe(1);
+    expect(cached.reflectAnswer).toBe("REFLECT_ANSWER");
   });
 
-  it("empty recall -> undefined", async () => {
+  it("reflect runs ONCE per session: cached on turn 1, not called again on turn 2", async () => {
     const cfg = resolveConfig({});
-    const result = await buildHookOutput({
+    const client = makeClient();
+    const t1 = await buildHookOutput({
       harness: "claude-code",
-      prompt: "hello",
+      prompt: UNRELATED_PROMPT,
       cfg,
-      client: { recall: async () => [], listPages: async () => ({ items: [] }) },
+      client,
       cacheFile,
     });
-    expect(result).toBeUndefined();
-    expect(JSON.parse(readFileSync(cacheFile, "utf8"))).toEqual({ turns: 1 });
-  });
-
-  it("recall rejects -> undefined, no throw, turn still counted", async () => {
-    const cfg = resolveConfig({});
-    const result = await buildHookOutput({
+    const t2 = await buildHookOutput({
       harness: "claude-code",
-      prompt: "hello",
+      prompt: "another prompt entirely",
       cfg,
-      client: {
-        recall: async () => {
-          throw new Error("recall boom");
-        },
-        listPages: async () => ({ items: [] }),
-      },
+      client,
       cacheFile,
     });
-    expect(result).toBeUndefined();
-    expect(JSON.parse(readFileSync(cacheFile, "utf8"))).toEqual({ turns: 1 });
+    expect(client.reflect).toHaveBeenCalledTimes(1);
+    // The cached answer is re-injected every turn.
+    expect(t1).toContain("REFLECT_ANSWER");
+    expect(t2).toContain("REFLECT_ANSWER");
+    expect(JSON.parse(readFileSync(cacheFile, "utf8")).turns).toBe(2);
   });
 
-  it("threads recallMaxTokens/recallTimeoutMs config into recall", async () => {
-    const cfg = resolveConfig({ recallMaxTokens: 512, recallTimeoutMs: 7000 });
-    const recallSpy = vi.fn(async () => [{ text: "MEM" }]);
+  it("reflect rejection: caches '' (no retry next turn), no throw, no reflect block", async () => {
+    const cfg = resolveConfig({});
+    const client = makeClient({
+      reflect: vi.fn(async () => {
+        throw new Error("reflect boom");
+      }),
+    });
+    const t1 = await buildHookOutput({
+      harness: "claude-code",
+      prompt: UNRELATED_PROMPT,
+      cfg,
+      client,
+      cacheFile,
+    });
+    // Nothing matched, reflect failed -> nothing to inject at all.
+    expect(t1).toBeUndefined();
+    expect(JSON.parse(readFileSync(cacheFile, "utf8")).reflectAnswer).toBe("");
+
+    await buildHookOutput({
+      harness: "claude-code",
+      prompt: UNRELATED_PROMPT,
+      cfg,
+      client,
+      cacheFile,
+    });
+    // The failure is cached as "" — reflect is NOT retried on the next turn.
+    expect(client.reflect).toHaveBeenCalledTimes(1);
+  });
+
+  it("caps the reflect timeout at 25000ms even when config asks for more", async () => {
+    const cfg = resolveConfig({}); // reflectTimeoutMs default 120000
+    const client = makeClient();
     await buildHookOutput({
       harness: "claude-code",
       prompt: "the prompt",
       cfg,
-      client: { recall: recallSpy, listPages: async () => ({ items: [] }) },
+      client,
       cacheFile,
     });
-    expect(recallSpy).toHaveBeenCalledWith("the prompt", { maxTokens: 512, timeoutMs: 7000 });
+    expect(client.reflect).toHaveBeenCalledWith("the prompt", {
+      budget: "high",
+      timeoutMs: 25000,
+    });
   });
 
-  it("defaults the recall token budget to 750", async () => {
-    const cfg = resolveConfig({});
-    const recallSpy = vi.fn(async () => [{ text: "MEM" }]);
+  it("uses the configured reflect timeout when it is below the 25s cap", async () => {
+    const cfg = resolveConfig({ reflectTimeoutMs: 5000 });
+    const client = makeClient();
     await buildHookOutput({
       harness: "claude-code",
       prompt: "the prompt",
       cfg,
-      client: { recall: recallSpy, listPages: async () => ({ items: [] }) },
+      client,
       cacheFile,
     });
-    expect(recallSpy).toHaveBeenCalledWith("the prompt", { maxTokens: 750, timeoutMs: 10000 });
+    expect(client.reflect).toHaveBeenCalledWith("the prompt", {
+      budget: "high",
+      timeoutMs: 5000,
+    });
+  });
+
+  it("fetches pages on the first turn and injects the section matching the prompt", async () => {
+    const cfg = resolveConfig({});
+    const client = makeClient();
+    const result = await buildHookOutput({
+      harness: "claude-code",
+      prompt: MATCHING_PROMPT,
+      cfg,
+      client,
+      cacheFile,
+    });
+    expect(client.listPages).toHaveBeenCalledTimes(1);
+    expect(client.getPage).toHaveBeenCalledWith("p1");
+    expect(result).toContain("Relevant project knowledge");
+    expect(result).toContain('"Uploader guide"');
+    expect(result).toContain('"Retry backoff"');
+    expect(result).toContain("200ms jitter window");
+    expect(result).toContain("hindsight_read_knowledge_page p1");
+    // The non-matching section is not injected.
+    expect(result).not.toContain("Auth tokens");
+    // The fetched pages are cached for later turns.
+    const cached = JSON.parse(readFileSync(cacheFile, "utf8"));
+    expect(cached.pages.atTurn).toBe(1);
+    expect(cached.pages.list).toEqual([
+      { id: "p1", title: "Uploader guide", content: PAGE_CONTENT },
+    ]);
+  });
+
+  it("no section matches the prompt -> no pages block", async () => {
+    const cfg = resolveConfig({});
+    const client = makeClient();
+    const result = await buildHookOutput({
+      harness: "claude-code",
+      prompt: UNRELATED_PROMPT,
+      cfg,
+      client,
+      cacheFile,
+    });
+    expect(result).toContain("REFLECT_ANSWER"); // reflect still injected
+    expect(result).not.toContain("Relevant project knowledge");
+    expect(result).not.toContain("hindsight_read_knowledge_page");
+  });
+
+  it("injects the page-roster refresh only on cadence turns", async () => {
+    const cfg = resolveConfig({ pageRefreshEveryTurns: 2 });
+    const client = makeClient();
+    // turn 1: not a multiple of 2 -> no refresh
+    const t1 = await buildHookOutput({
+      harness: "claude-code",
+      prompt: UNRELATED_PROMPT,
+      cfg,
+      client,
+      cacheFile,
+    });
+    expect(t1).not.toContain("hindsight_knowledge_refresh");
+    // turn 2: multiple of 2 -> refresh injected, listing the page roster
+    const t2 = await buildHookOutput({
+      harness: "claude-code",
+      prompt: UNRELATED_PROMPT,
+      cfg,
+      client,
+      cacheFile,
+    });
+    expect(t2).toContain("<hindsight_knowledge_refresh>");
+    expect(t2).toContain("Uploader guide (p1)");
+    // reflect answer still present alongside the refresh block
+    expect(t2).toContain("REFLECT_ANSWER");
+  });
+
+  it("listPages rejection: no throw, reflect block still returned, turn still counted", async () => {
+    const cfg = resolveConfig({});
+    const client = makeClient({
+      listPages: vi.fn(async () => {
+        throw new Error("listPages boom");
+      }),
+    });
+    const result = await buildHookOutput({
+      harness: "claude-code",
+      prompt: MATCHING_PROMPT,
+      cfg,
+      client,
+      cacheFile,
+    });
+    expect(result).toContain("REFLECT_ANSWER");
+    expect(result).not.toContain("Relevant project knowledge");
+    expect(JSON.parse(readFileSync(cacheFile, "utf8")).turns).toBe(1);
   });
 
   it("persists and increments the turn counter each call", async () => {
     const cfg = resolveConfig({ pageRefreshEveryTurns: 3 });
+    const client = makeClient();
     for (let n = 1; n <= 4; n++) {
       await buildHookOutput({
         harness: "claude-code",
         prompt: `turn ${n}`,
         cfg,
-        client: {
-          recall: async () => [],
-          listPages: async () => ({ items: [{ id: "p1", name: "Component map" }] }),
-        },
+        client,
         cacheFile,
       });
       const cached = JSON.parse(readFileSync(cacheFile, "utf8")) as { turns?: number };
@@ -112,62 +250,37 @@ describe("buildHookOutput", () => {
     }
   });
 
-  it("injects the page-roster refresh only on cadence turns", async () => {
+  it("re-fetches pages every pageRefreshEveryTurns turns, serving the cache in between", async () => {
     const cfg = resolveConfig({ pageRefreshEveryTurns: 2 });
-    const client = {
-      recall: async () => [{ text: "MEM" }],
-      listPages: async () => ({ items: [{ id: "p1", name: "Component map" }] }),
-    };
-    // turn 1: not a multiple of 2 -> no refresh
-    const t1 = await buildHookOutput({
-      harness: "claude-code",
-      prompt: "one",
-      cfg,
-      client,
-      cacheFile,
-    });
-    expect(t1).not.toContain("Component map");
-    expect(t1).not.toContain("hindsight_knowledge_refresh");
-    // turn 2: multiple of 2 -> refresh injected
-    const t2 = await buildHookOutput({
-      harness: "claude-code",
-      prompt: "two",
-      cfg,
-      client,
-      cacheFile,
-    });
-    expect(t2).toContain("hindsight_knowledge_refresh");
-    expect(t2).toContain("Component map");
-    // memories still present alongside the refresh block
-    expect(t2).toContain("<hindsight_memories>");
-  });
-
-  it("listPages rejection on a cadence turn still injects the tool+capture reminder (no roster), recall intact, no throw", async () => {
-    const cfg = resolveConfig({ pageRefreshEveryTurns: 2 });
-    // Seed the cache so this is turn 2 (a cadence turn) without needing a first turn.
+    const client = makeClient();
+    // Seed the cache so this session already has pages from turn 1.
     mkdirSync(join(root, "cache"), { recursive: true });
-    writeFileSync(cacheFile, JSON.stringify({ turns: 1 }));
-    const result = await buildHookOutput({
+    writeFileSync(
+      cacheFile,
+      JSON.stringify({
+        turns: 1,
+        reflectAnswer: "CACHED",
+        pages: { atTurn: 1, list: [{ id: "p1", title: "Uploader guide", content: PAGE_CONTENT }] },
+      })
+    );
+    // turn 2: 2 - 1 < 2 -> cache is fresh, no fetch
+    await buildHookOutput({
       harness: "claude-code",
-      prompt: "two",
+      prompt: UNRELATED_PROMPT,
       cfg,
-      client: {
-        recall: async () => [{ text: "MEM_KEEP" }],
-        listPages: async () => {
-          throw new Error("listPages boom");
-        },
-      },
+      client,
       cacheFile,
     });
-    expect(result).toContain("<hindsight_memories>");
-    expect(result).toContain("MEM_KEEP");
-    // The reminder re-injects even when listPages fails (empty roster fallback) — the nudge
-    // must not depend on a page existing.
-    expect(result).toContain("<hindsight_knowledge_refresh>");
-    expect(result).toContain("hindsight_capture_initiative");
-    expect(result).not.toContain("Current Hindsight knowledge pages");
-    // turns still advanced despite the listPages failure
-    expect(JSON.parse(readFileSync(cacheFile, "utf8")).turns).toBe(2);
+    expect(client.listPages).not.toHaveBeenCalled();
+    // turn 3: 3 - 1 >= 2 -> stale, re-fetched
+    await buildHookOutput({
+      harness: "claude-code",
+      prompt: UNRELATED_PROMPT,
+      cfg,
+      client,
+      cacheFile,
+    });
+    expect(client.listPages).toHaveBeenCalledTimes(1);
   });
 });
 

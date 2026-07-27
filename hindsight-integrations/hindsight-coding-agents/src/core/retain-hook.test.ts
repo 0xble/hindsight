@@ -49,12 +49,12 @@ describe("buildRetain", () => {
     expect(retainSpy).toHaveBeenCalledTimes(1);
     const [content, , documentId, tags, strategy] = retainSpy.mock.calls[0];
     expect(documentId).toBe("conversation:sess-1");
-    // A readable markdown transcript (## User / ## Assistant), not a JSON.stringify blob.
-    expect(content).toContain("## User");
-    expect(content).toContain("## Assistant");
-    expect(content).toContain("we use zod for validation");
-    expect(content).toContain("noted, zod it is");
-    expect(content).not.toContain('[{"role"'); // not the old JSON array form
+    // A JSON transcript (renderSessionJson): a stringified array of {role, content, timestamp}
+    // turns led by the REF-ID system turn.
+    const parsed = JSON.parse(content) as { role: string; content: string }[];
+    expect(parsed[0]).toMatchObject({ role: "system", content: "REF-ID: conversation:sess-1" });
+    expect(parsed[1]).toMatchObject({ role: "user", content: "we use zod for validation" });
+    expect(parsed[2]).toMatchObject({ role: "assistant", content: "noted, zod it is" });
     // Verbose `session` extraction, not the ≤2-fact `chat` extractor.
     expect(strategy).toBe("session");
     expect(tags).toEqual(["source:chat"]);
