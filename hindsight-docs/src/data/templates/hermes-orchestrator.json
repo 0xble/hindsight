@@ -1,0 +1,53 @@
+{
+  "version": "1",
+  "bank": {
+    "reflect_mission": "You are the shared memory for a multi-agent system — an orchestrator coordinating specialized sub-agents. Help the team stay aligned by recalling decisions, who owns what, hand-offs between agents, and how past escalations were resolved.",
+    "retain_mission": "Extract decisions and their rationale, task assignments and hand-offs between agents, escalations and how they were resolved, ownership boundaries, and durable operational knowledge. Ignore intra-step chatter and transient tool output.",
+    "enable_observations": true,
+    "observations_mission": "Track stable operational knowledge: which agent or domain owns what, how recurring problems get resolved, and the patterns behind successful escalations.",
+    "disposition_literalism": 4,
+    "disposition_skepticism": 4,
+    "disposition_empathy": 2
+  },
+  "mental_models": [
+    {
+      "id": "decisions-and-rationale",
+      "name": "Decisions & Rationale",
+      "source_query": "What key decisions have been made, by whom, and why? What trade-offs were considered and what was ruled out?",
+      "max_tokens": 2048,
+      "trigger": {
+        "refresh_after_consolidation": true
+      }
+    },
+    {
+      "id": "escalation-playbook",
+      "name": "Escalation Playbook",
+      "source_query": "What kinds of issues get escalated, and how were similar escalations resolved before? What worked and what didn't?",
+      "max_tokens": 1536,
+      "trigger": {
+        "refresh_after_consolidation": true
+      }
+    },
+    {
+      "id": "ownership-map",
+      "name": "Ownership Map",
+      "source_query": "Which agent, region, or domain owns which responsibilities? Where are the boundaries between agents and who handles what?",
+      "max_tokens": 1024,
+      "trigger": {
+        "refresh_after_consolidation": true
+      }
+    }
+  ],
+  "directives": [
+    {
+      "name": "Preserve decision provenance",
+      "content": "When recalling a decision, include who made it and why. Coordination depends on knowing not just what was decided but the reasoning behind it.",
+      "priority": 10
+    },
+    {
+      "name": "Escalate with context",
+      "content": "When an issue is escalated, carry forward any prior resolutions of similar issues so the next agent starts with the full picture rather than from scratch.",
+      "priority": 9
+    }
+  ]
+}

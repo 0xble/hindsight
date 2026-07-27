@@ -17,7 +17,8 @@
         "strands",
         "llamaindex",
         "local-mcp",
-        "skills"
+        "skills",
+        "hermes"
       ],
       "manifest_file": "templates/conversation.json"
     },
@@ -44,6 +45,36 @@
         "hindclaw"
       ],
       "manifest_file": "templates/personal-assistant.json"
+    },
+    {
+      "id": "hermes-gateway-bot",
+      "name": "Gateway / Community Bot",
+      "description": "For agents that talk to many people across chat platforms (Telegram, Discord, Slack). Keeps per-person profiles distinct, learns each community's norms, and tracks open threads across users.",
+      "category": "chat",
+      "integrations": [
+        "hermes"
+      ],
+      "manifest_file": "templates/hermes-gateway-bot.json"
+    },
+    {
+      "id": "hermes-orchestrator",
+      "name": "Multi-Agent Orchestrator",
+      "description": "For orchestrations of specialized agents. Remembers decisions and their rationale, ownership boundaries, hand-offs, and how past escalations were resolved. High literalism and skepticism for precise coordination.",
+      "category": "orchestration",
+      "integrations": [
+        "hermes"
+      ],
+      "manifest_file": "templates/hermes-orchestrator.json"
+    },
+    {
+      "id": "customer-support",
+      "name": "Customer Support Agent",
+      "description": "For support and client-comms agents. Remembers customer issues, resolutions, sentiment, and account context so every interaction is informed. High empathy, never re-asks known details.",
+      "category": "support",
+      "integrations": [
+        "hermes"
+      ],
+      "manifest_file": "templates/customer-support.json"
     }
   ]
 }

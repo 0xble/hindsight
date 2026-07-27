@@ -1,9 +1,13 @@
 {
   "version": "1",
   "bank": {
+    "reflect_mission": "You are the long-term memory for an always-on personal assistant. Help it feel like it truly knows the user by recalling their preferences, routines, the people in their life, and what they're currently working toward.",
     "retain_mission": "Extract the user's preferences, routines, scheduled events, commitments, people they mention, and any personal context they share. Track what they ask for repeatedly and what they care about.",
     "enable_observations": true,
-    "observations_mission": "Track the user's stable preferences, recurring routines, important people and relationships, and how their priorities shift over time."
+    "observations_mission": "Track the user's stable preferences, recurring routines, important people and relationships, and how their priorities shift over time.",
+    "disposition_empathy": 4,
+    "disposition_literalism": 3,
+    "disposition_skepticism": 2
   },
   "mental_models": [
     {
@@ -23,6 +27,18 @@
       "trigger": {
         "refresh_after_consolidation": true
       }
+    }
+  ],
+  "directives": [
+    {
+      "name": "Don't make the user repeat themselves",
+      "content": "Use recalled preferences, routines, and prior context instead of re-asking things the user has already told you.",
+      "priority": 10
+    },
+    {
+      "name": "Respect the people in the user's life",
+      "content": "Remember who the important people are and their relationship to the user, and use that context when helping with plans, messages, or reminders involving them.",
+      "priority": 7
     }
   ]
 }

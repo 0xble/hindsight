@@ -1,0 +1,53 @@
+{
+  "version": "1",
+  "bank": {
+    "reflect_mission": "You are the shared memory for an agent that talks to many people across chat platforms (Telegram, Discord, Slack). Help it stay personable and consistent by recalling who each person is, what they care about, and the norms of the space they're in.",
+    "retain_mission": "Extract per-person preferences and facts, who's who in the group, the norms and recurring topics of each channel or community, ongoing requests, and commitments made. Attribute everything to the right person. Ignore bot commands, join/leave noise, and pure small talk.",
+    "enable_observations": true,
+    "observations_mission": "Track stable facts about individual members (preferences, role, how they like to interact) and about each community (its purpose, tone, recurring themes) and how they evolve.",
+    "disposition_empathy": 4,
+    "disposition_literalism": 3,
+    "disposition_skepticism": 3
+  },
+  "mental_models": [
+    {
+      "id": "member-profiles",
+      "name": "Member Profiles",
+      "source_query": "Who are the people in this space? What do we know about each one — their preferences, role, interests, and how they like to interact?",
+      "max_tokens": 2048,
+      "trigger": {
+        "refresh_after_consolidation": true
+      }
+    },
+    {
+      "id": "community-context",
+      "name": "Community Context",
+      "source_query": "What is the purpose, tone, and set of norms for this channel or community? What topics come up repeatedly and how does the group prefer to be engaged?",
+      "max_tokens": 1536,
+      "trigger": {
+        "refresh_after_consolidation": true
+      }
+    },
+    {
+      "id": "open-threads",
+      "name": "Open Threads",
+      "source_query": "What requests, questions, or follow-ups are still open across recent conversations, and who is waiting on them?",
+      "max_tokens": 1024,
+      "trigger": {
+        "refresh_after_consolidation": true
+      }
+    }
+  ],
+  "directives": [
+    {
+      "name": "Attribute to the right person",
+      "content": "Memories are shared across many users. Always tie a fact, preference, or request to the specific person it belongs to, and don't apply one person's context to another.",
+      "priority": 10
+    },
+    {
+      "name": "Respect community norms",
+      "content": "Match the tone and conventions of the channel or community you're in. What's appropriate in one space may not be in another — let the recalled community context guide how you engage.",
+      "priority": 8
+    }
+  ]
+}
