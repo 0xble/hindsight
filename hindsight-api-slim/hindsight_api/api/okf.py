@@ -3,7 +3,7 @@
 Knowledge pages are a *read-only* OKF view over the existing mental models: each
 mental model is projected into an OKF document — a markdown body with YAML
 frontmatter (``type`` required; ``title``/``description``/``tags``/``timestamp``
-optional) — and pages are linked into a constellation graph via shared tags.
+optional).
 
 See the Open Knowledge Format spec:
 https://github.com/GoogleCloudPlatform/knowledge-catalog/tree/main/okf
@@ -16,7 +16,7 @@ DB or LLM and lets the HTTP layer stay a thin wrapper.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any
 
 # OKF requires exactly one frontmatter field — ``type``. We default to this when
@@ -30,21 +30,6 @@ TYPE_TAG_PREFIX = "type:"
 
 INDEX_FILENAME = "index.md"
 
-# Deterministic, colour-blind-friendly palette. Type → colour is stable across
-# requests so the constellation keeps the same colours between reloads.
-_PALETTE = (
-    "#0074d9",  # blue
-    "#2ecc40",  # green
-    "#b10dc9",  # purple
-    "#ff851b",  # orange
-    "#39cccc",  # teal
-    "#f012be",  # magenta
-    "#3d9970",  # olive
-    "#ff4136",  # red
-)
-
-_EDGE_COLOR = "#9aa5b1"
-
 
 @dataclass(frozen=True)
 class PageType:
@@ -52,22 +37,6 @@ class PageType:
 
     type: str
     display_tags: list[str]
-
-
-@dataclass(frozen=True)
-class KnowledgeGraph:
-    """Cytoscape-style node/edge graph of knowledge pages linked by shared tags."""
-
-    nodes: list[dict[str, Any]] = field(default_factory=list)
-    edges: list[dict[str, Any]] = field(default_factory=list)
-
-
-def _color_for(key: str) -> str:
-    """Stable colour for a string key (FNV-ish hash into the fixed palette)."""
-    h = 0
-    for ch in key:
-        h = (h * 31 + ord(ch)) & 0xFFFFFFFF
-    return _PALETTE[h % len(_PALETTE)]
 
 
 def _scalar(value: Any) -> str:
@@ -85,8 +54,8 @@ def page_type(tags: list[str] | None) -> PageType:
     """Split an OKF ``type`` out of the tag list.
 
     The first ``type:<x>`` tag wins; all ``type:`` tags are removed from the
-    returned ``display_tags`` so they don't pollute the constellation's
-    shared-tag edges. Falls back to :data:`DEFAULT_PAGE_TYPE`.
+    returned ``display_tags`` so they don't leak into the page's displayed tags.
+    Falls back to :data:`DEFAULT_PAGE_TYPE`.
     """
     resolved = DEFAULT_PAGE_TYPE
     display: list[str] = []

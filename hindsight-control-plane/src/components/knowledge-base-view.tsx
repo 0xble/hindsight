@@ -43,15 +43,12 @@ import {
   FolderPlus,
   Info,
   Loader2,
-  Network,
   Trash2,
   X,
 } from "lucide-react";
 import { formatAbsoluteDateTime, formatRelativeTime } from "@/lib/relative-time";
 import { CompactMarkdown } from "./compact-markdown";
 import { MentalModelDetailModal } from "./mental-model-detail-modal";
-import { Constellation } from "./constellation";
-import type { GraphData, GraphNode, GraphLink } from "./graph-data";
 
 type PageDetail = Awaited<ReturnType<typeof client.getKnowledgePage>>;
 
@@ -171,66 +168,6 @@ export function KnowledgeBaseView() {
   );
   const folders = useMemo(() => allNodes.filter((n) => n.kind === "folder"), [allNodes]);
 
-  // Graph view: pages linked by shared source memories.
-  const [view, setView] = useState<"tree" | "graph">("tree");
-  const [graph, setGraph] = useState<Awaited<
-    ReturnType<typeof client.getKnowledgeBaseGraph>
-  > | null>(null);
-  const [memLinks, setMemLinks] = useState<GraphLink[]>([]);
-  const [graphLoading, setGraphLoading] = useState(false);
-  useEffect(() => {
-    if (view !== "graph" || !currentBank) return;
-    setGraphLoading(true);
-    // Fetch the page→memory constellation + the memory graph; keep only the
-    // memory-memory edges whose endpoints are both in the knowledge base.
-    Promise.all([
-      client.getKnowledgeBaseGraph(currentBank),
-      client.getGraph({ bank_id: currentBank, limit: 1000 }) as Promise<{ edges?: unknown[] }>,
-    ])
-      .then(([kg, mg]) => {
-        setGraph(kg);
-        const ids = new Set(kg.nodes.map((n) => n.data.id));
-        const links: GraphLink[] = (mg.edges ?? [])
-          .map(
-            (raw) =>
-              (raw as { data?: Record<string, unknown> }).data ?? (raw as Record<string, unknown>)
-          )
-          .filter((e) => ids.has(String(e.source)) && ids.has(String(e.target)))
-          .map((e) => ({ source: String(e.source), target: String(e.target) }));
-        setMemLinks(links);
-      })
-      .catch(() => {})
-      .finally(() => setGraphLoading(false));
-  }, [view, currentBank]);
-  // Memories as points; each carries the pages it grounds (for the Venn hulls).
-  const constellationData = useMemo<GraphData>(() => {
-    if (!graph) return { nodes: [], links: [] };
-    const nodes: GraphNode[] = graph.nodes.map((n) => ({
-      id: n.data.id,
-      label: n.data.label,
-      metadata: { pages: n.data.pages },
-    }));
-    return { nodes, links: memLinks };
-  }, [graph, memLinks]);
-  // Stable colour per page (each page = one Euler circle).
-  const pageColors = useMemo(() => {
-    const palette = [
-      "#8b5cf6",
-      "#ec4899",
-      "#0ea5e9",
-      "#10b981",
-      "#f59e0b",
-      "#ef4444",
-      "#6366f1",
-      "#14b8a6",
-      "#f97316",
-      "#a855f7",
-    ];
-    const map = new Map<string, string>();
-    const pages = Array.from(new Set((graph?.nodes ?? []).flatMap((n) => n.data.pages))).sort();
-    pages.forEach((p, i) => map.set(p, palette[i % palette.length]));
-    return map;
-  }, [graph]);
 
   // Sync status for the open page, read from the tree (the page detail response
   // doesn't carry it); updates as the auto-refresh poll refreshes the tree.
@@ -385,57 +322,9 @@ export function KnowledgeBaseView() {
 
   return (
     <div>
-      <div className="flex justify-end mb-3">
-        <div className="flex items-center gap-1 bg-muted rounded-lg p-1">
-          <button
-            onClick={() => setView("tree")}
-            className={`px-3 py-1.5 rounded-md text-sm font-medium flex items-center gap-1.5 transition-all ${
-              view === "tree"
-                ? "bg-background text-foreground shadow-sm"
-                : "text-muted-foreground hover:text-foreground"
-            }`}
-          >
-            <FileText className="w-4 h-4" />
-            {t("viewTree")}
-          </button>
-          <button
-            onClick={() => setView("graph")}
-            className={`px-3 py-1.5 rounded-md text-sm font-medium flex items-center gap-1.5 transition-all ${
-              view === "graph"
-                ? "bg-background text-foreground shadow-sm"
-                : "text-muted-foreground hover:text-foreground"
-            }`}
-          >
-            <Network className="w-4 h-4" />
-            {t("viewGraph")}
-          </button>
-        </div>
-      </div>
-
-      {view === "graph" ? (
-        <div className="border border-border rounded-lg overflow-hidden h-[calc(100vh-13rem)] min-h-[520px]">
-          {graphLoading ? (
-            <div className="flex items-center justify-center h-full">
-              <Loader2 className="w-7 h-7 text-muted-foreground animate-spin" />
-            </div>
-          ) : constellationData.nodes.length > 0 ? (
-            <Constellation
-              data={constellationData}
-              height={620}
-              nodeGroupsFn={(n) => (n.metadata?.pages as string[]) ?? []}
-              groupColorFn={(p) => pageColors.get(p) || "#0074d9"}
-              groupLabelFn={(p) => p}
-            />
-          ) : (
-            <div className="flex items-center justify-center h-full px-6 text-center text-sm text-muted-foreground">
-              {t("graphEmpty")}
-            </div>
-          )}
-        </div>
-      ) : (
-        /* Obsidian-style workspace: one frame, a file-explorer sidebar + editor pane. */
-        <div className="flex items-stretch border border-border rounded-lg overflow-hidden h-[calc(100vh-13rem)] min-h-[520px]">
-          <aside className="w-64 flex-shrink-0 bg-muted/30 border-r border-border overflow-y-auto">
+      {/* Obsidian-style workspace: one frame, a file-explorer sidebar + editor pane. */}
+      <div className="flex items-stretch overflow-hidden h-[calc(100vh-13rem)] min-h-[520px]">
+          <aside className="w-72 flex-shrink-0 bg-muted/30 border-r border-border overflow-y-auto">
             {loading ? (
               <div className="flex items-center justify-center py-16">
                 <Loader2 className="w-6 h-6 text-muted-foreground animate-spin" />
@@ -469,7 +358,7 @@ export function KnowledgeBaseView() {
           <main className="flex-1 min-w-0 overflow-y-auto bg-background">
             {/* Editor tabs — open pages, click to focus, × to close. */}
             {tabs.length > 0 && (
-              <div className="sticky top-0 z-10 flex items-stretch border-b border-border bg-muted/20 overflow-x-auto">
+              <div className="sticky top-0 z-10 flex items-stretch border-b border-border bg-muted overflow-x-auto">
                 {tabs.map((tb) => (
                   <div
                     key={tb.id}
@@ -579,7 +468,6 @@ export function KnowledgeBaseView() {
             )}
           </main>
         </div>
-      )}
 
       {/* Create folder/page dialog */}
       <Dialog open={createKind !== null} onOpenChange={(o) => !o && setCreateKind(null)}>
@@ -715,7 +603,7 @@ export function TreeRow({
   return (
     <li>
       <div
-        className={`group flex items-center gap-1.5 pr-2 py-1.5 cursor-pointer border-l-2 transition-colors ${
+        className={`group relative flex items-center gap-1.5 pr-2 py-1.5 cursor-pointer border-l-2 transition-colors ${
           isActive
             ? "bg-primary/10 border-primary text-foreground"
             : "border-transparent hover:bg-muted text-foreground"
@@ -743,23 +631,30 @@ export function TreeRow({
           </>
         )}
         <div className="min-w-0 flex-1">
-          <div className="flex items-center gap-2">
-            <span className="text-sm truncate">{node.name}</span>
+          {/* Name owns the full first line; status is a compact dot so it never
+              steals width from the name (the full label shows in the page header). */}
+          <div className="flex items-center gap-1.5">
+            <span className="text-sm truncate" title={node.name}>
+              {node.name}
+            </span>
             {!isFolder && node.managed && (
-              <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-violet-500/10 text-violet-600 dark:text-violet-400 flex-shrink-0">
-                {t("autoBadge")}
-              </span>
+              <span
+                className="w-1.5 h-1.5 rounded-full bg-violet-500 flex-shrink-0"
+                title={t("autoBadge")}
+              />
             )}
-            {!isFolder &&
-              (node.is_stale === false ? (
-                <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 flex-shrink-0">
-                  {t("inSync")}
-                </span>
-              ) : node.is_stale === true ? (
-                <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-amber-500/10 text-amber-600 dark:text-amber-400 flex-shrink-0">
-                  {t("needsRefresh")}
-                </span>
-              ) : null)}
+            {!isFolder && node.is_stale === false && (
+              <span
+                className="w-1.5 h-1.5 rounded-full bg-emerald-500 flex-shrink-0"
+                title={t("inSync")}
+              />
+            )}
+            {!isFolder && node.is_stale === true && (
+              <span
+                className="w-1.5 h-1.5 rounded-full bg-amber-500 flex-shrink-0"
+                title={t("needsRefresh")}
+              />
+            )}
           </div>
           {!isFolder && (
             <div
@@ -773,7 +668,7 @@ export function TreeRow({
           )}
         </div>
         {!readOnly && (
-          <div className="flex items-center gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity flex-shrink-0">
+          <div className="absolute right-1 top-1/2 -translate-y-1/2 flex items-center gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity rounded-md bg-muted/95 shadow-sm px-0.5">
             {isFolder && (
               <>
                 <button

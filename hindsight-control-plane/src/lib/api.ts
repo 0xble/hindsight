@@ -631,28 +631,6 @@ export class ControlPlaneClient {
   }
 
   /**
-   * Get the knowledge-page graph (pages linked by shared source memories).
-   */
-  async getKnowledgeBaseGraph(bankId: string) {
-    return this.fetchApi<{
-      nodes: Array<{
-        data: {
-          id: string;
-          memoryId: string;
-          label: string;
-          cluster: string;
-          pages: string[];
-          shared: boolean;
-          type: string;
-        };
-      }>;
-      edges: unknown[];
-      total_pages: number;
-      total_memories: number;
-    }>(`/api/knowledge-base/graph?bank_id=${encodeURIComponent(bankId)}`);
-  }
-
-  /**
    * Get a single knowledge page rendered as an OKF document.
    */
   async getKnowledgePage(bankId: string, pageId: string) {

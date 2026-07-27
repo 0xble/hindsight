@@ -1539,44 +1539,6 @@ paths:
       summary: Create a knowledge-base page
       tags:
       - Knowledge Base
-  /v1/default/banks/{bank_id}/knowledge-base/graph:
-    get:
-      description: "Pages as nodes, linked when their backing models share source\
-        \ memories. For the graph view."
-      operationId: get_knowledge_base_graph
-      parameters:
-      - explode: false
-        in: path
-        name: bank_id
-        required: true
-        schema:
-          title: Bank Id
-          type: string
-        style: simple
-      - explode: false
-        in: header
-        name: authorization
-        required: false
-        schema:
-          nullable: true
-          type: string
-        style: simple
-      responses:
-        "200":
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/KnowledgePageGraphResponse'
-          description: Successful Response
-        "422":
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/HTTPValidationError'
-          description: Validation Error
-      summary: Knowledge-base graph (shared source memories)
-      tags:
-      - Knowledge Base
   /v1/default/banks/{bank_id}/knowledge-base/export:
     get:
       description: "Return a portable OKF bundle: a nested index.md, one <id>.md per\
@@ -6605,38 +6567,6 @@ components:
       required:
       - files
       title: KnowledgePageBundleResponse
-    KnowledgePageGraphResponse:
-      description: "Source memories as nodes, clustered by the page they ground."
-      example:
-        nodes:
-        - key: ""
-        - key: ""
-        total_memories: 6
-        edges:
-        - key: ""
-        - key: ""
-        total_pages: 0
-      properties:
-        nodes:
-          items:
-            additionalProperties: {}
-          type: array
-        edges:
-          items:
-            additionalProperties: {}
-          type: array
-        total_pages:
-          title: Total Pages
-          type: integer
-        total_memories:
-          title: Total Memories
-          type: integer
-      required:
-      - edges
-      - nodes
-      - total_memories
-      - total_pages
-      title: KnowledgePageGraphResponse
     KnowledgePageResponse:
       description: A knowledge page rendered as an OKF document.
       example:

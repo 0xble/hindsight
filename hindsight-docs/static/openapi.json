@@ -2259,65 +2259,6 @@
         }
       }
     },
-    "/v1/default/banks/{bank_id}/knowledge-base/graph": {
-      "get": {
-        "tags": [
-          "Knowledge Base"
-        ],
-        "summary": "Knowledge-base graph (shared source memories)",
-        "description": "Pages as nodes, linked when their backing models share source memories. For the graph view.",
-        "operationId": "get_knowledge_base_graph",
-        "parameters": [
-          {
-            "name": "bank_id",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "type": "string",
-              "title": "Bank Id"
-            }
-          },
-          {
-            "name": "authorization",
-            "in": "header",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "title": "Authorization"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "Successful Response",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/KnowledgePageGraphResponse"
-                }
-              }
-            }
-          },
-          "422": {
-            "description": "Validation Error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
     "/v1/default/banks/{bank_id}/knowledge-base/export": {
       "get": {
         "tags": [
@@ -10026,43 +9967,6 @@
         ],
         "title": "KnowledgePageBundleResponse",
         "description": "A portable OKF bundle \u2014 a flat set of markdown files (index + pages + logs)."
-      },
-      "KnowledgePageGraphResponse": {
-        "properties": {
-          "nodes": {
-            "items": {
-              "additionalProperties": true,
-              "type": "object"
-            },
-            "type": "array",
-            "title": "Nodes"
-          },
-          "edges": {
-            "items": {
-              "additionalProperties": true,
-              "type": "object"
-            },
-            "type": "array",
-            "title": "Edges"
-          },
-          "total_pages": {
-            "type": "integer",
-            "title": "Total Pages"
-          },
-          "total_memories": {
-            "type": "integer",
-            "title": "Total Memories"
-          }
-        },
-        "type": "object",
-        "required": [
-          "nodes",
-          "edges",
-          "total_pages",
-          "total_memories"
-        ],
-        "title": "KnowledgePageGraphResponse",
-        "description": "Source memories as nodes, clustered by the page they ground."
       },
       "KnowledgePageResponse": {
         "properties": {

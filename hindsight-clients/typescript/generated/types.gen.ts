@@ -2148,34 +2148,6 @@ export type KnowledgePageBundleResponse = {
 };
 
 /**
- * KnowledgePageGraphResponse
- *
- * Source memories as nodes, clustered by the page they ground.
- */
-export type KnowledgePageGraphResponse = {
-  /**
-   * Nodes
-   */
-  nodes: Array<{
-    [key: string]: unknown;
-  }>;
-  /**
-   * Edges
-   */
-  edges: Array<{
-    [key: string]: unknown;
-  }>;
-  /**
-   * Total Pages
-   */
-  total_pages: number;
-  /**
-   * Total Memories
-   */
-  total_memories: number;
-};
-
-/**
  * KnowledgePageResponse
  *
  * A knowledge page rendered as an OKF document.
@@ -5704,44 +5676,6 @@ export type CreateKnowledgePageResponses = {
 
 export type CreateKnowledgePageResponse2 =
   CreateKnowledgePageResponses[keyof CreateKnowledgePageResponses];
-
-export type GetKnowledgeBaseGraphData = {
-  body?: never;
-  headers?: {
-    /**
-     * Authorization
-     */
-    authorization?: string | null;
-  };
-  path: {
-    /**
-     * Bank Id
-     */
-    bank_id: string;
-  };
-  query?: never;
-  url: "/v1/default/banks/{bank_id}/knowledge-base/graph";
-};
-
-export type GetKnowledgeBaseGraphErrors = {
-  /**
-   * Validation Error
-   */
-  422: HttpValidationError;
-};
-
-export type GetKnowledgeBaseGraphError =
-  GetKnowledgeBaseGraphErrors[keyof GetKnowledgeBaseGraphErrors];
-
-export type GetKnowledgeBaseGraphResponses = {
-  /**
-   * Successful Response
-   */
-  200: KnowledgePageGraphResponse;
-};
-
-export type GetKnowledgeBaseGraphResponse =
-  GetKnowledgeBaseGraphResponses[keyof GetKnowledgeBaseGraphResponses];
 
 export type ExportKnowledgeBaseData = {
   body?: never;

@@ -84,7 +84,6 @@ hindsight_client_api/models/include_options.py
 hindsight_client_api/models/knowledge_node.py
 hindsight_client_api/models/knowledge_page_bundle_file.py
 hindsight_client_api/models/knowledge_page_bundle_response.py
-hindsight_client_api/models/knowledge_page_graph_response.py
 hindsight_client_api/models/knowledge_page_response.py
 hindsight_client_api/models/knowledge_tree_response.py
 hindsight_client_api/models/list_chunks_response.py

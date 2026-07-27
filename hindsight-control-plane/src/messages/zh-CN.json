@@ -1727,8 +1727,6 @@
     "loadingPage": "Loading page…",
     "empty": "No folders or pages yet.",
     "emptyHint": "Create a folder or a page to get started.",
-    "viewTree": "Tree",
-    "viewGraph": "Graph",
     "newFolder": "New folder",
     "newPage": "New page",
     "exportButton": "Export OKF bundle",
@@ -1755,8 +1753,7 @@
     "needsRefresh": "Needs refresh",
     "generating": "Generating…",
     "howDerived": "How this page is derived",
-    "backedBy": "Backed by {count} memories",
-    "graphEmpty": "No shared-memory links yet — pages connect once they're grounded in overlapping memories."
+    "backedBy": "Backed by {count} memories"
   },
   "home": {
     "title": "Home",

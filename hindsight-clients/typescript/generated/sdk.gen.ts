@@ -112,9 +112,6 @@ import type {
   GetGraphData,
   GetGraphErrors,
   GetGraphResponses,
-  GetKnowledgeBaseGraphData,
-  GetKnowledgeBaseGraphErrors,
-  GetKnowledgeBaseGraphResponses,
   GetKnowledgeBaseTreeData,
   GetKnowledgeBaseTreeErrors,
   GetKnowledgeBaseTreeResponses,
@@ -736,20 +733,6 @@ export const createKnowledgePage = <ThrowOnError extends boolean = false>(
       ...options.headers,
     },
   });
-
-/**
- * Knowledge-base graph (shared source memories)
- *
- * Pages as nodes, linked when their backing models share source memories. For the graph view.
- */
-export const getKnowledgeBaseGraph = <ThrowOnError extends boolean = false>(
-  options: Options<GetKnowledgeBaseGraphData, ThrowOnError>
-) =>
-  (options.client ?? client).get<
-    GetKnowledgeBaseGraphResponses,
-    GetKnowledgeBaseGraphErrors,
-    ThrowOnError
-  >({ url: "/v1/default/banks/{bank_id}/knowledge-base/graph", ...options });
 
 /**
  * Export the knowledge base as an OKF bundle

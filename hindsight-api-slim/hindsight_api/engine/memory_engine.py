@@ -847,42 +847,6 @@ class MemoryTimeseriesBucketData:
         }
 
 
-def _memory_facts_from_reflect(reflect_response: Any) -> list[dict[str, Any]]:
-    """Source memories (world/experience/observation) a mental model was grounded on.
-
-    Returns ``{id, text, type}`` per fact from the stored ``reflect_response.based_on``;
-    mental-model / directive entries are excluded (only raw memories are provenance).
-    ``reflect_response`` is JSONB, so it may arrive as a string or dict.
-    """
-    if isinstance(reflect_response, str):
-        try:
-            reflect_response = json.loads(reflect_response)
-        except (json.JSONDecodeError, TypeError):
-            return []
-    if not isinstance(reflect_response, dict):
-        return []
-    based_on = reflect_response.get("based_on") or {}
-    facts: list[dict[str, Any]] = []
-    if isinstance(based_on, dict):
-        for fact_type in ("world", "experience", "observation"):
-            for fact in based_on.get(fact_type) or []:
-                if isinstance(fact, dict) and fact.get("id"):
-                    facts.append(
-                        {"id": str(fact["id"]), "text": fact.get("text") or "", "type": fact.get("type") or fact_type}
-                    )
-    return facts
-
-
-@dataclass(frozen=True)
-class KnowledgePageGraph:
-    """Source memories as nodes, clustered by the page they ground (cytoscape-style)."""
-
-    nodes: list[dict[str, Any]]
-    edges: list[dict[str, Any]]
-    total_pages: int = 0
-    total_memories: int = 0
-
-
 @dataclass(frozen=True)
 class RefreshTagFiltering:
     """Resolved tag filtering parameters for mental model refresh."""
@@ -12410,58 +12374,6 @@ class MemoryEngine(MemoryEngineInterface):
         node = self._row_to_knowledge_node(row)
         node["content"] = row["mm_content"]
         return node
-
-    async def knowledge_page_memory_graph(
-        self, bank_id: str, *, request_context: "RequestContext"
-    ) -> KnowledgePageGraph:
-        """Constellation of the source memories grounding the knowledge base.
-
-        Each node is a (memory, page) pair, clustered by the page — so every page
-        is a blob of the memories it grounds, and a memory shared across pages
-        appears in each page's blob. That shows the substrate the wiki is built on
-        and where pages overlap (the same memory recurring across clusters).
-        """
-        await self._authenticate_tenant(request_context)
-        backend = await self._get_backend()
-        async with acquire_with_retry(backend) as conn:
-            rows = await conn.fetch(
-                f"""
-                SELECT kp.id, kp.name, mm.reflect_response AS mm_reflect_response
-                FROM {self._kp_join()}
-                WHERE kp.bank_id = $1 AND kp.kind = 'page'
-                ORDER BY kp.sort_order, kp.name
-                """,
-                bank_id,
-            )
-
-        # memory id -> {text, type, pages}
-        mem: dict[str, dict[str, Any]] = {}
-        page_names: set[str] = set()
-        for row in rows:
-            page_names.add(row["name"])
-            for fact in _memory_facts_from_reflect(row["mm_reflect_response"]):
-                entry = mem.setdefault(fact["id"], {"text": fact["text"], "type": fact["type"], "pages": set()})
-                entry["pages"].add(row["name"])
-
-        nodes: list[dict[str, Any]] = []
-        for mem_id, info in mem.items():
-            pages = sorted(info["pages"])
-            # Union representation: a shared memory is ONE node whose cluster is the
-            # combination of pages it grounds ("A + B"), so overlap forms its own blob.
-            nodes.append(
-                {
-                    "data": {
-                        "id": mem_id,
-                        "memoryId": mem_id,
-                        "label": (info["text"] or mem_id)[:80],
-                        "cluster": " + ".join(pages),
-                        "pages": pages,
-                        "shared": len(pages) > 1,
-                        "type": info["type"],
-                    }
-                }
-            )
-        return KnowledgePageGraph(nodes=nodes, edges=[], total_pages=len(page_names), total_memories=len(mem))
 
     async def rename_knowledge_node(
         self, bank_id: str, node_id: str, name: str, *, request_context: "RequestContext"

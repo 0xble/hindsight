@@ -2249,15 +2249,6 @@ class KnowledgePageResponse(BaseModel):
     markdown: str = Field(description="The full OKF document: YAML frontmatter + markdown body.")
 
 
-class KnowledgePageGraphResponse(BaseModel):
-    """Source memories as nodes, clustered by the page they ground."""
-
-    nodes: list[dict[str, Any]]
-    edges: list[dict[str, Any]]
-    total_pages: int
-    total_memories: int
-
-
 class KnowledgePageBundleFile(BaseModel):
     """One file in a portable OKF bundle."""
 
@@ -5355,38 +5346,6 @@ def _register_routes(app: FastAPI):
 
             error_detail = f"{str(e)}\n\nTraceback:\n{traceback.format_exc()}"
             logger.error(f"Error in POST /v1/default/banks/{bank_id}/knowledge-base/pages: {error_detail}")
-            raise HTTPException(status_code=500, detail=str(e))
-
-    @app.get(
-        "/v1/default/banks/{bank_id}/knowledge-base/graph",
-        response_model=KnowledgePageGraphResponse,
-        summary="Knowledge-base graph (shared source memories)",
-        description="Pages as nodes, linked when their backing models share source memories. For the graph view.",
-        operation_id="get_knowledge_base_graph",
-        tags=["Knowledge Base"],
-    )
-    async def api_knowledge_base_graph(
-        bank_id: str,
-        request_context: RequestContext = Depends(get_request_context),
-    ):
-        """Return the shared-source-memory graph for a bank's pages."""
-        try:
-            graph = await app.state.memory.knowledge_page_memory_graph(bank_id=bank_id, request_context=request_context)
-            return KnowledgePageGraphResponse(
-                nodes=graph.nodes,
-                edges=graph.edges,
-                total_pages=graph.total_pages,
-                total_memories=graph.total_memories,
-            )
-        except OperationValidationError as e:
-            raise HTTPException(status_code=e.status_code, detail=e.reason)
-        except (AuthenticationError, HTTPException):
-            raise
-        except Exception as e:
-            import traceback
-
-            error_detail = f"{str(e)}\n\nTraceback:\n{traceback.format_exc()}"
-            logger.error(f"Error in GET /v1/default/banks/{bank_id}/knowledge-base/graph: {error_detail}")
             raise HTTPException(status_code=500, detail=str(e))
 
     @app.get(

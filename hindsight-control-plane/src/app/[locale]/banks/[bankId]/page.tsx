@@ -678,9 +678,9 @@ export default function BankPage() {
             {view === "knowledge" && (
               <div>
                 <h1 className="text-3xl font-bold mb-2 text-foreground">{t("knowledge")}</h1>
-                <p className="text-muted-foreground mb-6">{t("knowledgeDescription")}</p>
+                <p className="text-muted-foreground mb-4">{t("knowledgeDescription")}</p>
 
-                <div className="mb-6 border-b border-border">
+                <div className="mb-4 border-b border-border">
                   <div className="flex gap-1">
                     <button
                       onClick={() => handleKnowledgeTabChange("pages")}
