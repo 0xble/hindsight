@@ -360,7 +360,7 @@ export function KnowledgeBaseView() {
     <div>
       {/* Obsidian-style workspace: one frame, a file-explorer sidebar + editor pane. */}
       <div className="flex items-stretch overflow-hidden h-[calc(100vh-13rem)] min-h-[520px]">
-        <aside className="w-72 flex-shrink-0 bg-muted/30 border-r border-border flex flex-col">
+        <aside className="w-1/3 flex-shrink-0 bg-muted/30 border-r border-border flex flex-col">
           {/* Hybrid search box — a query swaps the tree for ranked results. */}
           <div className="shrink-0 border-b border-border p-2">
             <div className="relative">
@@ -759,6 +759,18 @@ export function TreeRow({
               {node.timestamp
                 ? `${t("updatedLabel")} ${formatRelativeTime(node.timestamp)}`
                 : t("generating")}
+            </div>
+          )}
+          {!isFolder && node.tags && node.tags.length > 0 && (
+            <div className="mt-1 flex flex-wrap gap-1">
+              {node.tags.map((tag) => (
+                <span
+                  key={tag}
+                  className="rounded-full bg-muted-foreground/10 px-1.5 py-0.5 text-[10px] leading-none text-muted-foreground"
+                >
+                  {tag}
+                </span>
+              ))}
             </div>
           )}
         </div>
