@@ -30,7 +30,6 @@ describe("buildKnowledgePreamble", () => {
     // Every meaningful tool must be named with a when-to-call, not just pages.
     expect(out).toContain("hindsight_list_knowledge_pages");
     expect(out).toContain("hindsight_read_knowledge_page");
-    expect(out).toContain("hindsight_search_memory");
     expect(out).toContain("hindsight_capture_initiative");
     expect(out).toContain("hindsight_ingest_document");
   });
@@ -48,7 +47,6 @@ describe("buildRosterRefresh", () => {
     for (const tool of [
       "hindsight_list_knowledge_pages",
       "hindsight_read_knowledge_page",
-      "hindsight_search_memory",
       "hindsight_capture_initiative",
       "hindsight_ingest_document",
     ]) {
@@ -59,7 +57,6 @@ describe("buildRosterRefresh", () => {
     const out = buildRosterRefresh([]);
     expect(out).toContain("<hindsight_knowledge_refresh>");
     expect(out).toContain("hindsight_capture_initiative");
-    expect(out).toContain("hindsight_search_memory");
     expect(out).toContain("hindsight_ingest_document");
     // No roster block when there are no pages.
     expect(out).not.toContain("Current Hindsight knowledge pages");

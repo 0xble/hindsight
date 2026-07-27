@@ -29,13 +29,12 @@ const EXPECTED_TOOLS = [
   "hindsight_search_knowledge_pages",
   "hindsight_list_knowledge_pages",
   "hindsight_read_knowledge_page",
-  "hindsight_search_memory",
   "hindsight_capture_initiative",
   "hindsight_ingest_document",
 ];
 
 describe("buildKnowledgeTools", () => {
-  it("returns exactly the eight expected tools (as a set)", () => {
+  it("returns exactly the seven expected tools (as a set)", () => {
     const client = stubClient();
     const tools = buildKnowledgeTools(client, "repo-a");
     expect(tools.map((t) => t.name).sort()).toEqual([...EXPECTED_TOOLS].sort());
@@ -119,7 +118,6 @@ describe("buildKnowledgeTools", () => {
     expect(JSON.parse(result.content[0].text)).toEqual({ bank_id: "repo-a" });
     expect(client.listPages).not.toHaveBeenCalled();
     expect(client.getPage).not.toHaveBeenCalled();
-    expect(client.recall).not.toHaveBeenCalled();
   });
 
   it("hindsight_search_knowledge_pages calls the server hybrid search and returns ranked hits", async () => {
@@ -168,23 +166,6 @@ describe("buildKnowledgeTools", () => {
     const result = await tool.handler({ page_id: "p1" });
     expect(client.getPage).toHaveBeenCalledWith("p1");
     expect(JSON.parse(result.content[0].text)).toEqual({ id: "p1", name: "X" });
-  });
-
-  it("hindsight_search_memory calls client.recall(query, {maxTokens: max_tokens})", async () => {
-    const client = stubClient();
-    const tools = buildKnowledgeTools(client, "repo-a");
-    const tool = findTool(tools, "hindsight_search_memory");
-    const result = await tool.handler({ query: "how do we validate?", max_tokens: 512 });
-    expect(client.recall).toHaveBeenCalledWith("how do we validate?", { maxTokens: 512 });
-    expect(JSON.parse(result.content[0].text)).toEqual([{ text: "a fact" }]);
-  });
-
-  it("hindsight_search_memory passes maxTokens: undefined when max_tokens omitted", async () => {
-    const client = stubClient();
-    const tools = buildKnowledgeTools(client, "repo-a");
-    const tool = findTool(tools, "hindsight_search_memory");
-    await tool.handler({ query: "q" });
-    expect(client.recall).toHaveBeenCalledWith("q", { maxTokens: undefined });
   });
 
   it("hindsight_capture_initiative calls client.captureInitiative({title, summary, relatesToPageId}) and returns the page id", async () => {
@@ -282,8 +263,7 @@ describe("buildKnowledgeTools", () => {
   for (const name of [
     "hindsight_list_knowledge_pages",
     "hindsight_read_knowledge_page",
-    "hindsight_search_memory",
-    "hindsight_capture_initiative",
+      "hindsight_capture_initiative",
     "hindsight_ingest_document",
   ] as const) {
     it(`${name} returns isError:true with the error text when the client method throws`, async () => {
@@ -293,9 +273,6 @@ describe("buildKnowledgeTools", () => {
           throw boom;
         }),
         getPage: vi.fn(async () => {
-          throw boom;
-        }),
-        recall: vi.fn(async () => {
           throw boom;
         }),
         captureInitiative: vi.fn(async () => {
@@ -308,9 +285,7 @@ describe("buildKnowledgeTools", () => {
       const tools = buildKnowledgeTools(client, "repo-a");
       const tool = findTool(tools, name);
       const args =
-        name === "hindsight_search_memory"
-          ? { query: "q" }
-          : name === "hindsight_capture_initiative"
+        name === "hindsight_capture_initiative"
             ? { title: "T", summary: "S" }
             : name === "hindsight_ingest_document"
               ? { title: "T", content: "C" }

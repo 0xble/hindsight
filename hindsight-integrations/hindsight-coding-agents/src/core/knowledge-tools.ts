@@ -136,22 +136,6 @@ export function buildKnowledgeTools(
       handler: guarded(async ({ page_id }) => client.getPage(page_id)),
     },
     {
-      name: "hindsight_search_memory",
-      description:
-        "Search the repository's raw memory (facts from git history, past sessions, and captured " +
-        "notes) for specifics a knowledge page doesn't cover — a particular past decision and its " +
-        "rationale, why some code is the way it is, prior discussion of a bug, or the detail behind " +
-        "an initiative. Use when the pages are too high-level for your question, or to pull the " +
-        "underlying facts behind something a page mentions.",
-      inputSchema: {
-        query: z.string(),
-        max_tokens: z.number().optional(),
-      },
-      handler: guarded(async ({ query, max_tokens }) =>
-        client.recall(query, { maxTokens: max_tokens })
-      ),
-    },
-    {
       name: "hindsight_capture_initiative",
       description:
         "Record a new feature or initiative as a tracked knowledge page, so future sessions know it " +

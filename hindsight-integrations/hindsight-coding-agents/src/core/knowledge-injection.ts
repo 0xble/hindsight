@@ -33,8 +33,6 @@ const TOOL_GUIDE =
   "- hindsight_list_knowledge_pages / hindsight_read_knowledge_page — BEFORE substantial work, list the pages and " +
   "read the relevant ones to ground yourself in this repo's architecture, conventions, and past decisions instead " +
   "of re-deriving them from the code; follow any [[page:<id>]] links you see.\n" +
-  "- hindsight_search_memory(query) — when a page is too high-level for your question, search the raw memory for a " +
-  "specific past decision and its rationale, why some code is the way it is, or prior discussion of a problem.\n" +
   "- hindsight_capture_initiative(title, summary) — right after the user approves a plan or finishes brainstorming a " +
   "new feature/capability and you are about to start implementing (BEFORE you write any code), call this ONCE to " +
   "record it as a tracked page. Skip bug fixes, small tweaks, and chores.\n" +
