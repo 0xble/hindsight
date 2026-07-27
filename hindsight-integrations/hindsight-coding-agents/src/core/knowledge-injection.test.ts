@@ -30,6 +30,7 @@ describe("buildKnowledgePreamble", () => {
     // Every meaningful tool must be named with a when-to-call, not just pages.
     expect(out).toContain("hindsight_list_knowledge_pages");
     expect(out).toContain("hindsight_read_knowledge_page");
+    expect(out).toContain("hindsight_reflect");
     expect(out).toContain("hindsight_capture_initiative");
     expect(out).toContain("hindsight_ingest_document");
   });

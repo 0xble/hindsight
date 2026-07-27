@@ -29,12 +29,13 @@ const EXPECTED_TOOLS = [
   "hindsight_search_knowledge_pages",
   "hindsight_list_knowledge_pages",
   "hindsight_read_knowledge_page",
+  "hindsight_reflect",
   "hindsight_capture_initiative",
   "hindsight_ingest_document",
 ];
 
 describe("buildKnowledgeTools", () => {
-  it("returns exactly the seven expected tools (as a set)", () => {
+  it("returns exactly the eight expected tools (as a set)", () => {
     const client = stubClient();
     const tools = buildKnowledgeTools(client, "repo-a");
     expect(tools.map((t) => t.name).sort()).toEqual([...EXPECTED_TOOLS].sort());
@@ -168,6 +169,17 @@ describe("buildKnowledgeTools", () => {
     expect(JSON.parse(result.content[0].text)).toEqual({ id: "p1", name: "X" });
   });
 
+  it("hindsight_reflect calls client.reflect(query, {budget: high}) and returns the synthesis", async () => {
+    const client = stubClient({
+      reflect: vi.fn(async () => "the decided rule is X=3"),
+    });
+    const tool = findTool(buildKnowledgeTools(client, "repo-a"), "hindsight_reflect");
+    const result = await tool.handler({ query: "why is X 3?" });
+    expect(result.isError).toBeFalsy();
+    expect(client.reflect).toHaveBeenCalledWith("why is X 3?", { budget: "high" });
+    expect(JSON.parse(result.content[0].text)).toBe("the decided rule is X=3");
+  });
+
   it("hindsight_capture_initiative calls client.captureInitiative({title, summary, relatesToPageId}) and returns the page id", async () => {
     const client = stubClient({
       captureInitiative: vi.fn(async (_a: unknown) => ({ page_id: "initiative-retry-backoff" })),
@@ -263,7 +275,8 @@ describe("buildKnowledgeTools", () => {
   for (const name of [
     "hindsight_list_knowledge_pages",
     "hindsight_read_knowledge_page",
-      "hindsight_capture_initiative",
+      "hindsight_reflect",
+    "hindsight_capture_initiative",
     "hindsight_ingest_document",
   ] as const) {
     it(`${name} returns isError:true with the error text when the client method throws`, async () => {
@@ -273,6 +286,9 @@ describe("buildKnowledgeTools", () => {
           throw boom;
         }),
         getPage: vi.fn(async () => {
+          throw boom;
+        }),
+        reflect: vi.fn(async () => {
           throw boom;
         }),
         captureInitiative: vi.fn(async () => {
@@ -285,7 +301,9 @@ describe("buildKnowledgeTools", () => {
       const tools = buildKnowledgeTools(client, "repo-a");
       const tool = findTool(tools, name);
       const args =
-        name === "hindsight_capture_initiative"
+        name === "hindsight_reflect"
+          ? { query: "q" }
+          : name === "hindsight_capture_initiative"
             ? { title: "T", summary: "S" }
             : name === "hindsight_ingest_document"
               ? { title: "T", content: "C" }

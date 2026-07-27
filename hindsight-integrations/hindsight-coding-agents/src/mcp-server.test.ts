@@ -13,7 +13,7 @@ describe("selectTools", () => {
     expect(selectTools(cfg, stubClient, "b")).toEqual([]);
   });
 
-  it("returns the seven hindsight_* tool specs when enabled", () => {
+  it("returns the eight hindsight_* tool specs when enabled", () => {
     const cfg = resolveConfig({});
     const tools = selectTools(cfg, stubClient, "b");
     expect(tools.map((t) => t.name).sort()).toEqual(
@@ -23,6 +23,7 @@ describe("selectTools", () => {
         "hindsight_search_knowledge_pages",
         "hindsight_list_knowledge_pages",
         "hindsight_read_knowledge_page",
+        "hindsight_reflect",
         "hindsight_capture_initiative",
         "hindsight_ingest_document",
       ].sort()

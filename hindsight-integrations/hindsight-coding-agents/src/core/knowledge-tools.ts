@@ -136,6 +136,20 @@ export function buildKnowledgeTools(
       handler: guarded(async ({ page_id }) => client.getPage(page_id)),
     },
     {
+      name: "hindsight_reflect",
+      description:
+        "Deep memory reasoning: an agentic synthesis over this repository's FULL memory (git " +
+        "decisions, past sessions, ingested knowledge) that answers WHY questions — the past " +
+        "decision and exact rule/values that explain a behavior, bug, or convention. Slower than " +
+        "hindsight_search_knowledge_pages (several seconds): reach for it when pages are too " +
+        "shallow and you need the root cause or the decided literals. When the answer informs " +
+        "your reply, credit it visibly: \"🧠 From Hindsight memory:\".",
+      inputSchema: { query: z.string().describe("the question to reason over memory about") },
+      handler: guarded(async ({ query }: { query: string }) =>
+        client.reflect(query, { budget: "high" })
+      ),
+    },
+    {
       name: "hindsight_capture_initiative",
       description:
         "Record a new feature or initiative as a tracked knowledge page, so future sessions know it " +
