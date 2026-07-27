@@ -108,10 +108,9 @@ export async function buildSessionStartContext(args: {
             // Record the seed time (informational — no longer a gate).
             writeSeedState(bankId, { seededAt: new Date().toISOString() }, stateDir);
             diag(harness, "seed_started", { bank: bankId });
-            systemMessage =
-              `🧠 Hindsight is learning ${bankId} from this repo's git history in the background, ` +
-              `and surveying the codebase structure to build knowledge pages — recalled memories will ` +
-              `appear as it processes. No action needed.`;
+            // Keep this SHORT and non-technical — it's the product's first impression. The bank id
+            // is the one detail worth surfacing (it names where this repo's memory lives).
+            systemMessage = `🧠 Hindsight is learning this repo → memory bank “${bankId}”`;
           }
         }
       }

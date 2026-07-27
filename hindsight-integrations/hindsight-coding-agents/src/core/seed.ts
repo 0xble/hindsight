@@ -103,7 +103,7 @@ export function seedControl(
     writeSeedState(args.bankId, { seededAt: new Date().toISOString() }, args.stateDir);
     return {
       ok: true,
-      message: `Hindsight is learning ${args.bankId} from its git history in the background — memories will appear as it processes.`,
+      message: `🧠 Hindsight is learning this repo → memory bank “${args.bankId}”`,
     };
   }
   if (command === "decline") {
