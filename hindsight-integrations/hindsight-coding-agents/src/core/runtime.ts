@@ -16,9 +16,8 @@
 import type { Config } from "./config";
 import { diag } from "./diag";
 import type { HindsightClient } from "./hindsight";
+import type { PageRef } from "./knowledge-injection";
 import { buildRosterRefresh, parsePageList } from "./knowledge-injection";
-import type { PageContent } from "./pages-index";
-import { fetchPagesWithContent } from "./pages-index";
 import { brandWord } from "./brand";
 import { buildSystemInjection } from "./inject";
 import { buildKnowledgeTools, type ToolSpec } from "./knowledge-tools";
@@ -34,7 +33,7 @@ export class RuntimeCore {
   private readonly sessionState = new Map<string, { startTs: string; retainedUsers: number }>();
   private lastInjection = ""; // most recent turn's injection block, keyed by nothing (see getInjection)
   private readonly reflectBySession = new Map<string, string>(); // sessionId -> cached reflect ("" = ran, nothing)
-  private pagesCache: PageContent[] | undefined; // page set with content, refreshed on cadence
+  private pagesCache: PageRef[] | undefined; // page roster (ids + titles), refreshed on cadence
   private preamble = ""; // SessionStart-equivalent knowledge preamble, computed once at seedIfCold
   private gitSyncStarted = false; // once-per-process guard for syncGitOnce
 
@@ -127,7 +126,7 @@ export class RuntimeCore {
     if (refreshDue || this.pagesCache === undefined) {
       const t0 = Date.now();
       try {
-        this.pagesCache = await fetchPagesWithContent(this.client, parsePageList);
+        this.pagesCache = parsePageList(await this.client.listPages());
         diag(HARNESS, "pages_ok", { ms: Date.now() - t0, count: this.pagesCache.length });
       } catch (e) {
         this.pagesCache = this.pagesCache ?? [];
@@ -155,7 +154,7 @@ export class RuntimeCore {
       );
     }
     if (refreshDue) {
-      blocks.push(buildRosterRefresh(this.pagesCache.map((p) => ({ id: p.id, title: p.title }))));
+      blocks.push(buildRosterRefresh(this.pagesCache));
     }
     const block = blocks.filter(Boolean).join("\n\n");
     this.injection.set(sessionId, block);

@@ -152,7 +152,7 @@ describe("buildHookOutput", () => {
     });
   });
 
-  it("fetches and caches pages on the first turn but does NOT inject any page section", async () => {
+  it("fetches the page ROSTER (ids + titles, no content) on the first turn; nothing injected from it", async () => {
     const cfg = resolveConfig({});
     const client = makeClient();
     const result = await buildHookOutput({
@@ -162,9 +162,10 @@ describe("buildHookOutput", () => {
       client,
       cacheFile,
     });
-    // Pages are still fetched into the session cache (they back the search tool)…
+    // The roster is fetched into the session cache (ids + titles only — content lives behind
+    // the server-side search tool now, so getPage is never called here)…
     expect(client.listPages).toHaveBeenCalledTimes(1);
-    expect(client.getPage).toHaveBeenCalledWith("p1");
+    expect(client.getPage).not.toHaveBeenCalled();
     // …but NO page content appears in context: the context is the reflect block only.
     expect(result.context).not.toContain(PAGES_HEADER);
     expect(result.context).not.toContain("Preamble prose about this page.");
@@ -173,12 +174,10 @@ describe("buildHookOutput", () => {
     expect(result.context).not.toContain("hindsight_read_knowledge_page p1");
     expect(result.context).toContain("Relevant project memory");
     expect(result.context).toContain("REFLECT_ANSWER");
-    // The fetched pages are cached for later turns (and for the search tool).
+    // The roster is cached for the cadence-based refresh.
     const cached = JSON.parse(readFileSync(cacheFile, "utf8"));
     expect(cached.pages.atTurn).toBe(1);
-    expect(cached.pages.list).toEqual([
-      { id: "p1", title: "Uploader guide", content: PAGE_CONTENT },
-    ]);
+    expect(cached.pages.list).toEqual([{ id: "p1", title: "Uploader guide" }]);
   });
 
   it("pages with content are NEVER auto-injected, even for an unrelated prompt", async () => {

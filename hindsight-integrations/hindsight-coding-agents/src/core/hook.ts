@@ -28,9 +28,8 @@ import type { ClientOpts } from "./hindsight";
 import { HindsightClient } from "./hindsight";
 import { brandWord } from "./brand";
 import { buildSystemInjection } from "./inject";
+import type { PageRef } from "./knowledge-injection";
 import { buildRosterRefresh, parsePageList } from "./knowledge-injection";
-import type { PageContent } from "./pages-index";
-import { fetchPagesWithContent } from "./pages-index";
 
 export interface HookEventFields {
   prompt?: string;
@@ -52,7 +51,6 @@ export interface HookSpec {
 interface HookClient {
   reflect(query: string, opts: { budget?: string; timeoutMs?: number }): Promise<string>;
   listPages(): Promise<unknown>;
-  getPage(pageId: string): Promise<unknown>;
 }
 
 /** Hook harnesses run under the host's per-hook kill window; never let reflect outlive it. */
@@ -61,7 +59,7 @@ const HOOK_REFLECT_CAP_MS = 25_000;
 interface SessionCache {
   turns?: number;
   reflectAnswer?: string; // present (even "") = reflect already ran this session
-  pages?: { atTurn: number; list: PageContent[] };
+  pages?: { atTurn: number; list: PageRef[] };
 }
 
 
@@ -120,7 +118,7 @@ export async function buildHookOutput(args: {
     }
   }
 
-  // ── knowledge pages: fetched on the roster cadence, matched locally every turn ─
+  // ── knowledge-page roster (ids + titles only): refreshed on the cadence ────────
   const cadence = cfg.pageRefreshEveryTurns;
   const stale =
     !cached.pages || (cadence > 0 && turns - cached.pages.atTurn >= cadence);
@@ -128,7 +126,7 @@ export async function buildHookOutput(args: {
   if (stale) {
     const t0 = Date.now();
     try {
-      pages = await fetchPagesWithContent(client, parsePageList);
+      pages = parsePageList(await client.listPages());
       diag(harness, "pages_ok", { ms: Date.now() - t0, count: pages.length });
     } catch (e) {
       diag(harness, "pages_failed", {
@@ -160,7 +158,7 @@ export async function buildHookOutput(args: {
   // every turn (even a plain "yes") read as phantom research. The roster below keeps the tool
   // and the page names in front of the agent.
   if (cadence > 0 && turns % cadence === 0) {
-    blocks.push(buildRosterRefresh(pages.map((p) => ({ id: p.id, title: p.title }))));
+    blocks.push(buildRosterRefresh(pages));
   }
   const kept = blocks.filter(Boolean);
 
