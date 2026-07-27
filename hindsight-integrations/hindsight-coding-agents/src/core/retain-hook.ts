@@ -64,11 +64,13 @@ export async function buildRetain(args: {
   if (turns.length === 0) return;
 
   const startTs = turns[0]?.timestamp ?? new Date().toISOString();
+  const t0 = Date.now();
   try {
     await retainLiveSession(client as HindsightClient, sessionId, turns, startTs);
-    diag(harness, "retain_ok", { turns: turns.length, session: sessionId });
+    diag(harness, "retain_ok", { ms: Date.now() - t0, turns: turns.length, session: sessionId });
   } catch (e) {
     diag(harness, "retain_failed", {
+      ms: Date.now() - t0,
       error: String((e as Error)?.message || e).slice(0, 200),
       session: sessionId,
     });

@@ -179,7 +179,18 @@ export class RuntimeCore {
     }
     if (users - st.retainedUsers >= this.cfg.retainEveryTurns) {
       st.retainedUsers = users;
-      void retainLiveSession(this.client, sessionId, turns, st.startTs).catch(() => {});
+      const t0 = Date.now();
+      void retainLiveSession(this.client, sessionId, turns, st.startTs)
+        .then(() =>
+          diag(HARNESS, "retain_ok", { ms: Date.now() - t0, turns: turns.length, session: sessionId })
+        )
+        .catch((e) =>
+          diag(HARNESS, "retain_failed", {
+            ms: Date.now() - t0,
+            error: String((e as Error)?.message || e).slice(0, 200),
+            session: sessionId,
+          })
+        );
     }
   }
 

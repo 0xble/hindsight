@@ -77,6 +77,8 @@ export async function buildSessionStartContext(args: {
   ) => void;
 }): Promise<SessionStartOutput> {
   const { cwd, bankId, cfg, client, stateDir } = args;
+  const t0 = Date.now();
+  let cold: boolean | undefined; // undefined = not checked (autoSeed off / non-git / declined / unreachable)
   const harness = args.harness ?? "claude-code";
   const hasGit = args.hasGit ?? hasGitHistory;
   const startSeed = args.startSeed ?? startBackgroundSeed;
@@ -102,6 +104,7 @@ export async function buildSessionStartContext(args: {
           docIds = undefined; // server unreachable: transient — do nothing, try again next session
         }
 
+        cold = docIds !== undefined ? docIds.size === 0 : undefined;
         if (docIds !== undefined) {
           // ALWAYS fire the background deepen engine when the server is reachable — it is
           // idempotent (per-bank lock, dedup by document id) and each run does only the missing
@@ -136,6 +139,9 @@ export async function buildSessionStartContext(args: {
   // yields an empty roster (empty-state preamble) and never disturbs the seed logic above.
   const pages = parsePageList(await client.listPages().catch(() => null));
   const additionalContext = buildKnowledgePreamble(pages);
+
+  // ALWAYS record the session start (warm sessions used to log nothing — undebuggable).
+  diag(harness, "session_start", { bank: bankId, cold, pages: pages.length, ms: Date.now() - t0 });
 
   return { systemMessage, additionalContext };
 }

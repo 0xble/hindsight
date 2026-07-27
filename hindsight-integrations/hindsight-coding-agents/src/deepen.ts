@@ -32,6 +32,7 @@ import { parsePageList } from "./core/knowledge-injection";
 import { DEEPEN_DIFF_TARGET } from "./core/status";
 import { pool } from "./core/util";
 import { getHarness, HARNESS_NAMES } from "./harness/registry";
+import { diag } from "./core/diag";
 
 const DIFF_BATCH = 50; // per-run cap on per-commit diff ingestion (bounded session cost)
 const CONCURRENCY = 4;
@@ -66,7 +67,7 @@ if (!REPO || !BANK) {
   process.exit(1);
 }
 
-const log = (m: string) => console.log(m);
+const log = (m: string) => console.log(`${new Date().toISOString()} ${m}`);
 
 // ── per-bank lock: concurrent session starts must not double-ingest ─────────────
 const LOCK_DIR = join(homedir(), ".hindsight", "coding-agent-state");
@@ -93,6 +94,8 @@ async function main() {
     log(`deepen: another run holds the lock for ${BANK} — nothing to do`);
     return;
   }
+  const t0 = Date.now();
+  diag("deepen", "deepen_started", { bank: BANK });
   try {
     const harness = await getHarness(HARNESS);
     const client = new HindsightClient({ apiUrl: API_URL, apiToken: API_TOKEN, bank: BANK!, log });
@@ -155,7 +158,13 @@ async function main() {
     else await client.createPages();
 
     const failures = chatFails + gitFails;
-    log(`\n✅ deepen complete${failures ? ` (${failures} items failed to enqueue)` : ""}.`);
+    diag("deepen", "deepen_done", {
+      bank: BANK,
+      ms: Date.now() - t0,
+      newChats: sessions.length,
+      failures,
+    });
+    log(`\n✅ deepen complete in ${((Date.now() - t0) / 1000).toFixed(1)}s${failures ? ` (${failures} items failed to enqueue)` : ""}.`);
   } finally {
     try {
       unlinkSync(LOCK);
@@ -166,6 +175,7 @@ async function main() {
 }
 
 main().catch((e) => {
+  diag("deepen", "deepen_failed", { bank: BANK, error: String((e as Error)?.message || e).slice(0, 200) });
   console.error("deepen failed:", (e as Error).message || e);
   try {
     unlinkSync(LOCK);

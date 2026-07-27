@@ -76,13 +76,13 @@ describe("startBackgroundSeed", () => {
     return vi.fn().mockReturnValue({ on: vi.fn(), unref: vi.fn() });
   }
 
-  it("spawns node against enginePath, detached + stdio ignore, with the default gitlog limit", () => {
+  it("spawns node against enginePath, detached, output kept (log file or ignore), with the default gitlog limit", () => {
     const spawn = fakeSpawn();
     startBackgroundSeed("/some/repo", { enginePath: "/dist/deepen.js", spawn });
     expect(spawn).toHaveBeenCalledWith(
       "node",
       ["/dist/deepen.js", "--repo", "/some/repo", "--gitlog-limit", String(DEFAULT_SEED_LIMIT)],
-      { detached: true, stdio: "ignore" }
+      { detached: true, stdio: expect.anything() }
     );
     expect(spawn.mock.results[0].value.unref).toHaveBeenCalled();
   });
@@ -102,7 +102,7 @@ describe("startBackgroundSeed", () => {
     expect(spawn).toHaveBeenCalledWith(
       "node",
       ["/dist/deepen.js", "--repo", "/some/repo", "--gitlog-limit", "50"],
-      { detached: true, stdio: "ignore" }
+      { detached: true, stdio: expect.anything() }
     );
   });
 
