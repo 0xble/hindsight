@@ -19,7 +19,8 @@
  *   - empty set (cold)                 -> start the background seed, seededAt written, note added
  */
 import { readFileSync } from "node:fs";
-import { hasGitHistory } from "./git";
+import { gitHeadSha, hasGitHistory } from "./git";
+import { DEEPEN_DIFF_TARGET } from "./status";
 import { startBackgroundSeed } from "./seed";
 import { startCodebaseSurvey, type SurveyHarness } from "./survey";
 import { loadConfig } from "./config";
@@ -42,8 +43,51 @@ interface SeedContextClient {
  * server's banner) plus the repo's bank. Shown on EVERY session start; "learning" on a cold
  * repo (first ingest running), "remembering" once the bank is warm.
  */
-export function buildSeedBanner(bankId: string, cold = true): string {
-  return `${brandWord()} is ${cold ? "learning" : "remembering"} this repo → memory bank “${bankId}”`;
+export function buildSeedBanner(bankId: string, cold = true, gitNote?: string): string {
+  return (
+    `${brandWord()} is ${cold ? "learning" : "remembering"} this repo → memory bank “${bankId}”` +
+    (gitNote ? ` · ${gitNote}` : "")
+  );
+}
+
+/**
+ * One-phrase git-sync state for the banner (the syncStatus contract, condensed): whether the bank
+ * is current with the repo's commits. Cheap — reuses the cold-check's doc-id set plus ONE tag query
+ * (gitlog-head:<sha>, the freshness marker the deepen engine maintains). Returns undefined when
+ * there's nothing meaningful to say (gitIngest off, no git, cold bank — "learning" already covers it).
+ */
+async function gitSyncNote(args: {
+  client: SeedContextClient;
+  cwd: string;
+  gitIds: Set<string>;
+  mode: "message" | "full" | "none";
+  cold: boolean;
+}): Promise<string | undefined> {
+  const { client, cwd, gitIds, mode, cold } = args;
+  if (mode === "none" || cold) return undefined;
+  const head = gitHeadSha(cwd);
+  if (!head) return undefined;
+  const gitlogCurrent = await client
+    .listDocumentIds(`gitlog-head:${head}`)
+    .then((s) => s.size > 0)
+    .catch(() => undefined);
+  if (gitlogCurrent === undefined) return undefined; // server hiccup: say nothing rather than guess
+  if (mode === "message") return gitlogCurrent ? "git in sync" : "catching up on new commits";
+  // full: deepening progress = per-commit docs vs the recent-history target
+  const deepened = [...gitIds].filter((id) => id.startsWith("git:")).length;
+  let target = DEEPEN_DIFF_TARGET;
+  try {
+    const { execFileSync } = await import("node:child_process");
+    const n = Number(
+      execFileSync("git", ["-C", cwd, "rev-list", "--count", "HEAD"], { encoding: "utf8" }).trim()
+    );
+    if (n > 0) target = Math.min(DEEPEN_DIFF_TARGET, n);
+  } catch {
+    /* keep the default target */
+  }
+  return gitlogCurrent && deepened >= target
+    ? "git in sync"
+    : `syncing git history (${Math.min(deepened, target)}/${target})`;
 }
 
 /** Split SessionStart output: `systemMessage` renders in the terminal (user-visible);
@@ -74,7 +118,8 @@ export async function buildSessionStartContext(args: {
 }): Promise<SessionStartOutput> {
   const { cwd, bankId, cfg, client, stateDir } = args;
   const t0 = Date.now();
-  let cold: boolean | undefined; // undefined = not checked (autoSeed off / non-git / declined / unreachable)
+  let cold: boolean | undefined; // undefined = not checked (autoSeed off / non-git / unreachable)
+  let gitDocIds: Set<string> | undefined; // the cold-check's doc set, reused by the banner's git note
   const harness = args.harness ?? "claude-code";
   const hasGit = args.hasGit ?? hasGitHistory;
   const startSeed = args.startSeed ?? startBackgroundSeed;
@@ -99,6 +144,7 @@ export async function buildSessionStartContext(args: {
         }
 
         cold = docIds !== undefined ? docIds.size === 0 : undefined;
+        gitDocIds = docIds;
         if (docIds !== undefined) {
           // ALWAYS fire the background deepen engine when the server is reachable — it is
           // idempotent (per-bank lock, dedup by document id) and each run does only the missing
@@ -129,8 +175,19 @@ export async function buildSessionStartContext(args: {
   const additionalContext = buildKnowledgePreamble(pages);
 
   // The banner shows on EVERY session — Hindsight's presence is part of the product, not a
-  // one-time setup note. Wording tracks the bank state: cold = "learning", else "remembering".
-  systemMessage = buildSeedBanner(bankId, cold === true);
+  // one-time setup note. Wording tracks the bank state: cold = "learning", else "remembering";
+  // warm banners also condense the syncStatus contract into a git-sync phrase.
+  let gitNote: string | undefined;
+  if (gitDocIds) {
+    gitNote = await gitSyncNote({
+      client,
+      cwd,
+      gitIds: gitDocIds,
+      mode: cfg.gitIngest,
+      cold: cold === true,
+    }).catch(() => undefined);
+  }
+  systemMessage = buildSeedBanner(bankId, cold === true, gitNote);
 
   // ALWAYS record the session start (warm sessions used to log nothing — undebuggable).
   diag(harness, "session_start", { bank: bankId, cold, pages: pages.length, ms: Date.now() - t0 });
