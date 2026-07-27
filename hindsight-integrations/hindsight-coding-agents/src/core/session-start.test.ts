@@ -95,7 +95,8 @@ describe("buildSessionStartContext", () => {
     expect(startSeed).not.toHaveBeenCalled();
     expect(called).toBe(false);
     expect(out.additionalContext).toContain("- Component map (p1)");
-    expect(out.systemMessage).toBeUndefined();
+    // banner shows on EVERY session now; non-cold paths use the "remembering" wording
+    expect(out.systemMessage).toContain("remembering");
   });
 
   it("cold-check-wins: stale seededAt but EMPTY bank -> reseeds (consults the live bank, ignores seededAt)", async () => {
@@ -140,7 +141,8 @@ describe("buildSessionStartContext", () => {
     expect(startSeed).toHaveBeenCalledWith("/repo/dir", { limit: 300 });
     // Warm: the stored state is left untouched (no fresh seededAt written).
     expect(readSeedState("bank-1", stateDir)).toEqual({ seededAt: "2026-01-01T00:00:00Z" });
-    expect(out.systemMessage).toBeUndefined();
+    // banner shows on EVERY session now; non-cold paths use the "remembering" wording
+    expect(out.systemMessage).toContain("remembering");
     expect(out.additionalContext).toContain("- Component map (p1)");
   });
 
@@ -159,7 +161,8 @@ describe("buildSessionStartContext", () => {
     });
     expect(startSeed).not.toHaveBeenCalled();
     expect(out.additionalContext).toContain("- Component map (p1)");
-    expect(out.systemMessage).toBeUndefined();
+    // banner shows on EVERY session now; non-cold paths use the "remembering" wording
+    expect(out.systemMessage).toContain("remembering");
   });
 
   it("warm bank (non-empty doc set) -> deepen engine fires, but no survey/state-write/note", async () => {
@@ -182,7 +185,8 @@ describe("buildSessionStartContext", () => {
     expect(startSurvey).not.toHaveBeenCalled();
     expect(readSeedState("bank-1", stateDir)).toEqual({});
     expect(out.additionalContext).toContain("- Component map (p1)");
-    expect(out.systemMessage).toBeUndefined();
+    // banner shows on EVERY session now; non-cold paths use the "remembering" wording
+    expect(out.systemMessage).toContain("remembering");
   });
 
   it("listDocumentIds throws (server unreachable) -> no seed, NO state written, roster preamble only", async () => {
@@ -205,7 +209,8 @@ describe("buildSessionStartContext", () => {
     expect(startSeed).not.toHaveBeenCalled();
     expect(readSeedState("bank-1", stateDir)).toEqual({});
     expect(out.additionalContext).toContain("- Component map (p1)");
-    expect(out.systemMessage).toBeUndefined();
+    // banner shows on EVERY session now; non-cold paths use the "remembering" wording
+    expect(out.systemMessage).toContain("remembering");
   });
 
   it("listPages rejects -> fail-open: empty-state preamble, seed still starts, note still visible (cold repo)", async () => {
@@ -257,7 +262,8 @@ describe("buildSessionStartContext", () => {
     expect(startSeed).not.toHaveBeenCalled();
     expect(called).toBe(false);
     expect(out.additionalContext).toContain("- Component map (p1)");
-    expect(out.systemMessage).toBeUndefined();
+    // banner shows on EVERY session now; non-cold paths use the "remembering" wording
+    expect(out.systemMessage).toContain("remembering");
   });
 });
 

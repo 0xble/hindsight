@@ -37,16 +37,17 @@ interface SeedContextClient {
 }
 
 /**
- * The cold-start banner: a compact HINDSIGHT wordmark (box-drawing glyphs — fixed-width safe,
- * no emoji so alignment holds in every terminal) over one plain line naming the repo's bank.
- * Shown once per repo, so it can afford three lines.
+ * The session banner: a compact HINDSIGHT wordmark (box-drawing glyphs — fixed-width safe, no
+ * emoji so alignment holds in every terminal) over one plain line naming the repo's bank. Shown
+ * on EVERY session start — Hindsight's presence should be visible, not inferred. The line reads
+ * "learning" on a cold repo (first ingest running) and "remembering" once the bank is warm.
  */
-export function buildSeedBanner(bankId: string): string {
+export function buildSeedBanner(bankId: string, cold = true): string {
   return [
     "╦ ╦╦╔╗╔╔╦╗╔═╗╦╔═╗╦ ╦╔╦╗",
     "╠═╣║║║║ ║║╚═╗║║ ╦╠═╣ ║",
     "╩ ╩╩╝╚╝═╩╝╚═╝╩╚═╝╩ ╩ ╩",
-    `🧠 learning this repo → memory bank “${bankId}”`,
+    `🧠 ${cold ? "learning" : "remembering"} this repo → memory bank “${bankId}”`,
   ].join("\n");
 }
 
@@ -84,9 +85,9 @@ export async function buildSessionStartContext(args: {
   const startSeed = args.startSeed ?? startBackgroundSeed;
   const startSurvey = args.startSurvey ?? startCodebaseSurvey;
 
-  // The cold-seed note is USER-FACING and must ride `systemMessage` (the only hook field Claude
-  // Code renders in the terminal); `additionalContext` is model-only and would show the human
-  // nothing. The knowledge preamble is model context and stays in `additionalContext`.
+  // The banner is USER-FACING and must ride `systemMessage` (the only hook field Claude Code
+  // renders in the terminal); `additionalContext` is model-only and would show the human nothing.
+  // The knowledge preamble is model context and stays in `additionalContext`.
   let systemMessage: string | undefined;
 
   if (cfg.autoSeed !== false) {
@@ -125,10 +126,6 @@ export async function buildSessionStartContext(args: {
             // Record the seed time (informational — no longer a gate).
             writeSeedState(bankId, { seededAt: new Date().toISOString() }, stateDir);
             diag(harness, "seed_started", { bank: bankId });
-            // The product's first impression — shown ONCE per repo (cold bank only). A compact
-            // unicode wordmark (no emoji inside the art: double-width emoji skews alignment across
-            // terminals), then one short line whose only detail is the bank id.
-            systemMessage = buildSeedBanner(bankId);
           }
         }
       }
@@ -139,6 +136,10 @@ export async function buildSessionStartContext(args: {
   // yields an empty roster (empty-state preamble) and never disturbs the seed logic above.
   const pages = parsePageList(await client.listPages().catch(() => null));
   const additionalContext = buildKnowledgePreamble(pages);
+
+  // The banner shows on EVERY session — Hindsight's presence is part of the product, not a
+  // one-time setup note. Wording tracks the bank state: cold = "learning", else "remembering".
+  systemMessage = buildSeedBanner(bankId, cold === true);
 
   // ALWAYS record the session start (warm sessions used to log nothing — undebuggable).
   diag(harness, "session_start", { bank: bankId, cold, pages: pages.length, ms: Date.now() - t0 });
