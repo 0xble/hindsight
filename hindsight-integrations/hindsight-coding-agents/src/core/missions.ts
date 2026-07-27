@@ -88,6 +88,73 @@ export const RETAIN_STRATEGIES = {
   },
 } as const;
 
+// ── passive tier tagging (entity_labels) ───────────────────────────────────────
+// A single hierarchical bank-config group set by `configureBank` at seed time. `tag: true` makes the
+// extractor copy each selected `knowledge:<value>` onto the fact's tags (via `_inject_label_tags`),
+// giving every durable fact a knowledge-tier routing tag the server-side knowledge base (and any
+// tag-filtered query) can select on. The vocabulary is FIXED (not per-feature) because tag matching
+// is exact set-ops with no wildcards.
+export interface EntityLabelValue {
+  value: string;
+  description: string;
+}
+
+export interface EntityLabelGroup {
+  key: string;
+  type: "multi-values";
+  optional: boolean;
+  tag: boolean;
+  description: string;
+  values: EntityLabelValue[];
+}
+
+export const KNOWLEDGE_LABELS: EntityLabelGroup = {
+  key: "knowledge",
+  type: "multi-values", // 0, 1, or several — empty is normal
+  optional: true,
+  tag: true, // emits knowledge:<value> onto the fact's tags
+  description:
+    "Routing labels for this project's Hindsight KNOWLEDGE PAGES — curated, human-readable summaries " +
+    "of the repo's DURABLE engineering knowledge (architecture, key decisions, conventions, ongoing " +
+    "initiatives), each page rebuilt automatically from the facts labeled for it. Mark a fact only when " +
+    "it is durable, reusable knowledge a developer would still want surfaced in future sessions. " +
+    "IMPORTANT: leave this EMPTY for routine, transient, or operational facts — a passing test, a " +
+    "one-off command, a status update, a debugging dead-end. MOST facts should get no label here. " +
+    "Assign more than one value only when the fact genuinely fits several.",
+  values: [
+    {
+      value: "feature-work",
+      description:
+        "A new feature, initiative, or enhancement being planned or built — the capability being added " +
+        "and the intent behind it. Not routine bug-fixes or chores.",
+    },
+    {
+      value: "decision",
+      description:
+        "A technical decision that will constrain future work, with its rationale — why this approach " +
+        "was chosen over alternatives, or a rule deliberately adopted.",
+    },
+    {
+      value: "convention",
+      description:
+        "An established way this project does things — naming, structure, testing, error handling, or " +
+        "another recurring pattern a contributor is expected to follow.",
+    },
+    {
+      value: "component",
+      description:
+        "What a specific module, file, service, or subsystem is responsible for, or how components " +
+        "depend on and connect to one another.",
+    },
+    {
+      value: "concept",
+      description:
+        "A domain concept, key abstraction, or piece of project vocabulary a new contributor must " +
+        "understand to work effectively.",
+    },
+  ],
+};
+
 // Knowledge PAGES (OKF pages = mental models) = a developer's durable mental model of the codebase,
 // CONSOLIDATED from the ingested MEMORY (commit history + past conversations) — NOT mirrored from the
 // current source (which would need constant re-sync). A universal 5-page taxonomy that generalizes to

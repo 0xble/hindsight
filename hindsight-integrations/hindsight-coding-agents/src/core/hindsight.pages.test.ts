@@ -308,7 +308,7 @@ describe("HindsightClient.captureInitiative", () => {
     const memPost = calls.find((k) => k.method === "POST" && k.url.endsWith("/memories"));
     expect(memPost).toBeDefined();
     const item = memPost.body.items[0];
-    expect(item.tags).toEqual(["relatedPageId:pg"]);
+    expect(item.tags).toEqual(["knowledge:feature-work", "relatedPageId:pg"]);
     expect(item.strategy).toBe("document");
     expect(memPost.body.async).toBe(true);
     // Unique per-marker document id (NOT the page id) so repeated captures accrue.
@@ -351,13 +351,13 @@ describe("HindsightClient.captureInitiative", () => {
     const memPost = calls.find((k) => k.method === "POST" && k.url.endsWith("/memories"));
     expect(memPost).toBeDefined();
     const item = memPost.body.items[0];
-    expect(item.tags).toEqual(["relatedPageId:initiative-x"]);
+    expect(item.tags).toEqual(["knowledge:feature-work", "relatedPageId:initiative-x"]);
     expect(item.content).toContain("Enhancement to an existing initiative");
   });
 });
 
 describe("HindsightClient.configureBank config PATCH", () => {
-  it("PATCHes /config with the retain strategies only — NO entity_labels, NO free-form entities", async () => {
+  it("PATCHes /config with the retain strategies + the knowledge entity_labels tier", async () => {
     const calls: any[] = [];
     stubFetch(calls, async () => ({ ok: true }));
     const c = new HindsightClient({ apiUrl: "http://x", bank: "repo-a" });
@@ -367,8 +367,10 @@ describe("HindsightClient.configureBank config PATCH", () => {
     expect(configCall).toBeDefined();
     const updates = configCall.body.updates;
 
-    expect(updates).not.toHaveProperty("entity_labels");
-    expect(updates).not.toHaveProperty("entities_allow_free_form");
+    expect(updates.entity_labels).toEqual([
+      expect.objectContaining({ key: "knowledge", tag: true, optional: true }),
+    ]);
+    expect(updates.entities_allow_free_form).toBe(true);
     expect(updates.retain_default_strategy).toBe("git");
     expect(Object.keys(updates.retain_strategies)).toEqual(
       expect.arrayContaining(["git", "gitlog", "conversation", "document"])

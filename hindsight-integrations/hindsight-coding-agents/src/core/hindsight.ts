@@ -6,6 +6,7 @@
  * creates knowledge pages. Nothing here knows about opencode/claude-code/etc.
  */
 import {
+  KNOWLEDGE_LABELS,
   GIT_MISSION,
   REFLECT_MISSION,
   OBSERVATIONS_MISSION,
@@ -139,10 +140,12 @@ export class HindsightClient {
       updates: {
         retain_strategies: RETAIN_STRATEGIES,
         retain_default_strategy: "git",
+        entity_labels: [KNOWLEDGE_LABELS],
+        entities_allow_free_form: true,
       },
     });
     this.log(
-      `[bank] configured ${this.bank}: reflect mission, observations ON, strategies {git, gitlog, conversation, document}`
+      `[bank] configured ${this.bank}: reflect mission, observations ON, entity_labels {knowledge}, strategies {git, gitlog, conversation, document}`
     );
   }
 
@@ -366,7 +369,7 @@ export class HindsightClient {
       content,
       "initiative marker",
       markerId,
-      [`relatedPageId:${pageId}`],
+      ["knowledge:feature-work", `relatedPageId:${pageId}`],
       "document",
       { async: true }
     );
