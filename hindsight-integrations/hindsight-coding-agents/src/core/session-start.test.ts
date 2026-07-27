@@ -1,26 +1,12 @@
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { buildSessionStartContext, runSessionStartHook } from "./session-start";
-import { readSeedState, writeSeedState } from "./seed";
 import { resolveConfig } from "./config";
-
-let stateDir: string;
-
-beforeEach(() => {
-  stateDir = mkdtempSync(join(tmpdir(), "hs-session-start-"));
-});
-
-afterEach(() => {
-  rmSync(stateDir, { recursive: true, force: true });
-});
 
 /** Default roster the mock client returns; asserted on by name below. */
 const listPagesOk = async () => ({ items: [{ id: "p1", name: "Component map" }] });
 
 describe("buildSessionStartContext", () => {
-  it("cold git repo + autoSeed on -> seeds + surveys, writes seededAt, note in systemMessage (user-visible) + roster in additionalContext (model)", async () => {
+  it("cold git repo + autoSeed on -> seeds + surveys, note in systemMessage (user-visible) + roster in additionalContext (model)", async () => {
     const client = { listDocumentIds: async () => new Set<string>(), listPages: listPagesOk };
     const startSeed = vi.fn();
     const startSurvey = vi.fn();
@@ -29,7 +15,6 @@ describe("buildSessionStartContext", () => {
       bankId: "bank-1",
       cfg: resolveConfig(),
       client,
-      stateDir,
       hasGit: () => true,
       startSeed,
       startSurvey,
@@ -40,9 +25,6 @@ describe("buildSessionStartContext", () => {
       model: "haiku",
       budgetUsd: 2,
     });
-    const state = readSeedState("bank-1", stateDir);
-    expect(typeof state.seededAt).toBe("string");
-    expect(state.seededAt).not.toBe("");
     // The learning note is USER-VISIBLE (systemMessage), not buried in model context.
     expect(out.systemMessage).toContain("is learning");
     expect(out.systemMessage).toContain("bank-1");
@@ -65,7 +47,6 @@ describe("buildSessionStartContext", () => {
       bankId: "bank-1",
       cfg: resolveConfig({ codebaseSurvey: false }),
       client,
-      stateDir,
       hasGit: () => true,
       startSeed,
       startSurvey,
@@ -90,7 +71,6 @@ describe("buildSessionStartContext", () => {
       bankId: "bank-1",
       cfg: resolveConfig(),
       client,
-      stateDir,
       hasGit: () => false,
       startSeed,
     });
@@ -101,14 +81,17 @@ describe("buildSessionStartContext", () => {
     expect(out.systemMessage).toContain("remembering");
   });
 
-  it("cold-check-wins: stale seededAt but EMPTY bank -> reseeds (consults the live bank, ignores seededAt)", async () => {
-    writeSeedState("bank-1", { seededAt: "2026-01-01T00:00:00Z" }, stateDir);
+  // The old "declined state -> no seed" test is gone with the seed-state file itself: the live
+  // bank is the ONLY state now, so there is no client-side declined flag to consult. Opting a
+  // repo out of memory is `disabled` in project config.
+
+  it("cold-check-wins: EMPTY live bank -> (re)seeds — the bank is the only state", async () => {
     const startSeed = vi.fn();
     let called = false;
     const client = {
       listDocumentIds: async () => {
         called = true;
-        return new Set<string>(); // bank is empty (user cleared it)
+        return new Set<string>(); // bank is empty (fresh, or user cleared it)
       },
       listPages: listPagesOk,
     };
@@ -117,57 +100,16 @@ describe("buildSessionStartContext", () => {
       bankId: "bank-1",
       cfg: resolveConfig(),
       client,
-      stateDir,
       hasGit: () => true,
       startSeed,
     });
-    // The live bank is consulted despite the stored seededAt, and an empty bank reseeds.
+    // The live bank is consulted, and an empty bank seeds — no client-side flag can contradict it.
     expect(called).toBe(true);
     expect(startSeed).toHaveBeenCalledWith("/repo/dir", { limit: 300 });
     expect(out.systemMessage).toContain("is learning");
   });
 
-  it("stale seededAt + WARM bank -> deepen engine still fires (idempotent), but no cold-only note/state churn", async () => {
-    writeSeedState("bank-1", { seededAt: "2026-01-01T00:00:00Z" }, stateDir);
-    const startSeed = vi.fn();
-    const client = { listDocumentIds: async () => new Set(["git:abc"]), listPages: listPagesOk };
-    const out = await buildSessionStartContext({
-      cwd: "/repo/dir",
-      bankId: "bank-1",
-      cfg: resolveConfig(),
-      client,
-      stateDir,
-      hasGit: () => true,
-      startSeed,
-    });
-    expect(startSeed).toHaveBeenCalledWith("/repo/dir", { limit: 300 });
-    // Warm: the stored state is left untouched (no fresh seededAt written).
-    expect(readSeedState("bank-1", stateDir)).toEqual({ seededAt: "2026-01-01T00:00:00Z" });
-    // banner shows on EVERY session now; non-cold paths use the "remembering" wording
-    expect(out.systemMessage).toContain("remembering");
-    expect(out.additionalContext).toContain("- Component map (p1)");
-  });
-
-  it("declined state -> no seed, roster preamble only", async () => {
-    writeSeedState("bank-1", { declined: true }, stateDir);
-    const startSeed = vi.fn();
-    const client = { listDocumentIds: async () => new Set<string>(), listPages: listPagesOk };
-    const out = await buildSessionStartContext({
-      cwd: "/repo/dir",
-      bankId: "bank-1",
-      cfg: resolveConfig(),
-      client,
-      stateDir,
-      hasGit: () => true,
-      startSeed,
-    });
-    expect(startSeed).not.toHaveBeenCalled();
-    expect(out.additionalContext).toContain("- Component map (p1)");
-    // banner shows on EVERY session now; non-cold paths use the "remembering" wording
-    expect(out.systemMessage).toContain("remembering");
-  });
-
-  it("warm bank (non-empty doc set) -> deepen engine fires, but no survey/state-write/note", async () => {
+  it("warm bank (non-empty doc set) -> deepen engine fires, but no survey/note", async () => {
     const startSeed = vi.fn();
     const startSurvey = vi.fn();
     const client = { listDocumentIds: async () => new Set(["git:abc"]), listPages: listPagesOk };
@@ -176,22 +118,20 @@ describe("buildSessionStartContext", () => {
       bankId: "bank-1",
       cfg: resolveConfig(),
       client,
-      stateDir,
       hasGit: () => true,
       startSeed,
       startSurvey,
     });
     // The engine is idempotent, so every warm session start re-fires it to pick up missing work.
     expect(startSeed).toHaveBeenCalledWith("/repo/dir", { limit: 300 });
-    // The cold-only extras stay off: no survey, no seededAt write, no user-facing note.
+    // The cold-only extras stay off: no survey, no user-facing learning note.
     expect(startSurvey).not.toHaveBeenCalled();
-    expect(readSeedState("bank-1", stateDir)).toEqual({});
     expect(out.additionalContext).toContain("- Component map (p1)");
     // banner shows on EVERY session now; non-cold paths use the "remembering" wording
     expect(out.systemMessage).toContain("remembering");
   });
 
-  it("listDocumentIds throws (server unreachable) -> no seed, NO state written, roster preamble only", async () => {
+  it("listDocumentIds throws (server unreachable) -> no seed, roster preamble only", async () => {
     const startSeed = vi.fn();
     const client = {
       listDocumentIds: async () => {
@@ -204,12 +144,10 @@ describe("buildSessionStartContext", () => {
       bankId: "bank-1",
       cfg: resolveConfig(),
       client,
-      stateDir,
       hasGit: () => true,
       startSeed,
     });
     expect(startSeed).not.toHaveBeenCalled();
-    expect(readSeedState("bank-1", stateDir)).toEqual({});
     expect(out.additionalContext).toContain("- Component map (p1)");
     // banner shows on EVERY session now; non-cold paths use the "remembering" wording
     expect(out.systemMessage).toContain("remembering");
@@ -228,7 +166,6 @@ describe("buildSessionStartContext", () => {
       bankId: "bank-1",
       cfg: resolveConfig(),
       client,
-      stateDir,
       hasGit: () => true,
       startSeed,
     });
@@ -257,7 +194,6 @@ describe("buildSessionStartContext", () => {
       bankId: "bank-1",
       cfg: resolveConfig({ autoSeed: false }),
       client,
-      stateDir,
       hasGit: () => true,
       startSeed,
     });

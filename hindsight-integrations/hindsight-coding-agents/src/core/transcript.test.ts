@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { readClaudeTranscript } from "./transcript";
+import { buildSystemInjection } from "./inject";
 
 let root: string;
 let file: string;
@@ -163,6 +164,30 @@ describe("readClaudeTranscript", () => {
     expect(result[0].content).toContain("Why does upload retry?");
     expect(result[0].content).not.toContain("secret prior fact");
     expect(result[0].content).not.toContain("hindsight_memories");
+  });
+
+  it("strips the reflect hook's <hindsight_memory> injection block (buildSystemInjection output)", () => {
+    // The exact block the UserPromptSubmit hook injects — wrapper tags, preamble, attribution
+    // text and the surfaced memory itself must ALL be gone from retained text, or the session
+    // write-back would re-ingest the injected synthesis (a retain→reflect feedback loop).
+    writeFileSync(
+      file,
+      JSON.stringify({
+        type: "user",
+        message: {
+          role: "user",
+          content: `${buildSystemInjection("SECRET")}\nWhy does upload retry?`,
+        },
+      })
+    );
+
+    const result = readClaudeTranscript(file);
+
+    expect(result).toHaveLength(1);
+    expect(result[0].content).toContain("Why does upload retry?");
+    expect(result[0].content).not.toContain("SECRET");
+    expect(result[0].content).not.toContain("Relevant project memory");
+    expect(result[0].content).not.toContain("hindsight_memory");
   });
 
   it("fails open (returns []) when the file cannot be read", () => {

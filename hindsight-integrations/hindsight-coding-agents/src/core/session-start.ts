@@ -20,7 +20,7 @@
  */
 import { readFileSync } from "node:fs";
 import { hasGitHistory } from "./git";
-import { readSeedState, writeSeedState, startBackgroundSeed } from "./seed";
+import { startBackgroundSeed } from "./seed";
 import { startCodebaseSurvey, type SurveyHarness } from "./survey";
 import { loadConfig } from "./config";
 import type { Config } from "./config";
@@ -87,12 +87,10 @@ export async function buildSessionStartContext(args: {
 
   if (cfg.autoSeed !== false) {
     if (hasGit(cwd)) {
-      const state = readSeedState(bankId, stateDir);
-      // Only `declined` hard-opts-out. We DON'T gate on a stored `seededAt`: the LIVE bank is the
-      // source of truth (cold-check-wins). A stale `seededAt` from an earlier seed must not suppress
-      // re-seeding after the user has cleared the bank — otherwise "delete the bank + restart" never
-      // re-seeds. Cost: one `listDocumentIds` per session start (cheap; usually a single page).
-      if (!state.declined) {
+      // The LIVE bank is the ONLY state (cold-check-wins): delete the bank and the next session is
+      // a true first-open — no client-side flags can contradict it. Opting out of memory for a repo
+      // is `disabled` in project config, not a hidden state file.
+      {
         let docIds: Set<string> | undefined;
         try {
           docIds = await client.listDocumentIds("source:git");
@@ -118,8 +116,6 @@ export async function buildSessionStartContext(args: {
                 budgetUsd: cfg.surveyBudgetUsd,
               });
             }
-            // Record the seed time (informational — no longer a gate).
-            writeSeedState(bankId, { seededAt: new Date().toISOString() }, stateDir);
             diag(harness, "seed_started", { bank: bankId });
           }
         }

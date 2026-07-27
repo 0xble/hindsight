@@ -1,7 +1,11 @@
 /** The system-prompt injection wrapper for a surfaced memory (harness-agnostic text). */
 
 export function buildSystemInjection(memory: string): string {
+  // The <hindsight_memory> wrapper is LOAD-BEARING: the transcript readers strip this exact tag
+  // (transcript-util MEMORY_TAG_RE) so the session write-back never re-ingests the injected
+  // synthesis back into the bank (a retain→reflect feedback loop).
   return (
+    "<hindsight_memory>\n" +
     "Relevant project memory, surfaced from THIS repository's git history and past developer " +
     "conversations — a past decision that likely explains this issue.\n" +
     "ATTRIBUTION REQUIREMENT (mandatory output format): when this memory informs your answer or " +
@@ -12,6 +16,7 @@ export function buildSystemInjection(memory: string): string {
     "If it states an EXACT rule or literal values (specific strings, numbers, set members, " +
     "mappings), apply them PRECISELY as given — do not substitute a different but plausible " +
     "choice of your own. Verify against the current code before editing:\n\n" +
-    memory
+    memory +
+    "\n</hindsight_memory>"
   );
 }

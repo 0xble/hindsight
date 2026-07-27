@@ -8,7 +8,7 @@ export const TOOL_TEXT_CAP = 2000;
 /** Injected recall/knowledge context — stripped from retained text so a write-back never re-ingests
  *  its own injected memory (a retain→recall feedback loop). Covers every block the hooks inject. */
 const MEMORY_TAG_RE =
-  /<(hindsight_memories|hindsight_bank|relevant_memories|user_feedback|hindsight_knowledge|hindsight_knowledge_refresh)\b[\s\S]*?<\/\1>/g;
+  /<(hindsight_memory|hindsight_memories|hindsight_bank|relevant_memories|user_feedback|hindsight_knowledge|hindsight_knowledge_refresh)\b[\s\S]*?<\/\1>/g;
 
 export function stripInjectedMemory(s: string): string {
   return s.replace(MEMORY_TAG_RE, "");

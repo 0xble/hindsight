@@ -13,45 +13,7 @@ import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
-export interface SeedState {
-  declined?: boolean; // user said no to seeding this bank — don't re-ask every session
-  seededAt?: string; // ISO timestamp of the last successful seed, if any
-}
-
 const DEFAULT_STATE_DIR = join(homedir(), ".hindsight", "coding-agent-state");
-
-function statePath(bankId: string, stateDir: string): string {
-  return join(stateDir, encodeURIComponent(bankId) + ".json");
-}
-
-/** Read persisted per-bank seed state. Missing file, invalid JSON, or valid-but-wrong-shaped
- *  JSON (e.g. a hand-edited file containing a bare string/number/array) -> {} (never throws). */
-export function readSeedState(bankId: string, stateDir: string = DEFAULT_STATE_DIR): SeedState {
-  try {
-    const v: unknown = JSON.parse(readFileSync(statePath(bankId, stateDir), "utf8"));
-    return v && typeof v === "object" && !Array.isArray(v) ? (v as SeedState) : {};
-  } catch {
-    return {};
-  }
-}
-
-/** Merge `patch` into the persisted per-bank seed state and write it. Best-effort: never throws
- *  (a failed write must not break a hook). Not atomic: the read-merge-write is not locked, so a
- *  concurrent write for the same bank could lose a patch — accepted trade-off for low-frequency
- *  per-bank consent state. */
-export function writeSeedState(
-  bankId: string,
-  patch: SeedState,
-  stateDir: string = DEFAULT_STATE_DIR
-): void {
-  try {
-    const merged = { ...readSeedState(bankId, stateDir), ...patch };
-    mkdirSync(stateDir, { recursive: true });
-    writeFileSync(statePath(bankId, stateDir), JSON.stringify(merged));
-  } catch {
-    /* best-effort: never throw */
-  }
-}
 
 export const DEFAULT_SEED_LIMIT = 300;
 
@@ -105,20 +67,14 @@ export function seedControl(
     bankId: string;
     limit?: number;
     spawn?: typeof realSpawn;
-    stateDir?: string;
   }
 ): SeedControlResult {
   if (command === "seed") {
     startBackgroundSeed(args.repo, { limit: args.limit, spawn: args.spawn });
-    writeSeedState(args.bankId, { seededAt: new Date().toISOString() }, args.stateDir);
     return {
       ok: true,
       message: `🧠 Hindsight is learning this repo → memory bank “${args.bankId}”`,
     };
   }
-  if (command === "decline") {
-    writeSeedState(args.bankId, { declined: true }, args.stateDir);
-    return { ok: true, message: `Okay — won't offer to seed ${args.bankId} again.` };
-  }
-  return { ok: false, message: "usage: hindsight-seed <seed|decline> --repo <dir>" };
+  return { ok: false, message: "usage: hindsight-seed seed --repo <dir>" };
 }

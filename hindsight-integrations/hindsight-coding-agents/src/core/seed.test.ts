@@ -1,75 +1,6 @@
-import { mkdtempSync, rmSync, writeFileSync, mkdirSync } from "node:fs";
 import { EventEmitter } from "node:events";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import {
-  readSeedState,
-  writeSeedState,
-  startBackgroundSeed,
-  seedControl,
-  DEFAULT_SEED_LIMIT,
-} from "./seed";
-
-let stateDir: string;
-
-beforeEach(() => {
-  stateDir = mkdtempSync(join(tmpdir(), "hs-seed-"));
-});
-
-afterEach(() => {
-  rmSync(stateDir, { recursive: true, force: true });
-});
-
-describe("seed state persistence", () => {
-  it("readSeedState on a fresh dir returns {}", () => {
-    expect(readSeedState("bank-1", stateDir)).toEqual({});
-  });
-
-  it("writeSeedState then readSeedState round-trips", () => {
-    writeSeedState("bank-1", { declined: true }, stateDir);
-    expect(readSeedState("bank-1", stateDir)).toEqual({ declined: true });
-  });
-
-  it("writeSeedState merges patches over prior state", () => {
-    writeSeedState("bank-1", { declined: true }, stateDir);
-    writeSeedState("bank-1", { seededAt: "2026-01-01T00:00:00Z" }, stateDir);
-    expect(readSeedState("bank-1", stateDir)).toEqual({
-      declined: true,
-      seededAt: "2026-01-01T00:00:00Z",
-    });
-  });
-
-  it("bank ids with / and : round-trip via filesystem-safe encoding", () => {
-    const bankId = "org/repo:main";
-    writeSeedState(bankId, { declined: true }, stateDir);
-    expect(readSeedState(bankId, stateDir)).toEqual({ declined: true });
-  });
-
-  it("readSeedState on a corrupt file returns {} without throwing", () => {
-    mkdirSync(stateDir, { recursive: true });
-    writeFileSync(join(stateDir, encodeURIComponent("bank-1") + ".json"), "{ not json");
-    expect(readSeedState("bank-1", stateDir)).toEqual({});
-  });
-
-  it("readSeedState on valid-but-non-object JSON (e.g. a bare string) returns {}", () => {
-    mkdirSync(stateDir, { recursive: true });
-    writeFileSync(
-      join(stateDir, encodeURIComponent("bank-1") + ".json"),
-      JSON.stringify("just a string")
-    );
-    expect(readSeedState("bank-1", stateDir)).toEqual({});
-  });
-
-  it("writeSeedState never throws when the parent path is blocked by a file", () => {
-    const blocker = join(stateDir, "blocker");
-    writeFileSync(blocker, "x");
-    const brokenDir = join(blocker, "sub");
-    expect(() => writeSeedState("b", { declined: true }, brokenDir)).not.toThrow();
-    expect(() => readSeedState("b", brokenDir)).not.toThrow();
-    expect(readSeedState("b", brokenDir)).toEqual({});
-  });
-});
+import { describe, expect, it, vi } from "vitest";
+import { startBackgroundSeed, seedControl, DEFAULT_SEED_LIMIT } from "./seed";
 
 describe("startBackgroundSeed", () => {
   function fakeSpawn() {
@@ -136,35 +67,23 @@ describe("seedControl", () => {
     return vi.fn().mockReturnValue({ on: vi.fn(), unref: vi.fn() });
   }
 
-  it("seed: spawns the background deepen engine and persists seededAt", () => {
+  it("seed: spawns the background deepen engine and returns ok", () => {
     const spawn = fakeSpawn();
-    const result = seedControl("seed", { repo: "/r", bankId: "b", spawn, stateDir });
+    const result = seedControl("seed", { repo: "/r", bankId: "b", spawn });
     expect(spawn).toHaveBeenCalled();
-    const state = readSeedState("b", stateDir);
-    expect(typeof state.seededAt).toBe("string");
-    expect(state.seededAt).not.toBe("");
     expect(result.ok).toBe(true);
+    expect(result.message).toContain("b");
   });
 
-  it("decline: persists declined without spawning", () => {
+  it("decline (and any unknown command): not ok, usage message, no spawn", () => {
+    // "decline" is no longer a supported command — the live bank is the only state, so there is
+    // no declined flag to persist. It falls through to the usage error like any unknown command.
     const spawn = fakeSpawn();
-    const result = seedControl("decline", { repo: "/r", bankId: "b", spawn, stateDir });
+    for (const command of ["decline", "bogus"]) {
+      const result = seedControl(command, { repo: "/r", bankId: "b", spawn });
+      expect(result.ok).toBe(false);
+      expect(result.message).toBe("usage: hindsight-seed seed --repo <dir>");
+    }
     expect(spawn).not.toHaveBeenCalled();
-    expect(readSeedState("b", stateDir)).toEqual({ declined: true });
-    expect(result.ok).toBe(true);
-  });
-
-  it("decline: works fine without a spawn injected at all", () => {
-    const result = seedControl("decline", { repo: "/r", bankId: "b", stateDir });
-    expect(readSeedState("b", stateDir)).toEqual({ declined: true });
-    expect(result.ok).toBe(true);
-  });
-
-  it("unknown command: not ok, no state written, no spawn", () => {
-    const spawn = fakeSpawn();
-    const result = seedControl("bogus", { repo: "/r", bankId: "b", spawn, stateDir });
-    expect(spawn).not.toHaveBeenCalled();
-    expect(readSeedState("b", stateDir)).toEqual({});
-    expect(result.ok).toBe(false);
   });
 });
