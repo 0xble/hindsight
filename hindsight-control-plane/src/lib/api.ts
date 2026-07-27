@@ -631,6 +631,25 @@ export class ControlPlaneClient {
   }
 
   /**
+   * Hybrid search (BM25 + vector) across a bank's knowledge pages.
+   */
+  async searchKnowledgePages(bankId: string, q: string, limit = 10) {
+    return this.fetchApi<{
+      results: Array<{
+        id: string;
+        name: string;
+        mental_model_id: string | null;
+        snippet: string;
+        score: number;
+        updated_at: string | null;
+      }>;
+      total: number;
+    }>(
+      `/api/knowledge-base/search?bank_id=${encodeURIComponent(bankId)}&q=${encodeURIComponent(q)}&limit=${limit}`
+    );
+  }
+
+  /**
    * Get a single knowledge page rendered as an OKF document.
    */
   async getKnowledgePage(bankId: string, pageId: string) {

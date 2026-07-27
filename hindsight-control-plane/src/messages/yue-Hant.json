@@ -1716,7 +1716,8 @@
         "createPage": "Failed to create page",
         "fetchPage": "Failed to fetch knowledge page",
         "updateNode": "Failed to update node",
-        "deleteNode": "Failed to delete node"
+        "deleteNode": "Failed to delete node",
+        "search": "搜尋知識庫失敗"
       }
     }
   },
@@ -1753,7 +1754,10 @@
     "needsRefresh": "Needs refresh",
     "generating": "Generating…",
     "howDerived": "How this page is derived",
-    "backedBy": "Backed by {count} memories"
+    "backedBy": "Backed by {count} memories",
+    "searchPlaceholder": "搜尋頁面…",
+    "clearSearch": "清除搜尋",
+    "searchEmpty": "冇符合嘅頁面。"
   },
   "home": {
     "title": "Home",

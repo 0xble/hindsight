@@ -43,6 +43,7 @@ import {
   FolderPlus,
   Info,
   Loader2,
+  Search,
   Trash2,
   X,
 } from "lucide-react";
@@ -77,6 +78,13 @@ export function KnowledgeBaseView() {
   const [loading, setLoading] = useState(false);
   // Root folder starts expanded so its contents are visible by default.
   const [expanded, setExpanded] = useState<Set<string>>(new Set([ROOT_ID]));
+
+  // Hybrid search (BM25 + vector). A non-empty query swaps the tree for ranked hits.
+  const [query, setQuery] = useState("");
+  const [results, setResults] = useState<
+    Array<{ id: string; name: string; snippet: string; score: number }>
+  >([]);
+  const [searching, setSearching] = useState(false);
 
   // Obsidian-style editor tabs: multiple pages open at once; `activeId` is focused.
   const [tabs, setTabs] = useState<PageDetail[]>([]);
@@ -130,6 +138,35 @@ export function KnowledgeBaseView() {
     }
   }, [currentBank, loadTree]);
 
+  // Debounced hybrid search — a non-empty query drives the sidebar's result list.
+  useEffect(() => {
+    const q = query.trim();
+    if (!currentBank || !q) {
+      setResults([]);
+      setSearching(false);
+      return;
+    }
+    setSearching(true);
+    let cancelled = false;
+    const handle = setTimeout(() => {
+      client
+        .searchKnowledgePages(currentBank, q, 20)
+        .then((r) => {
+          if (!cancelled) setResults(r.results);
+        })
+        .catch(() => {
+          if (!cancelled) setResults([]);
+        })
+        .finally(() => {
+          if (!cancelled) setSearching(false);
+        });
+    }, 250);
+    return () => {
+      cancelled = true;
+      clearTimeout(handle);
+    };
+  }, [query, currentBank]);
+
   // Auto-refresh: silently re-poll the tree (freshness badges) and refresh every
   // open tab's content on the same tick.
   useEffect(() => {
@@ -167,7 +204,6 @@ export function KnowledgeBaseView() {
     [currentBank, roots]
   );
   const folders = useMemo(() => allNodes.filter((n) => n.kind === "folder"), [allNodes]);
-
 
   // Sync status for the open page, read from the tree (the page detail response
   // doesn't carry it); updates as the auto-refresh poll refreshes the tree.
@@ -324,8 +360,66 @@ export function KnowledgeBaseView() {
     <div>
       {/* Obsidian-style workspace: one frame, a file-explorer sidebar + editor pane. */}
       <div className="flex items-stretch overflow-hidden h-[calc(100vh-13rem)] min-h-[520px]">
-          <aside className="w-72 flex-shrink-0 bg-muted/30 border-r border-border overflow-y-auto">
-            {loading ? (
+        <aside className="w-72 flex-shrink-0 bg-muted/30 border-r border-border flex flex-col">
+          {/* Hybrid search box — a query swaps the tree for ranked results. */}
+          <div className="shrink-0 border-b border-border p-2">
+            <div className="relative">
+              <Search className="absolute left-2 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-muted-foreground pointer-events-none" />
+              <input
+                value={query}
+                onChange={(e) => setQuery(e.target.value)}
+                placeholder={t("searchPlaceholder")}
+                className="w-full pl-7 pr-7 py-1.5 text-sm rounded-md bg-background border border-border focus:outline-none focus:ring-1 focus:ring-primary"
+              />
+              {query && (
+                <button
+                  onClick={() => setQuery("")}
+                  className="absolute right-1.5 top-1/2 -translate-y-1/2 rounded p-0.5 text-muted-foreground hover:text-foreground hover:bg-muted"
+                  aria-label={t("clearSearch")}
+                >
+                  <X className="w-3.5 h-3.5" />
+                </button>
+              )}
+            </div>
+          </div>
+
+          <div className="flex-1 overflow-y-auto">
+            {query.trim() ? (
+              searching ? (
+                <div className="flex items-center justify-center py-16">
+                  <Loader2 className="w-6 h-6 text-muted-foreground animate-spin" />
+                </div>
+              ) : results.length === 0 ? (
+                <p className="px-3 py-6 text-sm text-muted-foreground text-center">
+                  {t("searchEmpty")}
+                </p>
+              ) : (
+                <ul className="py-1">
+                  {results.map((r) => (
+                    <li key={r.id}>
+                      <button
+                        onClick={() => openPage(r.id)}
+                        className={`w-full text-left px-3 py-2 border-l-2 transition-colors ${
+                          selected?.id === r.id
+                            ? "bg-primary/10 border-primary"
+                            : "border-transparent hover:bg-muted"
+                        }`}
+                      >
+                        <span className="flex items-center gap-1.5">
+                          <FileText className="w-3.5 h-3.5 flex-shrink-0 text-muted-foreground" />
+                          <span className="text-sm truncate">{r.name}</span>
+                        </span>
+                        {r.snippet && (
+                          <span className="mt-0.5 block pl-5 text-xs text-muted-foreground/80 line-clamp-2">
+                            {r.snippet}
+                          </span>
+                        )}
+                      </button>
+                    </li>
+                  ))}
+                </ul>
+              )
+            ) : loading ? (
               <div className="flex items-center justify-center py-16">
                 <Loader2 className="w-6 h-6 text-muted-foreground animate-spin" />
               </div>
@@ -353,121 +447,122 @@ export function KnowledgeBaseView() {
                 )}
               </ul>
             )}
-          </aside>
+          </div>
+        </aside>
 
-          <main className="flex-1 min-w-0 overflow-y-auto bg-background">
-            {/* Editor tabs — open pages, click to focus, × to close. */}
-            {tabs.length > 0 && (
-              <div className="sticky top-0 z-10 flex items-stretch border-b border-border bg-muted overflow-x-auto">
-                {tabs.map((tb) => (
-                  <div
-                    key={tb.id}
-                    onClick={() => setActiveId(tb.id)}
-                    className={`group flex items-center gap-2 px-3 py-2 border-r border-border cursor-pointer text-sm whitespace-nowrap ${
-                      tb.id === activeId
-                        ? "bg-background text-foreground"
-                        : "text-muted-foreground hover:bg-background/50"
-                    }`}
+        <main className="flex-1 min-w-0 overflow-y-auto bg-background">
+          {/* Editor tabs — open pages, click to focus, × to close. */}
+          {tabs.length > 0 && (
+            <div className="sticky top-0 z-10 flex items-stretch border-b border-border bg-muted overflow-x-auto">
+              {tabs.map((tb) => (
+                <div
+                  key={tb.id}
+                  onClick={() => setActiveId(tb.id)}
+                  className={`group flex items-center gap-2 px-3 py-2 border-r border-border cursor-pointer text-sm whitespace-nowrap ${
+                    tb.id === activeId
+                      ? "bg-background text-foreground"
+                      : "text-muted-foreground hover:bg-background/50"
+                  }`}
+                >
+                  <FileText className="w-3.5 h-3.5 flex-shrink-0" />
+                  <span className="truncate max-w-[160px]">{tb.name}</span>
+                  <button
+                    className="rounded p-0.5 opacity-0 group-hover:opacity-100 hover:bg-muted hover:text-foreground"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      closeTab(tb.id);
+                    }}
+                    aria-label={t("close")}
                   >
-                    <FileText className="w-3.5 h-3.5 flex-shrink-0" />
-                    <span className="truncate max-w-[160px]">{tb.name}</span>
-                    <button
-                      className="rounded p-0.5 opacity-0 group-hover:opacity-100 hover:bg-muted hover:text-foreground"
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        closeTab(tb.id);
-                      }}
-                      aria-label={t("close")}
-                    >
-                      <X className="w-3.5 h-3.5" />
-                    </button>
-                  </div>
+                    <X className="w-3.5 h-3.5" />
+                  </button>
+                </div>
+              ))}
+            </div>
+          )}
+          {loadingDetail && !selected ? (
+            <div className="flex items-center justify-center py-24">
+              <Loader2 className="w-7 h-7 text-muted-foreground animate-spin" />
+            </div>
+          ) : selected ? (
+            <div className="p-8 max-w-3xl mx-auto">
+              <h1 className="text-2xl font-bold text-foreground">{selected.name}</h1>
+
+              {/* Provenance: this wiki isn't written, it's grounded. Links back
+                  into the memory substrate the page was synthesized from. */}
+              {supportingCount > 0 && selectedMmId && (
+                <button
+                  onClick={() => setProvenanceMmId(selectedMmId)}
+                  className="mt-1.5 inline-flex items-center gap-1.5 text-xs text-primary hover:underline"
+                >
+                  {t("backedBy", { count: supportingCount })}
+                </button>
+              )}
+
+              {/* Freshness + tags. The generation prompt (machinery) is tucked
+                  behind the expander so the page opens with the knowledge. */}
+              <div className="flex items-center gap-2 flex-wrap text-xs mt-2">
+                {selected.timestamp ? (
+                  <span
+                    className="text-muted-foreground"
+                    title={formatAbsoluteDateTime(selected.timestamp)}
+                  >
+                    {t("updatedLabel")} {formatRelativeTime(selected.timestamp)}
+                  </span>
+                ) : (
+                  <span className="text-muted-foreground">{t("generating")}</span>
+                )}
+                {selectedStale === false ? (
+                  <span className="px-1.5 py-0.5 rounded-full bg-emerald-500/10 text-emerald-600 dark:text-emerald-400">
+                    {t("inSync")}
+                  </span>
+                ) : selectedStale === true ? (
+                  <span className="px-1.5 py-0.5 rounded-full bg-amber-500/10 text-amber-600 dark:text-amber-400">
+                    {t("needsRefresh")}
+                  </span>
+                ) : null}
+                {selected.tags.map((tag) => (
+                  <span
+                    key={tag}
+                    className="px-1.5 py-0.5 rounded bg-blue-500/10 text-blue-600 dark:text-blue-400"
+                  >
+                    {tag}
+                  </span>
                 ))}
               </div>
-            )}
-            {loadingDetail && !selected ? (
-              <div className="flex items-center justify-center py-24">
-                <Loader2 className="w-7 h-7 text-muted-foreground animate-spin" />
-              </div>
-            ) : selected ? (
-              <div className="p-8 max-w-3xl mx-auto">
-                <h1 className="text-2xl font-bold text-foreground">{selected.name}</h1>
 
-                {/* Provenance: this wiki isn't written, it's grounded. Links back
-                  into the memory substrate the page was synthesized from. */}
-                {supportingCount > 0 && selectedMmId && (
-                  <button
-                    onClick={() => setProvenanceMmId(selectedMmId)}
-                    className="mt-1.5 inline-flex items-center gap-1.5 text-xs text-primary hover:underline"
-                  >
-                    {t("backedBy", { count: supportingCount })}
-                  </button>
-                )}
-
-                {/* Freshness + tags. The generation prompt (machinery) is tucked
-                  behind the expander so the page opens with the knowledge. */}
-                <div className="flex items-center gap-2 flex-wrap text-xs mt-2">
-                  {selected.timestamp ? (
-                    <span
-                      className="text-muted-foreground"
-                      title={formatAbsoluteDateTime(selected.timestamp)}
-                    >
-                      {t("updatedLabel")} {formatRelativeTime(selected.timestamp)}
-                    </span>
-                  ) : (
-                    <span className="text-muted-foreground">{t("generating")}</span>
-                  )}
-                  {selectedStale === false ? (
-                    <span className="px-1.5 py-0.5 rounded-full bg-emerald-500/10 text-emerald-600 dark:text-emerald-400">
-                      {t("inSync")}
-                    </span>
-                  ) : selectedStale === true ? (
-                    <span className="px-1.5 py-0.5 rounded-full bg-amber-500/10 text-amber-600 dark:text-amber-400">
-                      {t("needsRefresh")}
-                    </span>
-                  ) : null}
-                  {selected.tags.map((tag) => (
-                    <span
-                      key={tag}
-                      className="px-1.5 py-0.5 rounded bg-blue-500/10 text-blue-600 dark:text-blue-400"
-                    >
-                      {tag}
-                    </span>
-                  ))}
-                </div>
-
-                {selected.description && (
-                  <details className="mt-2">
-                    <summary className="text-xs text-muted-foreground cursor-pointer list-none inline-flex items-center gap-1 hover:text-foreground [&::-webkit-details-marker]:hidden">
-                      <Info className="w-3 h-3" />
-                      {t("howDerived")}
-                    </summary>
-                    <p className="text-xs text-muted-foreground mt-1.5 italic pl-3 border-l-2 border-border">
-                      &ldquo;{selected.description}&rdquo;
-                    </p>
-                  </details>
-                )}
-
-                {selected.body ? (
-                  <div className="prose prose-sm dark:prose-invert max-w-none border-t border-border mt-5 pt-5">
-                    <CompactMarkdown>{selected.body}</CompactMarkdown>
-                  </div>
-                ) : (
-                  <p className="text-sm text-muted-foreground italic border-t border-border mt-5 pt-5">
-                    {t("noBody")}
+              {selected.description && (
+                <details className="mt-2">
+                  <summary className="text-xs text-muted-foreground cursor-pointer list-none inline-flex items-center gap-1 hover:text-foreground [&::-webkit-details-marker]:hidden">
+                    <Info className="w-3 h-3" />
+                    {t("howDerived")}
+                  </summary>
+                  <p className="text-xs text-muted-foreground mt-1.5 italic pl-3 border-l-2 border-border">
+                    &ldquo;{selected.description}&rdquo;
                   </p>
-                )}
-              </div>
-            ) : (
-              <div className="flex items-center justify-center h-full min-h-[480px] px-6 text-center">
-                <div>
-                  <FileText className="w-8 h-8 mx-auto mb-3 text-muted-foreground opacity-60" />
-                  <div className="text-sm text-muted-foreground">{t("selectPagePrompt")}</div>
+                </details>
+              )}
+
+              {selected.body ? (
+                <div className="prose prose-sm dark:prose-invert max-w-none border-t border-border mt-5 pt-5">
+                  <CompactMarkdown>{selected.body}</CompactMarkdown>
                 </div>
+              ) : (
+                <p className="text-sm text-muted-foreground italic border-t border-border mt-5 pt-5">
+                  {t("noBody")}
+                </p>
+              )}
+            </div>
+          ) : (
+            <div className="flex items-center justify-center h-full min-h-[480px] px-6 text-center">
+              <div>
+                <FileText className="w-8 h-8 mx-auto mb-3 text-muted-foreground opacity-60" />
+                <div className="text-sm text-muted-foreground">{t("selectPagePrompt")}</div>
               </div>
-            )}
-          </main>
-        </div>
+            </div>
+          )}
+        </main>
+      </div>
 
       {/* Create folder/page dialog */}
       <Dialog open={createKind !== null} onOpenChange={(o) => !o && setCreateKind(null)}>

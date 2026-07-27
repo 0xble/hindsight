@@ -1716,7 +1716,8 @@
         "createPage": "Failed to create page",
         "fetchPage": "Failed to fetch knowledge page",
         "updateNode": "Failed to update node",
-        "deleteNode": "Failed to delete node"
+        "deleteNode": "Failed to delete node",
+        "search": "Falha ao pesquisar na base de conhecimento"
       }
     }
   },
@@ -1753,7 +1754,10 @@
     "needsRefresh": "Needs refresh",
     "generating": "Generating…",
     "howDerived": "How this page is derived",
-    "backedBy": "Backed by {count} memories"
+    "backedBy": "Backed by {count} memories",
+    "searchPlaceholder": "Pesquisar páginas…",
+    "clearSearch": "Limpar pesquisa",
+    "searchEmpty": "Nenhuma página correspondente."
   },
   "home": {
     "title": "Home",
