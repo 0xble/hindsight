@@ -19,6 +19,7 @@ import type { HindsightClient } from "./hindsight";
 import { buildRosterRefresh, parsePageList } from "./knowledge-injection";
 import type { PageContent } from "./pages-index";
 import { buildPagesIndex, fetchPagesWithContent, formatPageInjection, selectSections } from "./pages-index";
+import { brandWord } from "./brand";
 import { buildSystemInjection } from "./inject";
 import { buildKnowledgeTools, type ToolSpec } from "./knowledge-tools";
 import { retainLiveSession, type TransportTurn } from "./chat";
@@ -148,10 +149,8 @@ export class RuntimeCore {
     const excerpt = q.length > 48 ? `${q.slice(0, 48)}…` : q;
     const pageTitles = [...new Set(sections.map((s) => s.pageTitle))];
     console.error(
-      `🧠 Hindsight: ${reflectAnswer ? "session memory in context" : "no relevant history"}` +
-        (pageTitles.length
-          ? ` · “${excerpt}” → ${pageTitles.join(", ")}`
-          : ` · no knowledge match for “${excerpt}”`)
+      `${brandWord()} ${reflectAnswer ? "applying this repo's past decisions" : "learning this repo"}` +
+        (pageTitles.length ? ` · “${excerpt}” → ${pageTitles.join(", ")}` : "")
     );
     if (refreshDue) {
       blocks.push(buildRosterRefresh(this.pagesCache.map((p) => ({ id: p.id, title: p.title }))));

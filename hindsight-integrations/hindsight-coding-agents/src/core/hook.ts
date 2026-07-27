@@ -26,6 +26,7 @@ import { loadConfig } from "./config";
 import { diag } from "./diag";
 import type { ClientOpts } from "./hindsight";
 import { HindsightClient } from "./hindsight";
+import { brandWord } from "./brand";
 import { buildSystemInjection } from "./inject";
 import { buildRosterRefresh, parsePageList } from "./knowledge-injection";
 import type { PageContent } from "./pages-index";
@@ -109,11 +110,11 @@ export async function buildHookOutput(args: {
         query: prompt.slice(0, 80),
       });
       reflectNote = reflectAnswer
-        ? `synthesized project memory in ${((Date.now() - t0) / 1000).toFixed(1)}s`
-        : "no relevant history for this session";
+        ? "applying this repo's past decisions"
+        : "learning this repo — no history for this task yet";
     } catch (e) {
       reflectAnswer = ""; // ran and failed — don't retry every turn; the diag trail records it
-      reflectNote = "memory unreachable this session";
+      reflectNote = "memory offline this session";
       diag(harness, "reflect_failed", {
         ms: Date.now() - t0,
         error: String((e as Error)?.message || e).slice(0, 200),
@@ -121,7 +122,9 @@ export async function buildHookOutput(args: {
       });
     }
   } else {
-    reflectNote = reflectAnswer ? "session memory in context" : "no relevant history for this session";
+    reflectNote = reflectAnswer
+      ? "applying this repo's past decisions"
+      : "learning this repo — no history for this task yet";
   }
 
   // ── knowledge pages: fetched on the roster cadence, matched locally every turn ─
@@ -172,10 +175,8 @@ export async function buildHookOutput(args: {
   const excerpt = q.length > 48 ? `${q.slice(0, 48)}…` : q;
   const pageTitles = [...new Set(sections.map((s) => s.pageTitle))];
   const notice =
-    `🧠 Hindsight: ${reflectNote}` +
-    (pageTitles.length
-      ? ` · “${excerpt}” → ${pageTitles.join(", ")}`
-      : ` · no knowledge match for “${excerpt}”`);
+    `${brandWord()} ${reflectNote}` +
+    (pageTitles.length ? ` · “${excerpt}” → ${pageTitles.join(", ")}` : "");
 
   return { context: kept.length ? kept.join("\n\n") : undefined, notice };
 }
