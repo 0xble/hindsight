@@ -51,9 +51,10 @@ export const DOCUMENT_MISSION =
   "concrete facts, concepts, and structure it describes.";
 
 export const SESSION_MISSION =
-  "You are ingesting a developer's LIVE coding-agent session: a markdown transcript of the user's " +
-  "requests, the assistant's narration, and the concrete ACTIONS it took (file edits, commands run, " +
-  "and their results, marked with '**Tool**' and '↳'). Unlike a short decision chat, a work session " +
+  "You are ingesting a developer's LIVE coding-agent session: a JSON transcript of turns " +
+  "({role, content}) — the user's requests, the assistant's narration, and compact 'action' turns " +
+  "naming each tool use and its target (e.g. \"Edit boltons/strutils.py\") with no arguments or " +
+  "outputs. Unlike a short decision chat, a work session " +
   "usually contains SEVERAL durable facts — capture them. Extract: the DECISIONS made and their " +
   "rationale; the concrete CHANGES to specific code entities (files, functions, identifiers — quote " +
   "them VERBATIM); problems encountered and how they were resolved; and any conventions, invariants, " +
@@ -122,83 +123,15 @@ export const RETAIN_STRATEGIES = {
   },
 } as const;
 
-// ── passive tier tagging (entity_labels) ───────────────────────────────────────
-// A single hierarchical bank-config group set by `configureBank` at seed time. `tag: true` makes the
-// extractor copy each selected `knowledge:<value>` onto the fact's tags (via `_inject_label_tags`),
-// so the seeded tier PAGES can scope their synthesis by tag with no extra query infra. The vocabulary
-// is FIXED (not per-feature) because tag matching is exact set-ops with no wildcards.
-export interface EntityLabelValue {
-  value: string;
-  description: string;
-}
-
-export interface EntityLabelGroup {
-  key: string;
-  type: "multi-values";
-  optional: boolean;
-  tag: boolean;
-  description: string;
-  values: EntityLabelValue[];
-}
-
-export const KNOWLEDGE_LABELS: EntityLabelGroup = {
-  key: "knowledge",
-  type: "multi-values", // 0, 1, or several — empty is normal
-  optional: true,
-  tag: true, // emits knowledge:<value> onto the fact's tags
-  description:
-    "Routing labels for this project's Hindsight KNOWLEDGE PAGES — curated, human-readable summaries " +
-    "of the repo's DURABLE engineering knowledge (architecture, key decisions, conventions, ongoing " +
-    "initiatives), each page rebuilt automatically from the facts labeled for it. Mark a fact only when " +
-    "it is durable, reusable knowledge a developer would still want surfaced in future sessions. " +
-    "IMPORTANT: leave this EMPTY for routine, transient, or operational facts — a passing test, a " +
-    "one-off command, a status update, a debugging dead-end. MOST facts should get no label here. " +
-    "Assign more than one value only when the fact genuinely fits several.",
-  values: [
-    {
-      value: "feature-work",
-      description:
-        "A new feature, initiative, or enhancement being planned or built — the capability being added " +
-        "and the intent behind it. Not routine bug-fixes or chores.",
-    },
-    {
-      value: "decision",
-      description:
-        "A technical decision that will constrain future work, with its rationale — why this approach " +
-        "was chosen over alternatives, or a rule deliberately adopted.",
-    },
-    {
-      value: "convention",
-      description:
-        "An established way this project does things — naming, structure, testing, error handling, or " +
-        "another recurring pattern a contributor is expected to follow.",
-    },
-    {
-      value: "component",
-      description:
-        "What a specific module, file, service, or subsystem is responsible for, or how components " +
-        "depend on and connect to one another.",
-    },
-    {
-      value: "concept",
-      description:
-        "A domain concept, key abstraction, or piece of project vocabulary a new contributor must " +
-        "understand to work effectively.",
-    },
-  ],
-};
-
 // Knowledge PAGES (OKF pages = mental models) = a developer's durable mental model of the codebase,
 // CONSOLIDATED from the ingested MEMORY (commit history + past conversations) — NOT mirrored from the
 // current source (which would need constant re-sync). A universal 5-page taxonomy that generalizes to
 // any repo; the curator populates each from history+chats and can spawn per-component sub-pages.
-// A seeded knowledge page = a saved, tag-scoped synthesis view. `tags` pins the page to one
-// `knowledge:<tier>` label so its synthesis draws ONLY from facts the extractor tagged for that tier
-// (exact set-ops, no wildcards — see KNOWLEDGE_LABELS). Names/tiers mirror the entity-label vocabulary.
+// Each page is UNSCOPED: its `source_query` selects the relevant facts from the whole bank at
+// synthesis time — no tag taxonomy for the extractor to maintain.
 export interface KnowledgePage {
   name: string;
   source_query: string;
-  tags: string[];
 }
 
 export const PAGES: KnowledgePage[] = [
@@ -208,7 +141,6 @@ export const PAGES: KnowledgePage[] = [
       "From this project's commit history and past discussions, what are the main " +
       "components/modules/subsystems, what is each responsible for, and how do they relate to or " +
       "depend on one another? Describe the structure and responsibilities.",
-    tags: ["knowledge:component"],
   },
   {
     name: "Core concepts",
@@ -216,7 +148,6 @@ export const PAGES: KnowledgePage[] = [
       "What are the core concepts, domain abstractions, and key entities in this project — " +
       "the vocabulary a developer must understand? For each, explain what it represents and its role, " +
       "drawn from how they are introduced and discussed across the history and conversations.",
-    tags: ["knowledge:concept"],
   },
   {
     name: "Conventions and patterns",
@@ -224,7 +155,6 @@ export const PAGES: KnowledgePage[] = [
       "What conventions, idioms, and recurring patterns does this project follow — its " +
       "approach to testing, error handling, naming, structure, and how changes are typically made? " +
       "Describe how THIS project does things, as evidenced across its history and discussions.",
-    tags: ["knowledge:convention"],
   },
   {
     name: "Key decisions and rationale",
@@ -232,7 +162,6 @@ export const PAGES: KnowledgePage[] = [
       "What are the significant technical decisions made in this project and the rationale " +
       "behind them — the durable 'why we do it this way' a developer should know? Summarize the " +
       "decisions and their reasoning from the commit rationales and past conversations.",
-    tags: ["knowledge:decision"],
   },
   {
     name: "Initiatives and enhancements",
@@ -241,6 +170,5 @@ export const PAGES: KnowledgePage[] = [
       "enhancements the project has worked on? Summarize the themes and notable changes over time. " +
       "When a source memory carries a tag of the form `relatedPageId:<id>`, include a Markdown link " +
       "`[[page:<id>]]` to that page in the summary, so each initiative links to its detailed page.",
-    tags: ["knowledge:feature-work"],
   },
 ];

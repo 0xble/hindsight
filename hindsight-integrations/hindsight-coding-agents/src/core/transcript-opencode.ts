@@ -4,13 +4,12 @@
  * opencode delivers the running conversation to a plugin as an in-memory message list (via
  * `experimental.chat.messages.transform`), NOT a JSONL file like Claude/Codex — so this is a pure
  * function over that list, not a file reader. It produces the SAME rich `TransportTurn[]` shape as
- * transcript.ts / transcript-codex.ts (text + tool calls + their inline output), and reuses the
- * shared `stripInjectedMemory`/`truncate` helpers so a retain never feeds injected memory back into
- * recall. Unlike Claude (tool results arrive as a separate later message) opencode carries a tool's
- * output inline on its `ToolPart.state`, so one assistant message renders as one turn.
+ * transcript.ts / transcript-codex.ts (prose turns + compact `role:"action"` tool turns), and
+ * reuses the shared `stripInjectedMemory`/`actionLine` helpers so a retain never feeds injected
+ * memory back into recall and tool noise stays out of the bank.
  */
 import type { TransportTurn } from "./chat";
-import { stripInjectedMemory, truncate } from "./transcript-util";
+import { actionLine, stripInjectedMemory } from "./transcript-util";
 
 /** Structural subset of the opencode SDK's ToolState we render (avoids a hard dep on its types). */
 interface OcToolState {
@@ -34,63 +33,44 @@ export interface OcMessage {
   parts?: OcPart[];
 }
 
-/** Compact JSON of a tool input; empty string if it can't be serialized (e.g. a cycle). */
-function compactJson(v: unknown): string {
-  try {
-    return JSON.stringify(v) ?? "";
-  } catch {
-    return "";
-  }
-}
-
 /**
- * Render one opencode message's parts into a single markdown turn, or null if nothing usable remains.
- * Text → prose (injected-memory stripped); a tool part → `**tool** {compact input}` followed by
- * `↳ output` (or `↳ error`). Tool text is truncated to the shared cap. reasoning/step/snapshot parts
- * are dropped. Non-conversational roles (system/tool-only) are dropped.
+ * Render one opencode message's parts into turns. Text parts join into one prose turn
+ * (injected-memory stripped); each tool part becomes its own compact `role:"action"` turn
+ * (tool name + primary target via `actionLine` — no args, no output). reasoning/step/snapshot
+ * parts and non-conversational roles are dropped.
  */
-function renderMessage(m: OcMessage): TransportTurn | null {
+function renderMessage(m: OcMessage): TransportTurn[] {
   const role = m.info?.role;
-  if (role !== "user" && role !== "assistant") return null;
+  if (role !== "user" && role !== "assistant") return [];
+  const created = m.info?.time?.created;
+  const ts = created ? { timestamp: new Date(created).toISOString() } : {};
 
-  const parts: string[] = [];
+  const texts: string[] = [];
+  const actions: TransportTurn[] = [];
   for (const p of m.parts || []) {
     if (!p || typeof p !== "object") continue;
     if (p.type === "text" && typeof p.text === "string") {
       const t = stripInjectedMemory(p.text).trim();
-      if (t) parts.push(t);
+      if (t) texts.push(t);
     } else if (p.type === "tool" && typeof p.tool === "string") {
-      const st = p.state || {};
-      const body = truncate(compactJson(st.input));
-      parts.push(body ? `**${p.tool}** ${body}` : `**${p.tool}**`);
-      const out = st.status === "error" ? st.error : st.output;
-      const t = typeof out === "string" ? truncate(out.trim()) : "";
-      if (t) parts.push(`↳ ${t}`);
+      actions.push({ role: "action", content: actionLine(p.tool, p.state?.input), ...ts });
     }
     // reasoning / step-start / step-finish / snapshot / patch / …: dropped
   }
 
-  const joined = parts.join("\n").trim();
-  if (!joined) return null;
-  const created = m.info?.time?.created;
-  return {
-    role,
-    content: joined,
-    ...(created ? { timestamp: new Date(created).toISOString() } : {}),
-  };
+  const out: TransportTurn[] = [];
+  const joined = texts.join("\n").trim();
+  if (joined) out.push({ role, content: joined, ...ts });
+  out.push(...actions);
+  return out;
 }
 
 /**
- * Normalize opencode's live message list into rich transcript turns (user/assistant text plus tool
- * calls and their inline output). Never throws on malformed entries.
+ * Normalize opencode's live message list into transcript turns (user/assistant prose plus compact
+ * action turns for tool calls). Never throws on malformed entries.
  */
 export function readOpencodeMessages(messages: OcMessage[]): TransportTurn[] {
-  const turns: TransportTurn[] = [];
-  for (const m of messages || []) {
-    const turn = renderMessage(m);
-    if (turn) turns.push(turn);
-  }
-  return turns;
+  return (messages || []).flatMap((m) => renderMessage(m));
 }
 
 /** The session id carried on the messages (first message that has one), or undefined. */

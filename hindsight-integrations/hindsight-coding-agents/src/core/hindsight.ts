@@ -10,7 +10,6 @@ import {
   REFLECT_MISSION,
   OBSERVATIONS_MISSION,
   RETAIN_STRATEGIES,
-  KNOWLEDGE_LABELS,
   PAGES,
 } from "./missions";
 import { sleep } from "./util";
@@ -174,12 +173,10 @@ export class HindsightClient {
       updates: {
         retain_strategies: RETAIN_STRATEGIES,
         retain_default_strategy: "git",
-        entity_labels: [KNOWLEDGE_LABELS],
-        entities_allow_free_form: true,
       },
     });
     this.log(
-      `[bank] configured ${this.bank}: reflect mission, observations ON, entity_labels {knowledge}, strategies {git, gitlog, chat, document, session}`
+      `[bank] configured ${this.bank}: reflect mission, observations ON, strategies {git, gitlog, chat, document, session}`
     );
   }
 
@@ -215,6 +212,25 @@ export class HindsightClient {
       `[wait] ${label} drained — ${ids.length - pending.size} done, ${failed} failed` +
         (pending.size ? `, ${pending.size} still pending at timeout` : "")
     );
+  }
+
+  /** Reflect: synthesized, root-cause answer over the bank. Bounded so a slow server never hangs a caller. */
+  async reflect(query: string, opts: { budget?: string; timeoutMs?: number } = {}): Promise<string> {
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), opts.timeoutMs ?? 120000);
+    try {
+      const resp = await fetch(this.bankUrl("/reflect"), {
+        method: "POST",
+        headers: this.headers(),
+        body: JSON.stringify({ query, budget: opts.budget ?? "high" }),
+        signal: ctrl.signal,
+      });
+      if (!resp.ok) throw new Error(`reflect ${resp.status}`);
+      const data = (await resp.json()) as { text?: string };
+      return (data.text || "").trim();
+    } finally {
+      clearTimeout(timer);
+    }
   }
 
   /**
@@ -330,7 +346,6 @@ export class HindsightClient {
         name: args.title,
         source_query: `Summarize the "${args.title}" initiative: what is being built or changed and why, and its current state — drawn from the project's memory.`,
         parent_id: folderId,
-        tags: ["knowledge:feature-work"],
         trigger: {
           fact_types: ["world", "experience", "observation"],
           refresh_after_consolidation: true,
@@ -352,7 +367,7 @@ export class HindsightClient {
       content,
       "initiative marker",
       markerId,
-      ["knowledge:feature-work", `relatedPageId:${pageId}`],
+      [`relatedPageId:${pageId}`],
       "document",
       { async: true }
     );
@@ -389,14 +404,13 @@ export class HindsightClient {
     for (const p of PAGES) {
       try {
         // fact_types = ALL (world+experience+observation) so a page draws from raw facts AND
-        // consolidated observations; refresh after consolidation keeps it a living document. Page-level
-        // `tags` scopes synthesis to one knowledge:<tier> (exact set-ops). Only the feature-work
-        // (Initiatives) page nests under the Initiatives folder; the rest are root pages.
-        const isInitiatives = p.tags.includes("knowledge:feature-work");
+        // consolidated observations; refresh after consolidation keeps it a living document. Pages
+        // are UNSCOPED — each page's source_query does the selection over the whole bank (no tag
+        // taxonomy to maintain). Only the Initiatives page nests under the Initiatives folder.
+        const isInitiatives = p.name === "Initiatives and enhancements";
         const body: Record<string, unknown> = {
           name: p.name,
           source_query: p.source_query,
-          tags: p.tags,
           trigger: {
             fact_types: ["world", "experience", "observation"],
             refresh_after_consolidation: true,

@@ -2,7 +2,7 @@
  * Harness-agnostic runtime for PERSISTENT-PLUGIN harnesses (opencode): the recall → inject →
  * write-back state machine, held in memory across a long-lived process. It is the plugin-side
  * sibling of core/hook.ts (which drives the fresh-process HOOK harnesses); both share the same core
- * primitives — `formatMemories`, `buildKnowledgePreamble`/`buildRosterRefresh`, `buildKnowledgeTools`,
+ * primitives — `buildSystemInjection`/`formatPageInjection`, `buildKnowledgePreamble`/`buildRosterRefresh`, `buildKnowledgeTools`,
  * `buildSessionStartContext` — so opencode reaches full v2 parity with Claude Code / Codex.
  *
  * A harness adapter feeds it three normalized events and reads two values back:
@@ -15,10 +15,12 @@
  */
 import type { Config } from "./config";
 import { diag } from "./diag";
-import type { HindsightClient, RecallResult } from "./hindsight";
+import type { HindsightClient } from "./hindsight";
 import { buildRosterRefresh, parsePageList } from "./knowledge-injection";
+import type { PageContent } from "./pages-index";
+import { buildPagesIndex, fetchPagesWithContent, formatPageInjection, selectSections } from "./pages-index";
+import { buildSystemInjection } from "./inject";
 import { buildKnowledgeTools, type ToolSpec } from "./knowledge-tools";
-import { formatMemories } from "./recall";
 import { retainLiveSession, type TransportTurn } from "./chat";
 import { buildSessionStartContext } from "./session-start";
 import { syncGit } from "./sync";
@@ -30,6 +32,8 @@ export class RuntimeCore {
   private readonly turnCount = new Map<string, number>(); // sessionId -> user-turn counter (cadence)
   private readonly sessionState = new Map<string, { startTs: string; retainedUsers: number }>();
   private lastInjection = ""; // most recent turn's injection block, keyed by nothing (see getInjection)
+  private readonly reflectBySession = new Map<string, string>(); // sessionId -> cached reflect ("" = ran, nothing)
+  private pagesCache: PageContent[] | undefined; // page set with content, refreshed on cadence
   private preamble = ""; // SessionStart-equivalent knowledge preamble, computed once at seedIfCold
   private gitSyncStarted = false; // once-per-process guard for syncGitOnce
 
@@ -77,7 +81,7 @@ export class RuntimeCore {
   }
 
   /**
-   * Each user turn: recall on the prompt and build this turn's injection block. Mirrors core/hook.ts's
+   * Each user turn: build this turn's injection block (reflect-once + page sections). Mirrors core/hook.ts's
    * `buildHookOutput`, but state lives in memory (persistent plugin) instead of a tmp cache file:
    *   - turn 1: prepend the knowledge preamble (the SessionStart-equivalent tool guide + page roster)
    *   - every turn: the recalled `<hindsight_memories>` block (attribution + user-feedback framing)
@@ -89,30 +93,46 @@ export class RuntimeCore {
     const turns = (this.turnCount.get(sessionId) ?? 0) + 1;
     this.turnCount.set(sessionId, turns);
 
-    // Kick recall and (on cadence) listPages off concurrently so they overlap.
-    const tRecall = Date.now();
-    const recallP = this.client.recall(prompt, {
-      maxTokens: this.cfg.recallMaxTokens,
-      timeoutMs: this.cfg.recallTimeoutMs,
-    });
+    // ── reflect: once per session, on its first prompt ──────────────────────────
+    let reflectAnswer = this.reflectBySession.get(sessionId);
+    if (reflectAnswer === undefined) {
+      const t0 = Date.now();
+      try {
+        reflectAnswer = await this.client.reflect(prompt, {
+          budget: "high",
+          timeoutMs: this.cfg.reflectTimeoutMs,
+        });
+        diag(HARNESS, reflectAnswer ? "reflect_ok" : "reflect_empty", {
+          ms: Date.now() - t0,
+          chars: reflectAnswer.length,
+          query: prompt.slice(0, 80),
+        });
+      } catch (e) {
+        reflectAnswer = ""; // ran and failed — don't retry every turn; the diag trail records it
+        diag(HARNESS, "reflect_failed", {
+          ms: Date.now() - t0,
+          error: String((e as Error)?.message || e).slice(0, 200),
+          query: prompt.slice(0, 80),
+        });
+      }
+      this.reflectBySession.set(sessionId, reflectAnswer);
+    }
+
+    // ── knowledge pages: refetch on cadence, match locally every turn ───────────
     const refreshDue =
       this.cfg.pageRefreshEveryTurns > 0 && turns % this.cfg.pageRefreshEveryTurns === 0;
-    const pagesP = refreshDue ? this.client.listPages() : undefined;
-
-    let results: RecallResult[] = [];
-    try {
-      results = await recallP;
-      diag(HARNESS, results.length ? "recall_ok" : "recall_empty", {
-        ms: Date.now() - tRecall,
-        count: results.length,
-        query: prompt.slice(0, 80),
-      });
-    } catch (e) {
-      diag(HARNESS, "recall_failed", {
-        ms: Date.now() - tRecall,
-        error: String((e as Error)?.message || e).slice(0, 200),
-        query: prompt.slice(0, 80),
-      });
+    if (refreshDue || this.pagesCache === undefined) {
+      const t0 = Date.now();
+      try {
+        this.pagesCache = await fetchPagesWithContent(this.client, parsePageList);
+        diag(HARNESS, "pages_ok", { ms: Date.now() - t0, count: this.pagesCache.length });
+      } catch (e) {
+        this.pagesCache = this.pagesCache ?? [];
+        diag(HARNESS, "pages_failed", {
+          ms: Date.now() - t0,
+          error: String((e as Error)?.message || e).slice(0, 200),
+        });
+      }
     }
 
     const blocks: string[] = [];
@@ -120,12 +140,11 @@ export class RuntimeCore {
     // the periodic refresh below). Empty until seedIfCold resolves — if the first prompt races ahead
     // of plugin-load seeding, the roster refresh still delivers the tool guide on cadence.
     if (turns === 1 && this.preamble) blocks.push(this.preamble);
-    blocks.push(formatMemories(results));
-    if (refreshDue && pagesP) {
-      // A listPages failure must not swallow the reminder — fall back to an empty roster so the
-      // tool + capture nudge still re-injects (it doesn't depend on any page existing).
-      const pages = parsePageList(await pagesP.catch(() => null));
-      blocks.push(buildRosterRefresh(pages));
+    if (reflectAnswer) blocks.push(buildSystemInjection(reflectAnswer));
+    const sections = selectSections(buildPagesIndex(this.pagesCache), prompt);
+    if (sections.length) blocks.push(formatPageInjection(sections));
+    if (refreshDue) {
+      blocks.push(buildRosterRefresh(this.pagesCache.map((p) => ({ id: p.id, title: p.title }))));
     }
     const block = blocks.filter(Boolean).join("\n\n");
     this.injection.set(sessionId, block);

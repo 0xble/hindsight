@@ -17,3 +17,34 @@ export function stripInjectedMemory(s: string): string {
 export function truncate(s: string, max = TOOL_TEXT_CAP): string {
   return s.length > max ? `${s.slice(0, max)}… (truncated)` : s;
 }
+
+/** Keys tried, in order, to find a tool call's primary target for the compact action line. */
+const TARGET_KEYS = [
+  "file_path", "path", "notebook_path", "command", "pattern", "query", "url", "name", "id",
+] as const;
+
+const ACTION_TARGET_CAP = 100;
+
+/**
+ * Compact one tool call into an action line: the tool name plus its primary target — a file path,
+ * command, pattern, … — with NO full arguments and NO output (e.g. `Edit boltons/strutils.py`).
+ * Retaining raw args/outputs buries the session's decisions in mechanical noise; the extractor only
+ * needs WHAT was touched.
+ */
+export function actionLine(tool: string, input: unknown): string {
+  let target = "";
+  if (input && typeof input === "object") {
+    const rec = input as Record<string, unknown>;
+    for (const k of TARGET_KEYS) {
+      const v = rec[k];
+      if (typeof v === "string" && v.trim()) {
+        target = v.trim().split("\n")[0];
+        break;
+      }
+    }
+  } else if (typeof input === "string") {
+    target = input.trim().split("\n")[0];
+  }
+  if (target.length > ACTION_TARGET_CAP) target = `${target.slice(0, ACTION_TARGET_CAP)}…`;
+  return target ? `${tool} ${target}` : tool;
+}

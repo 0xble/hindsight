@@ -18,32 +18,15 @@ export function withRefId(refId: string, turns: TransportTurn[], baseTs: string)
   return [{ role: "system", content: `REF-ID: ${refId}`, timestamp: baseTs }, ...turns];
 }
 
-/** Markdown section header per turn role. Unknown roles fall back to the raw role name. */
-const ROLE_HEADING: Record<string, string> = {
-  user: "User",
-  assistant: "Assistant",
-  tool: "Tool result",
-  system: "System",
-};
-
 /**
- * Render normalized turns as a READABLE MARKDOWN transcript for the live session write-back — a
- * `## User` / `## Assistant` / `## Tool result` document led by the `REF-ID` tracer, rather than a
- * `JSON.stringify` array. The extractor reads a legible transcript better than a raw JSON blob, and
- * the turns already carry the session's tool activity (see core/transcript.ts). Each turn keeps its
- * absolute timestamp inline so the extractor can order a revised decision correctly.
+ * Render normalized turns as a JSON transcript for the live session write-back — the SAME shape as
+ * the backfilled chats (`ingestChats`): a `JSON.stringify` array of `{role, content, timestamp}`
+ * turns led by the REF-ID system turn. One transcript format everywhere means the extractor and the
+ * bank's chat-tuned strategies see live sessions and backfilled history identically; the session's
+ * tool activity is already compacted into `role:"action"` turns by the transcript readers.
  */
-export function renderSessionMarkdown(
-  refId: string,
-  turns: TransportTurn[],
-  baseTs: string
-): string {
-  const sections = turns.map((t) => {
-    const heading = ROLE_HEADING[t.role] ?? t.role;
-    const when = t.timestamp ? ` (${t.timestamp})` : "";
-    return `## ${heading}${when}\n\n${t.content}`;
-  });
-  return [`REF-ID: ${refId}`, `_session started ${baseTs}_`, ...sections].join("\n\n");
+export function renderSessionJson(refId: string, turns: TransportTurn[], baseTs: string): string {
+  return JSON.stringify(withRefId(refId, turns, baseTs));
 }
 
 /** Backfill: ingest past sessions RAW as JSON transcripts under the `chat` strategy. */
@@ -107,8 +90,8 @@ export async function ingestChats(
  *
  * Uses the `session` strategy (verbose extraction), NOT `chat` (the ≤2-fact custom extractor tuned
  * for short backfilled decision logs) — a live work session makes several durable decisions/changes
- * and would be gutted by ≤2-fact extraction. The content is a readable markdown transcript that
- * includes the session's tool activity (see core/transcript.ts + renderSessionMarkdown).
+ * and would be gutted by ≤2-fact extraction. The content is a JSON transcript (renderSessionJson)
+ * whose tool activity is compacted into `role:"action"` turns (see core/transcript*.ts).
  */
 export async function retainLiveSession(
   client: HindsightClient,
@@ -118,7 +101,7 @@ export async function retainLiveSession(
 ): Promise<void> {
   const refId = `conversation:${sessionId}`;
   await client.retain(
-    renderSessionMarkdown(refId, turns, startTs),
+    renderSessionJson(refId, turns, startTs),
     "coding agent session",
     refId,
     ["source:chat"],

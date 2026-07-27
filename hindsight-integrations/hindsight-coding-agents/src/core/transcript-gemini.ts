@@ -17,15 +17,15 @@
  *   - a tool CALL (when present as a part): `[{ functionCall: { name, args } }]`
  *
  * Normalized to the SAME `TransportTurn[]` shape as the other readers so live write-back renders
- * identically: user text (real prompts), assistant text, `**name** {args}` for calls, `↳ name: output`
- * for results (role "tool"). Gemini's synthetic `<session_context>` bootstrap message (project tree +
+ * identically: user text (real prompts), assistant text, and a compact `role:"action"` turn per
+ * functionCall (tool name + primary target, no args); functionResponse results are dropped. Gemini's synthetic `<session_context>` bootstrap message (project tree +
  * environment) is dropped — that's agent setup, not the user's work — and stripInjectedMemory is a
  * defensive second pass so a retain never feeds our own injected memory back into recall. Fail-open:
  * never throws on a missing file or a malformed line.
  */
 import { readFileSync } from "node:fs";
 import type { TransportTurn } from "./chat";
-import { stripInjectedMemory, truncate } from "./transcript-util";
+import { actionLine, stripInjectedMemory } from "./transcript-util";
 
 interface Part {
   text?: string;
@@ -45,28 +45,6 @@ interface Line {
   ["$set"]?: { messages?: GeminiMessage[] };
 }
 
-/** Compact JSON of a tool input; empty string if it can't be serialized (e.g. a cycle). */
-function compactJson(v: unknown): string {
-  try {
-    return JSON.stringify(v) ?? "";
-  } catch {
-    return "";
-  }
-}
-
-/** A functionResponse's `response` is usually `{ output: string }`; fall back to serializing it. */
-function responseText(response: unknown): string {
-  if (
-    response &&
-    typeof response === "object" &&
-    "output" in (response as Record<string, unknown>)
-  ) {
-    const o = (response as Record<string, unknown>).output;
-    return typeof o === "string" ? o : compactJson(o);
-  }
-  return typeof response === "string" ? response : compactJson(response);
-}
-
 /** Gemini seeds each session with a synthetic user message (project tree + environment). Retaining
  *  it teaches the bank about the workspace layout, not the user's work — drop it. */
 function isSyntheticUserText(text: string): boolean {
@@ -80,56 +58,43 @@ function firstText(content: string | Part[] | undefined): string {
   return "";
 }
 
-/** Render one reconstructed Gemini message into a single normalized turn, or null if nothing usable. */
-function renderMessage(m: GeminiMessage): TransportTurn | null {
+/** Render one reconstructed Gemini message into normalized turns (prose + compact action turns). */
+function renderMessage(m: GeminiMessage): TransportTurn[] {
   const role = m.type;
-  if (role !== "user" && role !== "gemini") return null; // drop system/other roles
+  if (role !== "user" && role !== "gemini") return []; // drop system/other roles
+  const outRole = role === "gemini" ? "assistant" : "user";
 
   // Drop the synthetic session-context bootstrap (agent setup, not user work).
-  if (role === "user" && isSyntheticUserText(firstText(m.content))) return null;
+  if (role === "user" && isSyntheticUserText(firstText(m.content))) return [];
 
   // Assistant text is usually a plain string.
   if (typeof m.content === "string") {
     const t = stripInjectedMemory(m.content).trim();
-    if (!t) return null;
-    return { role: role === "gemini" ? "assistant" : "user", content: t };
+    return t ? [{ role: outRole, content: t }] : [];
   }
-  if (!Array.isArray(m.content)) return null;
+  if (!Array.isArray(m.content)) return [];
 
-  const parts: string[] = [];
-  let sawText = false;
-  let sawToolResponse = false;
+  const texts: string[] = [];
+  const actions: TransportTurn[] = [];
   for (const p of m.content) {
     if (!p || typeof p !== "object") continue;
     if (typeof p.text === "string") {
       const t = stripInjectedMemory(p.text).trim();
-      if (t) {
-        parts.push(t);
-        sawText = true;
-      }
+      if (t) texts.push(t);
     } else if (p.functionCall && typeof p.functionCall.name === "string") {
-      const body = truncate(compactJson(p.functionCall.args));
-      parts.push(body ? `**${p.functionCall.name}** ${body}` : `**${p.functionCall.name}**`);
-    } else if (p.functionResponse && typeof p.functionResponse.name === "string") {
-      const out = truncate(responseText(p.functionResponse.response).trim());
-      parts.push(out ? `↳ ${p.functionResponse.name}: ${out}` : `↳ ${p.functionResponse.name}`);
-      sawToolResponse = true;
+      actions.push({ role: "action", content: actionLine(p.functionCall.name, p.functionCall.args) });
     }
+    // functionResponse: dropped — outputs are mechanical noise for extraction
   }
 
-  const joined = parts.join("\n").trim();
-  if (!joined) return null;
-  // A user message carrying only tool responses is an environment return, not a user turn.
-  const outRole =
-    role === "user" && sawToolResponse && !sawText
-      ? "tool"
-      : role === "gemini"
-        ? "assistant"
-        : "user";
-  return { role: outRole, content: joined };
+  const out: TransportTurn[] = [];
+  const joined = texts.join("\n").trim();
+  if (joined) out.push({ role: outRole, content: joined });
+  out.push(...actions);
+  return out;
 }
 
-/** Parse a Gemini CLI session JSONL (mutation log) into normalized markdown turns.
+/** Parse a Gemini CLI session JSONL (mutation log) into normalized turns.
  *  Reconstructs the messages array (upsert-by-id), drops the synthetic session-context message,
  *  reasoning, injected memory, and empty turns. Never throws on bad lines. */
 export function readGeminiTranscript(path: string): TransportTurn[] {
@@ -180,10 +145,5 @@ export function readGeminiTranscript(path: string): TransportTurn[] {
   }
 
   const finalMessages = [...order.map((id) => byId.get(id) as GeminiMessage), ...noId];
-  const turns: TransportTurn[] = [];
-  for (const m of finalMessages) {
-    const t = renderMessage(m);
-    if (t) turns.push(t);
-  }
-  return turns;
+  return finalMessages.flatMap((m) => renderMessage(m));
 }

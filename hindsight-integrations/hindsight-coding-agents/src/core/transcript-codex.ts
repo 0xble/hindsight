@@ -12,7 +12,8 @@
  *   - user text (real prompts) — synthetic Codex startup messages (AGENTS.md + <environment_context>)
  *     are dropped so we capture the user's work, not the agent rules.
  *   - assistant text (all phases: commentary + final_answer).
- *   - function_call → `**Name** {args}` (role "assistant"); function_call_output → `↳ output` (role "tool").
+ *   - function_call → a compact `role:"action"` turn (tool name + primary target, no args);
+ *     function_call_output is dropped (outputs are mechanical noise for extraction).
  *
  * `developer`-role messages carry Codex's system prompt AND our hook-injected context
  * (<hindsight_knowledge>, <hindsight_memories>, <user_feedback>), so dropping them entirely is what
@@ -21,7 +22,7 @@
  */
 import { readFileSync } from "node:fs";
 import type { TransportTurn } from "./chat";
-import { stripInjectedMemory, truncate } from "./transcript-util";
+import { actionLine, stripInjectedMemory } from "./transcript-util";
 
 interface ContentItem {
   type?: string;
@@ -91,11 +92,13 @@ export function readCodexTranscript(path: string): TransportTurn[] {
       if (p.role === "user" && isSyntheticUserText(text)) continue;
       turns.push({ role: p.role, content: text });
     } else if (p.type === "function_call" && typeof p.name === "string") {
-      const args = truncate((p.arguments || "").trim());
-      turns.push({ role: "assistant", content: args ? `**${p.name}** ${args}` : `**${p.name}**` });
-    } else if (p.type === "function_call_output") {
-      const out = truncate((p.output || "").trim());
-      if (out) turns.push({ role: "tool", content: `↳ ${out}` });
+      let input: unknown;
+      try {
+        input = JSON.parse(p.arguments || "");
+      } catch {
+        input = undefined;
+      }
+      turns.push({ role: "action", content: actionLine(p.name, input) });
     }
     // reasoning / other payloads: dropped.
   }

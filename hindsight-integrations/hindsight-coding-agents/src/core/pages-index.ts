@@ -1,0 +1,154 @@
+/**
+ * Local knowledge-page section index — the per-turn injection surface.
+ *
+ * Pages are the per-turn memory: pre-synthesized by the server ("organized like reflect"), matched
+ * locally per prompt ("fast like recall") — no server round-trip, no LLM call, ~ms per turn.
+ *
+ * Mechanics: each page's markdown is split at headings into SECTIONS; a prompt is scored against
+ * sections by weighted term overlap (heading hits count extra); the top sections are injected,
+ * trimmed to a token budget, each with provenance and a pointer to the full page. Below a score
+ * floor nothing is injected — silence over noise.
+ */
+
+export interface PageContent {
+  id: string;
+  title: string;
+  content: string;
+}
+
+export interface PageSection {
+  pageId: string;
+  pageTitle: string;
+  heading: string;
+  body: string;
+  terms: Map<string, number>; // term -> weight (heading terms weighted)
+}
+
+const STOP = new Set(
+  ("the and for that this with what why how are you your our its can was were has have had not but " +
+   "all any into from over under when where which while will would should could been being a an of " +
+   "to in on it is as at by or be we they i").split(" ")
+);
+
+const HEADING_WEIGHT = 3;
+const SCORE_FLOOR = 3; // at least a couple of meaningful term hits before we inject anything
+const APPROX_CHARS_PER_TOKEN = 4;
+
+export function tokenize(text: string): string[] {
+  return (text.toLowerCase().match(/[a-z0-9_./-]{3,}/g) || []).filter((t) => !STOP.has(t));
+}
+
+/** Split one page's markdown into sections at headings (the preamble becomes its own section). */
+export function splitSections(page: PageContent): PageSection[] {
+  const out: PageSection[] = [];
+  const parts = page.content.split(/^(#{1,4}\s+.+)$/m);
+  let heading = page.title;
+  for (const part of parts) {
+    const h = part.match(/^#{1,4}\s+(.+)$/);
+    if (h) {
+      heading = h[1].trim();
+      continue;
+    }
+    const body = part.trim();
+    if (!body) continue;
+    const terms = new Map<string, number>();
+    for (const t of tokenize(heading)) terms.set(t, (terms.get(t) ?? 0) + HEADING_WEIGHT);
+    for (const t of tokenize(page.title)) terms.set(t, (terms.get(t) ?? 0) + 1);
+    for (const t of tokenize(body)) terms.set(t, (terms.get(t) ?? 0) + 1);
+    out.push({ pageId: page.id, pageTitle: page.title, heading, body, terms });
+  }
+  return out;
+}
+
+export function buildPagesIndex(pages: PageContent[]): PageSection[] {
+  return pages.flatMap(splitSections);
+}
+
+function scoreSection(promptTerms: Set<string>, s: PageSection): number {
+  let score = 0;
+  for (const t of promptTerms) {
+    const w = s.terms.get(t);
+    if (w) score += Math.min(w, HEADING_WEIGHT + 2); // cap per-term so one repeated word can't dominate
+  }
+  return score;
+}
+
+export interface SelectedSection {
+  pageId: string;
+  pageTitle: string;
+  heading: string;
+  text: string;
+}
+
+/** Pick the top sections for a prompt, trimmed to the token budget (paragraph-boundary trims). */
+export function selectSections(
+  index: PageSection[],
+  prompt: string,
+  opts: { budgetTokens?: number; maxSections?: number } = {}
+): SelectedSection[] {
+  const budget = (opts.budgetTokens ?? 700) * APPROX_CHARS_PER_TOKEN;
+  const maxSections = opts.maxSections ?? 3;
+  const promptTerms = new Set(tokenize(prompt));
+  const ranked = index
+    .map((s) => ({ s, score: scoreSection(promptTerms, s) }))
+    .filter((r) => r.score >= SCORE_FLOOR)
+    .sort((a, b) => b.score - a.score)
+    .slice(0, maxSections);
+
+  const out: SelectedSection[] = [];
+  let used = 0;
+  for (const { s } of ranked) {
+    if (used >= budget) break;
+    let text = s.body;
+    if (used + text.length > budget) {
+      // trim at a paragraph boundary within the remaining budget
+      const room = budget - used;
+      const cut = text.lastIndexOf("\n\n", room);
+      text = (cut > room / 3 ? text.slice(0, cut) : text.slice(0, room)).trimEnd() + "\n…";
+    }
+    used += text.length;
+    out.push({ pageId: s.pageId, pageTitle: s.pageTitle, heading: s.heading, text });
+  }
+  return out;
+}
+
+/** The injected block — provenance per section, full page reachable via the knowledge tool. */
+export function formatPageInjection(sections: SelectedSection[]): string {
+  if (!sections.length) return "";
+  const parts = sections.map(
+    (s) =>
+      `From "${s.pageTitle}" › "${s.heading}":\n${s.text}\n(full page: hindsight_read_knowledge_page ${s.pageId})`
+  );
+  return (
+    "🧠 Relevant project knowledge (from this repository's curated knowledge pages):\n\n" +
+    parts.join("\n\n")
+  );
+}
+
+/** Minimal client shape for fetching the page set. `HindsightClient` satisfies it structurally. */
+export interface PagesClient {
+  listPages(): Promise<unknown>;
+  getPage(pageId: string): Promise<unknown>;
+}
+
+const MAX_PAGES = 8;
+const MAX_PAGE_CHARS = 16_000;
+
+/** Fetch the page set with content (bounded), tolerating individual page failures. */
+export async function fetchPagesWithContent(
+  client: PagesClient,
+  parseList: (raw: unknown) => { id: string; title: string }[]
+): Promise<PageContent[]> {
+  const refs = parseList(await client.listPages()).slice(0, MAX_PAGES);
+  const out: PageContent[] = [];
+  for (const ref of refs) {
+    try {
+      const raw = (await client.getPage(ref.id)) as { content?: unknown };
+      const content = typeof raw?.content === "string" ? raw.content.slice(0, MAX_PAGE_CHARS) : "";
+      if (content) out.push({ id: ref.id, title: ref.title, content });
+    } catch {
+      /* a missing page never breaks the turn */
+    }
+  }
+  return out;
+}
