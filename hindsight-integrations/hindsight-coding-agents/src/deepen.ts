@@ -1,0 +1,176 @@
+#!/usr/bin/env node
+/**
+ * deepen — the background ingestion engine. NOT a user-facing CLI (no bin entry): the runtime
+ * spawns it detached at every session start (core/seed.ts), and harnesses that need deterministic
+ * ingestion (the benchmark, the live e2e suite) run it directly and poll `dist/status.js`.
+ *
+ * IDEMPOTENT and RESUMABLE — safe to fire every session; each run does only the missing work:
+ *   1. configure the bank (missions + retain strategies; PUT/PATCH, no reset — a fresh bank IS the
+ *      reset path)
+ *   2. ingest conversations not yet in the bank (`--conversations` file via the harness's
+ *      chatReader; dedup by `chat:<id>` document id — live sessions arrive via write-back, so this
+ *      is history import, not sync)
+ *   3. seed the aggregated commit-message history (ONE cheap document) if absent
+ *   4. progressively DEEPEN: ingest the next batch of not-yet-ingested commits individually with
+ *      their full diffs, NEWEST first (recent decisions matter most), up to DIFF_BATCH per run and
+ *      DEEPEN_DIFF_TARGET total — full precision arrives across sessions without a big-bang ingest
+ *   5. drain this run's extractions, then create the knowledge pages if the bank has none —
+ *      pages-last makes `syncStatus().synced` a real completion marker
+ *
+ * A per-bank lock file makes concurrent session starts a no-op (stale locks expire).
+ */
+import { execFileSync } from "node:child_process";
+import { mkdirSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
+import { homedir } from "node:os";
+import { join } from "node:path";
+import { deriveBankId } from "./core/bank";
+import { ingestChats } from "./core/chat";
+import { loadConfig } from "./core/config";
+import { ingestGitLog, repoNameOf, retainCommit } from "./core/git";
+import { HindsightClient } from "./core/hindsight";
+import { parsePageList } from "./core/knowledge-injection";
+import { DEEPEN_DIFF_TARGET } from "./core/status";
+import { pool } from "./core/util";
+import { getHarness, HARNESS_NAMES } from "./harness/registry";
+
+const DIFF_BATCH = 50; // per-run cap on per-commit diff ingestion (bounded session cost)
+const CONCURRENCY = 4;
+const LOCK_STALE_MS = 30 * 60 * 1000;
+
+function arg(name: string, def?: string): string | undefined {
+  const i = process.argv.indexOf(`--${name}`);
+  if (i >= 0 && i + 1 < process.argv.length) return process.argv[i + 1];
+  return process.argv.includes(`--${name}`) ? "true" : def;
+}
+
+const REPO = arg("repo");
+const cfg = loadConfig({
+  harness: arg("harness") ?? undefined,
+  projectDir: REPO || undefined,
+  path: arg("config"),
+});
+const BANK =
+  arg("bank") ?? (REPO ? deriveBankId(cfg, REPO, arg("harness") ?? cfg.harness) : cfg.bankId);
+const HARNESS = arg("harness") ?? cfg.harness;
+const API_URL = arg("api-url") ?? cfg.apiUrl;
+const API_TOKEN = arg("api-token") ?? cfg.apiToken;
+const CONV = arg("conversations");
+const GITLOG_LIMIT = arg("gitlog-limit") ? Number(arg("gitlog-limit")) : (cfg.seedLimit ?? 300);
+
+if (!REPO || !BANK) {
+  console.error(
+    "usage: node deepen.js --repo <path> [--bank <id>] [--harness <name>] " +
+      "[--conversations f.json] [--api-url U] [--api-token X] [--config path] [--gitlog-limit N]\n" +
+      `harnesses: ${HARNESS_NAMES.join(", ")}`
+  );
+  process.exit(1);
+}
+
+const log = (m: string) => console.log(m);
+
+// ── per-bank lock: concurrent session starts must not double-ingest ─────────────
+const LOCK_DIR = join(homedir(), ".hindsight", "coding-agent-state");
+const LOCK = join(LOCK_DIR, `deepen-${encodeURIComponent(BANK)}.lock`);
+
+function acquireLock(): boolean {
+  try {
+    const held = JSON.parse(readFileSync(LOCK, "utf8")) as { ts?: number };
+    if (held.ts && Date.now() - held.ts < LOCK_STALE_MS) return false; // live run in progress
+  } catch {
+    /* no/invalid lock — free */
+  }
+  try {
+    mkdirSync(LOCK_DIR, { recursive: true });
+    writeFileSync(LOCK, JSON.stringify({ pid: process.pid, ts: Date.now() }));
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function main() {
+  if (!acquireLock()) {
+    log(`deepen: another run holds the lock for ${BANK} — nothing to do`);
+    return;
+  }
+  try {
+    const harness = await getHarness(HARNESS);
+    const client = new HindsightClient({ apiUrl: API_URL, apiToken: API_TOKEN, bank: BANK!, log });
+    log(`deepen -> ${client.apiUrl} bank=${BANK} harness=${harness.name}`);
+
+    await client.configureBank();
+
+    const gitIds = await client.listDocumentIds("source:git");
+
+    // chats FIRST: few, and they carry the decisions that make memory necessary — never starved
+    // behind the git flood. Dedup against what's already in the bank (chat:<id>).
+    const chatIds = await client.listDocumentIds("source:chat").catch(() => new Set<string>());
+    const all = await harness.chatReader.read({ conversations: CONV, repo: REPO });
+    const sessions = all.filter((s, i) => !chatIds.has(`chat:${s.id || `s${i}`}`));
+    if (all.length !== sessions.length)
+      log(`[chat] ${all.length - sessions.length} conversations already ingested — skipping those`);
+    const chatFails = await ingestChats(client, sessions, { concurrency: CONCURRENCY, log });
+
+    // cheap breadth: the aggregated commit-message history, once.
+    let gitFails = 0;
+    if (gitIds.has(`gitlog:${repoNameOf(REPO!)}`)) {
+      log("[gitlog] already seeded — skipping");
+    } else {
+      gitFails += await ingestGitLog(client, REPO!, { limit: GITLOG_LIMIT, log });
+    }
+
+    // progressive depth: next batch of un-ingested commits, newest first, full message + diff.
+    try {
+      const shas = execFileSync("git", ["-C", REPO!, "rev-list", `-n`, String(DEEPEN_DIFF_TARGET), "HEAD"], {
+        encoding: "utf8",
+      })
+        .trim()
+        .split("\n")
+        .filter(Boolean)
+        .filter((sha) => !gitIds.has(`git:${sha}`))
+        .slice(0, DIFF_BATCH);
+      if (shas.length) {
+        const repoName = repoNameOf(REPO!);
+        log(`[deepen] ingesting ${shas.length} commits with full diffs (newest first) …`);
+        await pool(
+          shas,
+          CONCURRENCY,
+          (sha) => retainCommit(client, REPO!, sha, repoName),
+          () => {
+            gitFails++;
+          }
+        );
+      } else {
+        log(`[deepen] recent history fully deepened (target ${DEEPEN_DIFF_TARGET})`);
+      }
+    } catch {
+      log("[deepen] no git history — skipping diff deepening");
+    }
+
+    await client.drain(client.opIds, "extraction");
+
+    // pages LAST (completion marker for syncStatus): create only when the bank has none.
+    const pages = parsePageList(await client.listPages().catch(() => null));
+    if (pages.length) log(`[pages] ${pages.length} knowledge pages already present — skipping`);
+    else await client.createPages();
+
+    const failures = chatFails + gitFails;
+    log(`\n✅ deepen complete${failures ? ` (${failures} items failed to enqueue)` : ""}.`);
+  } finally {
+    try {
+      unlinkSync(LOCK);
+    } catch {
+      /* best-effort */
+    }
+  }
+}
+
+main().catch((e) => {
+  console.error("deepen failed:", (e as Error).message || e);
+  try {
+    unlinkSync(LOCK);
+  } catch {
+    /* best-effort */
+  }
+  process.exit(1);
+});

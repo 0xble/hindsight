@@ -1,3 +1,6 @@
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { basename, join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import { buildKnowledgeTools } from "./knowledge-tools";
 import type { HindsightClient } from "./hindsight";
@@ -21,6 +24,7 @@ function findTool(tools: ReturnType<typeof buildKnowledgeTools>, name: string) {
 }
 
 const EXPECTED_TOOLS = [
+  "hindsight_sync_status",
   "hindsight_get_current_bank",
   "hindsight_list_knowledge_pages",
   "hindsight_read_knowledge_page",
@@ -30,10 +34,16 @@ const EXPECTED_TOOLS = [
 ];
 
 describe("buildKnowledgeTools", () => {
-  it("returns exactly the six expected tools (as a set)", () => {
+  it("returns exactly the seven expected tools (as a set)", () => {
     const client = stubClient();
     const tools = buildKnowledgeTools(client, "repo-a");
     expect(tools.map((t) => t.name).sort()).toEqual([...EXPECTED_TOOLS].sort());
+  });
+
+  it("hindsight_sync_status is the FIRST tool in the list", () => {
+    const client = stubClient();
+    const tools = buildKnowledgeTools(client, "repo-a");
+    expect(tools[0].name).toBe("hindsight_sync_status");
   });
 
   it("does not expose the removed raw page-CRUD tools", () => {
@@ -45,6 +55,58 @@ describe("buildKnowledgeTools", () => {
     expect(names).not.toContain("agent_knowledge_create_page");
     expect(names).not.toContain("agent_knowledge_update_page");
     expect(names).not.toContain("agent_knowledge_delete_page");
+  });
+
+  it("hindsight_sync_status returns the syncStatus JSON for the given repoDir", async () => {
+    const repoDir = mkdtempSync(join(tmpdir(), "hs-status-nogit-"));
+    try {
+      const repoName = basename(repoDir);
+      const client = stubClient({
+        listDocumentIds: vi.fn(async (tag: string) =>
+          tag === "source:git"
+            ? new Set([`gitlog:${repoName}`, "git:sha1", "git:sha2"])
+            : new Set(["chat:s1"])
+        ),
+        listPages: vi.fn(async () => ({ items: [{ id: "p1", name: "Component map" }] })),
+        activeOperations: vi.fn(async () => 0),
+      });
+      const tools = buildKnowledgeTools(client, "repo-a", { repoDir });
+      const tool = findTool(tools, "hindsight_sync_status");
+      const result = await tool.handler({});
+      expect(result.isError).toBeFalsy();
+      expect(JSON.parse(result.content[0].text)).toEqual({
+        bank: "repo-a",
+        gitlogPresent: true,
+        gitDiffDocs: 2,
+        gitDiffTarget: null, // temp dir is not a git repo
+        chatDocs: 1,
+        pagesCount: 1,
+        activeOps: 0,
+        synced: true,
+      });
+    } finally {
+      rmSync(repoDir, { recursive: true, force: true });
+    }
+  });
+
+  it("hindsight_sync_status returns isError:true when the client's listDocumentIds throws", async () => {
+    const repoDir = mkdtempSync(join(tmpdir(), "hs-status-nogit-"));
+    try {
+      const client = stubClient({
+        listDocumentIds: vi.fn(async () => {
+          throw new Error("server down");
+        }),
+        listPages: vi.fn(async () => ({ items: [] })),
+        activeOperations: vi.fn(async () => 0),
+      });
+      const tools = buildKnowledgeTools(client, "repo-a", { repoDir });
+      const tool = findTool(tools, "hindsight_sync_status");
+      const result = await tool.handler({});
+      expect(result.isError).toBe(true);
+      expect(JSON.parse(result.content[0].text)).toEqual({ error: "server down" });
+    } finally {
+      rmSync(repoDir, { recursive: true, force: true });
+    }
   });
 
   it("hindsight_get_current_bank returns {bank_id} without touching the client", async () => {

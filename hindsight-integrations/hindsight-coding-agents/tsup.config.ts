@@ -3,7 +3,8 @@ import { defineConfig } from "tsup";
 export default defineConfig({
   entry: {
     index: "src/index.ts",
-    backfill: "src/backfill.ts",
+    deepen: "src/deepen.ts",
+    status: "src/status.ts",
     "claude-hook": "src/claude-hook.ts",
     "claude-stop-hook": "src/claude-stop-hook.ts",
     "claude-sessionstart-hook": "src/claude-sessionstart-hook.ts",
@@ -22,7 +23,7 @@ export default defineConfig({
   clean: true,
   dts: { entry: "src/index.ts" },
   shims: false,
-  // Each bin entry (claude-hook.js, cursor-hook.js, codex-hook.js, backfill.js, mcp-server.js,
+  // Each bin entry (claude-hook.js, cursor-hook.js, codex-hook.js, deepen.js, status.js, mcp-server.js,
   // hindsight-seed.js) must be a single self-contained file: plugin wrappers (e.g.
   // claude-code-v2/scripts/build.mjs) copy just that one file out of dist/, so shared code can't
   // live in a separate chunk-*.js.

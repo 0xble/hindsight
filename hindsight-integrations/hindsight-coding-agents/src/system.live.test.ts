@@ -88,24 +88,31 @@ describe.runIf(LIVE)("live system: backfill -> reflect -> hook injection", () =>
     const convFile = join(repo, "conv.json");
     writeFileSync(convFile, JSON.stringify(conv));
 
-    // the REAL backfill CLI: ingests git + chats, drains extraction (server-side real LLM)
+    // the REAL ingestion engine (what every session start fires): ingests git + chats, drains
+    // extraction (server-side real LLM), creates the knowledge pages last. The bank is unique per
+    // run (mkdtemp basename), so freshness needs no reset.
     execFileSync(
       "node",
       [
-        join(DIST, "backfill.js"),
+        join(DIST, "deepen.js"),
         "--repo",
         repo,
         "--bank",
         `live-e2e-${basename(repo)}`,
         "--api-url",
         API_URL,
-        "--reset",
         "--conversations",
         convFile,
-        "--no-pages",
       ],
       { encoding: "utf-8", timeout: 600_000 }
     );
+    // the readiness contract harnesses poll: the seeded memory must report synced
+    const statusOut = execFileSync(
+      "node",
+      [join(DIST, "status.js"), "--repo", repo, "--bank", `live-e2e-${basename(repo)}`, "--api-url", API_URL],
+      { encoding: "utf-8", timeout: 60_000 }
+    );
+    expect(JSON.parse(statusOut.trim().split("\n").at(-1) as string).synced).toBe(true);
   }, 660_000);
 
   afterAll(() => {

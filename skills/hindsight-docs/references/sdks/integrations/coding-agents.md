@@ -3,8 +3,8 @@
 
 Long-term **project memory** for coding agents, from one package: a shared reflect-and-inject core
 with a thin entry point per agent — **opencode**, **Claude Code**, **Codex CLI**, **Gemini CLI**, **Cursor CLI** —
-plus a one-shot **backfill** CLI that ingests a repo's git history and past developer conversations
-into a [Hindsight](https://vectorize.io/hindsight) memory bank.
+Ingestion into a [Hindsight](https://vectorize.io/hindsight) memory bank is fully automatic — no
+setup command: git history and conversations flow in as you work.
 
 The premise: most of a real fix is derivable from the code, but the *last mile* often hinges on a
 project-specific decision that isn't in the code at all — a rounding rule, a retry allowlist, a
@@ -13,12 +13,14 @@ in front of the agent at the moment it starts working.
 
 ## How it works
 
-1. **Backfill (once per repo).** `hindsight-coding-backfill --repo .` ingests every git commit
-   (message + diff) and, optionally, past developer conversations, under two retain strategies tuned
-   per content type (`git`: verbose decision extraction; `chat`: at most two coherent facts per
-   conversation — the final decision and the notable rejected alternative). It then synthesizes
-   **knowledge pages** (a codebase mental map) and tags every item with a `REF-ID` so any surfaced
-   fact traces back to its commit or session.
+1. **Automatic ingestion (no setup).** A cold repo is seeded in the background the first time an
+   agent opens it (aggregated commit-message history + a headless codebase survey), and every
+   session start fires an idempotent background **deepen engine** that ingests recent commits
+   individually with their full diffs — newest first, a bounded batch per session — plus any
+   conversations not yet in the bank. Retain strategies are tuned per content type, knowledge pages
+   are synthesized from the extracted facts, and every item carries a `REF-ID` tracer. The
+   `hindsight_sync_status` tool reports where ingestion stands (`synced: true` = seeded memory
+   fully queryable).
 2. **Reflect once per session.** On the session's first task message, the entry point sends that
    message to Hindsight `reflect`, which reasons over the bank and returns a synthesized
    **root-cause answer** — the exact rule and literal values that were decided, with citations.
@@ -108,13 +110,12 @@ side:
 | `disabled` | `false` | hard off-switch (inert plugin/hook — a no-memory baseline) |
 | `reflectTimeoutMs` | `120000` | session-reflect timeout (hook harnesses cap it at 25s to fit the host's hook window); on timeout the session runs without reflect (recorded in diagnostics) |
 | `pageRefreshEveryTurns` | `10` | refetch the knowledge pages and re-inject the page roster + tool guide every N user turns |
-| `retainSessions` | `true` | opencode write-back (set `false` to opt out; hook harnesses always write on Stop) |
-| `retainEveryTurns` | `5` | write-back cadence (user turns) |
-| `gitSync.enabled` | `false` | opencode only: on load, retain commits new since the backfill |
+| `retainSessions` | `true` | opencode write-back: async upsert every turn (set `false` to opt out; hook harnesses always write on Stop) |
+| `retainEveryTurns` | `1` | write-back cadence (user turns) |
+| `gitSync.enabled` | `false` | opencode only: on load, retain commits new since the seed |
 | `gitSync.ref` | `origin/main` | git-sync target ref (falls back to `HEAD`) |
 | `gitSync.fetch` | `false` | `git fetch` the ref before diffing |
 | `harnesses.<name>` | — | per-harness override of any field above |
-| `harness` | `opencode` | **backfill only**: which session format `--conversations` is read as |
 
 ### Bank resolution — per-repo by default
 
@@ -133,23 +134,6 @@ Coding memory is **per repository**. Resolution order for the working directory:
 
 The default `"{gitProject}"` means **all agents share one memory per repo** — use
 `"{harness}-{gitProject}"` to split per agent instead.
-
-## Backfill
-
-```bash
-hindsight-coding-backfill --repo /path/to/repo \
-  [--bank myproject] [--harness opencode] [--conversations sessions.json] \
-  [--api-url http://localhost:8888] [--api-token X] [--config <path>] \
-  [--limit 100] [--reset] [--no-pages] [--concurrency 8]
-```
-
-- Without `--bank`, the **same per-repo resolution** the runtime uses is applied to `--repo`, so
-  `hindsight-coding-backfill --repo .` fills exactly the bank the agents will read.
-- `sessions.json` is a normalized interchange format any exporter can emit:
-  `[{ "id": "s1", "turns": [{ "role": "user", "text": "...", "timestamp?": "ISO" }, ...] }, ...]`.
-  Session list order is **chronological** — a later chat can amend an earlier one, and recency
-  follows list order (last = newest).
-- Tip: validate a setup with `--limit 100` before a full-history ingest.
 
 ## Diagnostics
 

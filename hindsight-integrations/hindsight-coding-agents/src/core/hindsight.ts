@@ -180,6 +180,19 @@ export class HindsightClient {
     );
   }
 
+  /** Count of operations still ACTIVE on this bank — the list includes terminal ops (completed/
+   *  failed/cancelled), so filter by status. Powers syncStatus's "extractions drained" check. */
+  async activeOperations(): Promise<number> {
+    const r = await this.req("GET", this.bankUrl("/operations"));
+    try {
+      const j = (await r.json()) as { operations?: { status?: string }[]; items?: { status?: string }[] };
+      const ops = j.operations ?? j.items ?? [];
+      return ops.filter((o) => !TERMINAL.has((o?.status || "").toLowerCase())).length;
+    } catch {
+      return 0;
+    }
+  }
+
   /** Poll each enqueued operation by id until terminal. LIST only shows active ops, so per-id GET is reliable. */
   async drain(ids: string[], label: string, maxMs = 60 * 60 * 1000): Promise<void> {
     if (!ids.length) return;

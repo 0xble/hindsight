@@ -1,6 +1,7 @@
 /**
  * Claude Code `SessionStart` hook: deterministically auto-seeds a cold repo's bank from its git
- * history (in the background, non-blocking) and injects a short visible note plus the live
+ * history (in the background, non-blocking), keeps warm banks deepening on every start, and
+ * injects a short visible note plus the live
  * knowledge-page roster + guidance preamble that tells the agent to consult the repo's pages.
  *
  * Earlier design injected an instruction asking the AGENT to pose a y/n question to the user and
@@ -87,25 +88,31 @@ export async function buildSessionStartContext(args: {
           docIds = undefined; // server unreachable: transient — do nothing, try again next session
         }
 
-        // Cold iff the bank has zero source:git docs. An undefined result (server error) is NOT
-        // treated as cold — we only seed on a confirmed-empty bank.
-        if (docIds !== undefined && docIds.size === 0) {
+        if (docIds !== undefined) {
+          // ALWAYS fire the background deepen engine when the server is reachable — it is
+          // idempotent (per-bank lock, dedup by document id) and each run does only the missing
+          // work: cold seed, newly appeared conversations, the next per-commit diff batch. The
+          // one-time extras stay cold-gated below.
           startSeed(cwd, { limit: cfg.seedLimit });
-          if (cfg.codebaseSurvey !== false) {
-            // Run the survey under the current harness's own CLI (falls back to any available agent).
-            startSurvey(cwd, {
-              harness: harness as SurveyHarness,
-              model: cfg.surveyModel,
-              budgetUsd: cfg.surveyBudgetUsd,
-            });
+          // Cold iff the bank has zero source:git docs (an undefined result — server error — is
+          // NOT treated as cold; we never surveyed/noted on an unconfirmed-empty bank).
+          if (docIds.size === 0) {
+            if (cfg.codebaseSurvey !== false) {
+              // Run the survey under the current harness's own CLI (falls back to any available agent).
+              startSurvey(cwd, {
+                harness: harness as SurveyHarness,
+                model: cfg.surveyModel,
+                budgetUsd: cfg.surveyBudgetUsd,
+              });
+            }
+            // Record the seed time (informational — no longer a gate).
+            writeSeedState(bankId, { seededAt: new Date().toISOString() }, stateDir);
+            diag(harness, "seed_started", { bank: bankId });
+            systemMessage =
+              `🧠 Hindsight is learning ${bankId} from this repo's git history in the background, ` +
+              `and surveying the codebase structure to build knowledge pages — recalled memories will ` +
+              `appear as it processes. No action needed.`;
           }
-          // Record the seed time (informational — no longer a gate).
-          writeSeedState(bankId, { seededAt: new Date().toISOString() }, stateDir);
-          diag(harness, "seed_started", { bank: bankId });
-          systemMessage =
-            `🧠 Hindsight is learning ${bankId} from this repo's git history in the background, ` +
-            `and surveying the codebase structure to build knowledge pages — recalled memories will ` +
-            `appear as it processes. No action needed.`;
         }
       }
     }

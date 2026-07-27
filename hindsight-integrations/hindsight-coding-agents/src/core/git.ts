@@ -6,6 +6,7 @@
  *    (default). Cheap (one extraction op total).
  */
 import { execFileSync } from "node:child_process";
+import { resolve } from "node:path";
 import type { HindsightClient } from "./hindsight";
 import { pool } from "./util";
 
@@ -16,9 +17,10 @@ function git(repo: string, ...args: string[]): string {
   return execFileSync("git", ["-C", repo, ...args], { encoding: "utf8", maxBuffer: 1 << 28 });
 }
 
-/** The bank-facing name for a repo (its directory basename). */
+/** The bank-facing name for a repo (its directory basename). Resolves relative paths ("." must
+ *  name the directory, not literally "."), so document ids stay stable however the path is spelled. */
 export function repoNameOf(repo: string): string {
-  return repo.replace(/\/+$/, "").split("/").pop() || "repo";
+  return resolve(repo).replace(/\/+$/, "").split("/").pop() || "repo";
 }
 
 /** True iff `dir` is a git repo with at least one commit. Fast (--max-count=1). False on non-git/empty/error. */

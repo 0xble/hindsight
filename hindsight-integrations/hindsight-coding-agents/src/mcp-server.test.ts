@@ -13,11 +13,12 @@ describe("selectTools", () => {
     expect(selectTools(cfg, stubClient, "b")).toEqual([]);
   });
 
-  it("returns the six hindsight_* tool specs when enabled", () => {
+  it("returns the seven hindsight_* tool specs when enabled", () => {
     const cfg = resolveConfig({});
     const tools = selectTools(cfg, stubClient, "b");
     expect(tools.map((t) => t.name).sort()).toEqual(
       [
+        "hindsight_sync_status",
         "hindsight_get_current_bank",
         "hindsight_list_knowledge_pages",
         "hindsight_read_knowledge_page",

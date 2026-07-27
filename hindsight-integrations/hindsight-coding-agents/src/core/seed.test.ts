@@ -76,23 +76,32 @@ describe("startBackgroundSeed", () => {
     return vi.fn().mockReturnValue({ on: vi.fn(), unref: vi.fn() });
   }
 
-  it("spawns node against backfillPath, detached + stdio ignore, with the default limit", () => {
+  it("spawns node against enginePath, detached + stdio ignore, with the default gitlog limit", () => {
     const spawn = fakeSpawn();
-    startBackgroundSeed("/some/repo", { backfillPath: "/dist/backfill.js", spawn });
+    startBackgroundSeed("/some/repo", { enginePath: "/dist/deepen.js", spawn });
     expect(spawn).toHaveBeenCalledWith(
       "node",
-      ["/dist/backfill.js", "--repo", "/some/repo", "--limit", String(DEFAULT_SEED_LIMIT)],
+      ["/dist/deepen.js", "--repo", "/some/repo", "--gitlog-limit", String(DEFAULT_SEED_LIMIT)],
       { detached: true, stdio: "ignore" }
     );
     expect(spawn.mock.results[0].value.unref).toHaveBeenCalled();
   });
 
+  it("defaults enginePath to deepen.js next to the module", () => {
+    const spawn = fakeSpawn();
+    startBackgroundSeed("/some/repo", { spawn });
+    expect(spawn).toHaveBeenCalledTimes(1);
+    const args = spawn.mock.calls[0][1] as string[];
+    expect(args[0].endsWith("deepen.js")).toBe(true);
+    expect(args.slice(1)).toEqual(["--repo", "/some/repo", "--gitlog-limit", String(DEFAULT_SEED_LIMIT)]);
+  });
+
   it("opts.limit overrides the default limit", () => {
     const spawn = fakeSpawn();
-    startBackgroundSeed("/some/repo", { backfillPath: "/dist/backfill.js", spawn, limit: 50 });
+    startBackgroundSeed("/some/repo", { enginePath: "/dist/deepen.js", spawn, limit: 50 });
     expect(spawn).toHaveBeenCalledWith(
       "node",
-      ["/dist/backfill.js", "--repo", "/some/repo", "--limit", "50"],
+      ["/dist/deepen.js", "--repo", "/some/repo", "--gitlog-limit", "50"],
       { detached: true, stdio: "ignore" }
     );
   });
@@ -102,7 +111,7 @@ describe("startBackgroundSeed", () => {
       throw new Error("spawn EMFILE");
     });
     expect(() =>
-      startBackgroundSeed("/some/repo", { backfillPath: "/dist/backfill.js", spawn })
+      startBackgroundSeed("/some/repo", { enginePath: "/dist/deepen.js", spawn })
     ).not.toThrow();
   });
 
@@ -114,7 +123,7 @@ describe("startBackgroundSeed", () => {
     child.unref = vi.fn();
     const spawn = vi.fn().mockReturnValue(child);
     expect(() =>
-      startBackgroundSeed("/some/repo", { backfillPath: "/dist/backfill.js", spawn })
+      startBackgroundSeed("/some/repo", { enginePath: "/dist/deepen.js", spawn })
     ).not.toThrow();
     // Emitting 'error' with no listener would normally throw (EventEmitter semantics) and crash
     // the process — proving a listener was attached means this does NOT throw.
@@ -127,7 +136,7 @@ describe("seedControl", () => {
     return vi.fn().mockReturnValue({ on: vi.fn(), unref: vi.fn() });
   }
 
-  it("seed: spawns the background backfill and persists seededAt", () => {
+  it("seed: spawns the background deepen engine and persists seededAt", () => {
     const spawn = fakeSpawn();
     const result = seedControl("seed", { repo: "/r", bankId: "b", spawn, stateDir });
     expect(spawn).toHaveBeenCalled();

@@ -15,6 +15,7 @@
 import { z } from "zod";
 import type { ZodRawShape } from "zod";
 import type { HindsightClient } from "./hindsight";
+import { syncStatus } from "./status";
 
 export interface ToolResult {
   // Index signature so this structurally satisfies the MCP SDK's CallToolResult (which carries
@@ -53,8 +54,29 @@ function guarded(fn: (args: any) => Promise<unknown>): (args: any) => Promise<To
 }
 
 /** Build the knowledge-page + recall MCP tool specs, bound to one client/bank. */
-export function buildKnowledgeTools(client: HindsightClient, bankId: string): ToolSpec[] {
+export function buildKnowledgeTools(
+  client: HindsightClient,
+  bankId: string,
+  opts: { repoDir?: string } = {}
+): ToolSpec[] {
   return [
+    {
+      name: "hindsight_sync_status",
+      description:
+        "Report whether this repo's memory bank is in sync: gitlog seed present, how much recent " +
+        "history has been deepened with full diffs, conversations ingested, knowledge pages " +
+        "created, and extractions still running. `synced: true` means the seeded memory is fully " +
+        "queryable. Ingestion is automatic and background — if not synced, it is in progress; " +
+        "nothing to run.",
+      inputSchema: {},
+      handler: async () => {
+        try {
+          return ok(await syncStatus(client, bankId, opts.repoDir ?? process.cwd()));
+        } catch (e) {
+          return err(e);
+        }
+      },
+    },
     {
       name: "hindsight_get_current_bank",
       description:

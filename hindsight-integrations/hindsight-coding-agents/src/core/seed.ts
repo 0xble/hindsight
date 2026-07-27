@@ -55,18 +55,20 @@ export function writeSeedState(
 
 export const DEFAULT_SEED_LIMIT = 300;
 
-/** Spawn a DETACHED background backfill of the most-recent `limit` commits of `repoDir`. Fire-and-forget:
+/** Spawn a DETACHED background run of the deepen engine for `repoDir`. Idempotent server-side
+ *  (per-bank lock + dedup by document id), so firing it every session start is safe — each run does
+ *  only the missing work (cold seed, new conversations, the next diff-deepening batch). Fire-and-forget:
  *  the child outlives this process; extraction is server-side/async so nothing here blocks. Never throws. */
 export function startBackgroundSeed(
   repoDir: string,
-  opts: { limit?: number; backfillPath?: string; spawn?: typeof realSpawn } = {}
+  opts: { limit?: number; enginePath?: string; spawn?: typeof realSpawn } = {}
 ): void {
   try {
     const spawnFn = opts.spawn ?? realSpawn;
-    const backfillPath =
-      opts.backfillPath ?? join(dirname(fileURLToPath(import.meta.url)), "backfill.js");
+    const enginePath =
+      opts.enginePath ?? join(dirname(fileURLToPath(import.meta.url)), "deepen.js");
     const limit = opts.limit ?? DEFAULT_SEED_LIMIT;
-    const child = spawnFn("node", [backfillPath, "--repo", repoDir, "--limit", String(limit)], {
+    const child = spawnFn("node", [enginePath, "--repo", repoDir, "--gitlog-limit", String(limit)], {
       detached: true,
       stdio: "ignore",
     });

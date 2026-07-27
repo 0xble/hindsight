@@ -2,8 +2,9 @@
 
 Long-term project memory for **coding agents**, backed by [Hindsight](https://vectorize.io/hindsight).
 One package, several agents: a shared reflect-and-inject core with a thin entry point per agent
-(**opencode**, **Claude Code**, **Codex CLI**, **Gemini CLI**, **Cursor CLI**), plus a one-shot **backfill** CLI that
-ingests a repo's git history and past developer conversations into a memory bank.
+(**opencode**, **Claude Code**, **Codex CLI**, **Gemini CLI**, **Cursor CLI**). Ingestion is fully
+automatic — there is no setup command: a repo's git history and conversations flow into its memory
+bank in the background as you work.
 
 The premise: most of a real fix is derivable from the code, but the _last mile_ often hinges on a
 project-specific decision that isn't in the code at all — a rounding rule, a retry allowlist, a
@@ -17,9 +18,14 @@ in front of the agent at the moment it starts working, and keeps a curated set o
    the entry point deterministically kicks off a background **seed**: it aggregates the last N commit
    **messages** into a single cheap document (`gitlog` strategy) and spawns a short headless
    **codebase survey** — run under the current agent's own CLI (claude/codex/gemini/opencode),
-   read-only sandboxed — to map the structure. Both feed the knowledge pages. You can also
-   run the seed explicitly with the `backfill` CLI (below), including `--diffs` for verbose
-   per-commit decision extraction and `--conversations` to ingest past developer chats.
+   read-only sandboxed — to map the structure. Both feed the knowledge pages.
+1. **Deepen progressively (automatic, every session).** Every session start also fires the
+   idempotent background **deepen engine**: it ingests any conversations not yet in the bank and the
+   next batch of recent commits **individually with their full diffs, newest first** — so full
+   decision-level precision arrives across sessions without a big-bang ingest. A per-bank lock and
+   document-id dedup make concurrent or repeated runs a no-op. Ask the agent
+   `hindsight_sync_status` to see where ingestion stands (`synced: true` = seeded memory fully
+   queryable).
 2. **Reflect once per session.** On the session's first prompt, the entry point runs Hindsight
    `reflect` — an agentic synthesis over the bank that returns the past decision explaining the task
    at hand, with its exact rule and literal values. The answer is cached for the session and
@@ -128,13 +134,13 @@ hook by Codex...), so one shared config serves several agents side by side:
 | `codebaseSurvey`        | `true`                               | SessionStart: headless survey of a cold repo's structure, run under the current harness's own CLI (claude/codex/gemini/opencode), falling back to any available agent |
 | `surveyModel`           | `haiku`                              | model for the survey — Claude recipe only (`claude -p --model`); other agents use their configured default                                                            |
 | `surveyBudgetUsd`       | `2`                                  | survey spend cap — Claude recipe only (`claude -p --max-budget-usd`); other agents rely on their read-only sandbox                                                    |
-| `retainSessions`        | `true`                               | opencode write-back (set `false` to opt out; hook harnesses always write on Stop)                                                                                     |
-| `retainEveryTurns`      | `5`                                  | opencode write-back cadence (user turns)                                                                                                                              |
+| `retainSessions`        | `true`                               | opencode write-back: async upsert of the session transcript every turn (set `false` to opt out; hook harnesses always write on Stop)                                  |
+| `retainEveryTurns`      | `1`                                  | opencode write-back cadence (user turns)                                                                                                                              |
 | `gitSync.enabled`       | `false`                              | opencode only: on load, retain commits new since the seed                                                                                                             |
 | `gitSync.ref`           | `origin/main`                        | git-sync target ref (falls back to `HEAD`)                                                                                                                            |
 | `gitSync.fetch`         | `false`                              | `git fetch` the ref before diffing                                                                                                                                    |
 | `harnesses.<name>`      | —                                    | per-harness override of any field above                                                                                                                               |
-| `harness`               | `opencode`                           | **backfill only**: which session format `--conversations` is read as                                                                                                  |
+| `harness`               | `opencode`                           | **deepen engine only**: which session format `--conversations` is read as                                                                                                  |
 
 ### Bank resolution
 
@@ -154,28 +160,19 @@ Coding memory is **per repository**. Resolution order for the working directory:
 The default `"coding-agent::{gitProject}"` is **harness-neutral**, so opencode, Claude Code, and Codex
 all share one memory per repo — use `"{harness}-{gitProject}"` to split per agent instead.
 
-## Backfill
+## Ingestion internals (no CLI)
 
-The auto-seed covers the common case; the CLI is for explicit / richer ingests (full diffs, past
-conversations, resets):
+There is no user-facing ingest command — the deepen engine (`dist/deepen.js`) is spawned by every
+session start and does only the missing work: bank configuration, conversation import (dedup by
+document id), the one-time gitlog seed, the next per-commit diff batch (newest first, bounded per
+run), then knowledge pages once extraction has drained. Harnesses that need deterministic ingestion
+(benchmarks, e2e suites) run the same engine directly and poll `dist/status.js` until
+`"synced": true` — the exact readiness contract the `hindsight_sync_status` agent tool reports.
 
-```bash
-hindsight-coding-backfill --repo /path/to/repo \
-  [--bank myproject] [--harness opencode] [--conversations sessions.json] \
-  [--api-url http://localhost:8888] [--api-token X] [--config <path>] \
-  [--diffs] [--limit 100] [--reset] [--no-pages] [--concurrency 8]
-```
-
-- Without `--bank`, the **same per-repo resolution** the runtime uses is applied to `--repo`, so
-  `hindsight-coding-backfill --repo .` fills exactly the bank the agents will read.
-- Default is the cheap `gitlog` aggregate; `--diffs` switches to the verbose `git` strategy (every
-  commit's full message + diff — much more tokens; opt-in).
-- `sessions.json` is the normalized interchange format any exporter can emit:
-  `[{ "id": "s1", "turns": [{ "role": "user", "text": "...", "timestamp?": "ISO" }, ...] }, ...]`.
-  Session list order is **chronological** — a later chat can amend an earlier one (last = newest).
-- Chats are ingested **before** the git flood so decisions aren't starved in the extraction queue;
-  the CLI drains extraction and reports `done/failed` counts before exiting.
-- Tip: validate a setup with `--limit 100` before a full-history ingest.
+Past-conversation import accepts a normalized interchange file (engine `--conversations` flag):
+`[{ "id": "s1", "turns": [{ "role": "user", "text": "...", "timestamp?": "ISO" }, ...] }, ...]`,
+chronological (a later chat can amend an earlier one). Day-to-day, conversations simply accrue from
+the live session write-back — no export step.
 
 Local Hindsight for trying it out:
 

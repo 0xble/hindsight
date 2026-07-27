@@ -124,7 +124,7 @@ describe("buildSessionStartContext", () => {
     expect(out.systemMessage).toContain("🧠");
   });
 
-  it("cold-check-wins: stale seededAt but WARM bank -> no seed (only an empty bank reseeds)", async () => {
+  it("stale seededAt + WARM bank -> deepen engine still fires (idempotent), but no cold-only note/state churn", async () => {
     writeSeedState("bank-1", { seededAt: "2026-01-01T00:00:00Z" }, stateDir);
     const startSeed = vi.fn();
     const client = { listDocumentIds: async () => new Set(["git:abc"]), listPages: listPagesOk };
@@ -137,7 +137,9 @@ describe("buildSessionStartContext", () => {
       hasGit: () => true,
       startSeed,
     });
-    expect(startSeed).not.toHaveBeenCalled();
+    expect(startSeed).toHaveBeenCalledWith("/repo/dir", { limit: 300 });
+    // Warm: the stored state is left untouched (no fresh seededAt written).
+    expect(readSeedState("bank-1", stateDir)).toEqual({ seededAt: "2026-01-01T00:00:00Z" });
     expect(out.systemMessage).toBeUndefined();
     expect(out.additionalContext).toContain("- Component map (p1)");
   });
@@ -160,8 +162,9 @@ describe("buildSessionStartContext", () => {
     expect(out.systemMessage).toBeUndefined();
   });
 
-  it("warm bank (non-empty doc set) -> no seed, no note", async () => {
+  it("warm bank (non-empty doc set) -> deepen engine fires, but no survey/state-write/note", async () => {
     const startSeed = vi.fn();
+    const startSurvey = vi.fn();
     const client = { listDocumentIds: async () => new Set(["git:abc"]), listPages: listPagesOk };
     const out = await buildSessionStartContext({
       cwd: "/repo/dir",
@@ -171,8 +174,13 @@ describe("buildSessionStartContext", () => {
       stateDir,
       hasGit: () => true,
       startSeed,
+      startSurvey,
     });
-    expect(startSeed).not.toHaveBeenCalled();
+    // The engine is idempotent, so every warm session start re-fires it to pick up missing work.
+    expect(startSeed).toHaveBeenCalledWith("/repo/dir", { limit: 300 });
+    // The cold-only extras stay off: no survey, no seededAt write, no user-facing note.
+    expect(startSurvey).not.toHaveBeenCalled();
+    expect(readSeedState("bank-1", stateDir)).toEqual({});
     expect(out.additionalContext).toContain("- Component map (p1)");
     expect(out.systemMessage).toBeUndefined();
   });

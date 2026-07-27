@@ -51,7 +51,7 @@ export interface RawConfig {
   harness?: string; // runtime adapter (default "opencode")
   disabled?: boolean; // hard off-switch — inert plugin, for a no-memory baseline (default false)
   retainSessions?: boolean; // opencode plugin write-back (default true; set false to opt out). Hook harnesses always write back on Stop and ignore this flag.
-  retainEveryTurns?: number; // write-back cadence in user turns (default 5)
+  retainEveryTurns?: number; // write-back cadence in user turns (default 1: async upsert every turn)
   reflectTimeoutMs?: number; // session-start reflect timeout (default 120000; hooks cap lower internally)
   pageRefreshEveryTurns?: number; // knowledge-page refresh cadence in user turns (default 10)
   autoSeed?: boolean; // SessionStart: auto-seed a cold repo's bank from git history (default true)
@@ -102,7 +102,7 @@ export function resolveConfig(raw: RawConfig = {}): Config {
     harness: raw.harness ?? "opencode",
     disabled: raw.disabled ?? false,
     retainSessions: raw.retainSessions ?? true, // opencode: write back by default (parity with hook-harness Stop)
-    retainEveryTurns: raw.retainEveryTurns || 5,
+    retainEveryTurns: raw.retainEveryTurns || 1,
     reflectTimeoutMs: raw.reflectTimeoutMs || 120000,
     pageRefreshEveryTurns: raw.pageRefreshEveryTurns || 10,
     autoSeed: raw.autoSeed ?? true,
