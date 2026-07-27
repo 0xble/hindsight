@@ -1660,13 +1660,13 @@ Configuration for background task processing. By default, the API processes task
 | `HINDSIGHT_API_WORKER_MAX_SLOTS` | Maximum concurrent tasks per worker (total across all operation types) | `10` |
 | `HINDSIGHT_API_OPERATION_RETENTION_DAYS` | Static server-wide retention window for completed, failed, and cancelled operation rows, including their task payload and result metadata. `0` (the default) keeps them indefinitely; set a positive number of days to enable automatic pruning. | `0` |
 | `HINDSIGHT_API_OPERATION_CLEANUP_BATCH_SIZE` | Maximum expired terminal operation rows deleted per tenant schema during each cleanup cycle. The cleanup job runs once per maintenance tick, so this also sets the drain rate for a backlog. Must be a positive integer. | `1000` |
-| `HINDSIGHT_API_WORKER_CONSOLIDATION_MAX_SLOTS` | Reserved slots for consolidation tasks within `WORKER_MAX_SLOTS` (bank-serialization preserved) | `2` |
+| `HINDSIGHT_API_WORKER_CONSOLIDATION_MAX_SLOTS` | **Reserved (minimum) slots** for consolidation tasks within `WORKER_MAX_SLOTS` — a floor, **not** a per-type cap (bank-serialization preserved). See the note below. | `2` |
 | `HINDSIGHT_API_WORKER_CONSOLIDATION_BANK_PRIORITY` | Per-bank priority for consolidation scheduling (see note below) | _(unset)_ |
-| `HINDSIGHT_API_WORKER_RETAIN_MAX_SLOTS` | Reserved slots for retain tasks within `WORKER_MAX_SLOTS` | `0` |
-| `HINDSIGHT_API_WORKER_FILE_CONVERT_RETAIN_MAX_SLOTS` | Reserved slots for file_convert_retain tasks within `WORKER_MAX_SLOTS` | `0` |
-| `HINDSIGHT_API_WORKER_REFRESH_MENTAL_MODEL_MAX_SLOTS` | Reserved slots for refresh_mental_model tasks within `WORKER_MAX_SLOTS` | `0` |
-| `HINDSIGHT_API_WORKER_GRAPH_MAINTENANCE_MAX_SLOTS` | Reserved slots for graph_maintenance tasks within `WORKER_MAX_SLOTS` | `0` |
-| `HINDSIGHT_API_WORKER_IMPORT_DOCUMENTS_MAX_SLOTS` | Reserved slots for import_documents tasks within `WORKER_MAX_SLOTS` | `0` |
+| `HINDSIGHT_API_WORKER_RETAIN_MAX_SLOTS` | **Reserved (minimum) slots** for retain tasks within `WORKER_MAX_SLOTS` — a floor, not a per-type cap. See the note below. | `0` |
+| `HINDSIGHT_API_WORKER_FILE_CONVERT_RETAIN_MAX_SLOTS` | **Reserved (minimum) slots** for file_convert_retain tasks within `WORKER_MAX_SLOTS` — a floor, not a per-type cap. See the note below. | `0` |
+| `HINDSIGHT_API_WORKER_REFRESH_MENTAL_MODEL_MAX_SLOTS` | **Reserved (minimum) slots** for refresh_mental_model tasks within `WORKER_MAX_SLOTS` — a floor, not a per-type cap. See the note below. | `0` |
+| `HINDSIGHT_API_WORKER_GRAPH_MAINTENANCE_MAX_SLOTS` | **Reserved (minimum) slots** for graph_maintenance tasks within `WORKER_MAX_SLOTS` — a floor, not a per-type cap. See the note below. | `0` |
+| `HINDSIGHT_API_WORKER_IMPORT_DOCUMENTS_MAX_SLOTS` | **Reserved (minimum) slots** for import_documents tasks within `WORKER_MAX_SLOTS` — a floor, not a per-type cap. See the note below. | `0` |
 
 Terminal operations use one coherent retention window for the entire row. Hindsight does not scrub the task payload when an operation finishes: failed and cancelled operations need it for retry, while `include_payload=true` on completed operations is an explicit debugging surface. Keeping payload, result metadata, progress, and status together also avoids partial operation histories. Once a terminal row's `updated_at` is older than the configured window, the background maintenance loop prunes it in bounded per-schema batches, alongside the other scheduled sweeps. PostgreSQL only — the maintenance loop does not run on Oracle. Pending and processing rows are never pruned by this cleanup.
 
@@ -1676,6 +1676,28 @@ Per-operation `*_MAX_SLOTS` values are **reservations within** `WORKER_MAX_SLOTS
 Example: `MAX_SLOTS=10, CONSOLIDATION=2, RETAIN=3, REFRESH_MENTAL_MODEL=2` → shared pool = `10 - (2+3+2) = 3`.
 
 With the defaults (`MAX_SLOTS=10`, `CONSOLIDATION_MAX_SLOTS=2`, all other reservations `0`), 2 slots are always reserved for consolidation and the remaining 8 form the shared pool for any operation type. Set `CONSOLIDATION_MAX_SLOTS=0` to release consolidation's reserved capacity into the shared pool.
+:::
+
+:::warning `*_MAX_SLOTS` is a minimum, not a per-type maximum
+Despite the name, a per-operation `*_MAX_SLOTS` value does **not** cap how many tasks of that type can run concurrently. It reserves a floor — the type is *guaranteed* at least that many slots — and the type may then **overflow into the shared pool** on top of its reservation, right up to `WORKER_MAX_SLOTS`.
+
+A type's real ceiling is therefore:
+
+```
+ceiling(type) = reserved(type) + shared pool currently available
+```
+
+Concretely, with `MAX_SLOTS=10` and `CONSOLIDATION_MAX_SLOTS=1`, consolidation is *guaranteed* 1 slot but can still climb to **10** concurrent tasks by claiming the shared pool. Setting the value lower does not lower the ceiling — it only lowers the guarantee. (For consolidation, the per-bank serialization constraint still applies, so the practical ceiling is also bounded by the number of distinct banks with pending consolidation work.)
+
+**How to actually cap a type.** There is no dedicated per-type ceiling knob. A reservation becomes a hard cap only when the shared pool is zero — i.e. when the reservations across all types sum to `WORKER_MAX_SLOTS`, leaving nothing to overflow into. For example, to pin consolidation at exactly 2, reserve the entire pool so no shared capacity exists:
+
+```
+HINDSIGHT_API_WORKER_MAX_SLOTS=10
+HINDSIGHT_API_WORKER_CONSOLIDATION_MAX_SLOTS=2
+HINDSIGHT_API_WORKER_RETAIN_MAX_SLOTS=8   # 2 + 8 = 10 → shared pool = 0
+```
+
+With the shared pool at 0, each type is confined to its own reservation and consolidation can never exceed 2. If any shared capacity remains, treat `*_MAX_SLOTS` as a guaranteed minimum only.
 :::
 
 :::note Consolidation bank priority
