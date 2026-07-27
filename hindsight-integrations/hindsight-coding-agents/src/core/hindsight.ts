@@ -142,7 +142,7 @@ export class HindsightClient {
       },
     });
     this.log(
-      `[bank] configured ${this.bank}: reflect mission, observations ON, strategies {git, gitlog, chat, document, session}`
+      `[bank] configured ${this.bank}: reflect mission, observations ON, strategies {git, gitlog, conversation, document}`
     );
   }
 

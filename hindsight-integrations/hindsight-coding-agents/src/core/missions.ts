@@ -22,18 +22,21 @@ export const GITLOG_MISSION =
   "related commits into a coherent initiative/theme where the messages make that clear; preserve exact " +
   "identifiers and literal values verbatim when quoting a subject line.";
 
-export const CHAT_MISSION =
-  "You are ingesting a raw developer conversation (a JSON user/assistant transcript). Extract the " +
-  "FEWEST facts that capture the OUTCOME — do NOT emit one fact per message, per intermediate " +
-  "proposal, or per tool step; that fragments the decision and reads as contradictory out of order. " +
-  "Prefer: (1) ONE consolidated fact stating the FINAL, settled decision and its exact rule/values " +
-  "unambiguously; and (2) at most one fact for the key alternative that was REJECTED and why. " +
-  "CRITICAL: a conversation usually REVISES its answer — an early proposal gets changed. Record ONLY " +
-  "the FINAL state as the decision / what is in effect. A superseded proposal must appear ONLY inside " +
-  "the rejected fact ('initially proposed X, changed to Y because…'), NEVER as its own 'decided' " +
-  "fact. If the same setting changes several times, keep only the LAST. Make unmistakably clear which " +
-  "choice WON. Quote literal values/identifiers verbatim. Preserve the 'REF-ID: <token>' marker in " +
-  "each fact. Do not invent; capture only what was actually settled.";
+export const CONVERSATION_MISSION =
+  "You are ingesting a developer conversation as a JSON transcript of turns ({role, content}): the " +
+  "user's requests, the assistant's narration, and compact 'action' turns naming each tool use and " +
+  "its target (e.g. \"Edit boltons/strutils.py\") with no arguments or outputs. It may be a SHORT " +
+  "decision chat or a LONG working session — scale the facts to the substance, never to the message " +
+  "count. Extract the FEWEST facts that capture the OUTCOME: the settled DECISIONS and their exact " +
+  "rules/values (quote literals VERBATIM); concrete CHANGES to specific code entities; problems and " +
+  "how they were resolved; conventions or invariants established; at most one fact for a notable " +
+  "REJECTED alternative ('initially proposed X, changed to Y because Z'). A short decision chat " +
+  "usually yields 1-2 facts; a substantial working session several. CRITICAL: a conversation REVISES " +
+  "itself — record ONLY the FINAL state as what is in effect; a superseded proposal appears ONLY " +
+  "inside the rejected fact, NEVER as its own 'decided' fact; if the same setting changes several " +
+  "times keep only the LAST, and make unmistakably clear which choice WON. Do NOT emit one fact per " +
+  "message, per intermediate proposal, or per action turn. Preserve the 'REF-ID: <token>' marker " +
+  "verbatim in every fact. Do not invent; capture only what was actually settled.";
 
 export const REFLECT_MISSION =
   "You are a debugging assistant with the project's past decisions in memory (git rationale and " +
@@ -50,40 +53,10 @@ export const DOCUMENT_MISSION =
   "You are ingesting a standalone document (notes, docs, or structural findings). Extract the " +
   "concrete facts, concepts, and structure it describes.";
 
-export const SESSION_MISSION =
-  "You are ingesting a developer's LIVE coding-agent session: a JSON transcript of turns " +
-  "({role, content}) — the user's requests, the assistant's narration, and compact 'action' turns " +
-  "naming each tool use and its target (e.g. \"Edit boltons/strutils.py\") with no arguments or " +
-  "outputs. Unlike a short decision chat, a work session " +
-  "usually contains SEVERAL durable facts — capture them. Extract: the DECISIONS made and their " +
-  "rationale; the concrete CHANGES to specific code entities (files, functions, identifiers — quote " +
-  "them VERBATIM); problems encountered and how they were resolved; and any conventions, invariants, " +
-  "or constraints established. Consolidate related steps into coherent facts (do NOT emit one fact " +
-  "per message or per tool call), and when the session revised its approach, record only the FINAL, " +
-  "settled state as what is in effect. Preserve the 'REF-ID: <token>' marker verbatim in every fact.";
-
 export const OBSERVATIONS_MISSION =
   "Consolidate durable knowledge about THIS codebase — recurring patterns, conventions, module " +
   "responsibilities, and how components relate — from the ingested commits and conversations. " +
   "Favor stable structural understanding over one-off details.";
-
-// CUSTOM extraction prompt for chats — replaces the default extractor's rules entirely, so we get a
-// TINY number of coherent facts (final decision + optional rejection), not a fact per message.
-export const CHAT_CUSTOM_INSTRUCTIONS =
-  "You are reading ONE developer conversation (JSON user/assistant turns) about a coding decision. It " +
-  "typically PROPOSES options and then REVISES them — only the LAST state is real.\n\n" +
-  "Extract AT MOST 2 facts:\n" +
-  "1. THE DECISION — a single fact stating the FINAL, in-effect rule and its EXACT values/identifiers, " +
-  'unambiguously (e.g. "the client pins API version v3 via the X-Api-Version header, not the URL path, ' +
-  'as settled after the gateway migration"). Quote literals verbatim.\n' +
-  '2. THE REJECTION (only if a notable alternative was tried) — one fact of the form "initially ' +
-  'proposed X, but changed to Y because Z".\n\n' +
-  "HARD RULES:\n" +
-  "- NEVER emit a separate fact per message, per intermediate proposal, or per tool step.\n" +
-  "- A superseded proposal appears ONLY inside fact #2 — NEVER as its own 'decided' fact.\n" +
-  "- If a setting changed several times, keep ONLY the last as the decision.\n" +
-  "- Emit just 1 fact when there is no meaningful rejected alternative.\n" +
-  "- Preserve the 'REF-ID: <token>' marker from the transcript in each fact. Do not invent.";
 
 export const RETAIN_STRATEGIES = {
   git: { retain_mission: GIT_MISSION, retain_extraction_mode: "verbose" },
@@ -94,13 +67,15 @@ export const RETAIN_STRATEGIES = {
     retain_extraction_mode: "verbose",
     retain_chunk_size: 12000,
   },
-  // chunk big enough to hold a WHOLE typical chat in ONE chunk (these run ~2.5k tokens / ~10k chars;
-  // the 3000 default was SPLITTING them -> per-chunk fragments). ~12k stays well under a 16k-context
-  // model, so the custom "≤2 facts" prompt sees the full proposal→revision arc and emits the final
-  // decision. (Very long chats would still split and fall back to the consolidation layer.)
-  chat: {
-    retain_extraction_mode: "custom",
-    retain_custom_instructions: CHAT_CUSTOM_INSTRUCTIONS,
+  // ONE strategy for ALL developer conversations — backfilled decision chats and live working
+  // sessions alike (they are the same content type in the same JSON transcript format; the mission
+  // scales extraction to the substance, final-state-wins). Chunk big enough to hold a whole typical
+  // conversation in ONE chunk so the extractor sees the full proposal→revision arc (the 3000
+  // default SPLIT them into per-chunk fragments); very long sessions still split and fall back to
+  // the consolidation layer.
+  conversation: {
+    retain_mission: CONVERSATION_MISSION,
+    retain_extraction_mode: "verbose",
     retain_chunk_size: 12000,
   },
   // Structural documents (e.g. the codebase survey's ingested findings) aren't dialogue — the
@@ -108,16 +83,6 @@ export const RETAIN_STRATEGIES = {
   // with a bigger chunk size (documents can run long) captures the concrete facts/structure instead.
   document: {
     retain_mission: DOCUMENT_MISSION,
-    retain_extraction_mode: "verbose",
-    retain_chunk_size: 12000,
-  },
-  // LIVE coding-agent session write-back (core/retain-hook.ts, runtime.ts). A full work session is
-  // NOT a short decision convo — the `chat` strategy's aggressive "≤2 facts" custom extraction would
-  // throw away most of what the session produced. Verbose extraction over a big chunk captures the
-  // several durable decisions/changes a real session makes. Distinct from `chat` (backfilled past
-  // conversations, which ARE short decision logs and keep the ≤2-fact custom extractor).
-  session: {
-    retain_mission: SESSION_MISSION,
     retain_extraction_mode: "verbose",
     retain_chunk_size: 12000,
   },

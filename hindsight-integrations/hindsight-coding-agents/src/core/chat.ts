@@ -29,7 +29,7 @@ export function renderSessionJson(refId: string, turns: TransportTurn[], baseTs:
   return JSON.stringify(withRefId(refId, turns, baseTs));
 }
 
-/** Backfill: ingest past sessions RAW as JSON transcripts under the `chat` strategy. */
+/** Backfill: ingest past sessions RAW as JSON transcripts under the `conversation` strategy. */
 export async function ingestChats(
   client: HindsightClient,
   sessions: ChatSession[],
@@ -68,7 +68,7 @@ export async function ingestChats(
         "developer chat",
         `chat:${id}`,
         ["source:chat"],
-        "chat",
+        "conversation",
         {
           timestamp: baseIso,
           metadata: { source: "chat", chat: id, ref_id: `chat:${id}` },
@@ -88,10 +88,10 @@ export async function ingestChats(
  * Live write-back: upsert a running session under a stable document_id. Same id => Hindsight
  * reprocesses the FULL conversation, so the settled decision is extracted from the whole thing.
  *
- * Uses the `session` strategy (verbose extraction), NOT `chat` (the ≤2-fact custom extractor tuned
- * for short backfilled decision logs) — a live work session makes several durable decisions/changes
- * and would be gutted by ≤2-fact extraction. The content is a JSON transcript (renderSessionJson)
- * whose tool activity is compacted into `role:"action"` turns (see core/transcript*.ts).
+ * Uses the same `conversation` strategy as backfilled chats — one strategy for all developer
+ * conversations; the mission scales extraction to the substance. The content is a JSON transcript
+ * (renderSessionJson) whose tool activity is compacted into `role:"action"` turns
+ * (see core/transcript*.ts).
  */
 export async function retainLiveSession(
   client: HindsightClient,
@@ -105,7 +105,7 @@ export async function retainLiveSession(
     "coding agent session",
     refId,
     ["source:chat"],
-    "session",
+    "conversation",
     {
       timestamp: startTs,
       async: true,

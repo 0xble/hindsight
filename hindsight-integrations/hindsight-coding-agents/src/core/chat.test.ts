@@ -42,7 +42,7 @@ describe("renderSessionJson", () => {
 });
 
 describe("retainLiveSession", () => {
-  it("upserts the JSON transcript under conversation:<id> with the verbose session strategy", async () => {
+  it("upserts the JSON transcript under conversation:<id> with the unified conversation strategy", async () => {
     const retain = vi.fn().mockResolvedValue(undefined);
     const client = { retain } as unknown as HindsightClient;
     const turns: TransportTurn[] = [
@@ -65,7 +65,7 @@ describe("retainLiveSession", () => {
     expect(context).toBe("coding agent session");
     expect(documentId).toBe("conversation:s2");
     expect(tags).toEqual(["source:chat"]);
-    expect(strategy).toBe("session");
+    expect(strategy).toBe("conversation");
     expect(opts).toMatchObject({ async: true, timestamp: "2026-01-01T00:00:00Z" });
     expect(opts.metadata).toMatchObject({
       source: "chat",

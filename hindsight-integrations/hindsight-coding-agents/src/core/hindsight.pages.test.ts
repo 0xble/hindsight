@@ -371,7 +371,7 @@ describe("HindsightClient.configureBank config PATCH", () => {
     expect(updates).not.toHaveProperty("entities_allow_free_form");
     expect(updates.retain_default_strategy).toBe("git");
     expect(Object.keys(updates.retain_strategies)).toEqual(
-      expect.arrayContaining(["git", "gitlog", "chat", "document", "session"])
+      expect.arrayContaining(["git", "gitlog", "conversation", "document"])
     );
   });
 });

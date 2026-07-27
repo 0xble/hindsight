@@ -56,7 +56,7 @@ describe("buildRetain", () => {
     expect(parsed[1]).toMatchObject({ role: "user", content: "we use zod for validation" });
     expect(parsed[2]).toMatchObject({ role: "assistant", content: "noted, zod it is" });
     // Verbose `session` extraction, not the ≤2-fact `chat` extractor.
-    expect(strategy).toBe("session");
+    expect(strategy).toBe("conversation");
     expect(tags).toEqual(["source:chat"]);
   });
 
