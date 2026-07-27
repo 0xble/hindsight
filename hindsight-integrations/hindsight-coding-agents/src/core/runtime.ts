@@ -96,7 +96,9 @@ export class RuntimeCore {
 
     // ── reflect: once per session, on its first prompt ──────────────────────────
     let reflectAnswer = this.reflectBySession.get(sessionId);
+    let reflectRanThisTurn = false;
     if (reflectAnswer === undefined) {
+      reflectRanThisTurn = true;
       const t0 = Date.now();
       try {
         reflectAnswer = await this.client.reflect(prompt, {
@@ -148,11 +150,18 @@ export class RuntimeCore {
     const q = prompt.replace(/\s+/g, " ").trim();
     const excerpt = q.length > 48 ? `${q.slice(0, 48)}…` : q;
     const pageTitles = [...new Set(sections.map((s) => s.pageTitle))];
-    console.error(
-      pageTitles.length
-        ? `${brandWord()} · “${excerpt}” → ${pageTitles.join(", ")}`
-        : `${brandWord()} · memory warming up`
-    );
+    if (reflectRanThisTurn && reflectAnswer) {
+      const preview = reflectAnswer.replace(/\s+/g, " ").trim().slice(0, 140);
+      console.error(
+        `${brandWord()} · goal: recall this repo's past decisions about “${excerpt}”\n↳ ${preview}…`
+      );
+    } else {
+      console.error(
+        pageTitles.length
+          ? `${brandWord()} · “${excerpt}” → ${pageTitles.join(", ")}`
+          : `${brandWord()} · memory warming up`
+      );
+    }
     if (refreshDue) {
       blocks.push(buildRosterRefresh(this.pagesCache.map((p) => ({ id: p.id, title: p.title }))));
     }

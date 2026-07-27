@@ -96,7 +96,9 @@ export async function buildHookOutput(args: {
 
   // ── reflect: once per session, on the first prompt ────────────────────────────
   let reflectAnswer = cached.reflectAnswer;
+  let reflectRanThisTurn = false;
   if (reflectAnswer === undefined) {
+    reflectRanThisTurn = true;
     const t0 = Date.now();
     try {
       reflectAnswer = await client.reflect(prompt, {
@@ -160,13 +162,23 @@ export async function buildHookOutput(args: {
   }
   const kept = blocks.filter(Boolean);
 
-  // The per-turn user-facing notice: the brand plus what went into context this turn.
+  // The per-turn user-facing notice: the brand plus what went into context this turn. On the
+  // turn reflect actually RAN, show the goal it was assigned and what it brought back.
   const q = prompt.replace(/\s+/g, " ").trim();
   const excerpt = q.length > 48 ? `${q.slice(0, 48)}…` : q;
   const pageTitles = [...new Set(sections.map((s) => s.pageTitle))];
-  const notice = pageTitles.length
-    ? `${brandWord()} · “${excerpt}” → ${pageTitles.join(", ")}`
-    : `${brandWord()} · memory warming up`;
+  let notice: string;
+  if (reflectRanThisTurn && reflectAnswer) {
+    const preview = reflectAnswer.replace(/\s+/g, " ").trim();
+    notice =
+      `${brandWord()} · goal: recall this repo's past decisions about “${excerpt}”\n` +
+      `↳ ${preview.length > 140 ? `${preview.slice(0, 140)}…` : preview}` +
+      (pageTitles.length ? `\n· also in context: ${pageTitles.join(", ")}` : "");
+  } else {
+    notice = pageTitles.length
+      ? `${brandWord()} · “${excerpt}” → ${pageTitles.join(", ")}`
+      : `${brandWord()} · memory warming up`;
+  }
 
   return { context: kept.length ? kept.join("\n\n") : undefined, notice };
 }
