@@ -122,55 +122,34 @@ describe("buildKnowledgeTools", () => {
     expect(client.recall).not.toHaveBeenCalled();
   });
 
-  it("hindsight_search_knowledge_pages returns section objects with page/page_id/heading/content", async () => {
+  it("hindsight_search_knowledge_pages calls the server hybrid search and returns ranked hits", async () => {
     const client = stubClient({
-      listPages: vi.fn(async () => ({
-        items: [
-          { id: "p1", name: "Uploader guide" },
-          { id: "p2", name: "Auth notes" },
-        ],
-      })),
-      getPage: vi.fn(async (id: string) =>
-        id === "p1"
-          ? { content: "Preamble prose about uploads.\n\n## Retry backoff\nUploads retry.\n" }
-          : { content: "Tokens rotate daily.\n" }
-      ),
+      searchKnowledgePages: vi.fn(async () => [
+        { id: "p1", name: "Uploader guide", snippet: "Uploads retry with backoff…", score: 0.031 },
+        { id: "p2", name: "Auth notes", snippet: "Tokens rotate daily.", score: 0.012 },
+      ]),
     });
     const tools = buildKnowledgeTools(client, "repo-a");
     const tool = findTool(tools, "hindsight_search_knowledge_pages");
-    const result = await tool.handler({ query: "anything" });
+    const result = await tool.handler({ query: "upload retries" });
     expect(result.isError).toBeFalsy();
-    expect(client.listPages).toHaveBeenCalledTimes(1);
-    expect(client.getPage).toHaveBeenCalledWith("p1");
-    expect(client.getPage).toHaveBeenCalledWith("p2");
-    // Interim stub: the FIRST section of each distinct page, regardless of the query.
+    expect(client.searchKnowledgePages).toHaveBeenCalledWith("upload retries", 3);
     expect(JSON.parse(result.content[0].text)).toEqual([
-      {
-        page: "Uploader guide",
-        page_id: "p1",
-        heading: "Uploader guide",
-        content: "Preamble prose about uploads.",
-      },
-      {
-        page: "Auth notes",
-        page_id: "p2",
-        heading: "Auth notes",
-        content: "Tokens rotate daily.",
-      },
+      { page: "Uploader guide", page_id: "p1", snippet: "Uploads retry with backoff…", score: 0.031 },
+      { page: "Auth notes", page_id: "p2", snippet: "Tokens rotate daily.", score: 0.012 },
     ]);
   });
 
-  it("hindsight_search_knowledge_pages returns isError:true when listPages throws", async () => {
+  it("hindsight_search_knowledge_pages returns isError:true when the server search throws", async () => {
     const client = stubClient({
-      listPages: vi.fn(async () => {
-        throw new Error("pages down");
+      searchKnowledgePages: vi.fn(async () => {
+        throw new Error("search down");
       }),
     });
-    const tools = buildKnowledgeTools(client, "repo-a");
-    const tool = findTool(tools, "hindsight_search_knowledge_pages");
-    const result = await tool.handler({ query: "anything" });
+    const tool = findTool(buildKnowledgeTools(client, "repo-a"), "hindsight_search_knowledge_pages");
+    const result = await tool.handler({ query: "x" });
     expect(result.isError).toBe(true);
-    expect(JSON.parse(result.content[0].text)).toEqual({ error: "pages down" });
+    expect(result.content[0].text).toContain("search down");
   });
 
   it("hindsight_list_knowledge_pages calls client.listPages() with no args", async () => {

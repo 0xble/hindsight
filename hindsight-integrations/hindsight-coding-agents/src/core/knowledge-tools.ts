@@ -15,8 +15,6 @@
 import { z } from "zod";
 import type { ZodRawShape } from "zod";
 import type { HindsightClient } from "./hindsight";
-import { buildPagesIndex, fetchPagesWithContent, selectSections } from "./pages-index";
-import { parsePageList } from "./knowledge-injection";
 import { syncStatus } from "./status";
 
 export interface ToolResult {
@@ -90,24 +88,22 @@ export function buildKnowledgeTools(
     {
       name: "hindsight_search_knowledge_pages",
       description:
-        "Search this repository's Hindsight knowledge pages for content relevant to a query. Call " +
-        "this when the user's question may be answered by the project's accumulated knowledge " +
-        "(architecture, conventions, decisions, initiatives) rather than by reading code. Returns " +
-        "up to 3 sections with their page of origin. When a result informs your answer, credit it " +
-        "visibly: start that part with \"🧠 From Hindsight memory (<page name>):\".",
+        "Search this repository's Hindsight knowledge pages for content relevant to a query — " +
+        "hybrid full-text + semantic search, server-side. Call this when the user's question may " +
+        "be answered by the project's accumulated knowledge (architecture, conventions, decisions, " +
+        "initiatives) rather than by reading code. Returns ranked pages with a relevance snippet; " +
+        "read a full page with hindsight_read_knowledge_page. When a result informs your answer, " +
+        "credit it visibly: start that part with \"🧠 From Hindsight memory (<page name>):\".",
       inputSchema: { query: z.string().describe("what to look for") },
       handler: async (args: { query: string }) => {
         try {
-          // Interim: local selection over the fetched pages — swapped for the server-side
-          // knowledge-base/search when it ships (this handler is the single swap point).
-          const pages = await fetchPagesWithContent(client, parsePageList);
-          const sections = selectSections(buildPagesIndex(pages), args.query);
+          const hits = await client.searchKnowledgePages(args.query, 3);
           return ok(
-            sections.map((s) => ({
-              page: s.pageTitle,
-              page_id: s.pageId,
-              heading: s.heading,
-              content: s.text,
+            hits.map((h) => ({
+              page: h.name,
+              page_id: h.id,
+              snippet: h.snippet,
+              score: h.score,
             }))
           );
         } catch (e) {

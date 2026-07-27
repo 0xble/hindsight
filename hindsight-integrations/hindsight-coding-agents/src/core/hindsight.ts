@@ -271,6 +271,26 @@ export class HindsightClient {
     return await r.json();
   }
 
+  /** Hybrid (BM25 + vector, RRF-fused) server-side search over the bank's knowledge pages.
+   *  Returns page-level hits with a relevance snippet — the real search behind
+   *  hindsight_search_knowledge_pages. */
+  async searchKnowledgePages(
+    query: string,
+    limit = 3
+  ): Promise<{ id: string; name: string; snippet: string; score: number }[]> {
+    const q = `?q=${encodeURIComponent(query)}&limit=${limit}`;
+    const r = await this.req("GET", this.bankUrl(`/knowledge-base/search${q}`));
+    const j = (await r.json()) as {
+      results?: { id: string; name: string; snippet?: string; score?: number }[];
+    };
+    return (j.results ?? []).map((x) => ({
+      id: x.id,
+      name: x.name,
+      snippet: x.snippet ?? "",
+      score: x.score ?? 0,
+    }));
+  }
+
   /**
    * Create ONE custom knowledge page (used by seeding + captureInitiative; not exposed as an agent MCP tool).
    * NOT the same as `createPages()` below, which batch-synthesizes the fixed `PAGES` set at
