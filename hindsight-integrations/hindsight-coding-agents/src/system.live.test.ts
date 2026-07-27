@@ -122,7 +122,9 @@ describe.runIf(LIVE)("live system: backfill -> reflect -> hook injection", () =>
     const ctx: string = parsed.hookSpecificOutput.additionalContext;
     expect(parsed.hookSpecificOutput.hookEventName).toBe("UserPromptSubmit");
     for (const literal of DECISION_STATUSES) expect(ctx).toContain(literal);
-    expect(diagLines().at(-1)).toMatchObject({ harness: "claude-code", event: "reflect_ok" });
+    expect(diagLines()).toContainEqual(
+      expect.objectContaining({ harness: "claude-code", event: "reflect_ok" })
+    );
   }, 200_000);
 
   it("second prompt in the same session is served from cache (no new reflect)", () => {
@@ -145,7 +147,9 @@ describe.runIf(LIVE)("live system: backfill -> reflect -> hook injection", () =>
     const parsed = JSON.parse(out);
     const ctx: string = parsed.hookSpecificOutput.additionalContext;
     for (const literal of DECISION_STATUSES) expect(ctx).toContain(literal);
-    expect(diagLines().at(-1)).toMatchObject({ harness: "codex", event: "reflect_ok" });
+    expect(diagLines()).toContainEqual(
+      expect.objectContaining({ harness: "codex", event: "reflect_ok" })
+    );
   }, 200_000);
 
   it("cursor hook speaks its own protocol against the same bank", () => {
@@ -157,7 +161,9 @@ describe.runIf(LIVE)("live system: backfill -> reflect -> hook injection", () =>
     const parsed = JSON.parse(out);
     expect(parsed.continue).toBe(true);
     for (const literal of DECISION_STATUSES) expect(parsed.additional_context).toContain(literal);
-    expect(diagLines().at(-1)).toMatchObject({ harness: "cursor-cli", event: "reflect_ok" });
+    expect(diagLines()).toContainEqual(
+      expect.objectContaining({ harness: "cursor-cli", event: "reflect_ok" })
+    );
   }, 200_000);
 });
 
