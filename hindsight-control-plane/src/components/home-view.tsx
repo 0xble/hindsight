@@ -189,9 +189,17 @@ export function HomeView({
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-4 lg:h-[520px]">
         {/* Memory constellation — fills the row height so it never leaves a gap. */}
         <div className="lg:col-span-2 rounded-lg border border-border overflow-hidden flex flex-col lg:h-full">
-          <div className="flex items-center gap-2 px-4 py-3 border-b border-border shrink-0">
-            <Network className="w-4 h-4 text-muted-foreground" />
-            <h2 className="text-sm font-semibold text-foreground">{t("constellationTitle")}</h2>
+          <div className="flex items-center justify-between px-4 py-3 border-b border-border shrink-0">
+            <div className="flex items-center gap-2">
+              <Network className="w-4 h-4 text-muted-foreground" />
+              <h2 className="text-sm font-semibold text-foreground">{t("constellationTitle")}</h2>
+            </div>
+            <button
+              onClick={() => onNavigate("data")}
+              className="text-xs text-primary hover:underline flex items-center gap-1"
+            >
+              {t("viewAll")} <ArrowRight className="w-3 h-3" />
+            </button>
           </div>
           {constellationData.nodes.length > 0 ? (
             <Constellation
