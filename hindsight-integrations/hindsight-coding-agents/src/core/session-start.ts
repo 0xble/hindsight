@@ -44,10 +44,13 @@ interface SeedContextClient {
  * repo (first ingest running), "remembering" once the bank is warm.
  */
 export function buildSeedBanner(bankId: string, cold = true, gitNote?: string): string {
-  return (
-    `${brandWord()} is ${cold ? "learning" : "remembering"} this repo → memory bank “${bankId}”` +
-    (gitNote ? ` · ${gitNote}` : "")
-  );
+  // Two lines: what Hindsight DOES for this repo (value, not mechanism), then where the memory
+  // lives + sync state. The brand word leads line 1 so the host TUI's message prefix lands there.
+  const headline = cold
+    ? `${brandWord()} is learning this repo — ingesting its decisions, conventions and history`
+    : `${brandWord()} is tracking the decisions, conventions and history of this repo`;
+  const details = `  ↳ memory bank “${bankId}”` + (gitNote ? ` · ${gitNote}` : "");
+  return `${headline}\n${details}`;
 }
 
 /**

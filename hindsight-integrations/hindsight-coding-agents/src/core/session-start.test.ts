@@ -78,7 +78,7 @@ describe("buildSessionStartContext", () => {
     expect(called).toBe(false);
     expect(out.additionalContext).toContain("- Component map (p1)");
     // banner shows on EVERY session now; non-cold paths use the "remembering" wording
-    expect(out.systemMessage).toContain("remembering");
+    expect(out.systemMessage).toContain("is tracking the decisions");
   });
 
   // The old "declined state -> no seed" test is gone with the seed-state file itself: the live
@@ -128,7 +128,7 @@ describe("buildSessionStartContext", () => {
     expect(startSurvey).not.toHaveBeenCalled();
     expect(out.additionalContext).toContain("- Component map (p1)");
     // banner shows on EVERY session now; non-cold paths use the "remembering" wording
-    expect(out.systemMessage).toContain("remembering");
+    expect(out.systemMessage).toContain("is tracking the decisions");
   });
 
   it("listDocumentIds throws (server unreachable) -> no seed, roster preamble only", async () => {
@@ -150,7 +150,7 @@ describe("buildSessionStartContext", () => {
     expect(startSeed).not.toHaveBeenCalled();
     expect(out.additionalContext).toContain("- Component map (p1)");
     // banner shows on EVERY session now; non-cold paths use the "remembering" wording
-    expect(out.systemMessage).toContain("remembering");
+    expect(out.systemMessage).toContain("is tracking the decisions");
   });
 
   it("listPages rejects -> fail-open: empty-state preamble, seed still starts, note still visible (cold repo)", async () => {
@@ -201,7 +201,7 @@ describe("buildSessionStartContext", () => {
     expect(called).toBe(false);
     expect(out.additionalContext).toContain("- Component map (p1)");
     // banner shows on EVERY session now; non-cold paths use the "remembering" wording
-    expect(out.systemMessage).toContain("remembering");
+    expect(out.systemMessage).toContain("is tracking the decisions");
   });
 });
 
