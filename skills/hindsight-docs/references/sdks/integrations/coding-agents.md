@@ -2,7 +2,7 @@
 # Coding Agents
 
 Long-term **project memory** for coding agents, from one package: a shared reflect-and-inject core
-with a thin entry point per agent — **opencode**, **Claude Code**, **Codex CLI**, **Cursor CLI** —
+with a thin entry point per agent — **opencode**, **Claude Code**, **Codex CLI**, **Gemini CLI**, **Cursor CLI** —
 plus a one-shot **backfill** CLI that ingests a repo's git history and past developer conversations
 into a [Hindsight](https://vectorize.io/hindsight) memory bank.
 
@@ -22,12 +22,21 @@ in front of the agent at the moment it starts working.
 2. **Reflect once per session.** On the session's first task message, the entry point sends that
    message to Hindsight `reflect`, which reasons over the bank and returns a synthesized
    **root-cause answer** — the exact rule and literal values that were decided, with citations.
-3. **Inject every turn.** The answer is pushed into the agent's context (system prompt on opencode;
-   hook context on Claude/Codex/Cursor, cached per session and re-injected on later prompts) so it
-   survives long sessions and correction rounds.
-4. **Never break the agent — never fail silently.** A failed reflect degrades to no-memory, but
-   every outcome (`reflect_ok` / `reflect_empty` / `reflect_failed`, with duration and error) is
-   appended to a diagnostics file, so a memory-less session can't masquerade as a memory session.
+3. **Inject every turn.** The reflect answer is pushed into the agent's context (system prompt on
+   opencode; hook context on the hook harnesses, cached per session and re-injected on later
+   prompts) so it survives long sessions and correction rounds. Alongside it, the repo's
+   **knowledge pages** are matched *locally* against each prompt (a lexical section index — no
+   server round-trip, no LLM call) and the top-scoring page sections are injected with provenance
+   and a pointer to the full page; below a relevance floor nothing is injected.
+4. **Write back.** Each session is upserted into the bank as a JSON transcript — user/assistant
+   turns plus a compact `action` turn per tool call (tool name + primary target, no arguments or
+   outputs) — so sessions compound into memory. On Stop for the hook harnesses, every few turns for
+   the opencode plugin. Cold repos are auto-seeded (aggregated git log + a short headless codebase
+   survey) the first time an agent opens them.
+5. **Never break the agent — never fail silently.** A failed reflect or page fetch degrades to
+   no-memory, but every outcome (`reflect_ok` / `reflect_empty` / `reflect_failed`, `pages_ok` /
+   `pages_failed`, with duration and error) is appended to a diagnostics file, so a memory-less
+   session can't masquerade as a memory session.
 
 When memories **conflict** on the same rule, reflect prefers the latest/superseding decision — a
 rule amended in a later conversation wins over the original, and the superseded rule is reported as
@@ -40,6 +49,7 @@ no longer in effect.
 | `opencode`    | persistent plugin | package default export  | add the package dir to `opencode.json` → `"plugin": [...]` |
 | `claude-code` | per-prompt hook   | `hindsight-claude-hook` | `UserPromptSubmit` hook in Claude Code `settings.json` |
 | `codex`       | per-prompt hook   | `hindsight-codex-hook`  | `UserPromptSubmit` hook in `~/.codex/hooks.json` (+ `codex_hooks = true`, Codex CLI ≥ 0.116) |
+| `gemini`      | per-prompt hooks  | gemini wrapper hooks    | `SessionStart` + `BeforeAgent` + `SessionEnd` in `~/.gemini/settings.json` (Gemini CLI ≥ 0.52.0) |
 | `cursor-cli`  | per-prompt hook   | `hindsight-cursor-hook` | `beforeSubmitPrompt` hook in Cursor `hooks.json` |
 
 ```json title="opencode.json"
@@ -96,8 +106,9 @@ side:
 | `directoryBankMap` | — | absolute path → bank; **longest prefix wins**; overrides everything |
 | `resolveWorktrees` | `true` | `{gitProject}`: linked worktrees share the main repo's bank |
 | `disabled` | `false` | hard off-switch (inert plugin/hook — a no-memory baseline) |
-| `reflectTimeoutMs` | `120000` | reflect timeout; on timeout the agent runs without memory (recorded in diagnostics) |
-| `retainSessions` | `false` | opencode only: upsert the live transcript into the bank every N turns |
+| `reflectTimeoutMs` | `120000` | session-reflect timeout (hook harnesses cap it at 25s to fit the host's hook window); on timeout the session runs without reflect (recorded in diagnostics) |
+| `pageRefreshEveryTurns` | `10` | refetch the knowledge pages and re-inject the page roster + tool guide every N user turns |
+| `retainSessions` | `true` | opencode write-back (set `false` to opt out; hook harnesses always write on Stop) |
 | `retainEveryTurns` | `5` | write-back cadence (user turns) |
 | `gitSync.enabled` | `false` | opencode only: on load, retain commits new since the backfill |
 | `gitSync.ref` | `origin/main` | git-sync target ref (falls back to `HEAD`) |
@@ -142,7 +153,7 @@ hindsight-coding-backfill --repo /path/to/repo \
 
 ## Diagnostics
 
-Every reflect outcome is appended as a JSON line to `/tmp/hindsight-plugin.log` (override with
+Every reflect and page-fetch outcome is appended as a JSON line to `/tmp/hindsight-plugin.log` (override with
 `HINDSIGHT_DIAG_FILE`):
 
 ```json

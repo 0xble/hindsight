@@ -1,7 +1,7 @@
 # hindsight-coding-agents
 
 Long-term project memory for **coding agents**, backed by [Hindsight](https://vectorize.io/hindsight).
-One package, several agents: a shared recall-and-inject core with a thin entry point per agent
+One package, several agents: a shared reflect-and-inject core with a thin entry point per agent
 (**opencode**, **Claude Code**, **Codex CLI**, **Gemini CLI**, **Cursor CLI**), plus a one-shot **backfill** CLI that
 ingests a repo's git history and past developer conversations into a memory bank.
 
@@ -20,37 +20,46 @@ in front of the agent at the moment it starts working, and keeps a curated set o
    read-only sandboxed — to map the structure. Both feed the knowledge pages. You can also
    run the seed explicitly with the `backfill` CLI (below), including `--diffs` for verbose
    per-commit decision extraction and `--conversations` to ingest past developer chats.
-2. **Recall every turn.** On each user prompt, the entry point calls Hindsight `recall` with the
-   prompt and injects a compact `<hindsight_memories>` block (default ≤750 tokens) — the relevant
-   facts with their `REF-ID` citations, wrapped in a visible-attribution directive so the agent
-   surfaces a `🧠 Using Hindsight Memories` header when memory informs its answer.
-3. **Knowledge pages + tools.** At session start the agent is given the repo's page roster plus a
+2. **Reflect once per session.** On the session's first prompt, the entry point runs Hindsight
+   `reflect` — an agentic synthesis over the bank that returns the past decision explaining the task
+   at hand, with its exact rule and literal values. The answer is cached for the session and
+   re-injected on every turn, wrapped in a visible-attribution directive so the agent surfaces a
+   `🧠 Using Hindsight Memories` header when memory informs its answer.
+3. **Knowledge-page sections every turn.** The repo's knowledge pages are fetched on a cadence and
+   matched **locally** against each prompt (a lexical section index — no server round-trip, no LLM
+   call, ~ms): the top-scoring page sections are injected with provenance and a pointer to the full
+   page. Fast like recall, organized like reflect; below a relevance floor nothing is injected.
+4. **Knowledge pages + tools.** At session start the agent is given the repo's page roster plus a
    guide to the `hindsight_*` tools; it lists/reads pages to ground itself, searches raw memory for
-   specifics, and calls `hindsight_capture_initiative` right after a plan is approved to record a new
-   feature as a tracked page. On opencode these tools are registered natively; the hook harnesses get
-   them through the bundled **MCP server**.
-4. **Write back.** The live session is upserted into the bank as a rich transcript (text + tool calls
-   and their output) so sessions compound into memory — on Stop for the hook harnesses, every few
-   turns for the opencode plugin.
-5. **Never break the agent — never fail silently.** A failed recall degrades to no-memory, but every
-   outcome (`recall_ok` / `recall_empty` / `recall_failed`, with duration and error) is appended to a
-   diagnostics file, so a memory-less session can't masquerade as a memory session.
+   specifics (`hindsight_search_memory` is where recall lives now), and calls
+   `hindsight_capture_initiative` right after a plan is approved to record a new feature as a tracked
+   page. On opencode these tools are registered natively; the hook harnesses get them through the
+   bundled **MCP server**.
+5. **Write back.** The live session is upserted into the bank as a JSON transcript — user/assistant
+   turns plus a compact `action` turn per tool call (tool name + primary target, e.g.
+   `Edit boltons/strutils.py`; no arguments or outputs) — so sessions compound into memory without
+   burying decisions in mechanical noise. On Stop for the hook harnesses, every few turns for the
+   opencode plugin.
+6. **Never break the agent — never fail silently.** A failed reflect or page fetch degrades to
+   no-memory, but every outcome (`reflect_ok` / `reflect_empty` / `reflect_failed`, `pages_ok` /
+   `pages_failed`, with duration and error) is appended to a diagnostics file, so a memory-less
+   session can't masquerade as a memory session.
 
-When memories **conflict** on the same rule, recall prefers the latest/superseding decision — a rule
+When memories **conflict** on the same rule, reflect prefers the latest/superseding decision — a rule
 amended in a later conversation wins over the original.
 
 ## Harnesses
 
-Every harness runs the same v2 surface (seed → per-turn recall → knowledge tools → write-back); they
-differ only in how that surface is delivered.
+Every harness runs the same surface (seed → session reflect → per-turn page sections → knowledge
+tools → write-back); they differ only in how that surface is delivered.
 
 | harness       | kind              | lifecycle wiring                                                                                                       | install                                                              |
 | ------------- | ----------------- | ---------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------- |
-| `opencode`    | persistent plugin | one process: load-time seed, per-turn recall, native tools, write-back                                                 | add the package dir to `opencode.json` → `"plugin": [...]`           |
-| `claude-code` | per-prompt hooks  | `SessionStart` (seed) + `UserPromptSubmit` (recall) + `Stop` (write-back) + MCP                                        | the [`../claude-code-v2`](../claude-code-v2) wrapper's dev-installer |
+| `opencode`    | persistent plugin | one process: load-time seed, session reflect + page sections, native tools, write-back                                                 | add the package dir to `opencode.json` → `"plugin": [...]`           |
+| `claude-code` | per-prompt hooks  | `SessionStart` (seed) + `UserPromptSubmit` (reflect + pages) + `Stop` (write-back) + MCP                                        | the [`../claude-code-v2`](../claude-code-v2) wrapper's dev-installer |
 | `codex`       | per-prompt hooks  | same three hooks in `~/.codex/hooks.json` (+ `codex_hooks = true`, CLI ≥ 0.116)                                        | the [`../codex-v2`](../codex-v2) wrapper's dev-installer             |
-| `gemini`      | per-prompt hooks  | `SessionStart` + `BeforeAgent` (recall) + `SessionEnd` (write-back) + MCP, in `~/.gemini/settings.json` (CLI ≥ 0.52.0) | the [`../gemini-v2`](../gemini-v2) wrapper's dev-installer           |
-| `cursor-cli`  | per-prompt hook   | `beforeSubmitPrompt` (recall only — Cursor lacks a usable session/stop hook)                                           | `beforeSubmitPrompt` hook in Cursor `hooks.json`                     |
+| `gemini`      | per-prompt hooks  | `SessionStart` + `BeforeAgent` (reflect + pages) + `SessionEnd` (write-back) + MCP, in `~/.gemini/settings.json` (CLI ≥ 0.52.0) | the [`../gemini-v2`](../gemini-v2) wrapper's dev-installer           |
+| `cursor-cli`  | per-prompt hook   | `beforeSubmitPrompt` (reflect + pages only — Cursor lacks a usable session/stop hook)                                           | `beforeSubmitPrompt` hook in Cursor `hooks.json`                     |
 
 The hook-based harnesses share one runtime (`src/core/hook.ts`) plus their SessionStart/Stop
 entrypoints; opencode is the cleanest platform — a real per-turn event, a working system-prompt
@@ -68,7 +77,7 @@ plugin hooks (`src/harness/opencode.ts`) with **no MCP server needed**. It also 
 packages ([`../claude-code-v2`](../claude-code-v2), [`../codex-v2`](../codex-v2)) — thin bundles of
 this core whose `scripts/dev-install.sh` writes the settings/hooks pointing at each bundled
 `dist/*.js`. This package's `bin` entries (`hindsight-claude-hook`, `hindsight-codex-hook`,
-`hindsight-cursor-hook`) are the individual **recall-only** `UserPromptSubmit` entrypoints for a
+`hindsight-cursor-hook`) are the individual injection-only `UserPromptSubmit` entrypoints for a
 minimal, hand-wired setup.
 
 Adding an agent: hook-based → write a `HookSpec` entry point (see `src/cursor-hook.ts`) and register
@@ -94,7 +103,7 @@ hook by Codex...), so one shared config serves several agents side by side:
 {
   "apiUrl": "https://api.hindsight.vectorize.io",
   "harnesses": {
-    "opencode": { "recallMaxTokens": 1000 },
+    "opencode": { "reflectTimeoutMs": 60000 },
     "claude-code": { "disabled": true }, // e.g. memory off for Claude only
   },
 }
@@ -112,9 +121,8 @@ hook by Codex...), so one shared config serves several agents side by side:
 | `directoryBankMap`      | —                                    | absolute path → bank; **longest prefix wins**; overrides everything                                                                                                   |
 | `resolveWorktrees`      | `true`                               | `{gitProject}`: linked worktrees share the main repo's bank                                                                                                           |
 | `disabled`              | `false`                              | hard off-switch (inert plugin/hook — a no-memory baseline)                                                                                                            |
-| `recallMaxTokens`       | `750`                                | per-turn recall token budget                                                                                                                                          |
-| `recallTimeoutMs`       | `10000`                              | per-turn recall timeout; on timeout the turn runs without memory (recorded)                                                                                           |
-| `pageRefreshEveryTurns` | `10`                                 | re-inject the knowledge-page roster + tool guide every N user turns                                                                                                   |
+| `reflectTimeoutMs`      | `120000`                             | session-reflect timeout (hook harnesses additionally cap it at 25s to fit the host's hook window); on timeout the session runs without reflect (recorded)             |
+| `pageRefreshEveryTurns` | `10`                                 | refetch the knowledge pages and re-inject the page roster + tool guide every N user turns                                                                             |
 | `autoSeed`              | `true`                               | SessionStart: auto-seed a cold repo's bank from git history                                                                                                           |
 | `seedLimit`             | `300`                                | auto-seed: most-recent-N-commits cap                                                                                                                                  |
 | `codebaseSurvey`        | `true`                               | SessionStart: headless survey of a cold repo's structure, run under the current harness's own CLI (claude/codex/gemini/opencode), falling back to any available agent |
@@ -179,27 +187,28 @@ docker run -d -p 8888:8888 -p 9999:9999 -e HINDSIGHT_API_LLM_PROVIDER=gemini \
 
 ## Diagnostics
 
-Every recall outcome is appended as a JSON line to `/tmp/hindsight-plugin.log` (override with
-`HINDSIGHT_DIAG_FILE`):
+Every reflect and page-fetch outcome is appended as a JSON line to `/tmp/hindsight-plugin.log`
+(override with `HINDSIGHT_DIAG_FILE`):
 
 ```json
 {
-  "ts": "2026-07-25T07:05:52Z",
+  "ts": "2026-07-27T07:05:52Z",
   "harness": "claude-code",
-  "event": "recall_ok",
-  "ms": 812,
-  "count": 6,
+  "event": "reflect_ok",
+  "ms": 14210,
+  "chars": 792,
   "query": "..."
 }
 ```
 
-`recall_failed` records the error; if you're comparing memory-on vs memory-off, check this file —
-a run whose recalls failed is a no-memory run. Seed starts are logged as `seed_started`.
+`reflect_failed` / `pages_failed` record the error; if you're comparing memory-on vs memory-off,
+check this file — a run whose reflects failed is a no-memory run. Seed starts are logged as
+`seed_started`.
 
 ## Testing
 
 ```bash
-npm test          # unit tests: bank resolution, config layering, transcript readers, hook/recall logic (no network)
+npm test          # unit tests: bank resolution, config layering, transcript readers, hook/reflect logic, page-section index (no network)
 npm run test:live # LIVE system test against a real server + real LLM:
                   #   HINDSIGHT_API_URL=http://localhost:8888 npm run test:live
 ```
@@ -213,8 +222,9 @@ and asserts the decision's literal values come back in the injected context.
 ```
 src/
   core/          # harness-agnostic: config (layered), bank resolution, hindsight client, missions,
-                 # git + chat ingest, git-sync, seed + survey, recall, knowledge-injection,
-                 # knowledge-tools, session-start, transcript readers, hook runtime, RuntimeCore
+                 # git + chat ingest, git-sync, seed + survey, pages-index (local section matching),
+                 # knowledge-injection, knowledge-tools, session-start, transcript readers,
+                 # hook runtime, RuntimeCore
   harness/       # per-agent adapters + registry (opencode persistent; claude/codex/gemini/cursor as hooks)
   index.ts       # opencode plugin entrypoint
   claude-hook.ts / claude-sessionstart-hook.ts / claude-stop-hook.ts   # Claude Code entrypoints
