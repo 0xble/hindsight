@@ -23,7 +23,8 @@ void runHook({
     cwd: ev.cwd as string | undefined,
     sessionId: ev.session_id as string | undefined,
   }),
-  emit: (context) => ({
+  emit: (context, notice) => ({
+    ...(notice ? { systemMessage: notice } : {}),
     hookSpecificOutput: { hookEventName: "BeforeAgent", additionalContext: context },
   }),
 });

@@ -54,8 +54,8 @@ describe("buildHookOutput", () => {
       client,
       cacheFile,
     });
-    expect(result).toContain("Relevant project memory");
-    expect(result).toContain("REFLECT_ANSWER");
+    expect(result.context).toContain("Relevant project memory");
+    expect(result.context).toContain("REFLECT_ANSWER");
     expect(existsSync(cacheFile)).toBe(true);
     const cached = JSON.parse(readFileSync(cacheFile, "utf8"));
     expect(cached.turns).toBe(1);
@@ -81,8 +81,8 @@ describe("buildHookOutput", () => {
     });
     expect(client.reflect).toHaveBeenCalledTimes(1);
     // The cached answer is re-injected every turn.
-    expect(t1).toContain("REFLECT_ANSWER");
-    expect(t2).toContain("REFLECT_ANSWER");
+    expect(t1.context).toContain("REFLECT_ANSWER");
+    expect(t2.context).toContain("REFLECT_ANSWER");
     expect(JSON.parse(readFileSync(cacheFile, "utf8")).turns).toBe(2);
   });
 
@@ -101,7 +101,7 @@ describe("buildHookOutput", () => {
       cacheFile,
     });
     // Nothing matched, reflect failed -> nothing to inject at all.
-    expect(t1).toBeUndefined();
+    expect(t1.context).toBeUndefined();
     expect(JSON.parse(readFileSync(cacheFile, "utf8")).reflectAnswer).toBe("");
 
     await buildHookOutput({
@@ -159,13 +159,13 @@ describe("buildHookOutput", () => {
     });
     expect(client.listPages).toHaveBeenCalledTimes(1);
     expect(client.getPage).toHaveBeenCalledWith("p1");
-    expect(result).toContain("Relevant project knowledge");
-    expect(result).toContain('"Uploader guide"');
-    expect(result).toContain('"Retry backoff"');
-    expect(result).toContain("200ms jitter window");
-    expect(result).toContain("hindsight_read_knowledge_page p1");
+    expect(result.context).toContain("Relevant project knowledge");
+    expect(result.context).toContain('"Uploader guide"');
+    expect(result.context).toContain('"Retry backoff"');
+    expect(result.context).toContain("200ms jitter window");
+    expect(result.context).toContain("hindsight_read_knowledge_page p1");
     // The non-matching section is not injected.
-    expect(result).not.toContain("Auth tokens");
+    expect(result.context).not.toContain("Auth tokens");
     // The fetched pages are cached for later turns.
     const cached = JSON.parse(readFileSync(cacheFile, "utf8"));
     expect(cached.pages.atTurn).toBe(1);
@@ -184,9 +184,9 @@ describe("buildHookOutput", () => {
       client,
       cacheFile,
     });
-    expect(result).toContain("REFLECT_ANSWER"); // reflect still injected
-    expect(result).not.toContain("Relevant project knowledge");
-    expect(result).not.toContain("hindsight_read_knowledge_page");
+    expect(result.context).toContain("REFLECT_ANSWER"); // reflect still injected
+    expect(result.context).not.toContain("Relevant project knowledge");
+    expect(result.context).not.toContain("hindsight_read_knowledge_page");
   });
 
   it("injects the page-roster refresh only on cadence turns", async () => {
@@ -200,7 +200,7 @@ describe("buildHookOutput", () => {
       client,
       cacheFile,
     });
-    expect(t1).not.toContain("hindsight_knowledge_refresh");
+    expect(t1.context).not.toContain("hindsight_knowledge_refresh");
     // turn 2: multiple of 2 -> refresh injected, listing the page roster
     const t2 = await buildHookOutput({
       harness: "claude-code",
@@ -209,10 +209,10 @@ describe("buildHookOutput", () => {
       client,
       cacheFile,
     });
-    expect(t2).toContain("<hindsight_knowledge_refresh>");
-    expect(t2).toContain("Uploader guide (p1)");
+    expect(t2.context).toContain("<hindsight_knowledge_refresh>");
+    expect(t2.context).toContain("Uploader guide (p1)");
     // reflect answer still present alongside the refresh block
-    expect(t2).toContain("REFLECT_ANSWER");
+    expect(t2.context).toContain("REFLECT_ANSWER");
   });
 
   it("listPages rejection: no throw, reflect block still returned, turn still counted", async () => {
@@ -229,8 +229,8 @@ describe("buildHookOutput", () => {
       client,
       cacheFile,
     });
-    expect(result).toContain("REFLECT_ANSWER");
-    expect(result).not.toContain("Relevant project knowledge");
+    expect(result.context).toContain("REFLECT_ANSWER");
+    expect(result.context).not.toContain("Relevant project knowledge");
     expect(JSON.parse(readFileSync(cacheFile, "utf8")).turns).toBe(1);
   });
 

@@ -23,7 +23,10 @@ void runHook({
     cwd: ev.cwd as string | undefined,
     sessionId: ev.session_id as string | undefined,
   }),
-  emit: (context) => ({
+  emit: (context, notice) => ({
+    // systemMessage is the USER-visible line (memory must be seen working, not inferred);
+    // additionalContext stays model-only.
+    ...(notice ? { systemMessage: notice } : {}),
     hookSpecificOutput: { hookEventName: "UserPromptSubmit", additionalContext: context },
   }),
 });

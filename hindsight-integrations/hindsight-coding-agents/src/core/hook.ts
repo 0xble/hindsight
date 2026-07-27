@@ -42,8 +42,9 @@ export interface HookSpec {
   harness: string;
   /** Read the fields out of the harness's stdin event (shapes differ per harness). */
   parse(event: Record<string, unknown>): HookEventFields;
-  /** Wrap injected context in the harness's native hook-output schema. */
-  emit(context: string): unknown;
+  /** Wrap injected context (and an optional user-facing notice) in the harness's native
+   *  hook-output schema. Harnesses whose schema has no user-visible channel ignore `notice`. */
+  emit(context: string, notice?: string): unknown;
 }
 
 /** Minimal client shape `buildHookOutput` needs — `HindsightClient` satisfies it structurally. */
@@ -64,9 +65,16 @@ interface SessionCache {
 
 
 
+export interface HookOutput {
+  /** The model-facing injection block, or undefined when there's nothing to inject. */
+  context?: string;
+  /** One user-facing line saying what Hindsight retrieved this turn (memory must be VISIBLE). */
+  notice: string;
+}
+
 /**
  * Pure hook logic: reflect once per session (cached); knowledge-page sections + roster on every
- * turn. Returns the combined injection string, or `undefined` when there's nothing to inject.
+ * turn. Returns the injection plus a per-turn user-facing notice.
  */
 export async function buildHookOutput(args: {
   harness: string;
@@ -74,7 +82,7 @@ export async function buildHookOutput(args: {
   cfg: Config;
   client: HookClient;
   cacheFile: string;
-}): Promise<string | undefined> {
+}): Promise<HookOutput> {
   const { harness, prompt, cfg, client, cacheFile } = args;
 
   let cached: SessionCache = {};
@@ -87,6 +95,7 @@ export async function buildHookOutput(args: {
 
   // ── reflect: once per session, on the first prompt ────────────────────────────
   let reflectAnswer = cached.reflectAnswer;
+  let reflectNote: string;
   if (reflectAnswer === undefined) {
     const t0 = Date.now();
     try {
@@ -99,14 +108,20 @@ export async function buildHookOutput(args: {
         chars: reflectAnswer.length,
         query: prompt.slice(0, 80),
       });
+      reflectNote = reflectAnswer
+        ? `synthesized project memory in ${((Date.now() - t0) / 1000).toFixed(1)}s`
+        : "no relevant history for this session";
     } catch (e) {
       reflectAnswer = ""; // ran and failed — don't retry every turn; the diag trail records it
+      reflectNote = "memory unreachable this session";
       diag(harness, "reflect_failed", {
         ms: Date.now() - t0,
         error: String((e as Error)?.message || e).slice(0, 200),
         query: prompt.slice(0, 80),
       });
     }
+  } else {
+    reflectNote = reflectAnswer ? "session memory in context" : "no relevant history for this session";
   }
 
   // ── knowledge pages: fetched on the roster cadence, matched locally every turn ─
@@ -150,7 +165,14 @@ export async function buildHookOutput(args: {
     blocks.push(buildRosterRefresh(pages.map((p) => ({ id: p.id, title: p.title }))));
   }
   const kept = blocks.filter(Boolean);
-  return kept.length ? kept.join("\n\n") : undefined;
+
+  // The per-turn user-facing notice: what Hindsight actually delivered this turn.
+  const pageTitles = [...new Set(sections.map((s) => s.pageTitle))];
+  const notice =
+    `🧠 Hindsight: ${reflectNote}` +
+    (pageTitles.length ? ` · knowledge: ${pageTitles.join(", ")}` : "");
+
+  return { context: kept.length ? kept.join("\n\n") : undefined, notice };
 }
 
 /** Run one hook invocation: stdin event in, (maybe) an injection object on stdout. */
@@ -175,7 +197,8 @@ export async function runHook(
   const cfg = loadConfig({ harness: spec.harness, projectDir: cwd });
   if (cfg.disabled) return;
 
-  const out = (context: string) => process.stdout.write(JSON.stringify(spec.emit(context)));
+  const out = (context: string | undefined, notice: string) =>
+    process.stdout.write(JSON.stringify(spec.emit(context ?? "", notice)));
 
   const client = makeClient({
     apiUrl: cfg.apiUrl,
@@ -185,5 +208,5 @@ export async function runHook(
   const cacheFile = join(tmpdir(), `hindsight-${spec.harness}`, `${sessionId || "no-session"}.json`);
 
   const output = await buildHookOutput({ harness: spec.harness, prompt, cfg, client, cacheFile });
-  if (output) out(output);
+  if (output.context || output.notice) out(output.context, output.notice);
 }
