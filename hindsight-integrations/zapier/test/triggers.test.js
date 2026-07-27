@@ -116,11 +116,9 @@ describe("triggers.retainCompleted (REST hook)", () => {
 
 describe("exposed triggers surface", () => {
   it("exposes exactly the intended triggers", () => {
-    Object.keys(App.triggers).sort().should.eql([
-      "bankList",
-      "consolidationCompleted",
-      "retainCompleted",
-    ]);
+    Object.keys(App.triggers)
+      .sort()
+      .should.eql(["bankList", "consolidationCompleted", "retainCompleted"]);
   });
 
   it("does NOT expose memoryDefenseTriggered (gated capability — can't pass Zapier's T001/S002)", () => {
