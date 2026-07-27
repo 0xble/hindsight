@@ -34,8 +34,21 @@ const HEADING_WEIGHT = 3;
 const SCORE_FLOOR = 3; // at least a couple of meaningful term hits before we inject anything
 const APPROX_CHARS_PER_TOKEN = 4;
 
+/** Light singularizer so "components" matches a "Component map" heading — no stemming library,
+ *  just the plural suffixes that actually cost matches. Applied to BOTH index and query terms,
+ *  so normalization only has to be consistent, not linguistically perfect. */
+function singular(t: string): string {
+  if (!/^[a-z]+$/.test(t)) return t; // never touch path-like tokens (hook.ts, retry-loop_2)
+  if (t.length > 4 && t.endsWith("ies")) return `${t.slice(0, -3)}y`;
+  if (t.length > 4 && t.endsWith("ses")) return t.slice(0, -2);
+  if (t.length > 3 && t.endsWith("s") && !t.endsWith("ss")) return t.slice(0, -1);
+  return t;
+}
+
 export function tokenize(text: string): string[] {
-  return (text.toLowerCase().match(/[a-z0-9_./-]{3,}/g) || []).filter((t) => !STOP.has(t));
+  return (text.toLowerCase().match(/[a-z0-9_./-]{3,}/g) || [])
+    .filter((t) => !STOP.has(t))
+    .map(singular);
 }
 
 /** Split one page's markdown into sections at headings (the preamble becomes its own section). */
