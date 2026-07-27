@@ -1757,7 +1757,10 @@
     "backedBy": "Backed by {count} memories",
     "searchPlaceholder": "Search pages…",
     "clearSearch": "Clear search",
-    "searchEmpty": "No matching pages."
+    "searchEmpty": "No matching pages.",
+    "fieldTags": "Tags",
+    "fieldTagsPlaceholder": "type:policy, revenue, …",
+    "fieldTagsHint": "Comma-separated. A type:<x> tag sets the page's OKF type."
   },
   "home": {
     "title": "Home",

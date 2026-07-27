@@ -107,7 +107,7 @@ export function KnowledgeBaseView() {
   const autoSelectedRef = useRef(false);
 
   const [createKind, setCreateKind] = useState<"folder" | "page" | null>(null);
-  const [form, setForm] = useState({ name: "", sourceQuery: "", parentId: "" });
+  const [form, setForm] = useState({ name: "", sourceQuery: "", parentId: "", tags: "" });
   const [creating, setCreating] = useState(false);
   const [deleteTarget, setDeleteTarget] = useState<KnowledgeNode | null>(null);
   const [deleting, setDeleting] = useState(false);
@@ -309,7 +309,7 @@ export function KnowledgeBaseView() {
   }, []);
 
   const openCreate = (kind: "folder" | "page", parentId = "") => {
-    setForm({ name: "", sourceQuery: "", parentId });
+    setForm({ name: "", sourceQuery: "", parentId, tags: "" });
     setCreateKind(kind);
   };
 
@@ -325,10 +325,15 @@ export function KnowledgeBaseView() {
           parent_id,
         });
       } else {
+        const tags = form.tags
+          .split(",")
+          .map((s) => s.trim())
+          .filter(Boolean);
         await client.createKnowledgePage(currentBank, {
           name: form.name.trim(),
           source_query: form.sourceQuery.trim(),
           parent_id,
+          tags: tags.length ? tags : undefined,
         });
       }
       if (parent_id) setExpanded((prev) => new Set(prev).add(parent_id));
@@ -583,16 +588,27 @@ export function KnowledgeBaseView() {
               />
             </div>
             {createKind === "page" && (
-              <div className="space-y-2">
-                <label className="text-sm font-medium text-foreground">
-                  {t("fieldSourceQuery")}
-                </label>
-                <Textarea
-                  value={form.sourceQuery}
-                  onChange={(e) => setForm({ ...form, sourceQuery: e.target.value })}
-                  className="min-h-[100px]"
-                />
-              </div>
+              <>
+                <div className="space-y-2">
+                  <label className="text-sm font-medium text-foreground">
+                    {t("fieldSourceQuery")}
+                  </label>
+                  <Textarea
+                    value={form.sourceQuery}
+                    onChange={(e) => setForm({ ...form, sourceQuery: e.target.value })}
+                    className="min-h-[100px]"
+                  />
+                </div>
+                <div className="space-y-2">
+                  <label className="text-sm font-medium text-foreground">{t("fieldTags")}</label>
+                  <Input
+                    value={form.tags}
+                    onChange={(e) => setForm({ ...form, tags: e.target.value })}
+                    placeholder={t("fieldTagsPlaceholder")}
+                  />
+                  <p className="text-xs text-muted-foreground">{t("fieldTagsHint")}</p>
+                </div>
+              </>
             )}
             <div className="space-y-2">
               <label className="text-sm font-medium text-foreground">{t("fieldParent")}</label>

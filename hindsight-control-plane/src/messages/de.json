@@ -1757,7 +1757,10 @@
     "backedBy": "Backed by {count} memories",
     "searchPlaceholder": "Seiten suchen…",
     "clearSearch": "Suche löschen",
-    "searchEmpty": "Keine passenden Seiten."
+    "searchEmpty": "Keine passenden Seiten.",
+    "fieldTags": "Tags",
+    "fieldTagsPlaceholder": "type:policy, revenue, …",
+    "fieldTagsHint": "Kommagetrennt. Ein type:<x>-Tag legt den OKF-Typ der Seite fest."
   },
   "home": {
     "title": "Home",

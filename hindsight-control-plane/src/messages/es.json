@@ -1757,7 +1757,10 @@
     "backedBy": "Backed by {count} memories",
     "searchPlaceholder": "Buscar páginas…",
     "clearSearch": "Borrar búsqueda",
-    "searchEmpty": "No hay páginas coincidentes."
+    "searchEmpty": "No hay páginas coincidentes.",
+    "fieldTags": "Etiquetas",
+    "fieldTagsPlaceholder": "type:policy, revenue, …",
+    "fieldTagsHint": "Separadas por comas. Una etiqueta type:<x> define el tipo OKF de la página."
   },
   "home": {
     "title": "Home",

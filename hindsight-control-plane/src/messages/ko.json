@@ -1757,7 +1757,10 @@
     "backedBy": "Backed by {count} memories",
     "searchPlaceholder": "페이지 검색…",
     "clearSearch": "검색 지우기",
-    "searchEmpty": "일치하는 페이지가 없습니다."
+    "searchEmpty": "일치하는 페이지가 없습니다.",
+    "fieldTags": "태그",
+    "fieldTagsPlaceholder": "type:policy, revenue, …",
+    "fieldTagsHint": "쉼표로 구분. type:<x> 태그가 페이지의 OKF 유형을 설정합니다."
   },
   "home": {
     "title": "Home",

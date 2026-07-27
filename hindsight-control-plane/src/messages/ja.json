@@ -1757,7 +1757,10 @@
     "backedBy": "Backed by {count} memories",
     "searchPlaceholder": "ページを検索…",
     "clearSearch": "検索をクリア",
-    "searchEmpty": "一致するページがありません。"
+    "searchEmpty": "一致するページがありません。",
+    "fieldTags": "タグ",
+    "fieldTagsPlaceholder": "type:policy, revenue, …",
+    "fieldTagsHint": "カンマ区切り。type:<x> タグでページの OKF タイプを設定します。"
   },
   "home": {
     "title": "Home",

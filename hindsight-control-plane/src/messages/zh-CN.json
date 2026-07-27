@@ -1757,7 +1757,10 @@
     "backedBy": "Backed by {count} memories",
     "searchPlaceholder": "搜索页面…",
     "clearSearch": "清除搜索",
-    "searchEmpty": "没有匹配的页面。"
+    "searchEmpty": "没有匹配的页面。",
+    "fieldTags": "标签",
+    "fieldTagsPlaceholder": "type:policy, revenue, …",
+    "fieldTagsHint": "以逗号分隔。type:<x> 标签用于设置页面的 OKF 类型。"
   },
   "home": {
     "title": "Home",

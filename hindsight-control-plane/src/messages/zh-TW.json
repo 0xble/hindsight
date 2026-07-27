@@ -1757,7 +1757,10 @@
     "backedBy": "Backed by {count} memories",
     "searchPlaceholder": "搜尋頁面…",
     "clearSearch": "清除搜尋",
-    "searchEmpty": "沒有符合的頁面。"
+    "searchEmpty": "沒有符合的頁面。",
+    "fieldTags": "標籤",
+    "fieldTagsPlaceholder": "type:policy, revenue, …",
+    "fieldTagsHint": "以逗號分隔。type:<x> 標籤用於設定頁面的 OKF 類型。"
   },
   "home": {
     "title": "Home",
