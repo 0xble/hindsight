@@ -159,11 +159,13 @@ export const KNOWLEDGE_LABELS: EntityLabelGroup = {
 // CONSOLIDATED from the ingested MEMORY (commit history + past conversations) — NOT mirrored from the
 // current source (which would need constant re-sync). A universal 5-page taxonomy that generalizes to
 // any repo; the curator populates each from history+chats and can spawn per-component sub-pages.
-// Each page is UNSCOPED: its `source_query` selects the relevant facts from the whole bank at
-// synthesis time — no tag taxonomy for the extractor to maintain.
+// A seeded page is a tag-scoped synthesis view: `tags` pins it to one `knowledge:<tier>` label so
+// its synthesis draws from the facts the extractor routed to that tier (exact set-ops — see
+// KNOWLEDGE_LABELS above; names/tiers mirror the label vocabulary).
 export interface KnowledgePage {
   name: string;
   source_query: string;
+  tags: string[];
 }
 
 export const PAGES: KnowledgePage[] = [
@@ -173,6 +175,7 @@ export const PAGES: KnowledgePage[] = [
       "From this project's commit history and past discussions, what are the main " +
       "components/modules/subsystems, what is each responsible for, and how do they relate to or " +
       "depend on one another? Describe the structure and responsibilities.",
+    tags: ["knowledge:component"],
   },
   {
     name: "Core concepts",
@@ -180,6 +183,7 @@ export const PAGES: KnowledgePage[] = [
       "What are the core concepts, domain abstractions, and key entities in this project — " +
       "the vocabulary a developer must understand? For each, explain what it represents and its role, " +
       "drawn from how they are introduced and discussed across the history and conversations.",
+    tags: ["knowledge:concept"],
   },
   {
     name: "Conventions and patterns",
@@ -187,6 +191,7 @@ export const PAGES: KnowledgePage[] = [
       "What conventions, idioms, and recurring patterns does this project follow — its " +
       "approach to testing, error handling, naming, structure, and how changes are typically made? " +
       "Describe how THIS project does things, as evidenced across its history and discussions.",
+    tags: ["knowledge:convention"],
   },
   {
     name: "Key decisions and rationale",
@@ -194,6 +199,7 @@ export const PAGES: KnowledgePage[] = [
       "What are the significant technical decisions made in this project and the rationale " +
       "behind them — the durable 'why we do it this way' a developer should know? Summarize the " +
       "decisions and their reasoning from the commit rationales and past conversations.",
+    tags: ["knowledge:decision"],
   },
   {
     name: "Initiatives and enhancements",
@@ -202,5 +208,6 @@ export const PAGES: KnowledgePage[] = [
       "enhancements the project has worked on? Summarize the themes and notable changes over time. " +
       "When a source memory carries a tag of the form `relatedPageId:<id>`, include a Markdown link " +
       "`[[page:<id>]]` to that page in the summary, so each initiative links to its detailed page.",
+    tags: ["knowledge:feature-work"],
   },
 ];

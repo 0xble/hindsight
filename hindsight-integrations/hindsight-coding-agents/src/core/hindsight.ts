@@ -348,6 +348,7 @@ export class HindsightClient {
         name: args.title,
         source_query: `Summarize the "${args.title}" initiative: what is being built or changed and why, and its current state — drawn from the project's memory.`,
         parent_id: folderId,
+        tags: ["knowledge:feature-work"],
         trigger: {
           fact_types: ["world", "experience", "observation"],
           refresh_after_consolidation: true,
@@ -406,13 +407,15 @@ export class HindsightClient {
     for (const p of PAGES) {
       try {
         // fact_types = ALL (world+experience+observation) so a page draws from raw facts AND
-        // consolidated observations; refresh after consolidation keeps it a living document. Pages
-        // are UNSCOPED — each page's source_query does the selection over the whole bank (no tag
-        // taxonomy to maintain). Only the Initiatives page nests under the Initiatives folder.
-        const isInitiatives = p.name === "Initiatives and enhancements";
+        // consolidated observations; refresh after consolidation keeps it a living document.
+        // Page-level `tags` scopes synthesis to one knowledge:<tier> label (exact set-ops), matching
+        // the KNOWLEDGE_LABELS the extractor stamps on facts. Only the feature-work (Initiatives)
+        // page nests under the Initiatives folder.
+        const isInitiatives = p.tags.includes("knowledge:feature-work");
         const body: Record<string, unknown> = {
           name: p.name,
           source_query: p.source_query,
+          tags: p.tags,
           trigger: {
             fact_types: ["world", "experience", "observation"],
             refresh_after_consolidation: true,

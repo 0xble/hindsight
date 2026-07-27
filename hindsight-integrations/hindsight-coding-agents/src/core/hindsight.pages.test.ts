@@ -178,8 +178,8 @@ function stubFetchRouted(
   );
 }
 
-describe("HindsightClient.createPages Initiatives folder (unscoped pages, no tags)", () => {
-  it("each seeded page POST is UNSCOPED: name + source_query + trigger, NO tags field", async () => {
+describe("HindsightClient.createPages tag-scoping + Initiatives folder", () => {
+  it("each seeded page POST carries its mapped knowledge:<tier> tag", async () => {
     const calls: any[] = [];
     stubFetch(calls, async () => ({})); // no operation_id -> drain no-ops
     const c = new HindsightClient({ apiUrl: "http://x", bank: "repo-a" });
@@ -196,7 +196,8 @@ describe("HindsightClient.createPages Initiatives folder (unscoped pages, no tag
         fact_types: ["world", "experience", "observation"],
         refresh_after_consolidation: true,
       });
-      expect(post.body).not.toHaveProperty("tags");
+      expect(post.body.tags).toHaveLength(1);
+      expect(post.body.tags[0]).toMatch(/^knowledge:(feature-work|decision|convention|component|concept)$/);
     }
   });
 
@@ -301,7 +302,7 @@ describe("HindsightClient.captureInitiative", () => {
     expect(pagePost).toBeDefined();
     expect(pagePost.body.name).toBe("Retry backoff for the uploader");
     expect(pagePost.body.parent_id).toBe("folder-abc");
-    expect(pagePost.body).not.toHaveProperty("tags");
+    expect(pagePost.body.tags).toEqual(["knowledge:feature-work"]);
 
     // Marker retain POST to /memories: the ONLY tag is relatedPageId, pointing at the REAL
     // server-assigned page id ("pg").
