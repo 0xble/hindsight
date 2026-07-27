@@ -144,10 +144,14 @@ export class RuntimeCore {
     const sections = selectSections(buildPagesIndex(this.pagesCache), prompt);
     if (sections.length) blocks.push(formatPageInjection(sections));
     // Per-turn visibility (opencode has no per-turn user channel — stderr reaches the plugin log).
+    const q = prompt.replace(/\s+/g, " ").trim();
+    const excerpt = q.length > 48 ? `${q.slice(0, 48)}…` : q;
     const pageTitles = [...new Set(sections.map((s) => s.pageTitle))];
     console.error(
       `🧠 Hindsight: ${reflectAnswer ? "session memory in context" : "no relevant history"}` +
-        (pageTitles.length ? ` · knowledge: ${pageTitles.join(", ")}` : "")
+        (pageTitles.length
+          ? ` · “${excerpt}” → ${pageTitles.join(", ")}`
+          : ` · no knowledge match for “${excerpt}”`)
     );
     if (refreshDue) {
       blocks.push(buildRosterRefresh(this.pagesCache.map((p) => ({ id: p.id, title: p.title }))));

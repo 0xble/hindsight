@@ -166,11 +166,16 @@ export async function buildHookOutput(args: {
   }
   const kept = blocks.filter(Boolean);
 
-  // The per-turn user-facing notice: what Hindsight actually delivered this turn.
+  // The per-turn user-facing notice: what Hindsight actually delivered this turn, including the
+  // match query (the prompt drives the local section matching) and the pages it returned.
+  const q = prompt.replace(/\s+/g, " ").trim();
+  const excerpt = q.length > 48 ? `${q.slice(0, 48)}…` : q;
   const pageTitles = [...new Set(sections.map((s) => s.pageTitle))];
   const notice =
     `🧠 Hindsight: ${reflectNote}` +
-    (pageTitles.length ? ` · knowledge: ${pageTitles.join(", ")}` : "");
+    (pageTitles.length
+      ? ` · “${excerpt}” → ${pageTitles.join(", ")}`
+      : ` · no knowledge match for “${excerpt}”`);
 
   return { context: kept.length ? kept.join("\n\n") : undefined, notice };
 }
