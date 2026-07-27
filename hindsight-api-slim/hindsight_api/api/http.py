@@ -2262,6 +2262,24 @@ class KnowledgePageBundleResponse(BaseModel):
     files: list[KnowledgePageBundleFile]
 
 
+class KnowledgePageSearchResult(BaseModel):
+    """One hybrid-search hit: a knowledge page and its fused relevance score."""
+
+    id: str
+    name: str
+    mental_model_id: str | None = None
+    snippet: str
+    score: float
+    updated_at: str | None = None
+
+
+class KnowledgePageSearchResponse(BaseModel):
+    """Ranked knowledge-page search results (BM25 + vector, RRF-fused)."""
+
+    results: list[KnowledgePageSearchResult]
+    total: int
+
+
 def _knowledge_node_model(node: dict[str, Any]) -> KnowledgeNode:
     """Project an engine node dict into a (childless) KnowledgeNode."""
     is_page = node.get("kind") == "page"
@@ -5400,6 +5418,43 @@ def _register_routes(app: FastAPI):
 
             error_detail = f"{str(e)}\n\nTraceback:\n{traceback.format_exc()}"
             logger.error(f"Error in GET /v1/default/banks/{bank_id}/knowledge-base/export: {error_detail}")
+            raise HTTPException(status_code=500, detail=str(e))
+
+    @app.get(
+        "/v1/default/banks/{bank_id}/knowledge-base/search",
+        response_model=KnowledgePageSearchResponse,
+        summary="Hybrid search over knowledge pages (BM25 + vector)",
+        description=(
+            "Doc-level hybrid search across a bank's knowledge pages: a full-text (BM25) match "
+            "and a vector-similarity match, Reciprocal-Rank-Fusion fused. No reranker — tuned for latency."
+        ),
+        operation_id="search_knowledge_base",
+        tags=["Knowledge Base"],
+    )
+    async def api_search_knowledge_base(
+        bank_id: str,
+        q: str = Query(..., description="Search query", min_length=1),
+        limit: int = Query(10, ge=1, le=50, description="Maximum results to return"),
+        request_context: RequestContext = Depends(get_request_context),
+    ):
+        """Return knowledge pages ranked by fused BM25 + vector relevance."""
+        try:
+            results = await app.state.memory.search_knowledge_pages(
+                bank_id=bank_id, query=q, limit=limit, request_context=request_context
+            )
+            return KnowledgePageSearchResponse(
+                results=[KnowledgePageSearchResult(**r) for r in results],
+                total=len(results),
+            )
+        except OperationValidationError as e:
+            raise HTTPException(status_code=e.status_code, detail=e.reason)
+        except (AuthenticationError, HTTPException):
+            raise
+        except Exception as e:
+            import traceback
+
+            error_detail = f"{str(e)}\n\nTraceback:\n{traceback.format_exc()}"
+            logger.error(f"Error in GET /v1/default/banks/{bank_id}/knowledge-base/search: {error_detail}")
             raise HTTPException(status_code=500, detail=str(e))
 
     @app.get(

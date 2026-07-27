@@ -1577,6 +1577,69 @@ paths:
       summary: Export the knowledge base as an OKF bundle
       tags:
       - Knowledge Base
+  /v1/default/banks/{bank_id}/knowledge-base/search:
+    get:
+      description: "Doc-level hybrid search across a bank's knowledge pages: a full-text\
+        \ (BM25) match and a vector-similarity match, Reciprocal-Rank-Fusion fused.\
+        \ No reranker — tuned for latency."
+      operationId: search_knowledge_base
+      parameters:
+      - explode: false
+        in: path
+        name: bank_id
+        required: true
+        schema:
+          title: Bank Id
+          type: string
+        style: simple
+      - description: Search query
+        explode: true
+        in: query
+        name: q
+        required: true
+        schema:
+          description: Search query
+          minLength: 1
+          title: Q
+          type: string
+        style: form
+      - description: Maximum results to return
+        explode: true
+        in: query
+        name: limit
+        required: false
+        schema:
+          default: 10
+          description: Maximum results to return
+          maximum: 50
+          minimum: 1
+          title: Limit
+          type: integer
+        style: form
+      - explode: false
+        in: header
+        name: authorization
+        required: false
+        schema:
+          nullable: true
+          type: string
+        style: simple
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/KnowledgePageSearchResponse'
+          description: Successful Response
+        "422":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Hybrid search over knowledge pages (BM25 + vector)
+      tags:
+      - Knowledge Base
   /v1/default/banks/{bank_id}/knowledge-base/pages/{page_id}:
     get:
       description: Return a single page as an OKF document (frontmatter + markdown
@@ -6615,6 +6678,70 @@ components:
       - name
       - type
       title: KnowledgePageResponse
+    KnowledgePageSearchResponse:
+      description: "Ranked knowledge-page search results (BM25 + vector, RRF-fused)."
+      example:
+        total: 6
+        results:
+        - snippet: snippet
+          score: 0.8008281904610115
+          updated_at: updated_at
+          name: name
+          id: id
+          mental_model_id: mental_model_id
+        - snippet: snippet
+          score: 0.8008281904610115
+          updated_at: updated_at
+          name: name
+          id: id
+          mental_model_id: mental_model_id
+      properties:
+        results:
+          items:
+            $ref: '#/components/schemas/KnowledgePageSearchResult'
+          type: array
+        total:
+          title: Total
+          type: integer
+      required:
+      - results
+      - total
+      title: KnowledgePageSearchResponse
+    KnowledgePageSearchResult:
+      description: "One hybrid-search hit: a knowledge page and its fused relevance\
+        \ score."
+      example:
+        snippet: snippet
+        score: 0.8008281904610115
+        updated_at: updated_at
+        name: name
+        id: id
+        mental_model_id: mental_model_id
+      properties:
+        id:
+          title: Id
+          type: string
+        name:
+          title: Name
+          type: string
+        mental_model_id:
+          nullable: true
+          type: string
+        snippet:
+          title: Snippet
+          type: string
+        score:
+          title: Score
+          type: number
+        updated_at:
+          nullable: true
+          type: string
+      required:
+      - id
+      - name
+      - score
+      - snippet
+      title: KnowledgePageSearchResult
     KnowledgeTreeResponse:
       description: The knowledge base as a nested folder/page tree.
       example:

@@ -12375,6 +12375,100 @@ class MemoryEngine(MemoryEngineInterface):
         node["content"] = row["mm_content"]
         return node
 
+    async def search_knowledge_pages(
+        self, bank_id: str, query: str, *, limit: int = 10, request_context: "RequestContext"
+    ) -> list[dict[str, Any]]:
+        """Doc-level hybrid search over a bank's knowledge pages.
+
+        Fuses a full-text match (``mm.search_vector``, a generated tsvector over the
+        page name + content) with vector similarity (``mm.embedding``) using
+        Reciprocal Rank Fusion, in a single round trip. No reranker — this path is
+        tuned for latency. Returns pages ranked by fused score, each with a short
+        content snippet. Folders are excluded.
+        """
+        await self._authenticate_tenant(request_context)
+        query = (query or "").strip()
+        if not query:
+            return []
+        limit = max(1, min(limit, 50))
+        # Over-fetch each arm so RRF has room to reorder before the final cut.
+        fetch = min(max(limit * 4, 40), 200)
+
+        from .retain import embedding_utils
+
+        # Embed with the query input type (asymmetric models prefix queries).
+        emb = await embedding_utils.generate_embeddings_batch(self.embeddings, [query], input_type="query")
+        emb_str = str(emb[0]) if emb and emb[0] else None
+
+        kp = fq_table("knowledge_pages")
+        mm = fq_table("mental_models")
+        join = self._kp_join()
+
+        backend = await self._get_backend()
+        async with acquire_with_retry(backend) as conn:
+            if emb_str is not None:
+                # Vector arm (ANN over mm.embedding) + BM25 arm (mm.search_vector),
+                # each ranked independently, then RRF-fused (k=60) in SQL.
+                sql = f"""
+                    WITH vec AS (
+                        SELECT kp.id AS page_id,
+                               ROW_NUMBER() OVER (ORDER BY mm.embedding <=> $1::vector) AS rnk
+                        FROM {join}
+                        WHERE kp.bank_id = $2 AND kp.kind = 'page' AND mm.embedding IS NOT NULL
+                        ORDER BY mm.embedding <=> $1::vector
+                        LIMIT {fetch}
+                    ),
+                    bm AS (
+                        SELECT kp.id AS page_id,
+                               ROW_NUMBER() OVER (
+                                   ORDER BY ts_rank_cd(mm.search_vector, websearch_to_tsquery('english', $3)) DESC
+                               ) AS rnk
+                        FROM {join}
+                        WHERE kp.bank_id = $2 AND kp.kind = 'page'
+                              AND mm.search_vector @@ websearch_to_tsquery('english', $3)
+                        ORDER BY ts_rank_cd(mm.search_vector, websearch_to_tsquery('english', $3)) DESC
+                        LIMIT {fetch}
+                    ),
+                    fused AS (
+                        SELECT COALESCE(vec.page_id, bm.page_id) AS page_id,
+                               COALESCE(1.0 / (60 + vec.rnk), 0) + COALESCE(1.0 / (60 + bm.rnk), 0) AS score
+                        FROM vec FULL OUTER JOIN bm ON vec.page_id = bm.page_id
+                    )
+                    SELECT kp.id, kp.name, kp.mental_model_id,
+                           LEFT(mm.content, 280) AS snippet, mm.last_refreshed_at AS updated_at, f.score
+                    FROM fused f
+                    JOIN {kp} kp ON kp.id = f.page_id AND kp.bank_id = $2
+                    LEFT JOIN {mm} mm ON mm.id = kp.mental_model_id AND mm.bank_id = kp.bank_id
+                    ORDER BY f.score DESC
+                    LIMIT {limit}
+                """
+                rows = await conn.fetch(sql, emb_str, bank_id, query)
+            else:
+                # Embedding unavailable → BM25-only fallback (still useful).
+                sql = f"""
+                    SELECT kp.id, kp.name, kp.mental_model_id,
+                           LEFT(mm.content, 280) AS snippet, mm.last_refreshed_at AS updated_at,
+                           ts_rank_cd(mm.search_vector, websearch_to_tsquery('english', $2)) AS score
+                    FROM {join}
+                    WHERE kp.bank_id = $1 AND kp.kind = 'page'
+                          AND mm.search_vector @@ websearch_to_tsquery('english', $2)
+                    ORDER BY score DESC
+                    LIMIT {limit}
+                """
+                rows = await conn.fetch(sql, bank_id, query)
+
+        return [
+            {
+                "id": r["id"],
+                "name": r["name"],
+                "mental_model_id": r["mental_model_id"],
+                "snippet": (r["snippet"] or "").strip(),
+                "score": float(r["score"]) if r["score"] is not None else 0.0,
+                "updated_at": r["updated_at"].isoformat() if r["updated_at"] else None,
+            }
+            for r in rows
+        ]
+
     async def rename_knowledge_node(
         self, bank_id: str, node_id: str, name: str, *, request_context: "RequestContext"
     ) -> dict[str, Any] | None:

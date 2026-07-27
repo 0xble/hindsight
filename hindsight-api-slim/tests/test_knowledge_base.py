@@ -111,6 +111,56 @@ class TestTree:
         assert isinstance(roots["Loose"]["is_stale"], bool)
 
 
+class TestSearch:
+    """Doc-level hybrid search (BM25 + vector, RRF-fused). The BM25 arm runs on a
+    generated tsvector over page name + content, so ranking is deterministic even
+    though the seeds carry embeddings too."""
+
+    async def test_ranks_relevant_page_first(self, api_client, kb_bank):
+        bank_id, ids = kb_bank
+        # "Billing" name + "Net-30" body → the BM25 arm lifts Billing to the top
+        # of the fusion even though every page shares vocabulary.
+        resp = await api_client.get(
+            f"/v1/default/banks/{_enc(bank_id)}/knowledge-base/search",
+            params={"q": "billing net-30", "limit": 5},
+        )
+        assert resp.status_code == 200, resp.text
+        body = resp.json()
+        names = [r["name"] for r in body["results"]]
+        assert names, "expected at least one hit"
+        assert names[0] == "Billing"
+        assert body["total"] == len(body["results"])
+        # Scores are strictly descending.
+        scores = [r["score"] for r in body["results"]]
+        assert scores == sorted(scores, reverse=True)
+        top = body["results"][0]
+        assert top["id"] == ids.billing
+        assert top["mental_model_id"]
+        assert "Net-30" in top["snippet"] or "Billing" in top["snippet"]
+
+    async def test_excludes_folders_and_respects_limit(self, api_client, kb_bank):
+        bank_id, ids = kb_bank
+        resp = await api_client.get(
+            f"/v1/default/banks/{_enc(bank_id)}/knowledge-base/search",
+            params={"q": "orders billing loose net-30", "limit": 10},
+        )
+        assert resp.status_code == 200, resp.text
+        result_ids = {r["id"] for r in resp.json()["results"]}
+        assert not (result_ids & {ids.runbooks, ids.policies, ids.sub}), "folders must never appear"
+        assert ids.billing in result_ids
+
+        capped = await api_client.get(
+            f"/v1/default/banks/{_enc(bank_id)}/knowledge-base/search",
+            params={"q": "order", "limit": 1},
+        )
+        assert len(capped.json()["results"]) <= 1
+
+    async def test_query_is_required(self, api_client, kb_bank):
+        bank_id, _ = kb_bank
+        resp = await api_client.get(f"/v1/default/banks/{_enc(bank_id)}/knowledge-base/search")
+        assert resp.status_code == 422
+
+
 class TestPageDefaults:
     """A knowledge page is a living document by default: observation-only, delta,
     auto-refreshing, with a larger token budget than a plain mental model."""

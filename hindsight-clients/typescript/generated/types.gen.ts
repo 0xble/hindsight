@@ -2198,6 +2198,54 @@ export type KnowledgePageResponse = {
 };
 
 /**
+ * KnowledgePageSearchResponse
+ *
+ * Ranked knowledge-page search results (BM25 + vector, RRF-fused).
+ */
+export type KnowledgePageSearchResponse = {
+  /**
+   * Results
+   */
+  results: Array<KnowledgePageSearchResult>;
+  /**
+   * Total
+   */
+  total: number;
+};
+
+/**
+ * KnowledgePageSearchResult
+ *
+ * One hybrid-search hit: a knowledge page and its fused relevance score.
+ */
+export type KnowledgePageSearchResult = {
+  /**
+   * Id
+   */
+  id: string;
+  /**
+   * Name
+   */
+  name: string;
+  /**
+   * Mental Model Id
+   */
+  mental_model_id?: string | null;
+  /**
+   * Snippet
+   */
+  snippet: string;
+  /**
+   * Score
+   */
+  score: number;
+  /**
+   * Updated At
+   */
+  updated_at?: string | null;
+};
+
+/**
  * KnowledgeTreeResponse
  *
  * The knowledge base as a nested folder/page tree.
@@ -5713,6 +5761,56 @@ export type ExportKnowledgeBaseResponses = {
 
 export type ExportKnowledgeBaseResponse =
   ExportKnowledgeBaseResponses[keyof ExportKnowledgeBaseResponses];
+
+export type SearchKnowledgeBaseData = {
+  body?: never;
+  headers?: {
+    /**
+     * Authorization
+     */
+    authorization?: string | null;
+  };
+  path: {
+    /**
+     * Bank Id
+     */
+    bank_id: string;
+  };
+  query: {
+    /**
+     * Q
+     *
+     * Search query
+     */
+    q: string;
+    /**
+     * Limit
+     *
+     * Maximum results to return
+     */
+    limit?: number;
+  };
+  url: "/v1/default/banks/{bank_id}/knowledge-base/search";
+};
+
+export type SearchKnowledgeBaseErrors = {
+  /**
+   * Validation Error
+   */
+  422: HttpValidationError;
+};
+
+export type SearchKnowledgeBaseError = SearchKnowledgeBaseErrors[keyof SearchKnowledgeBaseErrors];
+
+export type SearchKnowledgeBaseResponses = {
+  /**
+   * Successful Response
+   */
+  200: KnowledgePageSearchResponse;
+};
+
+export type SearchKnowledgeBaseResponse =
+  SearchKnowledgeBaseResponses[keyof SearchKnowledgeBaseResponses];
 
 export type GetKnowledgePageData = {
   body?: never;

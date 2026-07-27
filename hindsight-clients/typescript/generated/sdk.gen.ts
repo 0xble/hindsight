@@ -220,6 +220,9 @@ import type {
   RetryOperationData,
   RetryOperationErrors,
   RetryOperationResponses,
+  SearchKnowledgeBaseData,
+  SearchKnowledgeBaseErrors,
+  SearchKnowledgeBaseResponses,
   TestBankLlmData,
   TestBankLlmErrors,
   TestBankLlmResponses,
@@ -747,6 +750,20 @@ export const exportKnowledgeBase = <ThrowOnError extends boolean = false>(
     ExportKnowledgeBaseErrors,
     ThrowOnError
   >({ url: "/v1/default/banks/{bank_id}/knowledge-base/export", ...options });
+
+/**
+ * Hybrid search over knowledge pages (BM25 + vector)
+ *
+ * Doc-level hybrid search across a bank's knowledge pages: a full-text (BM25) match and a vector-similarity match, Reciprocal-Rank-Fusion fused. No reranker — tuned for latency.
+ */
+export const searchKnowledgeBase = <ThrowOnError extends boolean = false>(
+  options: Options<SearchKnowledgeBaseData, ThrowOnError>
+) =>
+  (options.client ?? client).get<
+    SearchKnowledgeBaseResponses,
+    SearchKnowledgeBaseErrors,
+    ThrowOnError
+  >({ url: "/v1/default/banks/{bank_id}/knowledge-base/search", ...options });
 
 /**
  * Get a knowledge-base page
