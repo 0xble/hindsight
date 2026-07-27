@@ -36,6 +36,20 @@ interface SeedContextClient {
   listPages(): Promise<unknown>;
 }
 
+/**
+ * The cold-start banner: a compact HINDSIGHT wordmark (box-drawing glyphs — fixed-width safe,
+ * no emoji so alignment holds in every terminal) over one plain line naming the repo's bank.
+ * Shown once per repo, so it can afford three lines.
+ */
+export function buildSeedBanner(bankId: string): string {
+  return [
+    "╦ ╦╦╔╗╔╔╦╗╔═╗╦╔═╗╦ ╦╔╦╗",
+    "╠═╣║║║║ ║║╚═╗║║ ╦╠═╣ ║",
+    "╩ ╩╩╝╚╝═╩╝╚═╝╩╚═╝╩ ╩ ╩",
+    `🧠 learning this repo → memory bank “${bankId}”`,
+  ].join("\n");
+}
+
 /** Split SessionStart output: `systemMessage` renders in the terminal (user-visible);
  *  `additionalContext` is injected into the model's context only. */
 export interface SessionStartOutput {
@@ -108,9 +122,10 @@ export async function buildSessionStartContext(args: {
             // Record the seed time (informational — no longer a gate).
             writeSeedState(bankId, { seededAt: new Date().toISOString() }, stateDir);
             diag(harness, "seed_started", { bank: bankId });
-            // Keep this SHORT and non-technical — it's the product's first impression. The bank id
-            // is the one detail worth surfacing (it names where this repo's memory lives).
-            systemMessage = `🧠 Hindsight is learning this repo → memory bank “${bankId}”`;
+            // The product's first impression — shown ONCE per repo (cold bank only). A compact
+            // unicode wordmark (no emoji inside the art: double-width emoji skews alignment across
+            // terminals), then one short line whose only detail is the bank id.
+            systemMessage = buildSeedBanner(bankId);
           }
         }
       }
