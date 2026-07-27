@@ -56,7 +56,7 @@ export interface RawConfig {
   /** How git history feeds memory — seeding AND keeping current use the same engine:
    *  "message" = commit messages only (cheap aggregated doc, re-upserted when HEAD moves);
    *  "full"    = messages + every recent commit's full diff (progressive batches, newest first);
-   *  "none"    = git ingestion off entirely. Default "full". */
+   *  "none"    = git ingestion off entirely. Default "message" (cheap by default; opt into depth). */
   gitIngest?: "message" | "full" | "none";
   /** Per-harness overrides of any of the fields above, keyed by harness name ("opencode",
    *  "claude-code", ...). Lets one config file give each agent its own bank/settings. */
@@ -109,7 +109,7 @@ export function resolveConfig(raw: RawConfig = {}): Config {
     surveyBudgetUsd: raw.surveyBudgetUsd || 2,
     gitIngest: ["message", "full", "none"].includes(raw.gitIngest as string)
       ? (raw.gitIngest as "message" | "full" | "none")
-      : "full",
+      : "message",
   };
 }
 

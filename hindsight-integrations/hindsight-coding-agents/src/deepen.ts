@@ -57,11 +57,13 @@ const API_URL = arg("api-url") ?? cfg.apiUrl;
 const API_TOKEN = arg("api-token") ?? cfg.apiToken;
 const CONV = arg("conversations");
 const GITLOG_LIMIT = arg("gitlog-limit") ? Number(arg("gitlog-limit")) : (cfg.seedLimit ?? 300);
+// harness override (benchmark/e2e want deterministic depth regardless of user config)
+const GIT_INGEST = (["message", "full", "none"] as const).find((m) => m === arg("git-ingest")) ?? cfg.gitIngest;
 
 if (!REPO || !BANK) {
   console.error(
     "usage: node deepen.js --repo <path> [--bank <id>] [--harness <name>] " +
-      "[--conversations f.json] [--api-url U] [--api-token X] [--config path] [--gitlog-limit N]\n" +
+      "[--conversations f.json] [--api-url U] [--api-token X] [--config path] [--gitlog-limit N] [--git-ingest message|full|none]\n" +
       `harnesses: ${HARNESS_NAMES.join(", ")}`
   );
   process.exit(1);
@@ -122,7 +124,7 @@ async function main() {
     //   full    → message doc + progressive per-commit full diffs, newest first (new commits land
     //             at the top of rev-list, so the next run ingests them: that IS the sync)
     let gitFails = 0;
-    if (cfg.gitIngest === "none") {
+    if (GIT_INGEST === "none") {
       log("[git] gitIngest=none — git ingestion disabled");
     } else {
       const head = gitHeadSha(REPO!);
@@ -135,7 +137,7 @@ async function main() {
         gitFails += await ingestGitLog(client, REPO!, { limit: GITLOG_LIMIT, log });
       }
 
-      if (cfg.gitIngest === "full") {
+      if (GIT_INGEST === "full") {
         // progressive depth: next batch of un-ingested commits, newest first, full message + diff.
         try {
           const shas = execFileSync(

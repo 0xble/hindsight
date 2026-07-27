@@ -112,7 +112,7 @@ side:
 | `pageRefreshEveryTurns` | `10` | refetch the knowledge pages and re-inject the page roster + tool guide every N user turns |
 | `retainSessions` | `true` | opencode write-back: async upsert every turn (set `false` to opt out; hook harnesses always write on Stop) |
 | `retainEveryTurns` | `1` | write-back cadence (user turns) |
-| `gitIngest` | `"full"` | git depth for seeding and staying current: `"message"` (messages only), `"full"` (messages + per-commit diffs), `"none"` |
+| `gitIngest` | `"message"` | git depth for seeding and staying current: `"message"` (messages only), `"full"` (messages + per-commit diffs), `"none"` |
 | `harnesses.<name>` | — | per-harness override of any field above |
 
 ### Bank resolution — per-repo by default
