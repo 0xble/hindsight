@@ -70,24 +70,50 @@ describe("splitSections", () => {
 describe("selectSections", () => {
   const index = buildPagesIndex([PAGE]);
 
-  it("picks the section whose heading/terms overlap the prompt", () => {
+  it("stub: returns the first section of each distinct page in index order, ignoring the prompt", () => {
     const picked = selectSections(index, "why does the upload retry backoff fail?");
+    // One page -> only its FIRST section (the preamble), regardless of prompt overlap.
     expect(picked).toHaveLength(1);
     expect(picked[0]).toMatchObject({
       pageId: "p1",
       pageTitle: "Uploader guide",
-      heading: "Retry backoff",
+      heading: "Uploader guide", // preamble section inherits the page title
     });
-    expect(picked[0].text).toContain("200ms jitter window");
+    expect(picked[0].text).toBe("Preamble prose introducing this page.");
   });
 
-  it("respects the score floor: an unrelated prompt selects nothing", () => {
-    expect(selectSections(index, "completely unrelated banana smoothie question")).toEqual([]);
+  it("stub: an unrelated prompt selects the same first sections (prompt is ignored)", () => {
+    const picked = selectSections(index, "completely unrelated banana smoothie question");
+    expect(picked).toHaveLength(1);
+    expect(picked[0]).toMatchObject({ pageId: "p1", heading: "Uploader guide" });
+  });
+
+  it("stub: caps at the first section of 3 distinct pages by default (a 4-page index returns 3)", () => {
+    const pages: PageContent[] = ["a", "b", "c", "d"].map((id) => ({
+      id,
+      title: `Page ${id}`,
+      content: `First body of ${id}.\n\n## Extra ${id}\nLater body of ${id}.\n`,
+    }));
+    const picked = selectSections(buildPagesIndex(pages), "anything at all");
+    expect(picked.map((s) => s.pageId)).toEqual(["a", "b", "c"]);
+    // Only the FIRST section of each page is taken, never a later one.
+    expect(picked.map((s) => s.text)).toEqual([
+      "First body of a.",
+      "First body of b.",
+      "First body of c.",
+    ]);
   });
 
   it("honors maxSections", () => {
-    const picked = selectSections(index, "retry backoff and auth tokens", { maxSections: 1 });
+    const pages: PageContent[] = [
+      { id: "a", title: "Page a", content: "Body a.\n" },
+      { id: "b", title: "Page b", content: "Body b.\n" },
+    ];
+    const picked = selectSections(buildPagesIndex(pages), "retry backoff and auth tokens", {
+      maxSections: 1,
+    });
     expect(picked).toHaveLength(1);
+    expect(picked[0].pageId).toBe("a");
   });
 
   it("trims a section over the token budget at a paragraph boundary and appends …", () => {
@@ -118,10 +144,14 @@ describe("formatPageInjection", () => {
         text: "Uploads retry with exponential backoff.",
       },
     ]);
-    expect(out).toContain("Relevant project knowledge");
+    expect(out).toContain(
+      "Project knowledge from Hindsight, this repository's long-term memory"
+    );
     expect(out).toContain('From "Uploader guide" › "Retry backoff":');
     expect(out).toContain("Uploads retry with exponential backoff.");
     expect(out).toContain("hindsight_read_knowledge_page p1");
+    expect(out).toContain("ATTRIBUTION");
+    expect(out).toContain("🧠 From Hindsight memory");
   });
 
   it("returns '' for an empty selection", () => {

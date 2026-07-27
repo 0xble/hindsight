@@ -17,7 +17,8 @@ afterEach(() => {
   rmSync(root, { recursive: true, force: true });
 });
 
-/** One page whose "Retry backoff" section overlaps upload/retry/backoff prompts (score >= floor). */
+/** One page with a preamble and two headed sections. The selection stub always injects the FIRST
+ *  section (the preamble here), ignoring the prompt. */
 const PAGE_CONTENT =
   "Preamble prose about this page.\n\n" +
   "## Retry backoff\n" +
@@ -25,9 +26,12 @@ const PAGE_CONTENT =
   "## Auth tokens\n" +
   "Tokens rotate daily via the auth service.\n";
 
-/** A prompt whose terms hit the "Retry backoff" section's heading terms. */
+/** The new header formatPageInjection puts above the injected sections. */
+const PAGES_HEADER = "Project knowledge from Hindsight, this repository's long-term memory";
+
+/** A prompt overlapping the "Retry backoff" section (irrelevant to the stub, kept for realism). */
 const MATCHING_PROMPT = "why does the upload retry backoff fail?";
-/** A prompt matching nothing in the page (below the score floor). */
+/** A prompt matching nothing in the page — the stub injects the first section anyway. */
 const UNRELATED_PROMPT = "completely unrelated banana smoothie question";
 
 function makeClient(overrides: Partial<{
@@ -100,8 +104,10 @@ describe("buildHookOutput", () => {
       client,
       cacheFile,
     });
-    // Nothing matched, reflect failed -> nothing to inject at all.
-    expect(t1.context).toBeUndefined();
+    // Reflect failed -> no reflect block; the pages block still injects (stub always selects).
+    expect(t1.context).not.toContain("Relevant project memory");
+    expect(t1.context).not.toContain("REFLECT_ANSWER");
+    expect(t1.context).toContain(PAGES_HEADER);
     expect(JSON.parse(readFileSync(cacheFile, "utf8")).reflectAnswer).toBe("");
 
     await buildHookOutput({
@@ -147,7 +153,7 @@ describe("buildHookOutput", () => {
     });
   });
 
-  it("fetches pages on the first turn and injects the section matching the prompt", async () => {
+  it("fetches pages on the first turn and injects the page's first section (stub ignores the prompt)", async () => {
     const cfg = resolveConfig({});
     const client = makeClient();
     const result = await buildHookOutput({
@@ -159,12 +165,13 @@ describe("buildHookOutput", () => {
     });
     expect(client.listPages).toHaveBeenCalledTimes(1);
     expect(client.getPage).toHaveBeenCalledWith("p1");
-    expect(result.context).toContain("Relevant project knowledge");
+    expect(result.context).toContain(PAGES_HEADER);
     expect(result.context).toContain('"Uploader guide"');
-    expect(result.context).toContain('"Retry backoff"');
-    expect(result.context).toContain("200ms jitter window");
+    // The stub injects the page's FIRST section (the preamble), not the prompt-matched one.
+    expect(result.context).toContain("Preamble prose about this page.");
     expect(result.context).toContain("hindsight_read_knowledge_page p1");
-    // The non-matching section is not injected.
+    // Later sections are not injected.
+    expect(result.context).not.toContain("200ms jitter window");
     expect(result.context).not.toContain("Auth tokens");
     // The fetched pages are cached for later turns.
     const cached = JSON.parse(readFileSync(cacheFile, "utf8"));
@@ -174,7 +181,7 @@ describe("buildHookOutput", () => {
     ]);
   });
 
-  it("no section matches the prompt -> no pages block", async () => {
+  it("pages with content ALWAYS inject, even for an unrelated prompt", async () => {
     const cfg = resolveConfig({});
     const client = makeClient();
     const result = await buildHookOutput({
@@ -185,7 +192,22 @@ describe("buildHookOutput", () => {
       cacheFile,
     });
     expect(result.context).toContain("REFLECT_ANSWER"); // reflect still injected
-    expect(result.context).not.toContain("Relevant project knowledge");
+    expect(result.context).toContain(PAGES_HEADER);
+    expect(result.context).toContain("hindsight_read_knowledge_page p1");
+  });
+
+  it("empty page list -> no pages block", async () => {
+    const cfg = resolveConfig({});
+    const client = makeClient({ listPages: vi.fn(async () => ({ items: [] })) });
+    const result = await buildHookOutput({
+      harness: "claude-code",
+      prompt: UNRELATED_PROMPT,
+      cfg,
+      client,
+      cacheFile,
+    });
+    expect(result.context).toContain("REFLECT_ANSWER"); // reflect still injected
+    expect(result.context).not.toContain(PAGES_HEADER);
     expect(result.context).not.toContain("hindsight_read_knowledge_page");
   });
 
@@ -230,7 +252,7 @@ describe("buildHookOutput", () => {
       cacheFile,
     });
     expect(result.context).toContain("REFLECT_ANSWER");
-    expect(result.context).not.toContain("Relevant project knowledge");
+    expect(result.context).not.toContain(PAGES_HEADER);
     expect(JSON.parse(readFileSync(cacheFile, "utf8")).turns).toBe(1);
   });
 

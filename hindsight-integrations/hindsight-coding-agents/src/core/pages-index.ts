@@ -93,7 +93,14 @@ export interface SelectedSection {
   text: string;
 }
 
-/** Pick the top sections for a prompt, trimmed to the token budget (paragraph-boundary trims). */
+/**
+ * TEMPORARY selection stub — the ranking below is deliberately dumb while the real SERVER-SIDE
+ * knowledge-base/search is being built (it will replace this whole local index): always return
+ * the first section of up to `maxSections` DISTINCT pages, in page order, ignoring the prompt.
+ * Guarantees every turn injects some knowledge so source-attribution behavior is exercisable.
+ * The lexical scorer (tokenize/splitSections/scoreSection) is kept for the interim tests and
+ * will be dropped together with this stub.
+ */
 export function selectSections(
   index: PageSection[],
   prompt: string,
@@ -101,12 +108,15 @@ export function selectSections(
 ): SelectedSection[] {
   const budget = (opts.budgetTokens ?? 700) * APPROX_CHARS_PER_TOKEN;
   const maxSections = opts.maxSections ?? 3;
-  const promptTerms = new Set(tokenize(prompt));
-  const ranked = index
-    .map((s) => ({ s, score: scoreSection(promptTerms, s) }))
-    .filter((r) => r.score >= SCORE_FLOOR)
-    .sort((a, b) => b.score - a.score)
-    .slice(0, maxSections);
+  void tokenize(prompt); // prompt intentionally unused by the stub (kept for the real signature)
+  const seenPages = new Set<string>();
+  const ranked: { s: PageSection }[] = [];
+  for (const s of index) {
+    if (seenPages.has(s.pageId)) continue;
+    seenPages.add(s.pageId);
+    ranked.push({ s });
+    if (ranked.length >= maxSections) break;
+  }
 
   const out: SelectedSection[] = [];
   let used = 0;
@@ -125,7 +135,8 @@ export function selectSections(
   return out;
 }
 
-/** The injected block — provenance per section, full page reachable via the knowledge tool. */
+/** The injected block — provenance per section, full page reachable via the knowledge tool,
+ *  and an ATTRIBUTION directive: when this knowledge shapes the answer, the agent must say so. */
 export function formatPageInjection(sections: SelectedSection[]): string {
   if (!sections.length) return "";
   const parts = sections.map(
@@ -133,8 +144,12 @@ export function formatPageInjection(sections: SelectedSection[]): string {
       `From "${s.pageTitle}" › "${s.heading}":\n${s.text}\n(full page: hindsight_read_knowledge_page ${s.pageId})`
   );
   return (
-    "🧠 Relevant project knowledge (from this repository's curated knowledge pages):\n\n" +
-    parts.join("\n\n")
+    "Project knowledge from Hindsight, this repository's long-term memory (curated knowledge pages):\n\n" +
+    parts.join("\n\n") +
+    "\n\nATTRIBUTION: if any of the above informed your answer, credit it VISIBLY — start that " +
+    "part of your answer with \"🧠 From Hindsight memory (<page name>):\" so the user can see " +
+    "which knowledge came from memory rather than from reading the code. Never credit it when it " +
+    "did not actually contribute."
   );
 }
 
