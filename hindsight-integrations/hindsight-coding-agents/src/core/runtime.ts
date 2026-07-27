@@ -18,7 +18,7 @@ import { diag } from "./diag";
 import type { HindsightClient } from "./hindsight";
 import { buildRosterRefresh, parsePageList } from "./knowledge-injection";
 import type { PageContent } from "./pages-index";
-import { buildPagesIndex, fetchPagesWithContent, formatPageInjection, selectSections } from "./pages-index";
+import { fetchPagesWithContent } from "./pages-index";
 import { brandWord } from "./brand";
 import { buildSystemInjection } from "./inject";
 import { buildKnowledgeTools, type ToolSpec } from "./knowledge-tools";
@@ -144,22 +144,14 @@ export class RuntimeCore {
     // of plugin-load seeding, the roster refresh still delivers the tool guide on cadence.
     if (turns === 1 && this.preamble) blocks.push(this.preamble);
     if (reflectAnswer) blocks.push(buildSystemInjection(reflectAnswer));
-    const sections = selectSections(buildPagesIndex(this.pagesCache), prompt);
-    if (sections.length) blocks.push(formatPageInjection(sections));
-    // Per-turn visibility (opencode has no per-turn user channel — stderr reaches the plugin log).
-    const q = prompt.replace(/\s+/g, " ").trim();
-    const excerpt = q.length > 48 ? `${q.slice(0, 48)}…` : q;
-    const pageTitles = [...new Set(sections.map((s) => s.pageTitle))];
+    // Knowledge pages are NOT auto-injected (phantom-research problem) — the agent pulls them
+    // via the hindsight_search_knowledge_pages tool. Reflect-turn visibility only:
     if (reflectRanThisTurn && reflectAnswer) {
+      const q = prompt.replace(/\s+/g, " ").trim();
+      const excerpt = q.length > 48 ? `${q.slice(0, 48)}…` : q;
       const preview = reflectAnswer.replace(/\s+/g, " ").trim().slice(0, 140);
       console.error(
         `${brandWord()} · goal: recall this repo's past decisions about “${excerpt}”\n↳ ${preview}…`
-      );
-    } else {
-      console.error(
-        pageTitles.length
-          ? `${brandWord()} · “${excerpt}” → ${pageTitles.join(", ")}`
-          : `${brandWord()} · memory warming up`
       );
     }
     if (refreshDue) {

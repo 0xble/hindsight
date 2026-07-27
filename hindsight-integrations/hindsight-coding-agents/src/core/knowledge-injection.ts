@@ -27,6 +27,9 @@ function roster(pages: PageRef[]): string {
  * context. (Omits hindsight_get_current_bank — pure introspection, no workflow trigger.)
  */
 const TOOL_GUIDE =
+  "- hindsight_search_knowledge_pages(query) — FIRST STOP for any question the project's accumulated " +
+  "knowledge might answer (components, conventions, past decisions, initiatives): search the knowledge " +
+  "pages and credit results visibly with \"🧠 From Hindsight memory (<page>):\".\n" +
   "- hindsight_list_knowledge_pages / hindsight_read_knowledge_page — BEFORE substantial work, list the pages and " +
   "read the relevant ones to ground yourself in this repo's architecture, conventions, and past decisions instead " +
   "of re-deriving them from the code; follow any [[page:<id>]] links you see.\n" +

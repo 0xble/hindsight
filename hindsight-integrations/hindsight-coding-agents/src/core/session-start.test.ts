@@ -50,8 +50,10 @@ describe("buildSessionStartContext", () => {
     expect(out.additionalContext).toContain("<hindsight_knowledge>");
     expect(out.additionalContext).toContain("- Component map (p1)");
     expect(out.additionalContext).not.toContain("agent_knowledge_list_pages");
-    // The note must NOT be duplicated into model context.
-    expect(out.additionalContext).not.toContain("🧠");
+    // The banner must NOT be duplicated into model context. (The tool guide legitimately
+    // contains a "🧠 From Hindsight memory" attribution example, so match on banner text.)
+    expect(out.additionalContext).not.toContain("memory bank");
+    expect(out.additionalContext).not.toContain("is learning this repo");
   });
 
   it("cold git repo + codebaseSurvey:false -> starts the seed but NOT the survey", async () => {

@@ -30,7 +30,7 @@ import { brandWord } from "./brand";
 import { buildSystemInjection } from "./inject";
 import { buildRosterRefresh, parsePageList } from "./knowledge-injection";
 import type { PageContent } from "./pages-index";
-import { buildPagesIndex, fetchPagesWithContent, formatPageInjection, selectSections } from "./pages-index";
+import { fetchPagesWithContent } from "./pages-index";
 
 export interface HookEventFields {
   prompt?: string;
@@ -69,8 +69,8 @@ interface SessionCache {
 export interface HookOutput {
   /** The model-facing injection block, or undefined when there's nothing to inject. */
   context?: string;
-  /** One user-facing line saying what Hindsight retrieved this turn (memory must be VISIBLE). */
-  notice: string;
+  /** User-facing line(s) — set only on the reflect turn (its goal + result preview). */
+  notice?: string;
 }
 
 /**
@@ -155,29 +155,26 @@ export async function buildHookOutput(args: {
 
   const blocks: string[] = [];
   if (reflectAnswer) blocks.push(buildSystemInjection(reflectAnswer));
-  const sections = selectSections(buildPagesIndex(pages), prompt);
-  if (sections.length) blocks.push(formatPageInjection(sections));
+  // Knowledge pages are NOT auto-injected: the agent pulls them through
+  // hindsight_search_knowledge_pages when a question warrants it — an unprompted injection on
+  // every turn (even a plain "yes") read as phantom research. The roster below keeps the tool
+  // and the page names in front of the agent.
   if (cadence > 0 && turns % cadence === 0) {
     blocks.push(buildRosterRefresh(pages.map((p) => ({ id: p.id, title: p.title }))));
   }
   const kept = blocks.filter(Boolean);
 
-  // The per-turn user-facing notice: the brand plus what went into context this turn. On the
-  // turn reflect actually RAN, show the goal it was assigned and what it brought back.
-  const q = prompt.replace(/\s+/g, " ").trim();
-  const excerpt = q.length > 48 ? `${q.slice(0, 48)}…` : q;
-  const pageTitles = [...new Set(sections.map((s) => s.pageTitle))];
-  let notice: string;
+  // User-facing notice ONLY on the turn reflect actually ran (showing its assigned goal and a
+  // preview of what came back). Ordinary turns stay silent — page knowledge is now pulled via
+  // the hindsight_search_knowledge_pages tool, which is visible as a real tool call.
+  let notice: string | undefined;
   if (reflectRanThisTurn && reflectAnswer) {
+    const q = prompt.replace(/\s+/g, " ").trim();
+    const excerpt = q.length > 48 ? `${q.slice(0, 48)}…` : q;
     const preview = reflectAnswer.replace(/\s+/g, " ").trim();
     notice =
       `${brandWord()} · goal: recall this repo's past decisions about “${excerpt}”\n` +
-      `↳ ${preview.length > 140 ? `${preview.slice(0, 140)}…` : preview}` +
-      (pageTitles.length ? `\n· also in context: ${pageTitles.join(", ")}` : "");
-  } else {
-    notice = pageTitles.length
-      ? `${brandWord()} · “${excerpt}” → ${pageTitles.join(", ")}`
-      : `${brandWord()} · memory warming up`;
+      `↳ ${preview.length > 140 ? `${preview.slice(0, 140)}…` : preview}`;
   }
 
   return { context: kept.length ? kept.join("\n\n") : undefined, notice };
@@ -205,7 +202,7 @@ export async function runHook(
   const cfg = loadConfig({ harness: spec.harness, projectDir: cwd });
   if (cfg.disabled) return;
 
-  const out = (context: string | undefined, notice: string) =>
+  const out = (context: string | undefined, notice?: string) =>
     process.stdout.write(JSON.stringify(spec.emit(context ?? "", notice)));
 
   const client = makeClient({

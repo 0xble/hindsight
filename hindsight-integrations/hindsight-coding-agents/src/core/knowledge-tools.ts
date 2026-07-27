@@ -15,6 +15,8 @@
 import { z } from "zod";
 import type { ZodRawShape } from "zod";
 import type { HindsightClient } from "./hindsight";
+import { buildPagesIndex, fetchPagesWithContent, selectSections } from "./pages-index";
+import { parsePageList } from "./knowledge-injection";
 import { syncStatus } from "./status";
 
 export interface ToolResult {
@@ -84,6 +86,34 @@ export function buildKnowledgeTools(
         "knowledge-page and memory operations here share this one bank.",
       inputSchema: {},
       handler: async (_args: Record<string, never>) => ok({ bank_id: bankId }),
+    },
+    {
+      name: "hindsight_search_knowledge_pages",
+      description:
+        "Search this repository's Hindsight knowledge pages for content relevant to a query. Call " +
+        "this when the user's question may be answered by the project's accumulated knowledge " +
+        "(architecture, conventions, decisions, initiatives) rather than by reading code. Returns " +
+        "up to 3 sections with their page of origin. When a result informs your answer, credit it " +
+        "visibly: start that part with \"🧠 From Hindsight memory (<page name>):\".",
+      inputSchema: { query: z.string().describe("what to look for") },
+      handler: async (args: { query: string }) => {
+        try {
+          // Interim: local selection over the fetched pages — swapped for the server-side
+          // knowledge-base/search when it ships (this handler is the single swap point).
+          const pages = await fetchPagesWithContent(client, parsePageList);
+          const sections = selectSections(buildPagesIndex(pages), args.query);
+          return ok(
+            sections.map((s) => ({
+              page: s.pageTitle,
+              page_id: s.pageId,
+              heading: s.heading,
+              content: s.text,
+            }))
+          );
+        } catch (e) {
+          return err(e);
+        }
+      },
     },
     {
       name: "hindsight_list_knowledge_pages",

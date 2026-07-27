@@ -17,8 +17,8 @@ afterEach(() => {
   rmSync(root, { recursive: true, force: true });
 });
 
-/** One page with a preamble and two headed sections. The selection stub always injects the FIRST
- *  section (the preamble here), ignoring the prompt. */
+/** One page with a preamble and two headed sections. Pages are fetched/cached for the
+ *  hindsight_search_knowledge_pages tool but are NEVER auto-injected into context. */
 const PAGE_CONTENT =
   "Preamble prose about this page.\n\n" +
   "## Retry backoff\n" +
@@ -26,12 +26,12 @@ const PAGE_CONTENT =
   "## Auth tokens\n" +
   "Tokens rotate daily via the auth service.\n";
 
-/** The new header formatPageInjection puts above the injected sections. */
+/** The header formatPageInjection uses — must NEVER appear in hook context anymore. */
 const PAGES_HEADER = "Project knowledge from Hindsight, this repository's long-term memory";
 
-/** A prompt overlapping the "Retry backoff" section (irrelevant to the stub, kept for realism). */
+/** A prompt overlapping the "Retry backoff" section (pages still must not inject). */
 const MATCHING_PROMPT = "why does the upload retry backoff fail?";
-/** A prompt matching nothing in the page — the stub injects the first section anyway. */
+/** A prompt matching nothing in the page. */
 const UNRELATED_PROMPT = "completely unrelated banana smoothie question";
 
 function makeClient(overrides: Partial<{
@@ -90,7 +90,7 @@ describe("buildHookOutput", () => {
     expect(JSON.parse(readFileSync(cacheFile, "utf8")).turns).toBe(2);
   });
 
-  it("reflect rejection: caches '' (no retry next turn), no throw, no reflect block", async () => {
+  it("reflect rejection: caches '' (no retry next turn), no throw, no context at all", async () => {
     const cfg = resolveConfig({});
     const client = makeClient({
       reflect: vi.fn(async () => {
@@ -104,10 +104,9 @@ describe("buildHookOutput", () => {
       client,
       cacheFile,
     });
-    // Reflect failed -> no reflect block; the pages block still injects (stub always selects).
-    expect(t1.context).not.toContain("Relevant project memory");
-    expect(t1.context).not.toContain("REFLECT_ANSWER");
-    expect(t1.context).toContain(PAGES_HEADER);
+    // Reflect failed -> no reflect block; pages are never auto-injected -> nothing to inject.
+    expect(t1.context).toBeUndefined();
+    expect(t1.notice).toBeUndefined();
     expect(JSON.parse(readFileSync(cacheFile, "utf8")).reflectAnswer).toBe("");
 
     await buildHookOutput({
@@ -153,7 +152,7 @@ describe("buildHookOutput", () => {
     });
   });
 
-  it("fetches pages on the first turn and injects the page's first section (stub ignores the prompt)", async () => {
+  it("fetches and caches pages on the first turn but does NOT inject any page section", async () => {
     const cfg = resolveConfig({});
     const client = makeClient();
     const result = await buildHookOutput({
@@ -163,17 +162,18 @@ describe("buildHookOutput", () => {
       client,
       cacheFile,
     });
+    // Pages are still fetched into the session cache (they back the search tool)…
     expect(client.listPages).toHaveBeenCalledTimes(1);
     expect(client.getPage).toHaveBeenCalledWith("p1");
-    expect(result.context).toContain(PAGES_HEADER);
-    expect(result.context).toContain('"Uploader guide"');
-    // The stub injects the page's FIRST section (the preamble), not the prompt-matched one.
-    expect(result.context).toContain("Preamble prose about this page.");
-    expect(result.context).toContain("hindsight_read_knowledge_page p1");
-    // Later sections are not injected.
+    // …but NO page content appears in context: the context is the reflect block only.
+    expect(result.context).not.toContain(PAGES_HEADER);
+    expect(result.context).not.toContain("Preamble prose about this page.");
     expect(result.context).not.toContain("200ms jitter window");
     expect(result.context).not.toContain("Auth tokens");
-    // The fetched pages are cached for later turns.
+    expect(result.context).not.toContain("hindsight_read_knowledge_page p1");
+    expect(result.context).toContain("Relevant project memory");
+    expect(result.context).toContain("REFLECT_ANSWER");
+    // The fetched pages are cached for later turns (and for the search tool).
     const cached = JSON.parse(readFileSync(cacheFile, "utf8"));
     expect(cached.pages.atTurn).toBe(1);
     expect(cached.pages.list).toEqual([
@@ -181,7 +181,7 @@ describe("buildHookOutput", () => {
     ]);
   });
 
-  it("pages with content ALWAYS inject, even for an unrelated prompt", async () => {
+  it("pages with content are NEVER auto-injected, even for an unrelated prompt", async () => {
     const cfg = resolveConfig({});
     const client = makeClient();
     const result = await buildHookOutput({
@@ -192,8 +192,8 @@ describe("buildHookOutput", () => {
       cacheFile,
     });
     expect(result.context).toContain("REFLECT_ANSWER"); // reflect still injected
-    expect(result.context).toContain(PAGES_HEADER);
-    expect(result.context).toContain("hindsight_read_knowledge_page p1");
+    expect(result.context).not.toContain(PAGES_HEADER);
+    expect(result.context).not.toContain("hindsight_read_knowledge_page p1");
   });
 
   it("empty page list -> no pages block", async () => {
