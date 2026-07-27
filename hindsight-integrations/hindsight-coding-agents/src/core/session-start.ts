@@ -46,12 +46,15 @@ const LOGO =
   "  \x1b[38;2;9;127;184m\u2584\x1b[0m\x1b[48;2;8;130;178m\x1b[38;2;5;133;186m\u2584\x1b[0m       \x1b[48;2;10;143;160m\x1b[38;2;10;143;165m\u2584\x1b[0m\x1b[38;2;7;140;156m\u2584\x1b[0m\n \x1b[38;2;8;125;192m\u2584\x1b[0m \x1b[38;2;3;132;191m\u2580\x1b[0m\x1b[38;2;2;133;192m\u2584\x1b[0m \x1b[38;2;3;132;180m\u2584\x1b[0m\x1b[38;2;1;137;184m\u2584\x1b[0m\x1b[38;2;3;133;174m\u2584\x1b[0m \x1b[38;2;3;142;176m\u2584\x1b[0m\x1b[38;2;4;142;169m\u2580\x1b[0m \x1b[38;2;10;144;164m\u2584\x1b[0m\n\x1b[38;2;6;121;195m\u2580\x1b[0m\x1b[38;2;5;128;203m\u2580\x1b[0m\x1b[48;2;5;124;195m\x1b[38;2;3;125;200m\u2584\x1b[0m\x1b[38;2;2;126;196m\u2584\x1b[0m\x1b[48;2;3;128;188m\x1b[38;2;1;131;196m\u2584\x1b[0m\x1b[48;2;0;152;219m\x1b[38;2;2;131;191m\u2584\x1b[0m\x1b[38;2;1;141;196m\u2580\x1b[0m\x1b[38;2;1;135;183m\u2580\x1b[0m\x1b[38;2;1;148;198m\u2580\x1b[0m\x1b[48;2;1;156;202m\x1b[38;2;2;135;180m\u2584\x1b[0m\x1b[48;2;4;134;169m\x1b[38;2;1;137;177m\u2584\x1b[0m\x1b[38;2;3;138;173m\u2584\x1b[0m\x1b[48;2;6;137;165m\x1b[38;2;2;140;170m\u2584\x1b[0m\x1b[38;2;7;144;169m\u2580\x1b[0m\x1b[38;2;7;139;158m\u2580\x1b[0m\n   \x1b[48;2;2;128;202m\x1b[38;2;2;124;201m\u2584\x1b[0m\x1b[48;2;1;130;201m\x1b[38;2;0;135;212m\u2584\x1b[0m\x1b[38;2;2;128;196m\u2584\x1b[0m \x1b[48;2;2;142;204m\x1b[38;2;7;138;199m\u2584\x1b[0m \x1b[38;2;1;135;186m\u2584\x1b[0m\x1b[48;2;1;142;186m\x1b[38;2;2;144;194m\u2584\x1b[0m\x1b[48;2;3;138;176m\x1b[38;2;2;134;176m\u2584\x1b[0m\n \x1b[48;2;8;118;200m\x1b[38;2;8;121;209m\u2584\x1b[0m\x1b[38;2;3;121;203m\u2580\x1b[0m \x1b[38;2;3;122;192m\u2580\x1b[0m\x1b[38;2;1;138;216m\u2580\x1b[0m\x1b[48;2;0;138;210m\x1b[38;2;3;128;198m\u2584\x1b[0m\x1b[48;2;0;126;188m\x1b[38;2;2;131;198m\u2584\x1b[0m\x1b[48;2;0;142;205m\x1b[38;2;3;132;193m\u2584\x1b[0m\x1b[38;2;1;140;196m\u2580\x1b[0m  \x1b[38;2;4;134;175m\u2580\x1b[0m\x1b[48;2;13;135;167m\x1b[38;2;8;136;174m\u2584\x1b[0m ";
 
 /**
- * The session banner: the server's logo over one plain line naming the repo's bank. Shown on
- * EVERY session start — Hindsight's presence should be visible, not inferred. The line reads
- * "learning" on a cold repo (first ingest running) and "remembering" once the bank is warm.
+ * The session banner: one plain line naming the repo's bank, then the server's logo. Shown on
+ * EVERY session start — Hindsight's presence should be visible, not inferred. The text goes FIRST:
+ * the host TUI prefixes the message's first line (e.g. Claude Code's "SessionStart:startup says:"),
+ * which would displace the logo's first row and break the pixel alignment — the text line absorbs
+ * the prefix so every logo row starts at column 0. Wording reads "learning" on a cold repo (first
+ * ingest running) and "remembering" once the bank is warm.
  */
 export function buildSeedBanner(bankId: string, cold = true): string {
-  return `${LOGO}\n\n  Hindsight is ${cold ? "learning" : "remembering"} this repo → memory bank “${bankId}”`;
+  return `Hindsight is ${cold ? "learning" : "remembering"} this repo → memory bank “${bankId}”\n\n${LOGO}`;
 }
 
 /** Split SessionStart output: `systemMessage` renders in the terminal (user-visible);
