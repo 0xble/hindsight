@@ -32,12 +32,6 @@ import { DEFAULT_SEED_LIMIT } from "./seed";
 export const CONFIG_PATH = join(homedir(), ".hindsight", "coding-agent.json");
 
 /** Incremental git-sync settings (see core/sync.ts). */
-export interface GitSyncConfig {
-  enabled?: boolean; // keep the bank current with new commits on load (default false: opt-in)
-  ref?: string; // target ref (default origin/main; falls back to HEAD)
-  fetch?: boolean; // git fetch the ref before diffing (default false: no network side effect)
-}
-
 /** The config file's shape — every field optional; omitted fields take the documented default. */
 export interface RawConfig {
   apiUrl?: string; // Hindsight API base URL (default https://api.hindsight.vectorize.io — Cloud; set to http://localhost:8888 for a local server)
@@ -59,13 +53,17 @@ export interface RawConfig {
   codebaseSurvey?: boolean; // SessionStart: spawn a headless claude to survey a cold repo's structure (default true)
   surveyModel?: string; // model passed to the headless survey's `claude -p --model` (default "haiku")
   surveyBudgetUsd?: number; // spend cap passed to the headless survey's `claude -p --max-budget-usd` (default 2)
-  gitSync?: GitSyncConfig;
+  /** How git history feeds memory — seeding AND keeping current use the same engine:
+   *  "message" = commit messages only (cheap aggregated doc, re-upserted when HEAD moves);
+   *  "full"    = messages + every recent commit's full diff (progressive batches, newest first);
+   *  "none"    = git ingestion off entirely. Default "full". */
+  gitIngest?: "message" | "full" | "none";
   /** Per-harness overrides of any of the fields above, keyed by harness name ("opencode",
    *  "claude-code", ...). Lets one config file give each agent its own bank/settings. */
   harnesses?: Record<string, Omit<RawConfig, "harnesses">>;
 }
 
-/** Fully-resolved config: every field present, gitSync fully populated. */
+/** Fully-resolved config: every field present. */
 export interface Config {
   apiUrl: string;
   apiToken?: string;
@@ -85,12 +83,11 @@ export interface Config {
   codebaseSurvey: boolean;
   surveyModel: string;
   surveyBudgetUsd: number;
-  gitSync: Required<GitSyncConfig>;
+  gitIngest: "message" | "full" | "none";
 }
 
 /** Apply defaults to a raw (file) config. Pure — the single place the defaults live. */
 export function resolveConfig(raw: RawConfig = {}): Config {
-  const gs = raw.gitSync ?? {};
   return {
     apiUrl: raw.apiUrl ?? "https://api.hindsight.vectorize.io",
     apiToken: raw.apiToken || undefined,
@@ -110,11 +107,9 @@ export function resolveConfig(raw: RawConfig = {}): Config {
     codebaseSurvey: raw.codebaseSurvey ?? true,
     surveyModel: raw.surveyModel || "haiku",
     surveyBudgetUsd: raw.surveyBudgetUsd || 2,
-    gitSync: {
-      enabled: gs.enabled ?? false, // opt-in: off unless explicitly enabled in config
-      ref: gs.ref ?? "origin/main",
-      fetch: gs.fetch ?? false,
-    },
+    gitIngest: ["message", "full", "none"].includes(raw.gitIngest as string)
+      ? (raw.gitIngest as "message" | "full" | "none")
+      : "full",
   };
 }
 
@@ -129,10 +124,10 @@ function readRaw(path: string): RawConfig {
   }
 }
 
-/** Shallow-merge b over a; gitSync merges field-wise; `harnesses` never survives into a layer. */
+/** Shallow-merge b over a; `harnesses` never survives into a layer. */
 function mergeRaw(a: RawConfig, b: RawConfig): RawConfig {
   const { harnesses: _drop, ...flat } = b;
-  return { ...a, ...flat, gitSync: { ...(a.gitSync ?? {}), ...(b.gitSync ?? {}) } };
+  return { ...a, ...flat };
 }
 
 /**

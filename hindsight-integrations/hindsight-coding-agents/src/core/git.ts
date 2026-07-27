@@ -23,6 +23,15 @@ export function repoNameOf(repo: string): string {
   return resolve(repo).replace(/\/+$/, "").split("/").pop() || "repo";
 }
 
+/** HEAD's sha, or null on any failure (empty repo, not a repo). */
+export function gitHeadSha(dir: string): string | null {
+  try {
+    return git(dir, "rev-parse", "HEAD").trim() || null;
+  } catch {
+    return null;
+  }
+}
+
 /** True iff `dir` is a git repo with at least one commit. Fast (--max-count=1). False on non-git/empty/error. */
 export function hasGitHistory(dir: string): boolean {
   try {
@@ -158,11 +167,14 @@ export async function ingestGitLog(
   const n = text.split("\n\n---\n\n").length;
   log(`[gitlog] ingesting last ${n} commit messages for ${repoName} as ONE document …`);
   try {
+    // The gitlog-head:<sha> tag makes freshness a single tag query: the deepen engine re-upserts
+    // this document (same id — replaces, never duplicates) only when HEAD has moved past it.
+    const head = gitHeadSha(repo);
     await client.retain(
       text,
       `git commit-message history (last ${n}) for ${repoName}`,
       `gitlog:${repoName}`,
-      ["source:git", "source:git-log"],
+      ["source:git", "source:git-log", ...(head ? [`gitlog-head:${head}`] : [])],
       "gitlog",
       { async: true }
     );

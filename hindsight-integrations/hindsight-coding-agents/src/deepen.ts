@@ -26,7 +26,7 @@ import { join } from "node:path";
 import { deriveBankId } from "./core/bank";
 import { ingestChats } from "./core/chat";
 import { loadConfig } from "./core/config";
-import { ingestGitLog, repoNameOf, retainCommit } from "./core/git";
+import { gitHeadSha, ingestGitLog, repoNameOf, retainCommit } from "./core/git";
 import { HindsightClient } from "./core/hindsight";
 import { parsePageList } from "./core/knowledge-injection";
 import { DEEPEN_DIFF_TARGET } from "./core/status";
@@ -114,40 +114,58 @@ async function main() {
       log(`[chat] ${all.length - sessions.length} conversations already ingested — skipping those`);
     const chatFails = await ingestChats(client, sessions, { concurrency: CONCURRENCY, log });
 
-    // cheap breadth: the aggregated commit-message history, once.
+    // ── git: seeding and syncing are the SAME code — this idempotent pass runs every session,
+    // so "keep the bank current" is just "run it again". cfg.gitIngest picks the depth:
+    //   none    → git contributes nothing
+    //   message → ONE aggregated commit-message doc, re-upserted when HEAD moves (same doc id, so
+    //             it replaces — the gitlog-head:<sha> tag makes freshness a single tag query)
+    //   full    → message doc + progressive per-commit full diffs, newest first (new commits land
+    //             at the top of rev-list, so the next run ingests them: that IS the sync)
     let gitFails = 0;
-    if (gitIds.has(`gitlog:${repoNameOf(REPO!)}`)) {
-      log("[gitlog] already seeded — skipping");
+    if (cfg.gitIngest === "none") {
+      log("[git] gitIngest=none — git ingestion disabled");
     } else {
-      gitFails += await ingestGitLog(client, REPO!, { limit: GITLOG_LIMIT, log });
-    }
-
-    // progressive depth: next batch of un-ingested commits, newest first, full message + diff.
-    try {
-      const shas = execFileSync("git", ["-C", REPO!, "rev-list", `-n`, String(DEEPEN_DIFF_TARGET), "HEAD"], {
-        encoding: "utf8",
-      })
-        .trim()
-        .split("\n")
-        .filter(Boolean)
-        .filter((sha) => !gitIds.has(`git:${sha}`))
-        .slice(0, DIFF_BATCH);
-      if (shas.length) {
-        const repoName = repoNameOf(REPO!);
-        log(`[deepen] ingesting ${shas.length} commits with full diffs (newest first) …`);
-        await pool(
-          shas,
-          CONCURRENCY,
-          (sha) => retainCommit(client, REPO!, sha, repoName),
-          () => {
-            gitFails++;
-          }
-        );
+      const head = gitHeadSha(REPO!);
+      const gitlogCurrent =
+        head !== null &&
+        (await client.listDocumentIds(`gitlog-head:${head}`).catch(() => new Set())).size > 0;
+      if (gitlogCurrent) {
+        log("[gitlog] current with HEAD — skipping");
       } else {
-        log(`[deepen] recent history fully deepened (target ${DEEPEN_DIFF_TARGET})`);
+        gitFails += await ingestGitLog(client, REPO!, { limit: GITLOG_LIMIT, log });
       }
-    } catch {
-      log("[deepen] no git history — skipping diff deepening");
+
+      if (cfg.gitIngest === "full") {
+        // progressive depth: next batch of un-ingested commits, newest first, full message + diff.
+        try {
+          const shas = execFileSync(
+            "git",
+            ["-C", REPO!, "rev-list", `-n`, String(DEEPEN_DIFF_TARGET), "HEAD"],
+            { encoding: "utf8" }
+          )
+            .trim()
+            .split("\n")
+            .filter(Boolean)
+            .filter((sha) => !gitIds.has(`git:${sha}`))
+            .slice(0, DIFF_BATCH);
+          if (shas.length) {
+            const repoName = repoNameOf(REPO!);
+            log(`[deepen] ingesting ${shas.length} commits with full diffs (newest first) …`);
+            await pool(
+              shas,
+              CONCURRENCY,
+              (sha) => retainCommit(client, REPO!, sha, repoName),
+              () => {
+                gitFails++;
+              }
+            );
+          } else {
+            log(`[deepen] recent history fully deepened (target ${DEEPEN_DIFF_TARGET})`);
+          }
+        } catch {
+          log("[deepen] no git history — skipping diff deepening");
+        }
+      }
     }
 
     await client.drain(client.opIds, "extraction");

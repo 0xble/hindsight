@@ -86,13 +86,20 @@ describe("loadConfig layering", () => {
     expect(loadConfig({ path: globalCfg, projectDir: outer }).bankId).toBe("outer");
   });
 
-  it("gitSync merges field-wise across layers", () => {
-    writeJson(globalCfg, { gitSync: { enabled: true, ref: "origin/main" } });
+  it("gitIngest: defaults to 'full', accepts the enum, rejects junk values", () => {
+    writeJson(globalCfg, {});
     const proj = join(root, "repo");
-    writeJson(join(proj, ".hindsight", "coding-agent.json"), { gitSync: { ref: "origin/dev" } });
-    const cfg = loadConfig({ path: globalCfg, projectDir: proj });
-    expect(cfg.gitSync.enabled).toBe(true); // kept from global
-    expect(cfg.gitSync.ref).toBe("origin/dev"); // overridden by project
+    expect(loadConfig({ path: globalCfg, projectDir: proj }).gitIngest).toBe("full");
+    writeJson(globalCfg, { gitIngest: "message" });
+    expect(loadConfig({ path: globalCfg, projectDir: proj }).gitIngest).toBe("message");
+    writeJson(globalCfg, { gitIngest: "none" });
+    expect(loadConfig({ path: globalCfg, projectDir: proj }).gitIngest).toBe("none");
+    writeJson(globalCfg, { gitIngest: "everything" }); // unknown -> default
+    expect(loadConfig({ path: globalCfg, projectDir: proj }).gitIngest).toBe("full");
+    // project layer can override the global
+    writeJson(globalCfg, { gitIngest: "full" });
+    writeJson(join(proj, ".hindsight", "coding-agent.json"), { gitIngest: "message" });
+    expect(loadConfig({ path: globalCfg, projectDir: proj }).gitIngest).toBe("message");
   });
 
   it("legacy string signature still works as the global path", () => {

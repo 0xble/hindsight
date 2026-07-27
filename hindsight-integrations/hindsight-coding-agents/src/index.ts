@@ -40,9 +40,8 @@ const HindsightCodingAgentsPlugin: Plugin = async (input) => {
   // the first prompt; it is internally best-effort and bounded by the client's timeouts.
   await core.seedIfCold(projectDir);
 
-  // Keep the bank current: on load, async + best-effort, retain commits new since the backfill (or
-  // the last run). Fire-and-forget so it never blocks startup.
-  void core.syncGitOnce(projectDir);
+  // Keeping the bank current needs no separate path: seedIfCold fired the deepen engine, and the
+  // engine's idempotent git pass (cfg.gitIngest) ingests whatever is new — syncing IS re-seeding.
   return runtime;
 };
 

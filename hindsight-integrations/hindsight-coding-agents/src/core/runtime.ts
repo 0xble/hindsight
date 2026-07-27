@@ -23,7 +23,6 @@ import { buildSystemInjection } from "./inject";
 import { buildKnowledgeTools, type ToolSpec } from "./knowledge-tools";
 import { retainLiveSession, type TransportTurn } from "./chat";
 import { buildSessionStartContext } from "./session-start";
-import { syncGit } from "./sync";
 
 const HARNESS = "opencode";
 
@@ -35,7 +34,6 @@ export class RuntimeCore {
   private readonly reflectBySession = new Map<string, string>(); // sessionId -> cached reflect ("" = ran, nothing)
   private pagesCache: PageRef[] | undefined; // page roster (ids + titles), refreshed on cadence
   private preamble = ""; // SessionStart-equivalent knowledge preamble, computed once at seedIfCold
-  private gitSyncStarted = false; // once-per-process guard for syncGitOnce
 
   constructor(
     private readonly client: HindsightClient,
@@ -204,24 +202,4 @@ export class RuntimeCore {
     }
   }
 
-  /**
-   * Once per process: async-retain any commits on the target ref not yet in the bank, keeping memory
-   * current with the repo since the backfill (or the last run). Fire-and-forget and best-effort — a
-   * sync failure never blocks or breaks the agent. `repoPath` comes from the harness's plugin context.
-   */
-  async syncGitOnce(repoPath: string | undefined): Promise<void> {
-    if (process.env.HINDSIGHT_DISABLE_HOOKS) return; // anti-recursion (see seedIfCold)
-    if (!this.cfg.gitSync.enabled || !repoPath || this.gitSyncStarted) return;
-    this.gitSyncStarted = true;
-    try {
-      const r = await syncGit(this.client, repoPath, {
-        ref: this.cfg.gitSync.ref,
-        fetch: this.cfg.gitSync.fetch,
-      });
-      if (r.ingested)
-        console.error(`hindsight: git-sync retained ${r.ingested} new commit(s) from ${r.ref}`);
-    } catch {
-      /* best-effort — memory sync never breaks the agent */
-    }
-  }
 }
