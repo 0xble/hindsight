@@ -22,17 +22,17 @@ We benchmarked long-term project memory for coding agents on the thing benchmark
 
 ## One task, both runs
 
-Here's the moment the whole project exists for. (Reconstructed from a benchmark task: the decision, the failure sequence, and the injected memory are the real ones; the dialogue is condensed.)
+Here's the moment the whole project exists for. The bug report, the deciding conversation, and the failure sequence below are the actual dataset artifacts, lightly condensed.
 
-The agent gets a bug report: *"After last night's deploy, transient upstream errors are locking customer accounts — users hit one failure and then can't get back in."* Real codebase, ~1,600 commits of history, full test suite, standard tools.
+The agent gets a bug report: *"The nightly export to the ERP is corrupting rows — any product description containing a comma spills into the next column and shifts everything after it. Fix the export so field values arrive in the ERP intact, without breaking existing behaviour."* Real codebase, ~1,600 commits of history, full test suite, standard tools.
 
-**Without memory**, the agent does what a competent engineer new to the codebase would do: finds the retry wrapper, sees it retrying nothing but 5xx, and extends it with the industry-standard heuristic — retry the "retryable" 4xxs too. The visible repro passes. The harness runs the *hidden* test — the one encoding what the team actually decided — and it fails: this project retries **exactly** `429` and `408` from the 4xx range, nothing else. The agent's second attempt keeps 429 but drops the rest — still wrong: it dropped `408` too. There is no standard to reason from here, because the rule isn't a standard — it's a *decision*, made after a specific incident. Each failure comes back as raw pytest output with no hint; each retry is a **correction**, a moment where, on a real team, a human would have stopped their own work to un-stick the agent.
+**Without memory**, the agent does the textbook fix: standard CSV quoting, straight out of RFC 4180. The visible repro passes — commas stay in their columns. Then the harness runs the *hidden* tests, and they fail: part numbers like `00042` must arrive in the ERP **byte-for-byte**, and this ERP coerces even a *quoted* digit string to a number and strips the zeros. The agent, reasoning soundly from the failure, force-quotes digit fields as text — the right idea against any reasonable importer, and still wrong against this one, for a reason no amount of reasoning can reach: the only form this ERP's parser imports verbatim is an **Excel-style text formula**, `="00042"` — and only for leading-zero digit strings, while every other field uses minimal quoting with doubled embedded quotes, and every row must end `\r\n` because the parser rejects bare newlines. Three interacting constraints, none of them a standard, each failure revealing only a slice. Every retry is a **correction** — a moment where, on a real team, a human would have stopped their own work to un-stick the agent.
 
 **With memory**, the session's first prompt triggers one deep synthesis over the project's history, and the agent's context opens with:
 
-> 🧠 From Hindsight memory: retries apply to any 5xx plus **exactly `429` and `408`** from the 4xx range; every other 4xx fails fast. Settled after the 401-retry storm locked customer accounts — an earlier draft that retried all 4xx was explicitly reversed.
+> 🧠 From Hindsight memory: digit strings with a leading zero are written as `="00042"` (Excel text-formula form — the only thing the ERP imports byte-for-byte; ordinary quoting was tried last year and the ERP still stripped the zeros). All other fields: minimal quoting — quote only on comma/quote/newline, double embedded quotes. Rows end `\r\n`; the ERP rejects bare `\n`.
 
-One attempt. Tests pass, hidden test included. Notice what retrieval had to do: the bug report says *deploy*, *locking*, *accounts*; the deciding conversation months earlier was about *retry policy* and mentions none of those words. Nothing in the symptom's vocabulary points at the answer — which is exactly why the naive approach fails, and that's the next section.
+One attempt. Tests pass, hidden tests included. Two things are worth noticing. The team's *rejected alternative is the textbook fix* — standard quoting is on record as having already failed against this ERP, which is exactly the kind of thing a codebase never tells you and a memory must. And the vocabulary gap: the bug report says *export*, *corrupting*, *columns*; the deciding conversation months earlier was about *part numbers* and *leading zeros* and mentions none of those words. Nothing in the symptom points at the answer — which is why the naive retrieval approach fails, and that's the next section.
 
 Across the 33-task suite that difference compounds: **10 fewer interruptions per 33 tasks**. If your team pushes twenty agent tasks a day, that's roughly **six times a day someone doesn't get pulled out of their own work** — thirty times a week — before counting the 39% model-cost drop ($0.79 → $0.48 per task) from all the exploration the agent no longer does.
 
@@ -48,15 +48,15 @@ And the flip side of the premise holds too: our first architecture had full acce
 
 The "obvious" memory integration — embed the user's prompt, retrieve similar memories, inject them — is what most agent-memory products ship, and it's what one of our own integrations did. On the suite it scored **1.06 corrections per task versus vanilla's 0.97 (35 total vs 32). Worse than no memory.**
 
-The autopsy: half our hard tier is deliberately *symptom-distant*, like the retry task above. Similarity search, faced with a symptom that shares no vocabulary with the cause, returns snippets that merely sound alike — plausible-looking, confidently injected, wrong. The agent then iterates with distracting context attached, which is measurably worse than iterating with none. We had shipped variants of this pattern. The benchmark killed it in an afternoon, and we'd encourage anyone evaluating an agent-memory product to run this exact test: **per-prompt similarity injection on symptom-distant bugs**. It's where the demos go to die.
+The autopsy: half our hard tier is deliberately *symptom-distant*, like the export task above. Similarity search, faced with a symptom that shares no vocabulary with the cause, returns snippets that merely sound alike — plausible-looking, confidently injected, wrong. The agent then iterates with distracting context attached, which is measurably worse than iterating with none. We had shipped variants of this pattern. The benchmark killed it in an afternoon, and we'd encourage anyone evaluating an agent-memory product to run this exact test: **per-prompt similarity injection on symptom-distant bugs**. It's where the demos go to die.
 
 What replaced it is a two-level architecture, and the benchmark chose both levels:
 
 **Reflect — deep synthesis, once per session.** On the session's first prompt, an agentic reasoning pass works over the *whole* memory bank: it follows the connection from symptom to decision across the vocabulary gap, checks for later amendments, and returns the exact rule with its literal values quoted verbatim. It takes seconds, not milliseconds — so you pay for depth exactly once, and the answer rides along for the rest of the session. It's not a hidden wait, either: the plugin shows you the assignment and the finding while it happens —
 
 ```
-Hindsight · goal: recall this repo's past decisions about “transient errors locking accounts”
-↳ Retries apply to any 5xx plus exactly 429 and 408; every other 4xx fails fast…
+Hindsight · goal: recall this repo's past decisions about “nightly export corrupting rows”
+↳ Digit strings with a leading zero are written as ="…" — the ERP coerces even quoted digits…
 ```
 
 — and it's hard-capped (25s) so a slow day degrades to a normal memoryless session, never a hung one. Every turn after the first is instant: the synthesis is cached for the session.
@@ -73,7 +73,7 @@ When the plugin ingests a repo, it seeds a small fixed taxonomy — **component 
 >
 > **Retry policy.** Retries apply to any 5xx plus exactly `429` and `408` from the 4xx range; every other 4xx fails fast. Settled after the 401-storm incident locked customer accounts — amends an earlier draft that retried all 4xx.
 >
-> **Export sanitization.** The ERP importer rejects quoted fields outright (it predates RFC 4180), so descriptions are sanitized before export: embedded delimiters are replaced with `" / "`. Do not "fix" this by quoting — that was tried, and rolled back…
+> **ERP export format.** Leading-zero digit strings are written as `="00042"` (Excel text-formula form) — the ERP coerces even *quoted* digits and strips zeros; ordinary quoting was tried and rolled back. All other fields: minimal quoting, doubled embedded quotes, `\r\n` row endings…
 
 What keeps the pages coherent is routing at *extraction* time: as facts are pulled from commits and sessions, the durable ones are labeled by knowledge tier — decision, convention, component, concept, initiative — and each page synthesizes from exactly its tier. Transient facts (a passing test, a one-off command, a debugging dead end) get no label on purpose: they're useful to deep synthesis, poison to a curated page. When an agent starts a genuinely new piece of work, it registers the initiative and that initiative gets its own page, accruing progress across sessions.
 
@@ -103,7 +103,7 @@ The headline run measures the **product, end to end**: the harness deletes the m
 | **Memory, out-of-box** (bank built from empty, automatically) | **0.67** | **−31%** |
 | **Memory, matured banks** (history accrued from prior sessions) | **0.55** | **−44%** |
 
-That's OpenCode + Gemini 3.5 Flash — a deliberately modest model, because we wanted the out-of-box measurement on an affordable stack. 33/33 tasks solved in every memory run, cost down 39%.
+That's OpenCode + Gemini 3.5 Flash — a deliberately modest model, because we wanted the out-of-box measurement on an affordable stack. 33/33 tasks solved in every memory run, injection verified on all 33, cost down 39%.
 
 **How grading works**, compactly, since "corrections" is our metric and you should be able to reconstruct it: the agent attempts a fix; the full test suite runs, *including the hidden test it has never seen*; any failure output goes back to the agent verbatim — no hints, no human — and it retries, up to five rounds. Corrections = retries. Grading is deterministic pytest end to end; there is no LLM judge anywhere. Both arms run the identical loop.
 
@@ -115,7 +115,7 @@ The gap between the two memory rows is the quiet headline: 0.67 from a cold star
 
 ## Honest limitations
 
-One suite, one codebase family, built deliberately from tasks where memory *can* matter — it quantifies the last-mile-decision problem, not general coding ability; on tasks fully solvable from code, expect parity, not gains. The out-of-box row is a single verified run (an n=3 refresh is in progress; the prior architecture's n=3 campaign landed in the same 22–27 range on matured banks). Dataset, harness, per-task results, and the full hardening journal — including the experiments where our own ideas lost, because a benchmark that only ever confirms you is a mirror, not an instrument — go live at [agentmemorybenchmark.ai](https://agentmemorybenchmark.ai) in August 2026.
+One suite, one codebase family, built deliberately from tasks where memory *can* matter — it quantifies the last-mile-decision problem, not general coding ability; on tasks fully solvable from code, expect parity, not gains. The out-of-box row is a single verified run — an n=3 refresh is in progress — and it sits inside the prior architecture's n=3 range on freshly built banks (22–27 total corrections, i.e. 0.67–0.82 per task), which is the corroboration that matters. The matured-bank row has no prior-architecture analogue: automatic session write-back, the thing that matures a bank, is new in this release. Dataset, harness, per-task results, and the full hardening journal — including the experiments where our own ideas lost, because a benchmark that only ever confirms you is a mirror, not an instrument — go live at [agentmemorybenchmark.ai](https://agentmemorybenchmark.ai) in August 2026.
 
 ## The backstory, briefly
 
