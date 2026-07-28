@@ -176,6 +176,21 @@ async function main() {
     }
 
     await client.drain(client.opIds, "extraction");
+
+    // The drain above only covers operations THIS run enqueued — consolidation and the template's
+    // page refreshes run server-side on their own schedule. `synced` requires ZERO active ops, so
+    // wait (bounded) for the bank to fully settle before declaring the run complete.
+    const settleDeadline = Date.now() + 15 * 60 * 1000;
+    for (;;) {
+      const active = await client.activeOperations().catch(() => 0);
+      if (active === 0) break;
+      if (Date.now() > settleDeadline) {
+        log(`[deepen] ${active} server-side op(s) still active at settle timeout — proceeding`);
+        break;
+      }
+      log(`[deepen] waiting for ${active} server-side op(s) to settle …`);
+      await new Promise((r) => setTimeout(r, 5000));
+    }
     // (knowledge pages need no separate pass: configureBank's template import upserts them
     // by stable id every run — syncStatus's `synced` stays sound because it also requires the
     // gitlog seed present AND zero active extraction operations.)

@@ -17,7 +17,9 @@ import { join } from "node:path";
 import { DEFAULT_SEED_LIMIT } from "./seed";
 
 /** Default config-file path: ~/.hindsight/coding-agent.json */
-export const CONFIG_PATH = join(homedir(), ".hindsight", "coding-agent.json");
+export // HINDSIGHT_CONFIG joins the two env exceptions (diag/log files): it points at THE config file,
+// for containers and test harnesses where $HOME isn't the right anchor. Still one file.
+const CONFIG_PATH = process.env.HINDSIGHT_CONFIG || join(homedir(), ".hindsight", "coding-agent.json");
 
 /** Incremental git-sync settings (see core/sync.ts). */
 /** The config file's shape — every field optional; omitted fields take the documented default. */
