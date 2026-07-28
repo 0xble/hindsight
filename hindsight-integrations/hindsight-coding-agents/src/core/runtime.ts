@@ -15,6 +15,7 @@
  */
 import type { Config } from "./config";
 import { diag } from "./diag";
+import { setLogLevel } from "./log";
 import type { HindsightClient } from "./hindsight";
 import type { PageRef } from "./knowledge-injection";
 import { buildRosterRefresh, parsePageList } from "./knowledge-injection";
@@ -39,7 +40,9 @@ export class RuntimeCore {
     private readonly client: HindsightClient,
     private readonly bankId: string,
     private readonly cfg: Config
-  ) {}
+  ) {
+    setLogLevel(cfg.logLevel);
+  }
 
   /** The hindsight_* knowledge + recall tools, bound to this bank, for the harness to register natively. */
   toolSpecs(): ToolSpec[] {

@@ -28,6 +28,7 @@ import type { Config } from "./config";
 import { deriveBankId } from "./bank";
 import { brandWord } from "./brand";
 import { diag } from "./diag";
+import { setLogLevel } from "./log";
 import { parsePageList, buildKnowledgePreamble } from "./knowledge-injection";
 import type { ClientOpts } from "./hindsight";
 import { HindsightClient } from "./hindsight";
@@ -220,6 +221,7 @@ export async function runSessionStartHook(
     const cwd = (ev.cwd as string) || process.cwd();
 
     const cfg = loadConfig({ harness });
+    setLogLevel(cfg.logLevel);
     if (cfg.disabled) return;
 
     const bankId = deriveBankId(cfg, cwd, harness);

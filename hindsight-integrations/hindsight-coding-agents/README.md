@@ -136,6 +136,7 @@ hook by Codex...), so one shared config serves several agents side by side:
 | `surveyBudgetUsd`       | `2`                                  | survey spend cap — Claude recipe only (`claude -p --max-budget-usd`); other agents rely on their read-only sandbox                                                    |
 | `retainSessions`        | `true`                               | opencode write-back: async upsert of the session transcript every turn (set `false` to opt out; hook harnesses always write on Stop)                                  |
 | `retainEveryTurns`      | `1`                                  | opencode write-back cadence (user turns)                                                                                                                              |
+| `logLevel`              | `"info"`                             | plugin-log verbosity (`"debug"` \| `"info"` \| `"warn"` \| `"error"`); `HINDSIGHT_LOG_LEVEL` env overrides                                                             |
 | `gitIngest`             | `"message"`                             | git depth for seeding AND staying current (same engine): `"message"` = commit messages only (one doc, re-upserted when HEAD moves); `"full"` = messages + per-commit full diffs (progressive, newest first); `"none"` = git off |
 | `harnesses.<name>`      | —                                    | per-harness override of any field above                                                                                                                               |
 | `harness`               | `opencode`                           | **deepen engine only**: which session format `--conversations` is read as                                                                                                  |
@@ -180,10 +181,18 @@ docker run -d -p 8888:8888 -p 9999:9999 -e HINDSIGHT_API_LLM_PROVIDER=gemini \
   ghcr.io/vectorize-io/hindsight:latest
 ```
 
-## Diagnostics
+## Diagnostics & logging
 
-Every reflect and page-fetch outcome is appended as a JSON line to `/tmp/hindsight-plugin.log`
-(override with `HINDSIGHT_DIAG_FILE`):
+Two files, two audiences:
+
+**Leveled plugin log** (humans debugging): `$TMPDIR/hindsight-coding-agent/plugin.log` (override
+`HINDSIGHT_LOG_FILE`) — timestamped `LEVEL [scope] message` lines from every component, including
+the ingestion engine. Level defaults to `info`; set `"logLevel": "debug"` in config or
+`HINDSIGHT_LOG_LEVEL=debug` for ad-hoc debugging (at `debug`, every diag event below is mirrored
+here too, so one file tells the whole story).
+
+**Structured diag events** (machines/harnesses): every reflect and page-fetch outcome is appended
+as a JSON line to `/tmp/hindsight-plugin.log` (override with `HINDSIGHT_DIAG_FILE`):
 
 ```json
 {

@@ -33,6 +33,7 @@ import { DEEPEN_DIFF_TARGET } from "./core/status";
 import { pool } from "./core/util";
 import { getHarness, HARNESS_NAMES } from "./harness/registry";
 import { diag } from "./core/diag";
+import { log as plog, setLogLevel } from "./core/log";
 
 const DIFF_BATCH = 50; // per-run cap on per-commit diff ingestion (bounded session cost)
 const CONCURRENCY = 4;
@@ -65,7 +66,13 @@ if (!REPO || !BANK) {
   process.exit(1);
 }
 
-const log = (m: string) => console.log(`${new Date().toISOString()} ${m}`);
+setLogLevel(cfg.logLevel);
+// Foreground runs (benchmark/e2e) read stdout; background runs are followed via the leveled
+// plugin.log — every engine line goes to both.
+const log = (m: string) => {
+  console.log(`${new Date().toISOString()} ${m}`);
+  plog.info("deepen", m);
+};
 
 // ── per-bank lock: concurrent session starts must not double-ingest ─────────────
 // Scratch, not state: the lock only guards against concurrent double-ingest cost. In the OS

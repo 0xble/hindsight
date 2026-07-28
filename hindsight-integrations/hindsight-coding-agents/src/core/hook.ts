@@ -24,6 +24,7 @@ import { deriveBankId } from "./bank";
 import type { Config } from "./config";
 import { loadConfig } from "./config";
 import { diag } from "./diag";
+import { log, setLogLevel } from "./log";
 import { startBackgroundSeed } from "./seed";
 import { startCodebaseSurvey, type SurveyHarness } from "./survey";
 import type { ClientOpts } from "./hindsight";
@@ -118,6 +119,9 @@ export async function buildHookOutput(args: {
       });
     } catch (e) {
       reflectAnswer = ""; // ran and failed — don't retry every turn; the diag trail records it
+      log.warn(harness, "reflect failed — session runs without memory", {
+        error: String((e as Error)?.message || e).slice(0, 200),
+      });
       diag(harness, "reflect_failed", {
         ms: Date.now() - t0,
         error: String((e as Error)?.message || e).slice(0, 200),
@@ -206,7 +210,11 @@ export async function runHook(
   if (!prompt) return;
 
   const cfg = loadConfig({ harness: spec.harness });
-  if (cfg.disabled) return;
+  setLogLevel(cfg.logLevel);
+  if (cfg.disabled) {
+    log.debug(spec.harness, "hook skipped: disabled");
+    return;
+  }
 
   const out = (context: string | undefined, notice?: string) =>
     process.stdout.write(JSON.stringify(spec.emit(context ?? "", notice)));

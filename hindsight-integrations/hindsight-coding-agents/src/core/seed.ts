@@ -8,13 +8,10 @@
  * not break the hook.
  */
 import { spawn as realSpawn } from "node:child_process";
-import { mkdirSync, openSync, readFileSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
-// Runtime scratch (engine log) lives in the OS temp dir — ~/.hindsight holds ONLY the config file.
-const SCRATCH_DIR = join(tmpdir(), "hindsight-coding-agent");
 
 export const DEFAULT_SEED_LIMIT = 300;
 
@@ -31,19 +28,11 @@ export function startBackgroundSeed(
     const enginePath =
       opts.enginePath ?? join(dirname(fileURLToPath(import.meta.url)), "deepen.js");
     const limit = opts.limit ?? DEFAULT_SEED_LIMIT;
-    // Keep the engine's output: a detached child with stdio "ignore" made every ingest run
-    // undebuggable. Best-effort append to a per-user log; fall back to "ignore" if unwritable.
-    let stdio: "ignore" | ["ignore", number, number] = "ignore";
-    try {
-      mkdirSync(SCRATCH_DIR, { recursive: true });
-      const fd = openSync(join(SCRATCH_DIR, "deepen.log"), "a");
-      stdio = ["ignore", fd, fd];
-    } catch {
-      /* logging is best-effort */
-    }
+    // The engine writes the leveled plugin.log itself (core/log.ts), so the child's stdio can be
+    // fully detached — no fd redirect to manage.
     const child = spawnFn("node", [enginePath, "--repo", repoDir, "--gitlog-limit", String(limit)], {
       detached: true,
-      stdio,
+      stdio: "ignore",
     });
     // spawn() failures (ENOENT/EACCES/fd exhaustion/sandboxed environments) often arrive
     // ASYNCHRONOUSLY as an 'error' event on the child, not as a synchronous throw — an

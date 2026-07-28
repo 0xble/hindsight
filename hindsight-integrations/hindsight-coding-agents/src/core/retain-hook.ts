@@ -16,6 +16,7 @@ import { deriveBankId } from "./bank";
 import { retainLiveSession } from "./chat";
 import { loadConfig } from "./config";
 import { diag } from "./diag";
+import { log, setLogLevel } from "./log";
 import type { ClientOpts } from "./hindsight";
 import { HindsightClient } from "./hindsight";
 import { readClaudeTranscript } from "./transcript";
@@ -69,6 +70,9 @@ export async function buildRetain(args: {
     await retainLiveSession(client as HindsightClient, sessionId, turns, startTs);
     diag(harness, "retain_ok", { ms: Date.now() - t0, turns: turns.length, session: sessionId });
   } catch (e) {
+    log.warn(harness, "session write-back failed", {
+      error: String((e as Error)?.message || e).slice(0, 200),
+    });
     diag(harness, "retain_failed", {
       ms: Date.now() - t0,
       error: String((e as Error)?.message || e).slice(0, 200),
@@ -96,6 +100,7 @@ export async function runRetainHook(
   const cwd = rawCwd || process.cwd();
 
   const cfg = loadConfig({ harness: spec.harness });
+  setLogLevel(cfg.logLevel);
   if (cfg.disabled) return;
 
   if (!transcriptPath) return;

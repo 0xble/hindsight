@@ -41,6 +41,9 @@ export interface RawConfig {
   codebaseSurvey?: boolean; // SessionStart: spawn a headless claude to survey a cold repo's structure (default true)
   surveyModel?: string; // model passed to the headless survey's `claude -p --model` (default "haiku")
   surveyBudgetUsd?: number; // spend cap passed to the headless survey's `claude -p --max-budget-usd` (default 2)
+  /** Plugin log verbosity ("debug" | "info" | "warn" | "error", default "info");
+   *  HINDSIGHT_LOG_LEVEL overrides for ad-hoc debugging. */
+  logLevel?: "debug" | "info" | "warn" | "error";
   /** How git history feeds memory — seeding AND keeping current use the same engine:
    *  "message" = commit messages only (cheap aggregated doc, re-upserted when HEAD moves);
    *  "full"    = messages + every recent commit's full diff (progressive batches, newest first);
@@ -72,6 +75,7 @@ export interface Config {
   surveyModel: string;
   surveyBudgetUsd: number;
   gitIngest: "message" | "full" | "none";
+  logLevel: "debug" | "info" | "warn" | "error";
 }
 
 /** Apply defaults to a raw (file) config. Pure — the single place the defaults live. */
@@ -98,6 +102,9 @@ export function resolveConfig(raw: RawConfig = {}): Config {
     gitIngest: ["message", "full", "none"].includes(raw.gitIngest as string)
       ? (raw.gitIngest as "message" | "full" | "none")
       : "message",
+    logLevel: ["debug", "info", "warn", "error"].includes(raw.logLevel as string)
+      ? (raw.logLevel as "debug" | "info" | "warn" | "error")
+      : "info",
   };
 }
 

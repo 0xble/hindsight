@@ -8,6 +8,7 @@ export default defineConfig({
       // Unit tests exercise code paths that emit diagnostics; keep them out of the REAL
       // /tmp/hindsight-plugin.log so a developer's diag trail isn't polluted with test noise.
       HINDSIGHT_DIAG_FILE: join(tmpdir(), "hindsight-plugin-test.log"),
+      HINDSIGHT_LOG_FILE: join(tmpdir(), "hindsight-plugin-test-leveled.log"),
     },
   },
 });

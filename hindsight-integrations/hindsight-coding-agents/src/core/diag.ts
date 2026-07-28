@@ -8,8 +8,10 @@
  * reaching into another hook's module.
  */
 import { appendFileSync } from "node:fs";
+import { log } from "./log";
 
 export function diag(harness: string, event: string, extra: Record<string, unknown> = {}): void {
+  log.debug(harness, `diag:${event}`, extra); // debug level shows the full story in ONE file
   try {
     appendFileSync(
       process.env.HINDSIGHT_DIAG_FILE || "/tmp/hindsight-plugin.log",
