@@ -22,7 +22,7 @@ const bundleFiles = [
   "mcp-server.js",
   "claude-sessionstart-hook.js",
   "hindsight-seed.js",
-  "backfill.js",
+  "deepen.js",
 ];
 for (const f of bundleFiles) {
   cpSync(join(core, "dist", f), join(distDir, f));

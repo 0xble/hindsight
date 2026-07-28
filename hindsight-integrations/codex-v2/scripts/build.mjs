@@ -23,7 +23,7 @@ const bundleFiles = [
   "codex-stop-hook.js",
   "mcp-server.js",
   "hindsight-seed.js",
-  "backfill.js",
+  "deepen.js",
 ];
 for (const f of bundleFiles) {
   cpSync(join(core, "dist", f), join(distDir, f));
