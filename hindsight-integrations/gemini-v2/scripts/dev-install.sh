@@ -39,7 +39,7 @@ const cmd = (file, timeout) => ({
 settings.hooks = {
   ...(settings.hooks ?? {}),
   SessionStart: [cmd("gemini-sessionstart-hook.js", 15000)],
-  BeforeAgent: [cmd("gemini-hook.js", 15000)],
+  BeforeAgent: [cmd("gemini-hook.js", 30000)],
   SessionEnd: [cmd("gemini-stop-hook.js", 30000)],
 };
 

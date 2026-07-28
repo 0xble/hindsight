@@ -62,7 +62,13 @@ interface HookClient {
   listDocumentIds?(tag: string): Promise<Set<string>>;
 }
 
-/** Hook harnesses run under the host's per-hook kill window; never let reflect outlive it. */
+/**
+ * Cap on the once-per-session reflect. INVARIANT: this MUST stay below every harness's
+ * UserPromptSubmit/BeforeAgent hook timeout (currently 30s in claude-code-v2/hooks/hooks.json,
+ * codex-v2 + gemini-v2 dev-install) — otherwise the host kills the hook mid-reflect before the
+ * result is cached, so the injection is discarded AND the reflect re-fires (uncached) every turn.
+ * Raise the harness timeout in lockstep if you raise this.
+ */
 const HOOK_REFLECT_CAP_MS = 25_000;
 
 interface SessionCache {

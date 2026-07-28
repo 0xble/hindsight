@@ -29,7 +29,7 @@ cat > "${HOOKS_JSON}" <<JSON
       { "hooks": [ { "type": "command", "command": "node \"${DIST}/codex-sessionstart-hook.js\"", "timeout": 15 } ] }
     ],
     "UserPromptSubmit": [
-      { "hooks": [ { "type": "command", "command": "node \"${DIST}/codex-hook.js\"", "timeout": 15 } ] }
+      { "hooks": [ { "type": "command", "command": "node \"${DIST}/codex-hook.js\"", "timeout": 30 } ] }
     ],
     "Stop": [
       { "hooks": [ { "type": "command", "command": "node \"${DIST}/codex-stop-hook.js\"", "timeout": 30 } ] }
