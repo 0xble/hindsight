@@ -58,7 +58,6 @@ export class HindsightClient {
     return r;
   }
 
-
   /** Retain one memory. Async by default: enqueue extraction server-side and collect its op-id for drain(). */
   async retain(
     content: string,
@@ -136,7 +135,10 @@ export class HindsightClient {
   async activeOperations(): Promise<number> {
     const r = await this.req("GET", this.bankUrl("/operations"));
     try {
-      const j = (await r.json()) as { operations?: { status?: string }[]; items?: { status?: string }[] };
+      const j = (await r.json()) as {
+        operations?: { status?: string }[];
+        items?: { status?: string }[];
+      };
       const ops = j.operations ?? j.items ?? [];
       return ops.filter((o) => !TERMINAL.has((o?.status || "").toLowerCase())).length;
     } catch {
@@ -179,7 +181,10 @@ export class HindsightClient {
   }
 
   /** Reflect: synthesized, root-cause answer over the bank. Bounded so a slow server never hangs a caller. */
-  async reflect(query: string, opts: { budget?: string; timeoutMs?: number } = {}): Promise<string> {
+  async reflect(
+    query: string,
+    opts: { budget?: string; timeoutMs?: number } = {}
+  ): Promise<string> {
     const ctrl = new AbortController();
     const timer = setTimeout(() => ctrl.abort(), opts.timeoutMs ?? 120000);
     try {
@@ -379,5 +384,4 @@ export class HindsightClient {
       return undefined;
     }
   }
-
 }

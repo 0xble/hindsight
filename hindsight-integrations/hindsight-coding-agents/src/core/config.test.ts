@@ -54,19 +54,13 @@ describe("loadConfig layering", () => {
     expect(loadConfig({ path: globalCfg }).bankId).toBe("shared"); // no harness: base only
   });
 
-
-
-
-
   it("legacy string signature still works as the global path", () => {
     writeJson(globalCfg, { bankId: "legacy" });
     expect(loadConfig(globalCfg).bankId).toBe("legacy");
   });
 
   it("pageRefreshEveryTurns defaults to 10", () => {
-    expect(
-      loadConfig({ harness: "claude-code"}).pageRefreshEveryTurns
-    ).toBe(10);
+    expect(loadConfig({ harness: "claude-code" }).pageRefreshEveryTurns).toBe(10);
   });
 
   it("pageRefreshEveryTurns override wins over the default", () => {
@@ -79,9 +73,6 @@ describe("loadConfig layering", () => {
 // able to redirect the API endpoint/token or the global bank map — otherwise a malicious repo could
 // exfiltrate the user's token + prompts to its own server just by being opened.
 describe("loadConfig — untrusted project-local layer is sanitized (security)", () => {
-
-
-
   it("the user-global config CAN still set apiUrl/apiToken (only the project layer is restricted)", () => {
     writeJson(globalCfg, { apiUrl: "https://real.example", apiToken: "REAL-TOKEN" });
     const cfg = loadConfig({ path: globalCfg });

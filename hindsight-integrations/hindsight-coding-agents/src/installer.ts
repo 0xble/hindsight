@@ -52,9 +52,7 @@ function writeJson(path: string, value: unknown): void {
 
 /** Hook-array merge for claude/codex-style files: drop our old entries, append the new one. */
 function mergeHookEvent(existing: any[] | undefined, entry: unknown): any[] {
-  const kept = (existing ?? []).filter(
-    (e) => !JSON.stringify(e).includes(MARKER)
-  );
+  const kept = (existing ?? []).filter((e) => !JSON.stringify(e).includes(MARKER));
   return [...kept, entry];
 }
 
@@ -129,11 +127,25 @@ const claudeCode: HarnessInstaller = {
       settings.hooks.UserPromptSubmit,
       cmdHook(c.dist, "claude-hook.js", 30)
     );
-    settings.hooks.Stop = mergeHookEvent(settings.hooks.Stop, cmdHook(c.dist, "claude-stop-hook.js", 60));
+    settings.hooks.Stop = mergeHookEvent(
+      settings.hooks.Stop,
+      cmdHook(c.dist, "claude-stop-hook.js", 60)
+    );
     writeJson(path, settings);
     c.log?.(`claude-code: hooks merged into ${path}`);
     const mcp = c.claudeMcp ?? defaultClaudeMcp;
-    if (mcp(["mcp", "add", "--scope", "user", "hindsight", "--", "node", join(c.dist, "mcp-server.js")])) {
+    if (
+      mcp([
+        "mcp",
+        "add",
+        "--scope",
+        "user",
+        "hindsight",
+        "--",
+        "node",
+        join(c.dist, "mcp-server.js"),
+      ])
+    ) {
       c.log?.("claude-code: MCP server registered (claude mcp add, user scope)");
     } else {
       c.log?.(
@@ -180,7 +192,10 @@ const codex: HarnessInstaller = {
       cfg.hooks.SessionStart,
       cmdHook(c.dist, "codex-sessionstart-hook.js", 30)
     );
-    cfg.hooks.UserPromptSubmit = mergeHookEvent(cfg.hooks.UserPromptSubmit, cmdHook(c.dist, "codex-hook.js", 30));
+    cfg.hooks.UserPromptSubmit = mergeHookEvent(
+      cfg.hooks.UserPromptSubmit,
+      cmdHook(c.dist, "codex-hook.js", 30)
+    );
     cfg.hooks.Stop = mergeHookEvent(cfg.hooks.Stop, cmdHook(c.dist, "codex-stop-hook.js", 60));
     writeJson(hooksPath, cfg);
     c.log?.(`codex: hooks merged into ${hooksPath}`);
@@ -191,13 +206,17 @@ const codex: HarnessInstaller = {
     const additions: string[] = [];
     if (!/^\s*codex_hooks\s*=/m.test(toml)) {
       if (/^\[features\]/m.test(toml)) {
-        c.log?.("codex: add `codex_hooks = true` under your existing [features] section in ~/.codex/config.toml");
+        c.log?.(
+          "codex: add `codex_hooks = true` under your existing [features] section in ~/.codex/config.toml"
+        );
       } else {
         additions.push("[features]\ncodex_hooks = true");
       }
     }
     if (!toml.includes("[mcp_servers.hindsight]")) {
-      additions.push(`[mcp_servers.hindsight]\ncommand = "node"\nargs = ["${join(c.dist, "mcp-server.js")}"]`);
+      additions.push(
+        `[mcp_servers.hindsight]\ncommand = "node"\nargs = ["${join(c.dist, "mcp-server.js")}"]`
+      );
     }
     if (additions.length) {
       if (existsSync(tomlPath) && !existsSync(`${tomlPath}.hindsight-backup`)) {
@@ -222,10 +241,15 @@ const codex: HarnessInstaller = {
     const tomlPath = join(c.home, ".codex", "config.toml");
     if (existsSync(tomlPath)) {
       const toml = readFileSync(tomlPath, "utf8");
-      const cleaned = toml.replace(/\n?\[mcp_servers\.hindsight\]\ncommand = "node"\nargs = \[[^\]]*\]\n?/g, "\n");
+      const cleaned = toml.replace(
+        /\n?\[mcp_servers\.hindsight\]\ncommand = "node"\nargs = \[[^\]]*\]\n?/g,
+        "\n"
+      );
       if (cleaned !== toml) writeFileSync(tomlPath, cleaned);
     }
-    c.log?.("codex: hooks + MCP section removed (codex_hooks flag left as-is — other hooks may use it)");
+    c.log?.(
+      "codex: hooks + MCP section removed (codex_hooks flag left as-is — other hooks may use it)"
+    );
   },
 };
 
@@ -241,7 +265,10 @@ const gemini: HarnessInstaller = {
       settings.hooks.SessionStart,
       cmdHook(c.dist, "gemini-sessionstart-hook.js", 15000)
     );
-    settings.hooks.BeforeAgent = mergeHookEvent(settings.hooks.BeforeAgent, cmdHook(c.dist, "gemini-hook.js", 15000));
+    settings.hooks.BeforeAgent = mergeHookEvent(
+      settings.hooks.BeforeAgent,
+      cmdHook(c.dist, "gemini-hook.js", 15000)
+    );
     settings.hooks.SessionEnd = mergeHookEvent(
       settings.hooks.SessionEnd,
       cmdHook(c.dist, "gemini-stop-hook.js", 30000)
@@ -286,7 +313,10 @@ const cursor: HarnessInstaller = {
     writeJson(hooksPath, cfg);
     const mcpPath = join(c.home, ".cursor", "mcp.json");
     const mcp = readJson(mcpPath);
-    mcp.mcpServers = { ...(mcp.mcpServers ?? {}), hindsight: { command: "node", args: [join(c.dist, "mcp-server.js")] } };
+    mcp.mcpServers = {
+      ...(mcp.mcpServers ?? {}),
+      hindsight: { command: "node", args: [join(c.dist, "mcp-server.js")] },
+    };
     writeJson(mcpPath, mcp);
     c.log?.(`cursor-cli: hook merged into ${hooksPath}, MCP into ${mcpPath}`);
   },
@@ -341,7 +371,9 @@ export function run(argv: string[], ctx: InstallCtx): number {
     for (const n of names) {
       const hit = INSTALLERS.find((i) => i.name === n);
       if (!hit) {
-        ctx.log?.(`unknown harness "${n}" — expected one of: ${INSTALLERS.map((i) => i.name).join(", ")}`);
+        ctx.log?.(
+          `unknown harness "${n}" — expected one of: ${INSTALLERS.map((i) => i.name).join(", ")}`
+        );
         return 1;
       }
       targets.push(hit);

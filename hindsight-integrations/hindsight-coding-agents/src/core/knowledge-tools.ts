@@ -93,7 +93,7 @@ export function buildKnowledgeTools(
         "be answered by the project's accumulated knowledge (architecture, conventions, decisions, " +
         "initiatives) rather than by reading code. Returns ranked pages with a relevance snippet; " +
         "read a full page with hindsight_read_knowledge_page. When a result informs your answer, " +
-        "credit it visibly: start that part with \"🧠 From Hindsight memory (<page name>):\".",
+        'credit it visibly: start that part with "🧠 From Hindsight memory (<page name>):".',
       inputSchema: { query: z.string().describe("what to look for") },
       handler: async (args: { query: string }) => {
         try {
@@ -143,7 +143,7 @@ export function buildKnowledgeTools(
         "decision and exact rule/values that explain a behavior, bug, or convention. Slower than " +
         "hindsight_search_knowledge_pages (several seconds): reach for it when pages are too " +
         "shallow and you need the root cause or the decided literals. When the answer informs " +
-        "your reply, credit it visibly: \"🧠 From Hindsight memory:\".",
+        'your reply, credit it visibly: "🧠 From Hindsight memory:".',
       inputSchema: { query: z.string().describe("the question to reason over memory about") },
       handler: guarded(async ({ query }: { query: string }) =>
         client.reflect(query, { budget: "high" })

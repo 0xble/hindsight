@@ -12,7 +12,6 @@ import { readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
-
 export const DEFAULT_SEED_LIMIT = 300;
 
 /** Spawn a DETACHED background run of the deepen engine for `repoDir`. Idempotent server-side
@@ -30,10 +29,14 @@ export function startBackgroundSeed(
     const limit = opts.limit ?? DEFAULT_SEED_LIMIT;
     // The engine writes the leveled plugin.log itself (core/log.ts), so the child's stdio can be
     // fully detached — no fd redirect to manage.
-    const child = spawnFn("node", [enginePath, "--repo", repoDir, "--gitlog-limit", String(limit)], {
-      detached: true,
-      stdio: "ignore",
-    });
+    const child = spawnFn(
+      "node",
+      [enginePath, "--repo", repoDir, "--gitlog-limit", String(limit)],
+      {
+        detached: true,
+        stdio: "ignore",
+      }
+    );
     // spawn() failures (ENOENT/EACCES/fd exhaustion/sandboxed environments) often arrive
     // ASYNCHRONOUSLY as an 'error' event on the child, not as a synchronous throw — an
     // unhandled 'error' event would crash the caller. Swallow it: fire-and-forget best-effort.

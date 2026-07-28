@@ -34,11 +34,13 @@ const MATCHING_PROMPT = "why does the upload retry backoff fail?";
 /** A prompt matching nothing in the page. */
 const UNRELATED_PROMPT = "completely unrelated banana smoothie question";
 
-function makeClient(overrides: Partial<{
-  reflect: (query: string, opts: { budget?: string; timeoutMs?: number }) => Promise<string>;
-  listPages: () => Promise<unknown>;
-  getPage: (pageId: string) => Promise<unknown>;
-}> = {}) {
+function makeClient(
+  overrides: Partial<{
+    reflect: (query: string, opts: { budget?: string; timeoutMs?: number }) => Promise<string>;
+    listPages: () => Promise<unknown>;
+    getPage: (pageId: string) => Promise<unknown>;
+  }> = {}
+) {
   return {
     reflect: vi.fn(async () => "REFLECT_ANSWER"),
     listPages: vi.fn(async () => ({ items: [{ id: "p1", name: "Uploader guide" }] })),

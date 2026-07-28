@@ -82,7 +82,10 @@ function renderMessage(m: GeminiMessage): TransportTurn[] {
       const t = stripInjectedMemory(p.text).trim();
       if (t) texts.push(t);
     } else if (p.functionCall && typeof p.functionCall.name === "string") {
-      actions.push({ role: "action", content: actionLine(p.functionCall.name, p.functionCall.args) });
+      actions.push({
+        role: "action",
+        content: actionLine(p.functionCall.name, p.functionCall.args),
+      });
     }
     // functionResponse: dropped — outputs are mechanical noise for extraction
   }

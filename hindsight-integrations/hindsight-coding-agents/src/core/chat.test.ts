@@ -34,7 +34,9 @@ describe("renderSessionJson", () => {
   });
 
   it("empty turn list still yields the REF-ID system turn alone", () => {
-    const parsed = JSON.parse(renderSessionJson("r", [], "2026-01-01T00:00:00Z")) as TransportTurn[];
+    const parsed = JSON.parse(
+      renderSessionJson("r", [], "2026-01-01T00:00:00Z")
+    ) as TransportTurn[];
     expect(parsed).toEqual([
       { role: "system", content: "REF-ID: r", timestamp: "2026-01-01T00:00:00Z" },
     ]);

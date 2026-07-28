@@ -25,7 +25,7 @@ export const GITLOG_MISSION =
 export const CONVERSATION_MISSION =
   "You are ingesting a developer conversation as a JSON transcript of turns ({role, content}): the " +
   "user's requests, the assistant's narration, and compact 'action' turns naming each tool use and " +
-  "its target (e.g. \"Edit boltons/strutils.py\") with no arguments or outputs. It may be a SHORT " +
+  'its target (e.g. "Edit boltons/strutils.py") with no arguments or outputs. It may be a SHORT ' +
   "decision chat or a LONG working session — scale the facts to the substance, never to the message " +
   "count. Extract the FEWEST facts that capture the OUTCOME: the settled DECISIONS and their exact " +
   "rules/values (quote literals VERBATIM); concrete CHANGES to specific code entities; problems and " +
@@ -240,6 +240,9 @@ export const CODING_BANK_TEMPLATE = {
     source_query: p.source_query,
     tags: p.tags,
     max_tokens: 4096,
-    trigger: { fact_types: ["world", "experience", "observation"], refresh_after_consolidation: true },
+    trigger: {
+      fact_types: ["world", "experience", "observation"],
+      refresh_after_consolidation: true,
+    },
   })),
 } as const;

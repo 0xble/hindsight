@@ -109,7 +109,15 @@ describe.runIf(LIVE)("live system: backfill -> reflect -> hook injection", () =>
     // the readiness contract harnesses poll: the seeded memory must report synced
     const statusOut = execFileSync(
       "node",
-      [join(DIST, "status.js"), "--repo", repo, "--bank", `live-e2e-${basename(repo)}`, "--api-url", API_URL],
+      [
+        join(DIST, "status.js"),
+        "--repo",
+        repo,
+        "--bank",
+        `live-e2e-${basename(repo)}`,
+        "--api-url",
+        API_URL,
+      ],
       { encoding: "utf-8", timeout: 60_000 }
     );
     expect(JSON.parse(statusOut.trim().split("\n").at(-1) as string).synced).toBe(true);

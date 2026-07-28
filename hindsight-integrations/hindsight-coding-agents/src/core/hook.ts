@@ -71,8 +71,6 @@ interface SessionCache {
   pages?: { atTurn: number; list: PageRef[] };
 }
 
-
-
 export interface HookOutput {
   /** The model-facing injection block, or undefined when there's nothing to inject. */
   context?: string;
@@ -132,8 +130,7 @@ export async function buildHookOutput(args: {
 
   // ── knowledge-page roster (ids + titles only): refreshed on the cadence ────────
   const cadence = cfg.pageRefreshEveryTurns;
-  const stale =
-    !cached.pages || (cadence > 0 && turns - cached.pages.atTurn >= cadence);
+  const stale = !cached.pages || (cadence > 0 && turns - cached.pages.atTurn >= cadence);
   let pages = cached.pages?.list ?? [];
   if (stale) {
     const t0 = Date.now();
@@ -224,7 +221,11 @@ export async function runHook(
     apiToken: cfg.apiToken,
     bank: deriveBankId(cfg, cwd, spec.harness),
   });
-  const cacheFile = join(tmpdir(), `hindsight-${spec.harness}`, `${sessionId || "no-session"}.json`);
+  const cacheFile = join(
+    tmpdir(),
+    `hindsight-${spec.harness}`,
+    `${sessionId || "no-session"}.json`
+  );
 
   // SessionStart-parity for hosts without a session-start hook: on the session's FIRST prompt
   // (no cache file yet), fire the idempotent ingestion engine, and the cold-only survey.

@@ -72,7 +72,11 @@ describe("readOpencodeMessages", () => {
           {
             type: "tool",
             tool: "bash",
-            state: { status: "completed", input: { command: "cat big.log" }, output: "x".repeat(5000) },
+            state: {
+              status: "completed",
+              input: { command: "cat big.log" },
+              output: "x".repeat(5000),
+            },
           },
         ],
       },

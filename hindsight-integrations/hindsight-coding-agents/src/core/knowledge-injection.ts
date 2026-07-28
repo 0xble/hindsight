@@ -29,13 +29,13 @@ function roster(pages: PageRef[]): string {
 const TOOL_GUIDE =
   "- hindsight_search_knowledge_pages(query) — FIRST STOP for any question the project's accumulated " +
   "knowledge might answer (components, conventions, past decisions, initiatives): search the knowledge " +
-  "pages and credit results visibly with \"🧠 From Hindsight memory (<page>):\".\n" +
+  'pages and credit results visibly with "🧠 From Hindsight memory (<page>):".\n' +
   "- hindsight_list_knowledge_pages / hindsight_read_knowledge_page — BEFORE substantial work, list the pages and " +
   "read the relevant ones to ground yourself in this repo's architecture, conventions, and past decisions instead " +
   "of re-deriving them from the code; follow any [[page:<id>]] links you see.\n" +
   "- hindsight_reflect(query) — when pages are too shallow and you need the WHY: deep reasoning over the " +
   "repo's full memory for the past decision and exact values that explain a behavior or bug (slower — " +
-  "use deliberately, and credit results with \"🧠 From Hindsight memory:\").\n" +
+  'use deliberately, and credit results with "🧠 From Hindsight memory:").\n' +
   "- hindsight_capture_initiative(title, summary) — right after the user approves a plan or finishes brainstorming a " +
   "new feature/capability and you are about to start implementing (BEFORE you write any code), call this ONCE to " +
   "record it as a tracked page. Skip bug fixes, small tweaks, and chores.\n" +

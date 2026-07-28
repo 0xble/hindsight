@@ -24,7 +24,12 @@ describe("startBackgroundSeed", () => {
     expect(spawn).toHaveBeenCalledTimes(1);
     const args = spawn.mock.calls[0][1] as string[];
     expect(args[0].endsWith("deepen.js")).toBe(true);
-    expect(args.slice(1)).toEqual(["--repo", "/some/repo", "--gitlog-limit", String(DEFAULT_SEED_LIMIT)]);
+    expect(args.slice(1)).toEqual([
+      "--repo",
+      "/some/repo",
+      "--gitlog-limit",
+      String(DEFAULT_SEED_LIMIT),
+    ]);
   });
 
   it("opts.limit overrides the default limit", () => {

@@ -193,7 +193,11 @@ export class RuntimeCore {
       const t0 = Date.now();
       void retainLiveSession(this.client, sessionId, turns, st.startTs)
         .then(() =>
-          diag(HARNESS, "retain_ok", { ms: Date.now() - t0, turns: turns.length, session: sessionId })
+          diag(HARNESS, "retain_ok", {
+            ms: Date.now() - t0,
+            turns: turns.length,
+            session: sessionId,
+          })
         )
         .catch((e) =>
           diag(HARNESS, "retain_failed", {
@@ -204,5 +208,4 @@ export class RuntimeCore {
         );
     }
   }
-
 }

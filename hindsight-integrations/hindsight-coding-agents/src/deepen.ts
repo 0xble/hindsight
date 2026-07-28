@@ -54,7 +54,8 @@ const API_TOKEN = arg("api-token") ?? cfg.apiToken;
 const CONV = arg("conversations");
 const GITLOG_LIMIT = arg("gitlog-limit") ? Number(arg("gitlog-limit")) : (cfg.seedLimit ?? 300);
 // harness override (benchmark/e2e want deterministic depth regardless of user config)
-const GIT_INGEST = (["message", "full", "none"] as const).find((m) => m === arg("git-ingest")) ?? cfg.gitIngest;
+const GIT_INGEST =
+  (["message", "full", "none"] as const).find((m) => m === arg("git-ingest")) ?? cfg.gitIngest;
 
 if (!REPO || !BANK) {
   console.error(
@@ -186,7 +187,9 @@ async function main() {
       newChats: sessions.length,
       failures,
     });
-    log(`\n✅ deepen complete in ${((Date.now() - t0) / 1000).toFixed(1)}s${failures ? ` (${failures} items failed to enqueue)` : ""}.`);
+    log(
+      `\n✅ deepen complete in ${((Date.now() - t0) / 1000).toFixed(1)}s${failures ? ` (${failures} items failed to enqueue)` : ""}.`
+    );
   } finally {
     try {
       unlinkSync(LOCK);
@@ -197,7 +200,10 @@ async function main() {
 }
 
 main().catch((e) => {
-  diag("deepen", "deepen_failed", { bank: BANK, error: String((e as Error)?.message || e).slice(0, 200) });
+  diag("deepen", "deepen_failed", {
+    bank: BANK,
+    error: String((e as Error)?.message || e).slice(0, 200),
+  });
   console.error("deepen failed:", (e as Error).message || e);
   try {
     unlinkSync(LOCK);

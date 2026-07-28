@@ -134,7 +134,12 @@ describe("buildKnowledgeTools", () => {
     expect(result.isError).toBeFalsy();
     expect(client.searchKnowledgePages).toHaveBeenCalledWith("upload retries", 3);
     expect(JSON.parse(result.content[0].text)).toEqual([
-      { page: "Uploader guide", page_id: "p1", snippet: "Uploads retry with backoff…", score: 0.031 },
+      {
+        page: "Uploader guide",
+        page_id: "p1",
+        snippet: "Uploads retry with backoff…",
+        score: 0.031,
+      },
       { page: "Auth notes", page_id: "p2", snippet: "Tokens rotate daily.", score: 0.012 },
     ]);
   });
@@ -145,7 +150,10 @@ describe("buildKnowledgeTools", () => {
         throw new Error("search down");
       }),
     });
-    const tool = findTool(buildKnowledgeTools(client, "repo-a"), "hindsight_search_knowledge_pages");
+    const tool = findTool(
+      buildKnowledgeTools(client, "repo-a"),
+      "hindsight_search_knowledge_pages"
+    );
     const result = await tool.handler({ query: "x" });
     expect(result.isError).toBe(true);
     expect(result.content[0].text).toContain("search down");
@@ -275,7 +283,7 @@ describe("buildKnowledgeTools", () => {
   for (const name of [
     "hindsight_list_knowledge_pages",
     "hindsight_read_knowledge_page",
-      "hindsight_reflect",
+    "hindsight_reflect",
     "hindsight_capture_initiative",
     "hindsight_ingest_document",
   ] as const) {

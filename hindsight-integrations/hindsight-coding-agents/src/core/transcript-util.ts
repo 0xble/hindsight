@@ -20,7 +20,15 @@ export function truncate(s: string, max = TOOL_TEXT_CAP): string {
 
 /** Keys tried, in order, to find a tool call's primary target for the compact action line. */
 const TARGET_KEYS = [
-  "file_path", "path", "notebook_path", "command", "pattern", "query", "url", "name", "id",
+  "file_path",
+  "path",
+  "notebook_path",
+  "command",
+  "pattern",
+  "query",
+  "url",
+  "name",
+  "id",
 ] as const;
 
 const ACTION_TARGET_CAP = 100;
