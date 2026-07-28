@@ -58,8 +58,11 @@ One-command install (detects the coding agents on the machine, wires each native
 idempotent, with `uninstall` removing exactly what it added):
 
 ```bash
-npx hindsight-coding-agents install
+npm install -g hindsight-coding-agents && hindsight-coding-agents install
 ```
+
+Update with `npm update -g hindsight-coding-agents` — wired paths stay valid; re-run `install`
+(idempotent) only when a release notes a wiring change.
 
 Manual wiring per harness:
 

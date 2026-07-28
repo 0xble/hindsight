@@ -341,3 +341,18 @@ describe("run() CLI behavior", () => {
     ]);
   });
 });
+
+describe("npx-cache guard", () => {
+  it("refuses install when pkgRoot is inside an npx cache (wiring would die on eviction)", () => {
+    const logs: string[] = [];
+    const ctx = {
+      home: "/tmp/never-touched",
+      pkgRoot: "/Users/x/.npm/_npx/abc123/node_modules/hindsight-coding-agents",
+      dist: "/Users/x/.npm/_npx/abc123/node_modules/hindsight-coding-agents/dist",
+      claudeMcp: () => true,
+      log: (m: string) => logs.push(m),
+    };
+    expect(run(["install", "claude-code"], ctx)).toBe(1);
+    expect(logs.join("\n")).toContain("npm install -g");
+  });
+});

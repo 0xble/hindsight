@@ -318,6 +318,16 @@ export const INSTALLERS: HarnessInstaller[] = [opencode, claudeCode, codex, gemi
 
 export function run(argv: string[], ctx: InstallCtx): number {
   const [command, ...names] = argv;
+  // The wiring we write is ABSOLUTE paths into this package's dist. From an npx/pnpm-dlx cache
+  // those paths die on cache eviction — every hook silently stops. Refuse and say what to do.
+  if (command === "install" && /\/(_npx|\.npm\/_npx|dlx-)\/|\/_cacache\//.test(ctx.pkgRoot)) {
+    ctx.log?.(
+      "refusing to install from an npx/dlx cache: the hook wiring would point into a cache npm can " +
+        "evict, silently breaking every session.\nInstall the package permanently, then re-run:\n" +
+        "  npm install -g hindsight-coding-agents && hindsight-coding-agents install"
+    );
+    return 1;
+  }
   if (command !== "install" && command !== "uninstall") {
     ctx.log?.(
       `usage: hindsight-coding-agents <install|uninstall> [harness...]\n` +
