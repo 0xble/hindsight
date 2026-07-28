@@ -17,13 +17,15 @@
  * in `buildHookOutput` (client + cache file in, injection string out) so it's unit-testable
  * without stdin/stdout; `runHook` is thin plumbing around it, with a `makeClient` seam for tests.
  */
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { deriveBankId } from "./bank";
 import type { Config } from "./config";
 import { loadConfig } from "./config";
 import { diag } from "./diag";
+import { startBackgroundSeed } from "./seed";
+import { startCodebaseSurvey, type SurveyHarness } from "./survey";
 import type { ClientOpts } from "./hindsight";
 import { HindsightClient } from "./hindsight";
 import { brandWord } from "./brand";
@@ -40,6 +42,10 @@ export interface HookEventFields {
 export interface HookSpec {
   /** Harness name — config `harnesses.<name>` section, {harness} template field, diag records. */
   harness: string;
+  /** Harnesses with NO SessionStart-equivalent hook (Cursor): fire the ingestion engine from the
+   *  FIRST prompt of each session instead, so auto-ingestion parity doesn't depend on a hook the
+   *  host doesn't offer. */
+  ensureSeed?: boolean;
   /** Read the fields out of the harness's stdin event (shapes differ per harness). */
   parse(event: Record<string, unknown>): HookEventFields;
   /** Wrap injected context (and an optional user-facing notice) in the harness's native
@@ -51,6 +57,8 @@ export interface HookSpec {
 interface HookClient {
   reflect(query: string, opts: { budget?: string; timeoutMs?: number }): Promise<string>;
   listPages(): Promise<unknown>;
+  /** Only needed by ensureSeed's cold check (optional so test doubles stay minimal). */
+  listDocumentIds?(tag: string): Promise<Set<string>>;
 }
 
 /** Hook harnesses run under the host's per-hook kill window; never let reflect outlive it. */
@@ -209,6 +217,27 @@ export async function runHook(
     bank: deriveBankId(cfg, cwd, spec.harness),
   });
   const cacheFile = join(tmpdir(), `hindsight-${spec.harness}`, `${sessionId || "no-session"}.json`);
+
+  // SessionStart-parity for hosts without a session-start hook: on the session's FIRST prompt
+  // (no cache file yet), fire the idempotent ingestion engine, and the cold-only survey.
+  if (spec.ensureSeed && cfg.autoSeed !== false && !existsSync(cacheFile)) {
+    startBackgroundSeed(cwd, { limit: cfg.seedLimit });
+    if (cfg.codebaseSurvey !== false && client.listDocumentIds) {
+      void client
+        .listDocumentIds("source:git")
+        .then((ids) => {
+          if (ids.size === 0) {
+            diag(spec.harness, "seed_started", { bank: deriveBankId(cfg, cwd, spec.harness) });
+            startCodebaseSurvey(cwd, {
+              harness: spec.harness as SurveyHarness,
+              model: cfg.surveyModel,
+              budgetUsd: cfg.surveyBudgetUsd,
+            });
+          }
+        })
+        .catch(() => {});
+    }
+  }
 
   const output = await buildHookOutput({ harness: spec.harness, prompt, cfg, client, cacheFile });
   if (output.context || output.notice) out(output.context, output.notice);

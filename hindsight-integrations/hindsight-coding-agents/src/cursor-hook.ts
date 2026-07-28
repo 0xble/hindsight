@@ -18,6 +18,7 @@ import { runHook } from "./core/hook";
 
 void runHook({
   harness: "cursor-cli",
+  ensureSeed: true, // Cursor has no SessionStart hook — ingestion fires from the first prompt
   parse: (ev) => ({
     prompt: (ev.prompt as string | undefined) ?? (ev.user_prompt as string | undefined),
     cwd:
