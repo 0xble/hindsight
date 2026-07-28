@@ -54,6 +54,15 @@ no longer in effect.
 | `gemini`      | per-prompt hooks  | gemini wrapper hooks    | `SessionStart` + `BeforeAgent` + `SessionEnd` in `~/.gemini/settings.json` (Gemini CLI ≥ 0.52.0) |
 | `cursor-cli`  | per-prompt hook   | `hindsight-cursor-hook` | `beforeSubmitPrompt` hook in Cursor `hooks.json` |
 
+One-command install (detects the coding agents on the machine, wires each natively — hooks + MCP;
+idempotent, with `uninstall` removing exactly what it added):
+
+```bash
+npx hindsight-coding-agents install
+```
+
+Manual wiring per harness:
+
 ```json title="opencode.json"
 { "plugin": ["/path/to/hindsight-coding-agents"] }
 ```

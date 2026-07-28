@@ -73,6 +73,19 @@ injection channel, transcript access, and native tool registration — so the wh
 plugin hooks (`src/harness/opencode.ts`) with **no MCP server needed**. It also supports opt-in
 **incremental git-sync** (retain commits new since the seed on load).
 
+### Install — one command, every agent
+
+```bash
+npx hindsight-coding-agents install            # detects your agents, wires each natively
+npx hindsight-coding-agents install codex      # or pick specific harnesses
+npx hindsight-coding-agents uninstall          # removes exactly what install added
+```
+
+`install` merges the native wiring (hooks + MCP registration where the host wants them) into each
+agent's own config, preserving everything already there; it is idempotent (re-run after moving the
+package) and backs up any pre-existing file it touches as `<file>.hindsight-backup`. `uninstall`
+removes only our entries. Manual wiring per harness, if you prefer:
+
 **opencode** installs directly — point `opencode.json` at the package dir:
 
 ```json

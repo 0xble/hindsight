@@ -6,6 +6,7 @@
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "bin": {
+    "hindsight-coding-agents": "dist/installer.js",
     "hindsight-claude-hook": "dist/claude-hook.js",
     "hindsight-cursor-hook": "dist/cursor-hook.js",
     "hindsight-codex-hook": "dist/codex-hook.js"
