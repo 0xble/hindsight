@@ -25,11 +25,12 @@
     {
       "id": "coding-agent",
       "name": "Coding Agent",
-      "description": "For coding assistants. Remembers project architecture, technical decisions, coding patterns, and user preferences across sessions. High literalism for precise technical recall.",
+      "description": "For coding assistants and agents. Remembers project architecture, technical decisions, coding patterns, review preferences, and workflow across sessions. High literalism for precise technical recall.",
       "category": "coding",
       "integrations": [
         "claude-code",
-        "codex"
+        "codex",
+        "hermes"
       ],
       "manifest_file": "templates/coding-agent.json"
     },
@@ -75,6 +76,16 @@
         "hermes"
       ],
       "manifest_file": "templates/customer-support.json"
+    },
+    {
+      "id": "research-assistant",
+      "name": "Research Assistant",
+      "description": "For research, monitoring, and knowledge-work agents that write briefings and digests or maintain a second brain. Learns the user's interests, tracks what to ignore to sharpen curation, and compounds durable knowledge with sources over time.",
+      "category": "research",
+      "integrations": [
+        "hermes"
+      ],
+      "manifest_file": "templates/research-assistant.json"
     }
   ]
 }

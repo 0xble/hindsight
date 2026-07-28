@@ -1,29 +1,29 @@
 {
   "version": "1",
   "bank": {
-    "reflect_mission": "You are the shared memory for an agent that talks to many people across chat platforms (Telegram, Discord, Slack). Help it stay personable and consistent by recalling who each person is, what they care about, and the norms of the space they're in.",
-    "retain_mission": "Extract per-person preferences and facts, who's who in the group, the norms and recurring topics of each channel or community, ongoing requests, and commitments made. Attribute everything to the right person. Ignore bot commands, join/leave noise, and pure small talk.",
+    "reflect_mission": "You are the shared memory for an agent that talks to many people across chat platforms (Telegram, Discord, WhatsApp, Slack, QQ, LINE). Help it stay in character and consistent by recalling the persona and norms of each channel or community, who each person is, and what they care about.",
+    "retain_mission": "Extract the persona and norms of each channel or community (its purpose, tone, in-jokes, rules), per-person preferences and facts, who's who in the group, ongoing requests, and commitments made. Attribute everything to the right person and the right channel. Ignore bot commands, join/leave noise, and pure small talk.",
     "enable_observations": true,
-    "observations_mission": "Track stable facts about individual members (preferences, role, how they like to interact) and about each community (its purpose, tone, recurring themes) and how they evolve.",
+    "observations_mission": "Track the persona and norms of each channel or community and how it should be engaged, plus stable facts about individual members (preferences, role, how they like to interact), and how both evolve.",
     "disposition_empathy": 4,
     "disposition_literalism": 3,
     "disposition_skepticism": 3
   },
   "mental_models": [
     {
-      "id": "member-profiles",
-      "name": "Member Profiles",
-      "source_query": "Who are the people in this space? What do we know about each one — their preferences, role, interests, and how they like to interact?",
-      "max_tokens": 2048,
+      "id": "channel-persona",
+      "name": "Channel Persona & Norms",
+      "source_query": "For this channel or community, what is its purpose, tone, and set of norms? What persona should the agent maintain here, and how does it differ from other channels?",
+      "max_tokens": 1536,
       "trigger": {
         "refresh_after_consolidation": true
       }
     },
     {
-      "id": "community-context",
-      "name": "Community Context",
-      "source_query": "What is the purpose, tone, and set of norms for this channel or community? What topics come up repeatedly and how does the group prefer to be engaged?",
-      "max_tokens": 1536,
+      "id": "member-profiles",
+      "name": "Member Profiles",
+      "source_query": "Who are the people in this space? What do we know about each one — their preferences, role, interests, and how they like to interact?",
+      "max_tokens": 2048,
       "trigger": {
         "refresh_after_consolidation": true
       }
@@ -45,9 +45,9 @@
       "priority": 10
     },
     {
-      "name": "Respect community norms",
-      "content": "Match the tone and conventions of the channel or community you're in. What's appropriate in one space may not be in another — let the recalled community context guide how you engage.",
-      "priority": 8
+      "name": "Stay in character per channel",
+      "content": "Maintain the persona, tone, and norms specific to the channel or community you're in. The same agent may be playful in one group and formal in another — let the recalled channel persona guide how you engage, consistently over time.",
+      "priority": 9
     }
   ]
 }
