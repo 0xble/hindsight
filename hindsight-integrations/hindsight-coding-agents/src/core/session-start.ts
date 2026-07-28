@@ -136,8 +136,8 @@ export async function buildSessionStartContext(args: {
   if (cfg.autoSeed !== false) {
     if (hasGit(cwd)) {
       // The LIVE bank is the ONLY state (cold-check-wins): delete the bank and the next session is
-      // a true first-open — no client-side flags can contradict it. Opting out of memory for a repo
-      // is `disabled` in project config, not a hidden state file.
+      // a true first-open — no client-side flags can contradict it. Opting out of memory is the
+      // `disabled` config field (global or per-harness), not a hidden state file.
       {
         let docIds: Set<string> | undefined;
         try {
