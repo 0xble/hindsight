@@ -1,5 +1,5 @@
 ---
-title: "Your Coding Agent Keeps Making the Same Mistake. Ours Stopped: −31% Corrections With Long-Term Project Memory"
+title: "Does Memory Actually Help Coding Agents? We Built a Benchmark to Find Out — and Rebuilt Our Plugin Because of It"
 authors: [nicoloboschi]
 
 date: 2026-07-29T12:00
@@ -8,55 +8,57 @@ image: /img/blog/coding-agents-memory.png
 draft: true
 ---
 
-We gave coding agents long-term project memory — automatic, zero-setup, one plugin for opencode, Claude Code, Codex CLI, Gemini CLI, and Cursor CLI — and measured what happens on a benchmark of bugs whose correct fix *cannot be guessed from the code*. Starting from a completely empty memory bank, corrections dropped 31%. On banks matured by real usage: 44%. With a stronger model: 58%.
+We ship long-term memory for AI agents, so people kept asking us a fair question: *does memory actually make a coding agent better, or does it just feel like it should?* We didn't have a number. Getting one forced us to build a benchmark nobody had, throw away an architecture we liked, and consolidate five scattered integrations into one plugin. This is the story, ending at −31% corrections out of the box — measured from an empty memory bank.
 
 <!-- truncate -->
 
 ---
 
-## The mistake your agent keeps making
+## The question we couldn't answer
 
-Coding agents are good at what's *in* the code. They fail on what isn't.
+By early summer we had Hindsight integrations for several coding agents — a Claude Code hook here, an opencode plugin there, each wired a little differently, each injecting memory its own way. Users liked them. Demos were great. And when a customer asked "how much does this actually help?", everything we could say was anecdote.
 
-Most of a real fix is derivable from the codebase — but the last mile often hinges on a **project-specific decision** that lives nowhere in the source: a rounding rule someone settled in a code review, a retry allowlist agreed in Slack, a tie-break policy explained in a commit message two years ago. Without that context an agent produces a plausible-but-wrong fix, the tests (or a human) push back, it tries again. Every round of that loop is a developer interruption.
+Worse: because the integrations were scattered, there wasn't even a single behavior to measure. One plugin recalled memories on every prompt; another synthesized once at session start; ingestion was a manual CLI you had to remember to run. If we wanted a real number, we first needed a real, single answer to "what does the plugin *do*?"
 
-Teams already *have* the missing context. It's in git history and past conversations. It's just not in front of the agent when it starts typing.
+So the project became two intertwined problems: **build a measurement that can't lie to us**, and **use it to decide what the product should be**.
 
-## What we built
+## Why not SWE-bench
 
-[`hindsight-coding-agents`](/sdks/integrations/coding-agents) is one plugin that puts a repository's accumulated decisions in front of any of five coding agents, with no setup step at all:
+The obvious starting point was SWE-bench: real repos, real issues, standard in the field. We started there and hit two walls.
+
+**It doesn't reflect how people use coding agents.** SWE-bench is one-shot: the agent emits a patch, the patch is graded, the end. Nobody works with a coding agent that way. You ask, the agent tries, the tests push back, it tries again — you *iterate*. The pain of a weak agent isn't a failed patch; it's the third time you have to step in and correct it. A benchmark that can't see the iteration loop can't see the thing memory is supposed to fix.
+
+**Memory has nothing to add.** SWE-bench tasks are, by construction, solvable from the repository — the issue text plus the code contain the answer (and frontier models have seen much of it during training). A memory system can only shine on tasks where the deciding context *isn't in the repo*. On SWE-bench, a perfect memory and no memory should score the same.
+
+## The dataset: bugs you can't guess
+
+So we built our own suite — 33 bug-fix tasks hosted inside a real open-source codebase (`boltons`, with its ~1,600 real commits left in place as retrieval noise, plus 40 decoy conversations). The design rules came directly from the two SWE-bench walls:
+
+**Every task hinges on a non-guessable, project-specific decision.** The visible bug report reproduces a failure; the *obvious* fix passes that repro — and then fails a **hidden test** that encodes the decision the team actually made: a rounding rule, a retry allowlist, a tie-break policy, exact literal values. The rationale lives where teams really keep it: in a **past developer conversation** (15 tasks), in a **commit message's reasoning** (16), or — nastiest — in a conversation that was **amended by a later one** (2 tasks, which punish any memory that can't tell a superseded decision from the final one).
+
+**Grading mirrors real usage.** The agent works in a loop: attempt → tests run → failures go back to it verbatim (no hints) → it retries, capped at five rounds. The primary metric is **corrections** — how many times the fix came back wrong. That's the count of moments a human would have been interrupted. Grading is deterministic pytest; no LLM judge anywhere.
+
+**The harness assumes we might fool ourselves.** Every memory run records per-task proof that retrieval actually reached the agent — early on we caught a "memory" run that had silently failed retrieval and scored like vanilla, which taught us that a benchmark without injection verification is a benchmark of nothing. Both arms get identical repos, tools, full git history, and the identical feedback loop; the memory arm adds only read-only retrieval.
+
+## What measurement did to the product
+
+Then we started running it, and the numbers immediately started making product decisions for us.
+
+**Per-prompt recall — the "obvious" memory integration — scored worse than no memory at all.** 35 total corrections versus vanilla's 32. On bugs whose symptom is worded nothing like the original decision (half our hard tier, on purpose), similarity search surfaces plausible-looking snippets that are simply *distracting*, and the agent iterates past the right answer with confidence. We had shipped variants of this pattern. The benchmark killed it in one afternoon.
+
+**Deep synthesis, once per session, is what works.** Hindsight's *reflect* — an agentic reasoning pass over the whole bank that connects the task to the past decision explaining it and returns the exact rule with its literal values — brought the suite to 22–27 corrections across runs. Slow (seconds), so you do it once on the session's first prompt and let the answer ride along; the cost profile works because the depth only has to be paid once.
+
+**For everything in between, knowledge pages.** Sessions raise plenty of smaller questions — "what are the components here?", "what's our error-handling convention?" — where a full synthesis is overkill and raw recall is noise. The bank continuously curates a handful of living documents (component map, conventions, key decisions with rationale, active initiatives), rebuilt server-side as facts arrive, and the agent queries them through a hybrid full-text + semantic search tool. Organized like synthesis, fast like search. When any of it shapes an answer, the agent credits it inline — `🧠 From Hindsight memory (Key decisions and rationale): …` — so you can always tell what came from your project's history.
+
+**And nobody runs an ingestion CLI, so we deleted ours.** The final plugin builds memory entirely in the background: first open of a repo seeds the bank from commit history and surveys the structure; every session start, an idempotent engine tops it up — new commits (progressively deepening into full diffs, newest first), new sessions written back automatically. The five scattered integrations became one package with one runtime and a one-command installer:
 
 ```bash
 npm install -g hindsight-coding-agents && hindsight-coding-agents install
 ```
 
-That's the whole installation — it detects the agents on your machine and wires each natively. From there, everything is automatic:
+## The final numbers
 
-**Memory builds itself.** The first time an agent opens a repo, the plugin seeds a memory bank from the commit history and runs a short read-only survey of the codebase structure. Every session after that, a background engine keeps the bank current — new commits, new sessions — deepening progressively (recent commits first, full diffs) without a big-bang ingest. There is no CLI to run, no export step, no sync button. Open a repo and it says so:
-
-```
-Hindsight is tracking the decisions, conventions and history of this repo
-  ↳ memory bank “coding-agent::your-repo” · git in sync
-```
-
-**One deep synthesis per session.** On your first prompt, Hindsight *reflects*: an agentic reasoning pass over the whole bank that connects your task to the past decision that explains it — and returns the exact rule with its literal values, not a pile of similar-looking snippets. That answer rides along for the rest of the session.
-
-**Knowledge pages for everything else.** The bank continuously curates a small set of living documents — component map, conventions, key decisions and their rationale, active initiatives — rebuilt server-side as new facts arrive. Agents query them through a hybrid (full-text + semantic) search tool whenever a question calls for project knowledge, and read any page in full. Every session also writes itself back into the bank, so the memory compounds: decisions made *with* the agent today are context *for* the agent tomorrow.
-
-**And you can see it working.** When memory shapes an answer, the agent credits it inline — `🧠 From Hindsight memory (Key decisions and rationale): …` — so you always know which part came from your project's history rather than from reading the code.
-
-## The benchmark
-
-Claims about memory need adversarial measurement, so we built a benchmark designed to resist wishful results — 33 bug-fix tasks hosted in a real open-source codebase (`boltons`, ~1,600 real commits as retrieval noise, plus 40 decoy conversations):
-
-- Every task's correct fix hinges on a **non-guessable decision**: the obvious fix passes the visible repro but fails a **hidden test**.
-- The deciding rationale lives in a past conversation (15 tasks), a real commit's rationale (16), or a conversation **amended by a later one** (2) — that last category catches memories that can't tell a superseded decision from a final one.
-- Grading is deterministic — pytest, no LLM judge. The primary metric is **corrections**: the agent's fix fails the tests and it must retry. Exactly the moments a human would have to step in.
-- Both arms are the same agent with the same tools and full git history; the memory arm adds only read-only retrieval. Every memory run records per-task proof that retrieval actually reached the agent — a silently memory-less run cannot masquerade as a memory result.
-
-For the headline run we went further than we had to: the harness **deletes the memory bank before each task** and lets the plugin's own automatic pipeline rebuild it from empty — ingestion, extraction, knowledge pages, the works — waiting on the plugin's public sync-status contract before the agent starts. What's measured is the out-of-box product, not a hand-tuned index.
-
-## Results
+For the headline run we measured the *product*, not a hand-built index: the harness deletes the memory bank before each task and lets the plugin's own automatic pipeline rebuild it from empty, waiting on the plugin's public sync-status contract before the agent starts.
 
 | Condition | Corrections / task | vs vanilla |
 |---|---|---|
@@ -64,24 +66,18 @@ For the headline run we went further than we had to: the harness **deletes the m
 | **Memory, out-of-box** (bank built from empty, automatically) | **0.67** | **−31%** |
 | **Memory, matured banks** (history accrued from prior sessions) | **0.55** | **−44%** |
 
-OpenCode + Gemini 3.5 Flash, 33/33 tasks solved in every memory run, injection verified on all 33. Cost went *down* 39% ($0.79 → $0.48 per task) — memory replaces exploration with one targeted retrieval. In our earlier campaign with a stronger model (Claude Code + Sonnet, 5 runs per arm), the same mechanism cut corrections **58%** — the better the agent, the more its residual failures are exactly the non-guessable decisions memory addresses.
+OpenCode + Gemini 3.5 Flash; 33/33 tasks solved in every memory run; injection verified on all 33; per-task cost *down* 39% ($0.79 → $0.48) because one targeted retrieval replaces a lot of exploration. In an earlier campaign with a stronger model (Claude Code + Sonnet, five runs per arm), the same mechanism cut corrections **58%** — the stronger the agent, the more its remaining failures are precisely the non-guessable decisions memory carries.
 
-Two results deserve their own sentences:
-
-**Memory compounds.** The gap between 0.67 (fresh) and 0.55 (matured) is the product thesis in one number: the longer a repo lives with memory, the better its agent gets — automatically, because sessions write themselves back.
-
-**Retrieval quality is the whole game.** Mid-project we tested a variant that replaced the per-session synthesis with straight per-prompt similarity search. It scored *worse than no memory at all* (35 total corrections vs vanilla's 32): on symptom-distant bugs, similar-looking snippets are distracting noise. The architecture that wins is synthesis where depth matters (once per session) plus curated knowledge pages where speed matters (every question) — not raw recall everywhere.
+The fresh-vs-matured gap is the part we find most satisfying: 0.67 out of the box, 0.55 once the bank has lived with the project — because sessions write themselves back, **the agent gets better at your repo just by working in it**.
 
 ## Honest limitations
 
-One benchmark, one codebase family, and the out-of-box numbers are single verified runs (an n=3 refresh is in progress; the prior architecture's n=3 landed in the same range). The suite is deliberately built from tasks where memory *can* matter — it measures the last-mile-decision problem, not general coding ability. Dataset, harness, per-task results, and the full hardening journal will be public at [agentmemorybenchmark.ai](https://agentmemorybenchmark.ai), including the runs where our own ideas lost.
+One suite, one codebase family. The out-of-box row is a single verified run (n=3 refresh in progress; the previous architecture's n=3 landed in the same range). And the dataset deliberately concentrates on tasks where memory *can* matter — it quantifies the last-mile-decision problem, not general coding ability. Dataset, harness, per-task results, and the full hardening journal — including the experiments where our own ideas lost — will be public at [agentmemorybenchmark.ai](https://agentmemorybenchmark.ai).
 
-## Run it on your repo
-
-The strongest test isn't our benchmark — it's your repository, whose history is full of decisions your agent keeps not knowing.
+## Try it on the repo that knows things your agent doesn't
 
 ```bash
 npm install -g hindsight-coding-agents && hindsight-coding-agents install
 ```
 
-Point it at a [Hindsight server](https://vectorize.io/hindsight) (self-hosted or cloud) in `~/.hindsight/coding-agent.json`, open a repo, and watch the banner. Docs: [coding agents integration](/sdks/integrations/coding-agents).
+Point it at a [Hindsight server](https://vectorize.io/hindsight) in `~/.hindsight/coding-agent.json`, open a repo, and watch it introduce itself. Works with opencode, Claude Code, Codex CLI, Gemini CLI, and Cursor CLI — one plugin, one path. Docs: [coding agents integration](/sdks/integrations/coding-agents).
