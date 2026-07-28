@@ -46,6 +46,7 @@ export interface RawConfig {
   /** Plugin log verbosity ("debug" | "info" | "warn" | "error", default "info");
    *  HINDSIGHT_LOG_LEVEL overrides for ad-hoc debugging. */
   logLevel?: "debug" | "info" | "warn" | "error";
+  surveyRefreshCommits?: number; // re-run the survey at SessionStart once this many commits have accrued since the last one, so structural pages track an evolving architecture (default 20; 0 = cold-seed only)
   /** How git history feeds memory — seeding AND keeping current use the same engine:
    *  "message" = commit messages only (cheap aggregated doc, re-upserted when HEAD moves);
    *  "full"    = messages + every recent commit's full diff (progressive batches, newest first);
@@ -76,6 +77,7 @@ export interface Config {
   codebaseSurvey: boolean;
   surveyModel: string;
   surveyBudgetUsd: number;
+  surveyRefreshCommits: number;
   gitIngest: "message" | "full" | "none";
   logLevel: "debug" | "info" | "warn" | "error";
 }
@@ -101,6 +103,7 @@ export function resolveConfig(raw: RawConfig = {}): Config {
     codebaseSurvey: raw.codebaseSurvey ?? true,
     surveyModel: raw.surveyModel || "haiku",
     surveyBudgetUsd: raw.surveyBudgetUsd || 2,
+    surveyRefreshCommits: raw.surveyRefreshCommits ?? 20,
     gitIngest: ["message", "full", "none"].includes(raw.gitIngest as string)
       ? (raw.gitIngest as "message" | "full" | "none")
       : "message",

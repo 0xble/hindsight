@@ -32,6 +32,22 @@ export function gitHeadSha(dir: string): string | null {
   }
 }
 
+/**
+ * Count commits reachable from HEAD but NOT from `sinceSha` (`git rev-list --count sinceSha..HEAD`).
+ * Branch-robust "new commits since a baseline": counts what's reachable from wherever HEAD is now, so
+ * switching to a behind-branch yields 0 and a feature branch counts only its own new commits. Returns
+ * null when `sinceSha` is unknown to the repo (rebased/gc'd/foreign) or on any git error — the caller
+ * treats null as "not a reachable baseline" rather than "0 new".
+ */
+export function commitsSince(dir: string, sinceSha: string): number | null {
+  try {
+    const n = Number.parseInt(git(dir, "rev-list", "--count", `${sinceSha}..HEAD`).trim(), 10);
+    return Number.isFinite(n) ? n : null;
+  } catch {
+    return null;
+  }
+}
+
 /** True iff `dir` is a git repo with at least one commit. Fast (--max-count=1). False on non-git/empty/error. */
 export function hasGitHistory(dir: string): boolean {
   try {

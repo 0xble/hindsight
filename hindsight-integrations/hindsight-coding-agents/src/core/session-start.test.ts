@@ -223,3 +223,149 @@ describe("runSessionStartHook anti-recursion guard", () => {
     expect(makeClient).not.toHaveBeenCalled();
   });
 });
+
+// Periodic re-survey (Option A): the survey baseline lives in the bank as `survey-baseline:<sha>`
+// marker docs. Warm sessions re-survey when the MIN reachable `<sha>..HEAD` count >= threshold.
+describe("buildSessionStartContext — periodic re-survey (bank-stored commit count)", () => {
+  // A warm bank: source:git non-empty; source:survey-baseline returns the given marker ids.
+  const warmClient = (baselineIds: string[], retain = vi.fn()) => ({
+    listDocumentIds: async (tag: string) =>
+      tag === "source:survey-baseline" ? new Set(baselineIds) : new Set(["git:abc"]),
+    listPages: listPagesOk,
+    retain,
+  });
+  const marker = (sha: string) => [
+    sha,
+    expect.any(String),
+    `survey-baseline:${sha}`,
+    ["source:survey-baseline"],
+    "document",
+    expect.anything(),
+  ];
+
+  it(">= threshold since the latest reachable baseline -> re-surveys + records a new baseline", async () => {
+    const startSurvey = vi.fn();
+    const retain = vi.fn();
+    await buildSessionStartContext({
+      cwd: "/repo",
+      bankId: "bank-1",
+      cfg: resolveConfig({ surveyRefreshCommits: 20 }),
+      client: warmClient(["survey-baseline:oldsha"], retain),
+      hasGit: () => true,
+      startSeed: vi.fn(),
+      startSurvey,
+      headSha: () => "newsha",
+      commitsSince: () => 25,
+    });
+    expect(startSurvey).toHaveBeenCalledWith(
+      "/repo",
+      expect.objectContaining({ harness: "claude-code" })
+    );
+    expect(retain).toHaveBeenCalledWith(...marker("newsha"));
+  });
+
+  it("< threshold -> no re-survey, no new baseline", async () => {
+    const startSurvey = vi.fn();
+    const retain = vi.fn();
+    await buildSessionStartContext({
+      cwd: "/repo",
+      bankId: "bank-1",
+      cfg: resolveConfig({ surveyRefreshCommits: 20 }),
+      client: warmClient(["survey-baseline:oldsha"], retain),
+      hasGit: () => true,
+      startSeed: vi.fn(),
+      startSurvey,
+      headSha: () => "newsha",
+      commitsSince: () => 5,
+    });
+    expect(startSurvey).not.toHaveBeenCalled();
+    expect(retain).not.toHaveBeenCalled();
+  });
+
+  it("no baseline yet (upgrade from a pre-feature bank) -> records HEAD as baseline, does NOT survey", async () => {
+    const startSurvey = vi.fn();
+    const retain = vi.fn();
+    await buildSessionStartContext({
+      cwd: "/repo",
+      bankId: "bank-1",
+      cfg: resolveConfig({ surveyRefreshCommits: 20 }),
+      client: warmClient([], retain),
+      hasGit: () => true,
+      startSeed: vi.fn(),
+      startSurvey,
+      headSha: () => "headnow",
+      commitsSince: () => 999, // must not fire on the very first (baseline) encounter
+    });
+    expect(startSurvey).not.toHaveBeenCalled();
+    expect(retain).toHaveBeenCalledWith(...marker("headnow"));
+  });
+
+  it("all markers unreachable (rebase/gc) -> re-baselines to HEAD, does NOT survey", async () => {
+    const startSurvey = vi.fn();
+    const retain = vi.fn();
+    await buildSessionStartContext({
+      cwd: "/repo",
+      bankId: "bank-1",
+      cfg: resolveConfig({ surveyRefreshCommits: 20 }),
+      client: warmClient(["survey-baseline:gone1", "survey-baseline:gone2"], retain),
+      hasGit: () => true,
+      startSeed: vi.fn(),
+      startSurvey,
+      headSha: () => "newhead",
+      commitsSince: () => null, // none reachable from HEAD
+    });
+    expect(startSurvey).not.toHaveBeenCalled();
+    expect(retain).toHaveBeenCalledWith(...marker("newhead"));
+  });
+
+  it("takes the MIN reachable count (newest survey), ignoring older + dead-branch markers", async () => {
+    const startSurvey = vi.fn();
+    const counts: Record<string, number | null> = { old1: 50, old2: 10, dead: null };
+    await buildSessionStartContext({
+      cwd: "/repo",
+      bankId: "bank-1",
+      cfg: resolveConfig({ surveyRefreshCommits: 20 }),
+      client: warmClient(["survey-baseline:old1", "survey-baseline:old2", "survey-baseline:dead"]),
+      hasGit: () => true,
+      startSeed: vi.fn(),
+      startSurvey,
+      headSha: () => "head",
+      commitsSince: (_d: string, sha: string) => counts[sha] ?? null,
+    });
+    expect(startSurvey).not.toHaveBeenCalled(); // min reachable (old2 = 10) < 20
+  });
+
+  it("surveyRefreshCommits=0 disables re-survey even far past threshold", async () => {
+    const startSurvey = vi.fn();
+    await buildSessionStartContext({
+      cwd: "/repo",
+      bankId: "bank-1",
+      cfg: resolveConfig({ surveyRefreshCommits: 0 }),
+      client: warmClient(["survey-baseline:old"]),
+      hasGit: () => true,
+      startSeed: vi.fn(),
+      startSurvey,
+      headSha: () => "newsha",
+      commitsSince: () => 999,
+    });
+    expect(startSurvey).not.toHaveBeenCalled();
+  });
+
+  it("cold seed records the survey baseline", async () => {
+    const startSurvey = vi.fn();
+    const retain = vi.fn();
+    await buildSessionStartContext({
+      cwd: "/repo",
+      bankId: "bank-1",
+      cfg: resolveConfig(),
+      client: { listDocumentIds: async () => new Set<string>(), listPages: listPagesOk, retain },
+      hasGit: () => true,
+      startSeed: vi.fn(),
+      startSurvey,
+      headSha: () => "seedhead",
+      commitsSince: () => 0,
+    });
+    expect(startSurvey).toHaveBeenCalled();
+    expect(retain).toHaveBeenCalledWith(...marker("seedhead"));
+  });
+});

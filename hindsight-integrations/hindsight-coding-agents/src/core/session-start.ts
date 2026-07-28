@@ -19,7 +19,7 @@
  *   - empty set (cold)                 -> start the background seed, seededAt written, note added
  */
 import { readFileSync } from "node:fs";
-import { gitHeadSha, hasGitHistory } from "./git";
+import { gitHeadSha, hasGitHistory, commitsSince } from "./git";
 import { DEEPEN_DIFF_TARGET } from "./status";
 import { startBackgroundSeed } from "./seed";
 import { startCodebaseSurvey, type SurveyHarness } from "./survey";
@@ -37,6 +37,16 @@ import { HindsightClient } from "./hindsight";
 interface SeedContextClient {
   listDocumentIds(tag: string): Promise<Set<string>>;
   listPages(): Promise<unknown>;
+  // Optional: used to write the survey-baseline marker (Option A). HindsightClient has it; the
+  // minimal test clients omit it, and the baseline write guards on its presence.
+  retain?(
+    content: string,
+    context: string,
+    documentId: string,
+    tags: string[],
+    strategy: string,
+    opts?: { async?: boolean }
+  ): Promise<void>;
 }
 
 /**
@@ -119,6 +129,8 @@ export async function buildSessionStartContext(args: {
     repoDir: string,
     opts?: { harness?: SurveyHarness; model?: string; budgetUsd?: number }
   ) => void;
+  headSha?: (dir: string) => string | null;
+  commitsSince?: (dir: string, sinceSha: string) => number | null;
 }): Promise<SessionStartOutput> {
   const { cwd, bankId, cfg, client, stateDir } = args;
   const t0 = Date.now();
@@ -128,6 +140,33 @@ export async function buildSessionStartContext(args: {
   const hasGit = args.hasGit ?? hasGitHistory;
   const startSeed = args.startSeed ?? startBackgroundSeed;
   const startSurvey = args.startSurvey ?? startCodebaseSurvey;
+  const resolveHeadSha = args.headSha ?? gitHeadSha;
+  const countCommitsSince = args.commitsSince ?? commitsSince;
+
+  // Codebase-survey baseline (Option A): the bank is the only state, so the HEAD at the last survey
+  // is recorded IN the bank as a tiny `survey-baseline:<sha>` marker doc (tag source:survey-baseline;
+  // content = the bare sha so extraction yields no facts), mirroring the deepen engine's gitlog-head
+  // marker. The commit-count re-survey reads these back by tag.
+  const SURVEY_BASELINE_TAG = "source:survey-baseline";
+  const SURVEY_BASELINE_PREFIX = "survey-baseline:";
+  const recordSurveyBaseline = (sha: string): void => {
+    if (!client.retain) return; // minimal client (some tests) — nothing to record
+    try {
+      // Fire-and-forget; Promise.resolve tolerates a non-Promise return (e.g. a test spy).
+      void Promise.resolve(
+        client.retain(
+          sha,
+          "hindsight codebase-survey baseline",
+          `${SURVEY_BASELINE_PREFIX}${sha}`,
+          [SURVEY_BASELINE_TAG],
+          "document",
+          { async: true }
+        )
+      ).catch(() => {});
+    } catch {
+      /* best-effort — a failed baseline write never breaks SessionStart */
+    }
+  };
 
   // The banner is USER-FACING and must ride `systemMessage` (the only hook field Claude Code
   // renders in the terminal); `additionalContext` is model-only and would show the human nothing.
@@ -165,8 +204,41 @@ export async function buildSessionStartContext(args: {
                 model: cfg.surveyModel,
                 budgetUsd: cfg.surveyBudgetUsd,
               });
+              const sha = resolveHeadSha(cwd);
+              if (sha) recordSurveyBaseline(sha); // baseline for the commit-count re-survey below
             }
             diag(harness, "seed_started", { bank: bankId });
+          } else if (cfg.codebaseSurvey !== false && cfg.surveyRefreshCommits > 0) {
+            // WARM bank: re-run the survey once enough commits have accrued since the last one, so
+            // structural pages track an evolving architecture. Branch-robust: read the
+            // survey-baseline:<sha> markers and take the MIN reachable `sha..HEAD` count (= the most
+            // recent survey that's an ancestor of HEAD; dead-branch/rebased markers are unreachable →
+            // ignored). No reachable baseline yet (pre-feature bank, or all markers gone) => record
+            // HEAD as the baseline WITHOUT surveying (no surprise spend).
+            const sha = resolveHeadSha(cwd);
+            if (sha) {
+              const markers = await client
+                .listDocumentIds(SURVEY_BASELINE_TAG)
+                .catch(() => new Set<string>());
+              const counts: number[] = [];
+              for (const id of markers) {
+                if (!id.startsWith(SURVEY_BASELINE_PREFIX)) continue;
+                const n = countCommitsSince(cwd, id.slice(SURVEY_BASELINE_PREFIX.length));
+                if (n !== null) counts.push(n);
+              }
+              const sinceLast = counts.length ? Math.min(...counts) : null;
+              if (sinceLast !== null && sinceLast >= cfg.surveyRefreshCommits) {
+                startSurvey(cwd, {
+                  harness: harness as SurveyHarness,
+                  model: cfg.surveyModel,
+                  budgetUsd: cfg.surveyBudgetUsd,
+                });
+                recordSurveyBaseline(sha);
+                diag(harness, "survey_refresh", { bank: bankId, commits: sinceLast });
+              } else if (sinceLast === null) {
+                recordSurveyBaseline(sha); // first baseline, or reset after a rebase — no survey
+              }
+            }
           }
         }
       }
