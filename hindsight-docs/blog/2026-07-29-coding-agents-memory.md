@@ -11,7 +11,7 @@ draft: true
 We benchmarked long-term project memory for coding agents on the thing benchmarks never measure: how many times a human has to step in and correct the agent. The results rebuilt our product.
 
 **TL;DR** —
-- **Per-prompt RAG injection — the memory pattern most of the ecosystem ships — made the agent *worse than no memory at all*** (35 corrections vs 32 on our suite).
+- **Per-prompt RAG injection — the memory pattern most of the ecosystem ships — made the agent *worse than no memory at all*** (1.06 vs 0.97 corrections per task on our suite).
 - Session-level memory synthesis + curated knowledge pages cut corrections **31%** out of the box (empty bank, fully automatic ingestion) and **44%** on matured banks; **58%** with a stronger model.
 - Model cost went **down 39%** — memory replaces exploration, it doesn't add overhead.
 - Everything ships today: one plugin for opencode, Claude Code, Codex CLI, Gemini CLI, Cursor CLI — plus **knowledge pages**, live for every Hindsight bank.
@@ -48,15 +48,15 @@ And the flip side of the premise holds too: our first architecture had full acce
 
 The "obvious" memory integration — embed the user's prompt, retrieve similar memories, inject them — is what most agent-memory products ship, and it's what one of our own integrations did. On the suite it scored **1.06 corrections per task versus vanilla's 0.97 (35 total vs 32). Worse than no memory.**
 
-The autopsy: half our hard tier is deliberately *symptom-distant*, like the CSV task above. Similarity search, faced with a symptom that shares no vocabulary with the cause, returns snippets that merely sound alike — plausible-looking, confidently injected, wrong. The agent then iterates with distracting context attached, which is measurably worse than iterating with none. We had shipped variants of this pattern. The benchmark killed it in an afternoon, and we'd encourage anyone evaluating an agent-memory product to run this exact test: **per-prompt similarity injection on symptom-distant bugs**. It's where the demos go to die.
+The autopsy: half our hard tier is deliberately *symptom-distant*, like the retry task above. Similarity search, faced with a symptom that shares no vocabulary with the cause, returns snippets that merely sound alike — plausible-looking, confidently injected, wrong. The agent then iterates with distracting context attached, which is measurably worse than iterating with none. We had shipped variants of this pattern. The benchmark killed it in an afternoon, and we'd encourage anyone evaluating an agent-memory product to run this exact test: **per-prompt similarity injection on symptom-distant bugs**. It's where the demos go to die.
 
 What replaced it is a two-level architecture, and the benchmark chose both levels:
 
 **Reflect — deep synthesis, once per session.** On the session's first prompt, an agentic reasoning pass works over the *whole* memory bank: it follows the connection from symptom to decision across the vocabulary gap, checks for later amendments, and returns the exact rule with its literal values quoted verbatim. It takes seconds, not milliseconds — so you pay for depth exactly once, and the answer rides along for the rest of the session. It's not a hidden wait, either: the plugin shows you the assignment and the finding while it happens —
 
 ```
-Hindsight · goal: recall this repo's past decisions about “why does the export corrupt rows?”
-↳ Fields are quoted only when they contain the delimiter; quotes are doubled, not escaped…
+Hindsight · goal: recall this repo's past decisions about “transient errors locking accounts”
+↳ Retries apply to any 5xx plus exactly 429 and 408; every other 4xx fails fast…
 ```
 
 — and it's hard-capped (25s) so a slow day degrades to a normal memoryless session, never a hung one. Every turn after the first is instant: the synthesis is cached for the session.
