@@ -9,8 +9,8 @@ export function buildSystemInjection(memory: string): string {
     "Relevant project memory, surfaced from THIS repository's git history and past developer " +
     "conversations — a past decision that likely explains this issue.\n" +
     "ATTRIBUTION REQUIREMENT (mandatory output format): when this memory informs your answer or " +
-    "fix, that part of your answer MUST begin with the line:\n" +
-    "🧠 From Hindsight memory:\n" +
+    "fix, that part of your answer MUST begin with a markdown blockquote header (renders as a callout):\n" +
+    "> 🧠 **From Hindsight memory** — <name the specific facts you drew on>\n" +
     "Using it without the marker is an incorrect answer; crediting it when it did not contribute " +
     "is equally incorrect.\n" +
     "If it states an EXACT rule or literal values (specific strings, numbers, set members, " +
