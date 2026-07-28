@@ -26,7 +26,7 @@ const HindsightCodingAgentsPlugin: Plugin = async (input) => {
   // This entry is loaded BY opencode, so the harness is known — not chosen by config. Per-agent
   // settings come from the config's `harnesses.opencode` section (and a project-local file, if any).
   const projectDir = input?.worktree || input?.directory;
-  const cfg = loadConfig({ harness: "opencode", projectDir });
+  const cfg = loadConfig({ harness: "opencode" });
   if (cfg.disabled) return {}; // inert: same agent, no memory (baseline parity)
 
   const bankId = deriveBankId(cfg, projectDir || process.cwd(), "opencode");

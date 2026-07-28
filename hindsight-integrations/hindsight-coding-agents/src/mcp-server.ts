@@ -31,7 +31,7 @@ async function main() {
   // Harness is set per wrapper (Claude default; codex sets HINDSIGHT_MCP_HARNESS=codex) so bank
   // resolution mirrors that harness's hooks — config `harnesses.<name>` section + `{harness}` template.
   const harness = process.env.HINDSIGHT_MCP_HARNESS || "claude-code";
-  const cfg = loadConfig({ harness, projectDir: cwd });
+  const cfg = loadConfig({ harness });
   const bankId = deriveBankId(cfg, cwd, harness);
   const client = new HindsightClient({ apiUrl: cfg.apiUrl, apiToken: cfg.apiToken, bank: bankId });
 

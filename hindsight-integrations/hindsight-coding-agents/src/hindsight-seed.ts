@@ -22,7 +22,7 @@ function arg(name: string): string | undefined {
 
 const command = process.argv[2] || "";
 const repo = arg("repo") || process.cwd();
-const cfg = loadConfig({ harness: "claude-code", projectDir: repo });
+const cfg = loadConfig({ harness: "claude-code" });
 const bankId = deriveBankId(cfg, repo, "claude-code");
 const result = seedControl(command, { repo, bankId });
 console.log(result.message);

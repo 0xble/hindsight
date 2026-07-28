@@ -95,7 +95,7 @@ export async function runRetainHook(
   const { sessionId, transcriptPath, cwd: rawCwd } = spec.parse(ev);
   const cwd = rawCwd || process.cwd();
 
-  const cfg = loadConfig({ harness: spec.harness, projectDir: cwd });
+  const cfg = loadConfig({ harness: spec.harness });
   if (cfg.disabled) return;
 
   if (!transcriptPath) return;

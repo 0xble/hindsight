@@ -73,15 +73,10 @@ reflect, callable mid-task) and opt-in **incremental git-sync** and **live sessi
 
 ## Configuration
 
-All configuration is **JSON files, no environment variables** (exception: `HINDSIGHT_DIAG_FILE` for
-the diagnostics path). Layering, later wins per field:
-
-1. built-in defaults
-2. `~/.hindsight/coding-agent.json` — user-global
-3. its `harnesses.<name>` section — per-agent override
-4. the **nearest** `<dir>/.hindsight/coding-agent.json` at or above the working directory —
-   project-local (the natural home for per-repo settings)
-5. its `harnesses.<name>` section
+All configuration is **one JSON file**: `~/.hindsight/coding-agent.json` (no environment
+variables; exception: `HINDSIGHT_DIAG_FILE`). Later wins per field: built-in defaults → the file's
+top level → its `harnesses.<name>` section for the asking agent. There is no repo-carried config —
+per-repo bank routing is `directoryBankMap`, per-agent differences are `harnesses.<name>`.
 
 Each entry point knows which harness it *is*, so one shared config serves several agents side by
 side:

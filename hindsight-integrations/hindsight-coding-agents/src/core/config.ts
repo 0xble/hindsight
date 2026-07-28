@@ -1,31 +1,19 @@
 /**
- * Harness-agnostic configuration — JSON files, NO environment variables.
+ * ONE config file: ~/.hindsight/coding-agent.json (JSON, no environment variables — the sole
+ * exception is HINDSIGHT_DIAG_FILE for the diagnostics path).
  *
- * All entry points read this: the runtime adapters (opencode plugin, claude hook) and the backfill
- * CLI (whose --flags override it). Files are optional: missing -> defaults; malformed -> one warning
- * + defaults (memory never breaks the agent).
- *
- * Layering (later wins, per field):
+ * Layering, later wins per field:
  *   1. built-in defaults
- *   2. ~/.hindsight/coding-agent.json            (user-global — TRUSTED, unrestricted)
- *   3.   its `harnesses.<name>` section          (per-agent override, e.g. different bankId for claude)
- *   4. <project>/.hindsight/coding-agent.json    (project-local — UNTRUSTED: comes from the repo; sanitized)
- *   5.   its `harnesses.<name>` section
+ *   2. the config file's top level
+ *   3. its `harnesses.<name>` section for the asking harness
  *
- * Each runtime entry point knows which harness it IS (the opencode plugin is loaded by opencode, the
- * claude hook by Claude Code) and passes its own name — so one shared config serves several agents
- * side by side. The legacy top-level `harness` key only selects the backfill's session formatter.
- *
- * SECURITY: the project-local file lives inside whatever repo the developer opens, so it is untrusted
- * input. It may set per-repo bank settings, but it must NOT be able to redirect where the user's
- * credential and prompts/transcripts are sent — otherwise a malicious repo could drop a
- * `.hindsight/coding-agent.json` that points `apiUrl` at its own server while the user-global
- * `apiToken` rides along in the Authorization header (token + prompt exfiltration on open).
- * `PROJECT_UNTRUSTED_KEYS` are therefore stripped from the project layer (see sanitizeProjectLayer).
+ * There is deliberately NO project-local config: a second, repo-carried file was both a security
+ * surface (untrusted repos influencing memory behavior) and a second place to look. Per-repo bank
+ * routing is `directoryBankMap`; per-agent differences are `harnesses.<name>`.
  */
 import { readFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { dirname, join, resolve } from "node:path";
+import { join } from "node:path";
 import { DEFAULT_SEED_LIMIT } from "./seed";
 
 /** Default config-file path: ~/.hindsight/coding-agent.json */
@@ -137,67 +125,11 @@ function mergeRaw(a: RawConfig, b: RawConfig): RawConfig {
  * `bankId`/`bankIdTemplate` — just not the network endpoint, token, or global path→bank map. The
  * user-global config is trusted and unrestricted.
  */
-const PROJECT_UNTRUSTED_KEYS: readonly (keyof RawConfig)[] = [
-  "apiUrl",
-  "apiToken",
-  "directoryBankMap",
-];
-
-/** Drop the untrusted keys from a project-local layer — from its top level AND its per-harness
- *  sections (so a repo can't smuggle apiUrl in under `harnesses.claude-code`). Warns once if any were
- *  present. Never mutates the input. */
-function sanitizeProjectLayer(raw: RawConfig): RawConfig {
-  const stripped = new Set<string>();
-  const strip = <T extends Record<string, unknown>>(obj: T): T => {
-    const out = { ...obj };
-    for (const k of PROJECT_UNTRUSTED_KEYS) {
-      if (k in out) {
-        delete (out as Record<string, unknown>)[k];
-        stripped.add(k);
-      }
-    }
-    return out;
-  };
-  const clean = strip(raw as Record<string, unknown>) as RawConfig;
-  if (clean.harnesses) {
-    clean.harnesses = Object.fromEntries(
-      Object.entries(clean.harnesses).map(([h, sec]) => [h, strip(sec as Record<string, unknown>)])
-    ) as RawConfig["harnesses"];
-  }
-  if (stripped.size) {
-    console.error(
-      `hindsight: ignoring security-sensitive key(s) [${[...stripped].join(", ")}] from a project-local ` +
-        `.hindsight/coding-agent.json — set apiUrl/apiToken only in your user-global ~/.hindsight/coding-agent.json`
-    );
-  }
-  return clean;
-}
-
 export interface LoadOptions {
   /** Which harness is asking ("opencode", "claude-code", ...) — applies its `harnesses.<name>` overrides. */
   harness?: string;
-  /** Project directory — the NEAREST .hindsight/coding-agent.json at or above it layers over the global file. */
-  projectDir?: string;
   /** Explicit global-config path (default ~/.hindsight/coding-agent.json). */
   path?: string;
-}
-
-/** Nearest project config at or above `dir`: walk up until a .hindsight/coding-agent.json exists. */
-function findProjectConfig(dir: string): string | undefined {
-  let d = dir;
-  for (let i = 0; i < 64; i++) {
-    const candidate = join(d, ".hindsight", "coding-agent.json");
-    try {
-      readFileSync(candidate);
-      return candidate;
-    } catch {
-      /* keep walking */
-    }
-    const parent = dirname(d);
-    if (parent === d) return undefined; // filesystem root
-    d = parent;
-  }
-  return undefined;
 }
 
 /** Apply one config layer (its top level, then its `harnesses.<name>` override) over `raw`. */
@@ -208,25 +140,8 @@ function applyLayer(raw: RawConfig, layer: RawConfig, harness?: string): RawConf
   return out;
 }
 
-/** Load + resolve config from the layered files. Missing files -> silent defaults. The user-global
- *  file is trusted; the project-local file (from the opened repo) is sanitized — see the module-level
- *  SECURITY note and PROJECT_UNTRUSTED_KEYS. */
+/** Load + resolve config from THE config file. Missing file -> silent defaults. */
 export function loadConfig(opts: LoadOptions | string = {}): Config {
   const o: LoadOptions = typeof opts === "string" ? { path: opts } : opts; // legacy: loadConfig(path)
-
-  // Layer 1-3: user-global config (TRUSTED — unrestricted).
-  const globalPath = o.path ?? CONFIG_PATH;
-  let raw = applyLayer({}, readRaw(globalPath), o.harness);
-
-  // Layer 4-5: project-local config (UNTRUSTED — comes from the opened repo). Sanitized so a repo
-  // can set its own per-repo bank but cannot redirect the API endpoint/token or the global bank map.
-  // Skip it when the upward walk lands back on the user-global file itself (a repo under $HOME with no
-  // closer .hindsight config) — that file is already applied as the trusted layer, and re-applying it
-  // as "untrusted" would strip its own apiUrl/apiToken and emit a spurious warning every session.
-  const projectPath = o.projectDir ? findProjectConfig(o.projectDir) : undefined;
-  if (projectPath && resolve(projectPath) !== resolve(globalPath)) {
-    raw = applyLayer(raw, sanitizeProjectLayer(readRaw(projectPath)), o.harness);
-  }
-
-  return resolveConfig(raw);
+  return resolveConfig(applyLayer({}, readRaw(o.path ?? CONFIG_PATH), o.harness));
 }

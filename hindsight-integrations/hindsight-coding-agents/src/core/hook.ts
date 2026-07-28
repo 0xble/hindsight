@@ -197,7 +197,7 @@ export async function runHook(
   const prompt = (rawPrompt || "").trim();
   if (!prompt) return;
 
-  const cfg = loadConfig({ harness: spec.harness, projectDir: cwd });
+  const cfg = loadConfig({ harness: spec.harness });
   if (cfg.disabled) return;
 
   const out = (context: string | undefined, notice?: string) =>

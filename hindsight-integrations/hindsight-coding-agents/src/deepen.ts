@@ -45,11 +45,7 @@ function arg(name: string, def?: string): string | undefined {
 }
 
 const REPO = arg("repo");
-const cfg = loadConfig({
-  harness: arg("harness") ?? undefined,
-  projectDir: REPO || undefined,
-  path: arg("config"),
-});
+const cfg = loadConfig({ harness: arg("harness") ?? undefined, path: arg("config") });
 const BANK =
   arg("bank") ?? (REPO ? deriveBankId(cfg, REPO, arg("harness") ?? cfg.harness) : cfg.bankId);
 const HARNESS = arg("harness") ?? cfg.harness;

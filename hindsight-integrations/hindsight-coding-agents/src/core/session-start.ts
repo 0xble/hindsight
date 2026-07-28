@@ -219,7 +219,7 @@ export async function runSessionStartHook(
     }
     const cwd = (ev.cwd as string) || process.cwd();
 
-    const cfg = loadConfig({ harness, projectDir: cwd });
+    const cfg = loadConfig({ harness });
     if (cfg.disabled) return;
 
     const bankId = deriveBankId(cfg, cwd, harness);
