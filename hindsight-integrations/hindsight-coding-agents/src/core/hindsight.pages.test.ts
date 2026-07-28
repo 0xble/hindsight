@@ -178,58 +178,6 @@ function stubFetchRouted(
   );
 }
 
-describe("HindsightClient.createPages tag-scoping + Initiatives folder", () => {
-  it("each seeded page POST carries its mapped knowledge:<tier> tag", async () => {
-    const calls: any[] = [];
-    stubFetch(calls, async () => ({})); // no operation_id -> drain no-ops
-    const c = new HindsightClient({ apiUrl: "http://x", bank: "repo-a" });
-    await c.createPages();
-
-    const pagePosts = calls.filter(
-      (k) => k.method === "POST" && k.url.endsWith("/knowledge-base/pages")
-    );
-    expect(pagePosts.length).toBe(5);
-    for (const post of pagePosts) {
-      expect(typeof post.body.name).toBe("string");
-      expect(typeof post.body.source_query).toBe("string");
-      expect(post.body.trigger).toEqual({
-        fact_types: ["world", "experience", "observation"],
-        refresh_after_consolidation: true,
-      });
-      expect(post.body.tags).toHaveLength(1);
-      expect(post.body.tags[0]).toMatch(/^knowledge:(feature-work|decision|convention|component|concept)$/);
-    }
-  });
-
-  it("parents ONLY the Initiatives page under the folder id returned by POST /knowledge-base/folders", async () => {
-    const calls: any[] = [];
-    stubFetchRouted(calls, [
-      { match: (m, u) => m === "GET" && u.endsWith("/knowledge-base/tree"), json: { roots: [] } },
-      {
-        match: (m, u) => m === "POST" && u.endsWith("/knowledge-base/folders"),
-        json: { id: "folder-123" },
-      },
-      {
-        match: (m, u) => m === "POST" && u.endsWith("/knowledge-base/pages"),
-        json: { page_id: "p" },
-      },
-    ]);
-    const c = new HindsightClient({ apiUrl: "http://x", bank: "repo-a" });
-    await c.createPages();
-
-    const pagePosts = calls.filter(
-      (k) => k.method === "POST" && k.url.endsWith("/knowledge-base/pages")
-    );
-    const initiatives = pagePosts.find((k) => k.body.name === "Initiatives and enhancements");
-    expect(initiatives.body.parent_id).toBe("folder-123");
-    for (const post of pagePosts) {
-      if (post.body.name !== "Initiatives and enhancements") {
-        expect(post.body.parent_id).toBeUndefined();
-      }
-    }
-  });
-});
-
 describe("HindsightClient.ensureFolder", () => {
   it("returns an existing root folder's id (case-insensitive) and does NOT POST a duplicate", async () => {
     const calls: any[] = [];
@@ -357,24 +305,53 @@ describe("HindsightClient.captureInitiative", () => {
   });
 });
 
-describe("HindsightClient.configureBank config PATCH", () => {
-  it("PATCHes /config with the retain strategies + the knowledge entity_labels tier", async () => {
+describe("HindsightClient.configureBank template import", () => {
+  it("POSTs the full CODING_BANK_TEMPLATE manifest to /import in exactly one call", async () => {
     const calls: any[] = [];
     stubFetch(calls, async () => ({ ok: true }));
     const c = new HindsightClient({ apiUrl: "http://x", bank: "repo-a" });
     await c.configureBank();
 
-    const configCall = calls.find((c) => c.method === "PATCH" && c.url.endsWith("/config"));
-    expect(configCall).toBeDefined();
-    const updates = configCall.body.updates;
+    const importPosts = calls.filter((k) => k.method === "POST" && k.url.endsWith("/import"));
+    expect(importPosts).toHaveLength(1);
+    expect(calls).toHaveLength(1); // the import POST is the ONLY request (no PUT bank, no PATCH /config)
 
-    expect(updates.entity_labels).toEqual([
-      expect.objectContaining({ key: "knowledge", tag: true, optional: true }),
-    ]);
-    expect(updates.entities_allow_free_form).toBe(true);
-    expect(updates.retain_default_strategy).toBe("git");
-    expect(Object.keys(updates.retain_strategies)).toEqual(
+    const body = importPosts[0].body;
+    expect(body.version).toBe("1");
+
+    // bank config section
+    expect(typeof body.bank.reflect_mission).toBe("string");
+    expect(body.bank.retain_default_strategy).toBe("git");
+    expect(Object.keys(body.bank.retain_strategies)).toEqual(
       expect.arrayContaining(["git", "gitlog", "conversation", "document"])
     );
+    expect(body.bank.entity_labels).toEqual(
+      expect.arrayContaining([expect.objectContaining({ key: "knowledge", tag: true })])
+    );
+    expect(body.bank.entities_allow_free_form).toBe(true);
+
+    // seeded knowledge pages, matched server-side by stable slug id
+    expect(body.mental_models).toHaveLength(5);
+    for (const page of body.mental_models) {
+      expect(page.id).toMatch(/^[a-z0-9-]+$/);
+      expect(page.tags).toHaveLength(1);
+      expect(page.tags[0]).toMatch(
+        /^knowledge:(feature-work|decision|convention|component|concept)$/
+      );
+      expect(page.trigger.refresh_after_consolidation).toBe(true);
+    }
+  });
+
+  it("configureBank({reset: true}) DELETEs the bank before the import POST", async () => {
+    const calls: any[] = [];
+    stubFetch(calls, async () => ({ ok: true }));
+    const c = new HindsightClient({ apiUrl: "http://x", bank: "repo-a" });
+    await c.configureBank({ reset: true });
+
+    expect(calls).toHaveLength(2);
+    expect(calls[0].method).toBe("DELETE");
+    expect(calls[0].url.endsWith("/import")).toBe(false);
+    expect(calls[1].method).toBe("POST");
+    expect(calls[1].url.endsWith("/import")).toBe(true);
   });
 });

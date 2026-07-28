@@ -28,7 +28,6 @@ import { ingestChats } from "./core/chat";
 import { loadConfig } from "./core/config";
 import { gitHeadSha, ingestGitLog, repoNameOf, retainCommit } from "./core/git";
 import { HindsightClient } from "./core/hindsight";
-import { parsePageList } from "./core/knowledge-injection";
 import { DEEPEN_DIFF_TARGET } from "./core/status";
 import { pool } from "./core/util";
 import { getHarness, HARNESS_NAMES } from "./harness/registry";
@@ -176,11 +175,9 @@ async function main() {
     }
 
     await client.drain(client.opIds, "extraction");
-
-    // pages LAST (completion marker for syncStatus): create only when the bank has none.
-    const pages = parsePageList(await client.listPages().catch(() => null));
-    if (pages.length) log(`[pages] ${pages.length} knowledge pages already present — skipping`);
-    else await client.createPages();
+    // (knowledge pages need no separate pass: configureBank's template import upserts them
+    // by stable id every run — syncStatus's `synced` stays sound because it also requires the
+    // gitlog seed present AND zero active extraction operations.)
 
     const failures = chatFails + gitFails;
     diag("deepen", "deepen_done", {

@@ -211,3 +211,35 @@ export const PAGES: KnowledgePage[] = [
     tags: ["knowledge:feature-work"],
   },
 ];
+
+// ── the ONE-SHOT bank template ─────────────────────────────────────────────────
+// Everything a coding bank needs — missions, retain strategies, entity labels, and the seeded
+// knowledge pages — as a single template manifest for POST /banks/{id}/import. Idempotent: config
+// fields apply as per-bank overrides and mental models match by stable id (update, not duplicate),
+// so the deepen engine can apply it every run. Replaces the old configureBank PUT+PATCH plus the
+// separate createPages pass.
+export const CODING_BANK_TEMPLATE = {
+  version: "1",
+  bank: {
+    reflect_mission: REFLECT_MISSION,
+    enable_observations: true,
+    observations_mission: OBSERVATIONS_MISSION,
+    retain_mission: GIT_MISSION,
+    retain_extraction_mode: "verbose",
+    retain_default_strategy: "git",
+    retain_strategies: RETAIN_STRATEGIES,
+    entity_labels: [KNOWLEDGE_LABELS],
+    entities_allow_free_form: true,
+  },
+  mental_models: PAGES.map((p) => ({
+    id: p.name
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, "-")
+      .replace(/^-+|-+$/g, ""),
+    name: p.name,
+    source_query: p.source_query,
+    tags: p.tags,
+    max_tokens: 4096,
+    trigger: { fact_types: ["world", "experience", "observation"], refresh_after_consolidation: true },
+  })),
+} as const;

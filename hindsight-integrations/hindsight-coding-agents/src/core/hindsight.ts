@@ -5,14 +5,7 @@
  * (missions + git/chat retain strategies), retains memories, reflects, drains async operations, and
  * creates knowledge pages. Nothing here knows about opencode/claude-code/etc.
  */
-import {
-  KNOWLEDGE_LABELS,
-  GIT_MISSION,
-  REFLECT_MISSION,
-  OBSERVATIONS_MISSION,
-  RETAIN_STRATEGIES,
-  PAGES,
-} from "./missions";
+import { CODING_BANK_TEMPLATE } from "./missions";
 import { sleep } from "./util";
 
 export interface ClientOpts {
@@ -122,30 +115,19 @@ export class HindsightClient {
     return ids;
   }
 
-  /** Configure the bank: reflect mission, observations ON, and the named git/chat retain strategies. */
+  /** Configure the bank in ONE SHOT: POST the coding bank template manifest to /import —
+   *  missions, retain strategies, entity labels, AND the seeded knowledge pages (matched by
+   *  stable id server-side, so re-applying every deepen run updates instead of duplicating).
+   *  Creates the bank if missing. */
   async configureBank(opts: { reset?: boolean } = {}): Promise<void> {
     if (opts.reset) {
       await this.req("DELETE", this.bankUrl());
       this.log(`[bank] reset ${this.bank}`);
     }
-    await this.req("PUT", this.bankUrl(), {
-      name: this.bank,
-      reflect_mission: REFLECT_MISSION,
-      enable_observations: true,
-      observations_mission: OBSERVATIONS_MISSION,
-      retain_mission: GIT_MISSION,
-      retain_extraction_mode: "verbose",
-    });
-    await this.req("PATCH", this.bankUrl("/config"), {
-      updates: {
-        retain_strategies: RETAIN_STRATEGIES,
-        retain_default_strategy: "git",
-        entity_labels: [KNOWLEDGE_LABELS],
-        entities_allow_free_form: true,
-      },
-    });
+    await this.req("POST", this.bankUrl("/import"), CODING_BANK_TEMPLATE);
     this.log(
-      `[bank] configured ${this.bank}: reflect mission, observations ON, entity_labels {knowledge}, strategies {git, gitlog, conversation, document}`
+      `[bank] template applied to ${this.bank}: missions, entity_labels {knowledge}, ` +
+        `strategies {git, gitlog, conversation, document}, ${CODING_BANK_TEMPLATE.mental_models.length} knowledge pages`
     );
   }
 
@@ -398,38 +380,4 @@ export class HindsightClient {
     }
   }
 
-  /** Knowledge pages — synthesized from the EXTRACTED facts, so call AFTER the retain drain. */
-  async createPages(): Promise<void> {
-    this.log(`[pages] creating ${PAGES.length} knowledge pages …`);
-    // Initiatives get their own folder so per-initiative sub-pages (captureInitiative) nest under it.
-    const initiativesFolderId = await this.ensureFolder("Initiatives");
-    const pageOps: string[] = [];
-    for (const p of PAGES) {
-      try {
-        // fact_types = ALL (world+experience+observation) so a page draws from raw facts AND
-        // consolidated observations; refresh after consolidation keeps it a living document.
-        // Page-level `tags` scopes synthesis to one knowledge:<tier> label (exact set-ops), matching
-        // the KNOWLEDGE_LABELS the extractor stamps on facts. Only the feature-work (Initiatives)
-        // page nests under the Initiatives folder.
-        const isInitiatives = p.tags.includes("knowledge:feature-work");
-        const body: Record<string, unknown> = {
-          name: p.name,
-          source_query: p.source_query,
-          tags: p.tags,
-          trigger: {
-            fact_types: ["world", "experience", "observation"],
-            refresh_after_consolidation: true,
-          },
-        };
-        if (isInitiatives) body.parent_id = initiativesFolderId;
-        const r = await this.req("POST", this.bankUrl("/knowledge-base/pages"), body);
-        const j = (await r.json()) as { operation_id?: string; page_id?: string };
-        if (j.operation_id) pageOps.push(j.operation_id);
-        this.log(`  created page '${p.name}' -> ${j.page_id || "?"}`);
-      } catch (e) {
-        this.log(`  ! page '${p.name}' failed: ${(e as Error).message?.slice(0, 140)}`);
-      }
-    }
-    await this.drain(pageOps, "page-generation");
-  }
 }
