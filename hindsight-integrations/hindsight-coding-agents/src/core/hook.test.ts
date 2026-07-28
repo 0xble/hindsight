@@ -86,9 +86,10 @@ describe("buildHookOutput", () => {
       cacheFile,
     });
     expect(client.reflect).toHaveBeenCalledTimes(1);
-    // The cached answer is re-injected every turn.
+    // Injected ONCE (hook context persists in the transcript — stacking it every turn would
+    // duplicate the same block); turn 2 carries no repeat.
     expect(t1.context).toContain("REFLECT_ANSWER");
-    expect(t2.context).toContain("REFLECT_ANSWER");
+    expect(t2.context ?? "").not.toContain("REFLECT_ANSWER");
     expect(JSON.parse(readFileSync(cacheFile, "utf8")).turns).toBe(2);
   });
 
