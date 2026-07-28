@@ -21,7 +21,7 @@
  */
 import { execFileSync } from "node:child_process";
 import { mkdirSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
-import { homedir } from "node:os";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { deriveBankId } from "./core/bank";
 import { ingestChats } from "./core/chat";
@@ -68,7 +68,9 @@ if (!REPO || !BANK) {
 const log = (m: string) => console.log(`${new Date().toISOString()} ${m}`);
 
 // ── per-bank lock: concurrent session starts must not double-ingest ─────────────
-const LOCK_DIR = join(homedir(), ".hindsight", "coding-agent-state");
+// Scratch, not state: the lock only guards against concurrent double-ingest cost. In the OS
+// temp dir so ~/.hindsight holds ONLY the config file (a reboot clearing it is harmless).
+const LOCK_DIR = join(tmpdir(), "hindsight-coding-agent");
 const LOCK = join(LOCK_DIR, `deepen-${encodeURIComponent(BANK)}.lock`);
 
 function acquireLock(): boolean {

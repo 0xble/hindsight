@@ -9,11 +9,12 @@
  */
 import { spawn as realSpawn } from "node:child_process";
 import { mkdirSync, openSync, readFileSync, writeFileSync } from "node:fs";
-import { homedir } from "node:os";
+import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
-const DEFAULT_STATE_DIR = join(homedir(), ".hindsight", "coding-agent-state");
+// Runtime scratch (engine log) lives in the OS temp dir — ~/.hindsight holds ONLY the config file.
+const SCRATCH_DIR = join(tmpdir(), "hindsight-coding-agent");
 
 export const DEFAULT_SEED_LIMIT = 300;
 
@@ -34,8 +35,8 @@ export function startBackgroundSeed(
     // undebuggable. Best-effort append to a per-user log; fall back to "ignore" if unwritable.
     let stdio: "ignore" | ["ignore", number, number] = "ignore";
     try {
-      mkdirSync(DEFAULT_STATE_DIR, { recursive: true });
-      const fd = openSync(join(DEFAULT_STATE_DIR, "deepen.log"), "a");
+      mkdirSync(SCRATCH_DIR, { recursive: true });
+      const fd = openSync(join(SCRATCH_DIR, "deepen.log"), "a");
       stdio = ["ignore", fd, fd];
     } catch {
       /* logging is best-effort */
