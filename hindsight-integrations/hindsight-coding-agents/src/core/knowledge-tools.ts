@@ -179,7 +179,10 @@ export function buildKnowledgeTools(
         "Save an external document or a block of durable notes/findings into this repository's " +
         "memory so it informs future recall and pages. Use for design notes, research, or " +
         "reference material you want remembered — not for the conversation you're already in " +
-        "(that's captured automatically at session end).",
+        "(that's captured automatically at session end). This is ALSO the correction mechanism: " +
+        "when you verify that a retrieved memory is wrong or outdated, ingest a document titled " +
+        "'Correction: <topic>' stating what memory claimed, what is actually true, and the " +
+        "evidence — the newer fact supersedes the stale one in future retrieval.",
       inputSchema: { title: z.string(), content: z.string() },
       handler: guarded(async ({ title, content }) => {
         const docId =
