@@ -17,6 +17,7 @@
 import { execFileSync } from "node:child_process";
 import { commitsSince, repoNameOf } from "./git";
 import { parsePageList } from "./knowledge-injection";
+import { SURVEY_DOC_IDS } from "./survey";
 
 /** Minimal client shape (HindsightClient satisfies it structurally). */
 export interface StatusClient {
@@ -35,7 +36,8 @@ export interface SyncStatus {
   gitDiffTarget: number | null; // min(DEEPEN_DIFF_TARGET, repo commits); null when repo unknown
   chatDocs: number; // past/live conversations in the bank
   pagesCount: number;
-  surveyBaseline: string | null; // HEAD sha at the last codebase survey (null = never surveyed)
+  surveyBaseline: string | null; // HEAD sha at the last codebase survey START (null = never started)
+  surveyDocs: number; // findings documents present (of 4) — completion signal, not just started
   surveyCommitsBehind: number | null; // commits since that baseline (null = no baseline / no repo)
   activeOps: number | null; // extraction ops still running; null if the server can't report
   synced: boolean;
@@ -61,6 +63,8 @@ export async function syncStatus(
   const chatIds = await client.listDocumentIds("source:chat").catch(() => new Set<string>());
   const pages = parsePageList(await client.listPages().catch(() => null));
   const activeOps = await client.activeOperations().catch(() => null);
+  const uploads = await client.listDocumentIds("source:upload").catch(() => new Set<string>());
+  const surveyDocs = SURVEY_DOC_IDS.filter((id) => uploads.has(id)).length;
 
   // Survey observability: the survey-baseline:<sha> markers Chris's re-survey mechanism writes.
   // Most recent baseline REACHABLE from HEAD wins (dead branches/rebases leave unreachable markers).
@@ -101,6 +105,7 @@ export async function syncStatus(
     chatDocs: chatIds.size,
     pagesCount: pages.length,
     surveyBaseline,
+    surveyDocs,
     surveyCommitsBehind,
     activeOps,
     synced: gitlogPresent && pages.length > 0 && (activeOps ?? 0) === 0,

@@ -22,7 +22,7 @@ import { readFileSync } from "node:fs";
 import { gitHeadSha, hasGitHistory, commitsSince } from "./git";
 import { DEEPEN_DIFF_TARGET } from "./status";
 import { startBackgroundSeed } from "./seed";
-import { startCodebaseSurvey, type SurveyHarness } from "./survey";
+import { SURVEY_DOC_IDS, startCodebaseSurvey, type SurveyHarness } from "./survey";
 import { loadConfig } from "./config";
 import type { Config } from "./config";
 import { deriveBankId } from "./bank";
@@ -227,14 +227,24 @@ export async function buildSessionStartContext(args: {
                 if (n !== null) counts.push(n);
               }
               const sinceLast = counts.length ? Math.min(...counts) : null;
-              if (sinceLast !== null && sinceLast >= cfg.surveyRefreshCommits) {
+              // A baseline without FINDINGS means the surveyed agent died before ingesting (no
+              // CLI on PATH, budget kill) — the marker alone must not suppress retries forever.
+              const uploads = await client
+                .listDocumentIds("source:upload")
+                .catch(() => new Set<string>());
+              const findingsAbsent =
+                counts.length > 0 && !SURVEY_DOC_IDS.some((id) => uploads.has(id));
+              if (
+                (sinceLast !== null && sinceLast >= cfg.surveyRefreshCommits) ||
+                findingsAbsent
+              ) {
                 startSurvey(cwd, {
                   harness: harness as SurveyHarness,
                   model: cfg.surveyModel,
                   budgetUsd: cfg.surveyBudgetUsd,
                 });
                 recordSurveyBaseline(sha);
-                diag(harness, "survey_refresh", { bank: bankId, commits: sinceLast });
+                diag(harness, "survey_refresh", { bank: bankId, commits: sinceLast, retry: findingsAbsent });
               } else if (sinceLast === null) {
                 recordSurveyBaseline(sha); // first baseline, or reset after a rebase — no survey
               }

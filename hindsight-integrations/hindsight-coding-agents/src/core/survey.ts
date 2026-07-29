@@ -31,6 +31,16 @@ import { homedir } from "node:os";
 import { delimiter, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
+/** Deterministic doc ids of the survey's findings (its fixed titles slugified by
+ *  hindsight_ingest_document). Their presence in the bank = the survey actually FINISHED —
+ *  the baseline marker only proves it was started. */
+export const SURVEY_DOC_IDS = [
+  "repository-component-map",
+  "repository-core-concepts",
+  "repository-conventions-and-patterns",
+  "repository-tech-stack-and-features",
+] as const;
+
 export type SurveyHarness = "claude-code" | "codex" | "gemini" | "opencode";
 
 /** Resolve the claude CLI binary for a detached spawn (a shell alias won't apply to child_process).

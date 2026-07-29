@@ -228,9 +228,18 @@ describe("runSessionStartHook anti-recursion guard", () => {
 // marker docs. Warm sessions re-survey when the MIN reachable `<sha>..HEAD` count >= threshold.
 describe("buildSessionStartContext — periodic re-survey (bank-stored commit count)", () => {
   // A warm bank: source:git non-empty; source:survey-baseline returns the given marker ids.
-  const warmClient = (baselineIds: string[], retain = vi.fn()) => ({
+  // findings present by default so the crashed-survey retry path stays quiet in cadence tests.
+  const warmClient = (
+    baselineIds: string[],
+    retain = vi.fn(),
+    uploads: string[] = ["repository-component-map"]
+  ) => ({
     listDocumentIds: async (tag: string) =>
-      tag === "source:survey-baseline" ? new Set(baselineIds) : new Set(["git:abc"]),
+      tag === "source:survey-baseline"
+        ? new Set(baselineIds)
+        : tag === "source:upload"
+          ? new Set(uploads)
+          : new Set(["git:abc"]),
     listPages: listPagesOk,
     retain,
   });
@@ -367,5 +376,35 @@ describe("buildSessionStartContext — periodic re-survey (bank-stored commit co
     });
     expect(startSurvey).toHaveBeenCalled();
     expect(retain).toHaveBeenCalledWith(...marker("seedhead"));
+  });
+});
+
+describe("buildSessionStartContext — crashed-survey retry (baseline without findings)", () => {
+  it("re-fires the survey when a baseline exists but NO findings docs ever arrived", async () => {
+    const startSurvey = vi.fn();
+    const retain = vi.fn();
+    const client = {
+      listDocumentIds: async (tag: string) =>
+        tag === "source:survey-baseline"
+          ? new Set(["survey-baseline:aaa"])
+          : tag === "source:upload"
+            ? new Set<string>() // survey died before ingesting anything
+            : new Set(["git:abc"]),
+      listPages: async () => ({ items: [] }),
+      retain,
+    };
+    const out = await buildSessionStartContext({
+      cwd: "/tmp/x",
+      bankId: "bank-1",
+      cfg: resolveConfig({ surveyRefreshCommits: 50 }),
+      client,
+      hasGit: () => true,
+      startSeed: vi.fn(),
+      startSurvey,
+      headSha: () => "bbb",
+      commitsSince: () => 1, // far below the cadence threshold — retry must fire anyway
+    });
+    expect(startSurvey).toHaveBeenCalledTimes(1);
+    expect(out).toBeTruthy();
   });
 });

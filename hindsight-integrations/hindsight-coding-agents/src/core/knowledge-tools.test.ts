@@ -81,6 +81,7 @@ describe("buildKnowledgeTools", () => {
         gitDiffDocs: 2,
         gitDiffTarget: null, // temp dir is not a git repo
         surveyBaseline: null,
+      surveyDocs: 0,
       surveyCommitsBehind: null,
       chatDocs: 1,
         pagesCount: 1,

@@ -40,6 +40,7 @@ describe("syncStatus", () => {
       gitDiffDocs: 0,
       gitDiffTarget: null, // no repoDir passed
       surveyBaseline: null,
+      surveyDocs: 0,
       surveyCommitsBehind: null,
       chatDocs: 0,
       pagesCount: 1,
