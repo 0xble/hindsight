@@ -26,7 +26,7 @@ const SYMPTOM =
   "endpoint after failures. Which failures are actually safe to retry here?";
 
 let repo: string;
-  let cfgFile: string;
+let cfgFile: string;
 let diagFile: string;
 const RUN = `${Date.now()}`; // session ids must be unique per run: the hooks cache per session id in tmp
 
@@ -69,7 +69,10 @@ describe.runIf(LIVE)("live system: backfill -> reflect -> hook injection", () =>
     // Point the hooks at the test server + bank naming via HINDSIGHT_CONFIG (the single config
     // file, relocated for the test) — there is no repo-carried config layer anymore.
     cfgFile = join(mkdtempSync(join(tmpdir(), "hs-live-cfg-")), "coding-agent.json");
-    writeFileSync(cfgFile, JSON.stringify({ apiUrl: API_URL, bankIdTemplate: `live-e2e-{gitProject}` }));
+    writeFileSync(
+      cfgFile,
+      JSON.stringify({ apiUrl: API_URL, bankIdTemplate: `live-e2e-{gitProject}` })
+    );
     // a past conversation restating the decision (the normalized interchange format)
     const conv = [
       {

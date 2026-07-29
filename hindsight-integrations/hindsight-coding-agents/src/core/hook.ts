@@ -174,8 +174,7 @@ export async function buildHookOutput(args: {
   // system prompt, it accumulates. So the reflect block is injected ONCE (the turn reflect ran)
   // and re-freshed only on the roster cadence (insurance against long-session compaction), never
   // stacked on every turn.
-  const reflectDue =
-    reflectRanThisTurn || (cadence > 0 && turns % cadence === 0 && turns > 1);
+  const reflectDue = reflectRanThisTurn || (cadence > 0 && turns % cadence === 0 && turns > 1);
   if (reflectAnswer && reflectDue) blocks.push(buildSystemInjection(reflectAnswer));
   // Knowledge pages are NOT auto-injected: the agent pulls them through
   // hindsight_search_knowledge_pages when a question warrants it — an unprompted injection on

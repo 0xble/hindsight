@@ -24,6 +24,7 @@ explains what happens automatically, which tools you have, and how to configure 
 ## Storing things deliberately
 
 When the user says "store this in hindsight" / "remember this":
+
 - The **current conversation** is captured automatically at session end — say so; no tool needed.
 - An **external document, notes, or durable findings** → `hindsight_ingest_document(title, content)`.
 - A **new feature/initiative being started** → `hindsight_capture_initiative(title, summary)`,
@@ -47,16 +48,17 @@ Layering, later wins: defaults → file → `harnesses.<name>` → `banks.<resol
 
 ```jsonc
 {
-  "apiUrl": "http://localhost:8888",            // your Hindsight server
-  "apiToken": "…",                              // Hindsight Cloud only
-  "gitIngest": "message",                       // "message" | "full" (per-commit diffs) | "none"
-  "harnesses": { "claude-code": { "disabled": true } },   // per-agent override of anything
+  "apiUrl": "http://localhost:8888", // your Hindsight server
+  "apiToken": "…", // Hindsight Cloud only
+  "gitIngest": "message", // "message" | "full" (per-commit diffs) | "none"
+  "harnesses": { "claude-code": { "disabled": true } }, // per-agent override of anything
   "mapPathToBank": { "/Users/me/work/client-x": "client-x-memory" }, // path-prefix → bank
-  "banks": {                                    // per-repo control, keyed by RESOLVED bank id
-    "coding-agent::secret": { "disabled": true },          // blacklist a repo
-    "coding-agent::old":    { "bank": "team::shared" },    // rename / converge banks (single hop)
-    "coding-agent::mono":   { "gitIngest": "full", "retainSessions": false }
-  }
+  "banks": {
+    // per-repo control, keyed by RESOLVED bank id
+    "coding-agent::secret": { "disabled": true }, // blacklist a repo
+    "coding-agent::old": { "bank": "team::shared" }, // rename / converge banks (single hop)
+    "coding-agent::mono": { "gitIngest": "full", "retainSessions": false },
+  },
 }
 ```
 
@@ -93,5 +95,9 @@ npm update -g hindsight-coding-agents        # update; wired paths stay valid
 - **Rule of thumb**: memory silently missing → check the diag log for whether `session_start`/
   `deepen_started` ever fired for that bank; a session started before the plugin was installed has
   no SessionStart behind it (its first prompt after install self-heals).
+- **Internal marker docs you may notice** (safe to ignore, safe to delete): `survey-baseline:<sha>`
+  — records the HEAD at the last codebase survey (content is deliberately the bare sha: it must
+  extract to ZERO facts so the marker never pollutes memory); powers the re-survey cadence and
+  `surveyBaseline` in sync status. `gitlog:<repo>` is the aggregated commit-message seed document.
 - Failures never break the agent: reflect/pages/retain failures degrade to a normal memoryless
   turn and are recorded in the logs.

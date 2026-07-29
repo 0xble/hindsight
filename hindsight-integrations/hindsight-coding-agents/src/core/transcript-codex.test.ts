@@ -129,7 +129,7 @@ describe("readCodexTranscript", () => {
         content: [
           {
             type: "input_text",
-            text: '<hook_prompt hook_run_id="stop:4:abc">python3: can\'t open file \'/tmp/check.py\': [Errno 2] No such file or directory</hook_prompt>',
+            text: "<hook_prompt hook_run_id=\"stop:4:abc\">python3: can't open file '/tmp/check.py': [Errno 2] No such file or directory</hook_prompt>",
           },
         ],
       })

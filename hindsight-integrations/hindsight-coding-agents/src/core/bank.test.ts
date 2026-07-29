@@ -100,9 +100,7 @@ describe("deriveBankId", () => {
     });
 
     it("matches any subdirectory by prefix", () => {
-      expect(deriveBankId({ mapPathToBank: { [WT]: "mapped" } }, `${WT}/deep/sub`)).toBe(
-        "mapped"
-      );
+      expect(deriveBankId({ mapPathToBank: { [WT]: "mapped" } }, `${WT}/deep/sub`)).toBe("mapped");
     });
 
     it("does not match sibling directories sharing a name prefix", () => {
@@ -124,10 +122,7 @@ describe("deriveBankId", () => {
     });
 
     it("tolerates trailing slashes in map keys", () => {
-      expect(deriveBankId({ mapPathToBank: { [`${WT}/`]: "mapped" } }, `${WT}/sub`)).toBe(
-        "mapped"
-      );
+      expect(deriveBankId({ mapPathToBank: { [`${WT}/`]: "mapped" } }, `${WT}/sub`)).toBe("mapped");
     });
   });
 });
-

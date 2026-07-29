@@ -235,17 +235,18 @@ export async function buildSessionStartContext(args: {
                 .catch(() => new Set<string>());
               const findingsAbsent =
                 counts.length > 0 && !SURVEY_DOC_IDS.some((id) => uploads.has(id));
-              if (
-                (sinceLast !== null && sinceLast >= cfg.surveyRefreshCommits) ||
-                findingsAbsent
-              ) {
+              if ((sinceLast !== null && sinceLast >= cfg.surveyRefreshCommits) || findingsAbsent) {
                 startSurvey(cwd, {
                   harness: harness as SurveyHarness,
                   model: cfg.surveyModel,
                   budgetUsd: cfg.surveyBudgetUsd,
                 });
                 recordSurveyBaseline(sha);
-                diag(harness, "survey_refresh", { bank: bankId, commits: sinceLast, retry: findingsAbsent });
+                diag(harness, "survey_refresh", {
+                  bank: bankId,
+                  commits: sinceLast,
+                  retry: findingsAbsent,
+                });
               } else if (sinceLast === null) {
                 recordSurveyBaseline(sha); // first baseline, or reset after a rebase — no survey
               }

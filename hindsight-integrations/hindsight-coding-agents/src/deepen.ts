@@ -112,7 +112,12 @@ async function main() {
   diag("deepen", "deepen_started", { bank: FINAL_BANK });
   try {
     const harness = await getHarness(HARNESS);
-    const client = new HindsightClient({ apiUrl: API_URL, apiToken: API_TOKEN, bank: FINAL_BANK!, log });
+    const client = new HindsightClient({
+      apiUrl: API_URL,
+      apiToken: API_TOKEN,
+      bank: FINAL_BANK!,
+      log,
+    });
     log(`deepen -> ${client.apiUrl} bank=${FINAL_BANK} harness=${harness.name}`);
 
     await client.configureBank();

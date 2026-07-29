@@ -87,9 +87,7 @@ function mapLookup(map: Record<string, string>, directory: string): string | und
 /** Derive the bank id for a working directory (see module doc for the resolution order). */
 export function deriveBankId(config: BankConfig, directory: string, harness = "coding"): string {
   const mapped =
-    directory && config.mapPathToBank
-      ? mapLookup(config.mapPathToBank, directory)
-      : undefined;
+    directory && config.mapPathToBank ? mapLookup(config.mapPathToBank, directory) : undefined;
   if (mapped) return mapped;
 
   // dynamic by default — but an explicit bankId (without dynamicBankId: true) means "static".

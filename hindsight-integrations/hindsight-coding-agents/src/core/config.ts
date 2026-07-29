@@ -19,7 +19,8 @@ import { DEFAULT_SEED_LIMIT } from "./seed";
 /** Default config-file path: ~/.hindsight/coding-agent.json */
 export // HINDSIGHT_CONFIG joins the two env exceptions (diag/log files): it points at THE config file,
 // for containers and test harnesses where $HOME isn't the right anchor. Still one file.
-const CONFIG_PATH = process.env.HINDSIGHT_CONFIG || join(homedir(), ".hindsight", "coding-agent.json");
+const CONFIG_PATH =
+  process.env.HINDSIGHT_CONFIG || join(homedir(), ".hindsight", "coding-agent.json");
 
 /** Incremental git-sync settings (see core/sync.ts). */
 /** The config file's shape — every field optional; omitted fields take the documented default. */
@@ -185,10 +186,7 @@ const BANK_OVERRIDE_EXCLUDED = [
  * that runs AFTER bank resolution, giving per-repo opt-in/out (disable, retainSessions, gitIngest,
  * survey settings, ...) from the ONE global config file.
  */
-export function applyBankConfig(
-  cfg: Config,
-  resolvedId: string
-): { cfg: Config; bankId: string } {
+export function applyBankConfig(cfg: Config, resolvedId: string): { cfg: Config; bankId: string } {
   const section = cfg.banks[resolvedId];
   if (!section) return { cfg, bankId: resolvedId };
   const safe: Record<string, unknown> = { ...section };
@@ -207,7 +205,8 @@ function resolvePartial(cfg: Config, patch: RawConfig): Partial<Config> {
   const full = resolveConfig(patch);
   const out: Partial<Config> = {};
   for (const key of Object.keys(patch) as (keyof RawConfig)[]) {
-    if (key in full) (out as Record<string, unknown>)[key] = (full as unknown as Record<string, unknown>)[key];
+    if (key in full)
+      (out as Record<string, unknown>)[key] = (full as unknown as Record<string, unknown>)[key];
   }
   return out;
 }
