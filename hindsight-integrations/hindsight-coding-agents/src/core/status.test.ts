@@ -39,6 +39,8 @@ describe("syncStatus", () => {
       gitlogPresent: true,
       gitDiffDocs: 0,
       gitDiffTarget: null, // no repoDir passed
+      surveyBaseline: null,
+      surveyCommitsBehind: null,
       chatDocs: 0,
       pagesCount: 1,
       activeOps: 0,
