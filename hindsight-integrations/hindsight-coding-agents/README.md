@@ -90,7 +90,10 @@ new version; re-run `install` (idempotent) only when a release note says the wir
 `install` merges the native wiring (hooks + MCP registration where the host wants them) into each
 agent's own config, preserving everything already there; it is idempotent (re-run after moving the
 package) and backs up any pre-existing file it touches as `<file>.hindsight-backup`. `uninstall`
-removes only our entries. Manual wiring per harness, if you prefer:
+removes only our entries. On Claude Code the install also ships a **companion skill**
+(`~/.claude/skills/hindsight-coding-agent`) that teaches the agent how this memory works — what
+"store this in hindsight" should do, the tool surface, per-repo configuration, debugging — so users
+can ask the agent itself. Manual wiring per harness, if you prefer:
 
 **opencode** installs directly — point `opencode.json` at the package dir:
 
