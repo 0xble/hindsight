@@ -26,6 +26,7 @@ import { applyBankConfig, loadConfig } from "./config";
 import { diag } from "./diag";
 import { log, setLogLevel } from "./log";
 import { startBackgroundSeed } from "./seed";
+import { syncCompanionSkill } from "./skill-sync";
 import { startCodebaseSurvey, type SurveyHarness } from "./survey";
 import type { ClientOpts } from "./hindsight";
 import { HindsightClient } from "./hindsight";
@@ -251,6 +252,7 @@ export async function runHook(
   // no error anywhere). The survey stays SessionStart-owned except for hosts without one.
   if (cfg.autoSeed !== false && !existsSync(cacheFile)) {
     startBackgroundSeed(cwd, { limit: cfg.seedLimit });
+    syncCompanionSkill(spec.harness); // hosts without SessionStart still self-update the skill
     if (spec.ensureSeed && cfg.codebaseSurvey !== false && client.listDocumentIds) {
       void client
         .listDocumentIds("source:git")

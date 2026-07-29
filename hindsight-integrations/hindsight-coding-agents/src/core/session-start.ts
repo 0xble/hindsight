@@ -22,6 +22,7 @@ import { readFileSync } from "node:fs";
 import { gitHeadSha, hasGitHistory, commitsSince } from "./git";
 import { DEEPEN_DIFF_TARGET } from "./status";
 import { startBackgroundSeed } from "./seed";
+import { syncCompanionSkill } from "./skill-sync";
 import { SURVEY_DOC_IDS, startCodebaseSurvey, type SurveyHarness } from "./survey";
 import { applyBankConfig, loadConfig } from "./config";
 import type { Config } from "./config";
@@ -304,6 +305,7 @@ export async function runSessionStartHook(
 
     let cfg = loadConfig({ harness });
     setLogLevel(cfg.logLevel);
+    syncCompanionSkill(harness); // keep the installed skill current with the package version
     if (cfg.disabled) return;
 
     const resolved = applyBankConfig(cfg, deriveBankId(cfg, cwd, harness));
