@@ -248,7 +248,7 @@ describe("buildSessionStartContext — periodic re-survey (bank-stored commit co
     expect.any(String),
     `survey-baseline:${sha}`,
     ["source:survey-baseline"],
-    "marker", // zero-extraction system-marker strategy
+    "survey", // survey-lifecycle strategy (marker rule: zero extraction)
     expect.anything(),
   ];
 

@@ -97,7 +97,7 @@ npm update -g hindsight-coding-agents        # update; wired paths stay valid
   no SessionStart behind it (its first prompt after install self-heals).
 - **Internal marker docs you may notice** (safe to ignore, safe to delete): `survey-baseline:<sha>`
   — "🛰️ researching…" while a codebase survey runs, flipped to "✅ completed" once its findings
-  land. Retained under the zero-extraction `marker` strategy, so it contributes NO memories;
+  land. Retained under the `survey` strategy, whose marker rule extracts NOTHING from status markers;
   powers the re-survey cadence and `surveyBaseline` in sync status. `gitlog:<repo>` is the
   aggregated commit-message seed document.
 - Failures never break the agent: reflect/pages/retain failures degrade to a normal memoryless

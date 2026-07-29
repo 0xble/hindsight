@@ -161,7 +161,7 @@ export async function buildSessionStartContext(args: {
           "hindsight codebase-survey baseline",
           `${SURVEY_BASELINE_PREFIX}${sha}`,
           [SURVEY_BASELINE_TAG],
-          "marker",
+          "survey",
           { async: true }
         )
       ).catch(() => {});

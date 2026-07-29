@@ -93,15 +93,19 @@ export const RETAIN_STRATEGIES = {
     retain_extraction_mode: "verbose",
     retain_chunk_size: 12000,
   },
-  // Internal SYSTEM MARKER documents (survey baseline, future state markers): human-readable in
-  // the dashboard, but they must contribute ZERO memories — custom extraction that returns an
-  // empty fact list, replacing the default extractor entirely.
-  marker: {
+  // Codebase-SURVEY lifecycle documents, ONE strategy with conditional rules: the survey's
+  // internal status markers ("researching…"/"completed" baselines) must yield ZERO memories,
+  // while any actual survey findings routed here extract as concrete structural facts.
+  survey: {
     retain_extraction_mode: "custom",
     retain_custom_instructions:
-      "This document is an INTERNAL SYSTEM MARKER for the Hindsight coding-agent plugin (state " +
-      "bookkeeping such as codebase-survey baselines). It contains NO project knowledge. Extract " +
-      "NOTHING: return an empty list of facts, regardless of the content.",
+      "This document belongs to the Hindsight codebase-survey lifecycle. Apply ONE of two rules: " +
+      "(1) If the content is an internal status marker — it says it is an internal marker, or " +
+      "merely announces that a survey started/completed at some commit — extract NOTHING: return " +
+      "an empty list of facts. (2) Otherwise the content is survey FINDINGS about the codebase: " +
+      "extract the concrete structural facts it states (components and their responsibilities, " +
+      "key concepts, conventions, tech stack), preserving identifiers verbatim.",
+    retain_chunk_size: 12000,
   },
 } as const;
 

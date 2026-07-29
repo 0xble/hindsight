@@ -210,7 +210,9 @@ async function main() {
       const uploads = await client.listDocumentIds("source:upload").catch(() => new Set<string>());
       if (SURVEY_DOC_IDS.some((id) => uploads.has(id))) {
         const markers = await client.listDocumentIds("source:survey-baseline");
-        const done = await client.listDocumentIds("survey-state:done").catch(() => new Set<string>());
+        const done = await client
+          .listDocumentIds("survey-state:done")
+          .catch(() => new Set<string>());
         let best: { id: string; sha: string; behind: number } | undefined;
         for (const id of markers) {
           if (done.has(id)) continue;
@@ -225,7 +227,7 @@ async function main() {
             "hindsight codebase-survey baseline",
             best.id,
             ["source:survey-baseline", "survey-state:done"],
-            "marker",
+            "survey",
             { async: true }
           );
           log(`[survey] marker ${best.id} flipped to completed`);
