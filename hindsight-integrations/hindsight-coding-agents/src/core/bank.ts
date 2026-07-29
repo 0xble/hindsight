@@ -24,6 +24,7 @@ import { execFileSync } from "node:child_process";
 import { basename, dirname, normalize, sep } from "node:path";
 
 export interface BankConfig {
+  bankAliases?: Record<string, string>;
   bankId?: string;
   dynamicBankId?: boolean;
   bankIdTemplate?: string;
@@ -79,6 +80,17 @@ function mapLookup(map: Record<string, string>, directory: string): string | und
 
 /** Derive the bank id for a working directory (see module doc for the resolution order). */
 export function deriveBankId(config: BankConfig, directory: string, harness = "coding"): string {
+  return aliased(config, deriveRawBankId(config, directory, harness));
+}
+
+/** `bankAliases` remaps a RESOLVED id to another name as the final step — whatever path produced
+ *  it (map, static, template). Single hop, no chaining: an alias's target is taken literally, so
+ *  two aliases can intentionally converge on one shared bank without loop risk. */
+function aliased(config: BankConfig, id: string): string {
+  return config.bankAliases?.[id] ?? id;
+}
+
+function deriveRawBankId(config: BankConfig, directory: string, harness = "coding"): string {
   const mapped =
     directory && config.directoryBankMap
       ? mapLookup(config.directoryBankMap, directory)

@@ -79,16 +79,21 @@ Manual wiring per harness:
 { "hooks": { "beforeSubmitPrompt": [ { "command": "hindsight-cursor-hook" } ] } }
 ```
 
-The opencode plugin additionally exposes an on-demand **`memory_reflect` tool** (same synthesized
-reflect, callable mid-task) and opt-in **incremental git-sync** and **live session write-back**
-(see the configuration reference).
+Every harness gets the same agent tools (`hindsight_search_knowledge_pages`, `hindsight_reflect`,
+page list/read, `hindsight_capture_initiative`, `hindsight_ingest_document`,
+`hindsight_sync_status`) — natively on opencode, via the bundled MCP server elsewhere. Session
+write-back is on by default everywhere; staying current with git needs no separate sync — the
+ingestion engine re-runs idempotently at every session start.
 
 ## Configuration
 
 All configuration is **one JSON file**: `~/.hindsight/coding-agent.json` (no environment
-variables; exception: `HINDSIGHT_DIAG_FILE`). Later wins per field: built-in defaults → the file's
-top level → its `harnesses.<name>` section for the asking agent. There is no repo-carried config —
-per-repo bank routing is `directoryBankMap`, per-agent differences are `harnesses.<name>`.
+variables; exceptions: `HINDSIGHT_CONFIG` to relocate the file, `HINDSIGHT_DIAG_FILE` /
+`HINDSIGHT_LOG_FILE` / `HINDSIGHT_LOG_LEVEL` for diagnostics). Later wins per field: built-in
+defaults → the file's top level → its `harnesses.<name>` section for the asking agent → the
+`banks.<resolvedBankId>` section for the repo's bank (applied AFTER bank resolution). There is no
+repo-carried config — per-repo routing is `directoryBankMap`/`bankAliases`, per-repo behavior is
+`banks.<id>`, per-agent differences are `harnesses.<name>`.
 
 Each entry point knows which harness it *is*, so one shared config serves several agents side by
 side:
@@ -98,7 +103,14 @@ side:
   "apiUrl": "http://localhost:8888",
   "harnesses": {
     "opencode":    { "reflectTimeoutMs": 60000 },
-    "claude-code": { "disabled": true }          // e.g. memory off for Claude only
+    "claude-code": { "disabled": true }          // memory off for Claude only
+  },
+  "bankAliases": {
+    "coding-agent::old-name": "team::shared"     // remap a resolved bank id (final step)
+  },
+  "banks": {
+    "coding-agent::secret-client": { "disabled": true },   // per-repo blacklist
+    "coding-agent::big-mono": { "gitIngest": "full", "retainSessions": false }
   }
 }
 ```
@@ -120,6 +132,12 @@ side:
 | `retainSessions` | `true` | opencode write-back: async upsert every turn (set `false` to opt out; hook harnesses always write on Stop) |
 | `retainEveryTurns` | `1` | write-back cadence (user turns) |
 | `gitIngest` | `"message"` | git depth for seeding and staying current: `"message"` (messages only), `"full"` (messages + per-commit diffs), `"none"` |
+| `logLevel` | `"info"` | plugin-log verbosity (`"debug"` \| `"info"` \| `"warn"` \| `"error"`); `HINDSIGHT_LOG_LEVEL` env overrides |
+| `autoSeed` / `seedLimit` | `true` / `300` | automatic cold-repo seeding and its commit-message cap |
+| `codebaseSurvey` / `surveyModel` / `surveyBudgetUsd` | `true` / `haiku` / `2` | cold-repo structural survey (runs under your agent's own CLI, read-only, spend-capped) |
+| `surveyRefreshCommits` | `0` (off) | re-run the survey after N new commits so structural pages track an evolving architecture |
+| `bankAliases` | — | remap **resolved** bank ids to other names (final resolution step; single hop) |
+| `banks.<bankId>` | — | per-repo opt-in/out: any behavioral field, keyed by the resolved bank id (resolution fields ignored inside) |
 | `harnesses.<name>` | — | per-harness override of any field above |
 
 ### Bank resolution — per-repo by default
@@ -137,7 +155,10 @@ Coding memory is **per repository**. Resolution order for the working directory:
    - `{harness}` — the entry point asking (`opencode`, `claude-code`, `codex`, `cursor-cli`)
    - `{channel}` / `{user}` — `$HINDSIGHT_CHANNEL_ID` / `$HINDSIGHT_USER_ID`
 
-The default `"{gitProject}"` means **all agents share one memory per repo** — use
+4. **Aliases last**: `bankAliases` remaps whatever id steps 1–3 produced — rename a bank or point
+   several resolved ids at one shared bank without touching the template.
+
+The default template means **all agents share one memory per repo** — use
 `"{harness}-{gitProject}"` to split per agent instead.
 
 ## Diagnostics

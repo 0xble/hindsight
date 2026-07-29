@@ -55,6 +55,11 @@ export interface RawConfig {
   /** Per-harness overrides of any of the fields above, keyed by harness name ("opencode",
    *  "claude-code", ...). Lets one config file give each agent its own bank/settings. */
   harnesses?: Record<string, Omit<RawConfig, "harnesses">>;
+  /** Remap RESOLVED bank ids to other names, applied as the LAST step of bank resolution — e.g.
+   *  point every harness's "coding-agent::legacy-name" at "team::shared" without touching the
+   *  template. Keys are resolved ids (what the banner shows); values are the final bank names.
+   *  `banks.<id>` overrides key on the POST-alias (final) name. */
+  bankAliases?: Record<string, string>;
   /** Per-BANK overrides, applied AFTER bank resolution — the per-repo opt-in/out surface, keyed by
    *  the RESOLVED bank id (run a session once or check the banner to see it). Behavioral fields
    *  only: bank-resolution fields (bankId/template/map/...) are ignored here — they can't change
@@ -86,6 +91,7 @@ export interface Config {
   surveyBudgetUsd: number;
   surveyRefreshCommits: number;
   gitIngest: "message" | "full" | "none";
+  bankAliases: Record<string, string>;
   banks: Record<string, Omit<RawConfig, "banks" | "harnesses">>;
   logLevel: "debug" | "info" | "warn" | "error";
 }
@@ -115,6 +121,7 @@ export function resolveConfig(raw: RawConfig = {}): Config {
     gitIngest: ["message", "full", "none"].includes(raw.gitIngest as string)
       ? (raw.gitIngest as "message" | "full" | "none")
       : "message",
+    bankAliases: raw.bankAliases && typeof raw.bankAliases === "object" ? raw.bankAliases : {},
     banks: raw.banks && typeof raw.banks === "object" ? raw.banks : {},
     logLevel: ["debug", "info", "warn", "error"].includes(raw.logLevel as string)
       ? (raw.logLevel as "debug" | "info" | "warn" | "error")
@@ -170,6 +177,7 @@ export function loadConfig(opts: LoadOptions | string = {}): Config {
 /** Bank-resolution fields are meaningless inside a `banks.<id>` section (they can't change the id
  *  that selected it) — strip them so a typo there can't silently re-route memory. */
 const BANK_OVERRIDE_EXCLUDED = [
+  "bankAliases",
   "bankId",
   "bankIdTemplate",
   "directoryBankMap",
