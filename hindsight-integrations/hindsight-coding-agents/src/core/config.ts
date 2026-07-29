@@ -9,7 +9,7 @@
  *
  * There is deliberately NO project-local config: a second, repo-carried file was both a security
  * surface (untrusted repos influencing memory behavior) and a second place to look. Per-repo bank
- * routing is `directoryBankMap`; per-agent differences are `harnesses.<name>`.
+ * routing is `mapPathToBank`; per-agent differences are `harnesses.<name>`.
  */
 import { readFileSync } from "node:fs";
 import { homedir } from "node:os";
@@ -30,7 +30,7 @@ export interface RawConfig {
   dynamicBankId?: boolean; // force dynamic resolution even when bankId is set (default: dynamic iff no bankId)
   bankIdTemplate?: string; // dynamic bank id format (default "coding-agent::{gitProject}" — harness-neutral) —
   //   placeholders: {gitProject} {project} {harness} {channel} {user} (see core/bank.ts)
-  directoryBankMap?: Record<string, string>; // absolute path -> bank; longest prefix wins; overrides everything
+  mapPathToBank?: Record<string, string>; // absolute path -> bank; longest prefix wins; overrides everything
   resolveWorktrees?: boolean; // {gitProject}: worktrees share the main repo's bank (default true)
   harness?: string; // runtime adapter (default "opencode")
   disabled?: boolean; // hard off-switch — inert plugin, for a no-memory baseline (default false)
@@ -73,7 +73,7 @@ export interface Config {
   bankId?: string; // resolved per-directory via deriveBankId(cfg, dir) — see core/bank.ts
   dynamicBankId?: boolean;
   bankIdTemplate?: string;
-  directoryBankMap?: Record<string, string>;
+  mapPathToBank?: Record<string, string>;
   resolveWorktrees?: boolean;
   harness: string;
   disabled: boolean;
@@ -100,7 +100,7 @@ export function resolveConfig(raw: RawConfig = {}): Config {
     bankId: raw.bankId,
     dynamicBankId: raw.dynamicBankId,
     bankIdTemplate: raw.bankIdTemplate,
-    directoryBankMap: raw.directoryBankMap,
+    mapPathToBank: raw.mapPathToBank,
     resolveWorktrees: raw.resolveWorktrees,
     harness: raw.harness ?? "opencode",
     disabled: raw.disabled ?? false,
@@ -144,7 +144,7 @@ function mergeRaw(a: RawConfig, b: RawConfig): RawConfig {
 /**
  * Keys a PROJECT-LOCAL (untrusted, repo-supplied) config may NOT set. These control where the user's
  * credential + prompts/transcripts are sent (`apiUrl`, `apiToken`) or remap banks globally
- * (`directoryBankMap`, which "overrides everything"). A repo can still set its own per-repo bank via
+ * (`mapPathToBank`, which "overrides everything"). A repo can still set its own per-repo bank via
  * `bankId`/`bankIdTemplate` — just not the network endpoint, token, or global path→bank map. The
  * user-global config is trusted and unrestricted.
  */
@@ -174,7 +174,7 @@ export function loadConfig(opts: LoadOptions | string = {}): Config {
 const BANK_OVERRIDE_EXCLUDED = [
   "bankId",
   "bankIdTemplate",
-  "directoryBankMap",
+  "mapPathToBank",
   "dynamicBankId",
   "resolveWorktrees",
   "harness",

@@ -103,13 +103,13 @@ describe("banks.<bankId> overrides (per-repo opt-in/out, applied AFTER bank reso
   it("ignores bank-resolution fields inside a bank section (cannot re-route memory)", () => {
     const cfg = resolveConfig({
       banks: {
-        b1: { bankId: "evil", directoryBankMap: { "/x": "evil" }, disabled: true } as never,
+        b1: { bankId: "evil", mapPathToBank: { "/x": "evil" }, disabled: true } as never,
       },
     });
     const out = applyBankConfig(cfg, "b1").cfg;
     expect(out.disabled).toBe(true);
     expect(out.bankId).toBe(cfg.bankId); // untouched
-    expect(out.directoryBankMap).toBe(cfg.directoryBankMap);
+    expect(out.mapPathToBank).toBe(cfg.mapPathToBank);
   });
 
   it("an override only changes the fields it names (defaults don't reset the rest)", () => {

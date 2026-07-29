@@ -92,7 +92,7 @@ variables; exceptions: `HINDSIGHT_CONFIG` to relocate the file, `HINDSIGHT_DIAG_
 `HINDSIGHT_LOG_FILE` / `HINDSIGHT_LOG_LEVEL` for diagnostics). Later wins per field: built-in
 defaults → the file's top level → its `harnesses.<name>` section for the asking agent → the
 `banks.<resolvedBankId>` section for the repo's bank (applied AFTER bank resolution). There is no
-repo-carried config — per-repo routing is `directoryBankMap`, per-repo behavior (including renaming
+repo-carried config — per-repo routing is `mapPathToBank`, per-repo behavior (including renaming
 the bank) is `banks.<id>`, per-agent differences are `harnesses.<name>`.
 
 Each entry point knows which harness it *is*, so one shared config serves several agents side by
@@ -122,7 +122,7 @@ side:
 | `bankId` | — | **explicit static bank**; unset ⇒ per-repo dynamic resolution (below) |
 | `dynamicBankId` | dynamic iff no `bankId` | force dynamic (`true`) or static (`false`) resolution |
 | `bankIdTemplate` | `"{gitProject}"` | dynamic bank id format, e.g. `"hindsight-{gitProject}"` |
-| `directoryBankMap` | — | absolute path → bank; **longest prefix wins**; overrides everything |
+| `mapPathToBank` | — | absolute path → bank; **longest prefix wins**; overrides everything |
 | `resolveWorktrees` | `true` | `{gitProject}`: linked worktrees share the main repo's bank |
 | `disabled` | `false` | hard off-switch (inert plugin/hook — a no-memory baseline) |
 | `reflectTimeoutMs` | `120000` | session-reflect timeout (hook harnesses cap it at 25s to fit the host's hook window); on timeout the session runs without reflect (recorded in diagnostics) |
@@ -141,7 +141,7 @@ side:
 
 Coding memory is **per repository**. Resolution order for the working directory:
 
-1. `directoryBankMap` — longest matching absolute-path prefix (mapping a repo root covers every
+1. `mapPathToBank` — longest matching absolute-path prefix (mapping a repo root covers every
    subdirectory; deeper mappings win; overrides even an explicit `bankId`).
 2. Static — `bankId` set (or `dynamicBankId: false`).
 3. Dynamic — `bankIdTemplate` with placeholders:
@@ -175,12 +175,12 @@ they move). Both ids converge on one literal target:
 }
 ```
 
-**By path prefix** — the repos live under one directory; a single `directoryBankMap` entry covers
+**By path prefix** — the repos live under one directory; a single `mapPathToBank` entry covers
 every repo (present and future) beneath it:
 
 ```jsonc
 {
-  "directoryBankMap": { "/Users/me/work/client-x": "client-x-memory" }
+  "mapPathToBank": { "/Users/me/work/client-x": "client-x-memory" }
 }
 ```
 

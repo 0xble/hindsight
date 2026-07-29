@@ -92,39 +92,39 @@ describe("deriveBankId", () => {
     });
   });
 
-  describe("directoryBankMap", () => {
+  describe("mapPathToBank", () => {
     const WT = "/home/me/dev/myrepo";
 
     it("matches the exact directory", () => {
-      expect(deriveBankId({ directoryBankMap: { [WT]: "mapped" } }, WT)).toBe("mapped");
+      expect(deriveBankId({ mapPathToBank: { [WT]: "mapped" } }, WT)).toBe("mapped");
     });
 
     it("matches any subdirectory by prefix", () => {
-      expect(deriveBankId({ directoryBankMap: { [WT]: "mapped" } }, `${WT}/deep/sub`)).toBe(
+      expect(deriveBankId({ mapPathToBank: { [WT]: "mapped" } }, `${WT}/deep/sub`)).toBe(
         "mapped"
       );
     });
 
     it("does not match sibling directories sharing a name prefix", () => {
-      expect(deriveBankId({ directoryBankMap: { [WT]: "mapped" } }, `${WT}-other`)).toBe(
+      expect(deriveBankId({ mapPathToBank: { [WT]: "mapped" } }, `${WT}-other`)).toBe(
         "coding-agent::myrepo-other"
       );
     });
 
     it("longest prefix wins", () => {
       const map = { [WT]: "outer", [`${WT}/pkg`]: "inner" };
-      expect(deriveBankId({ directoryBankMap: map }, `${WT}/pkg/x`)).toBe("inner");
-      expect(deriveBankId({ directoryBankMap: map }, `${WT}/other`)).toBe("outer");
+      expect(deriveBankId({ mapPathToBank: map }, `${WT}/pkg/x`)).toBe("inner");
+      expect(deriveBankId({ mapPathToBank: map }, `${WT}/other`)).toBe("outer");
     });
 
     it("overrides an explicit bankId", () => {
-      expect(deriveBankId({ bankId: "static", directoryBankMap: { [WT]: "mapped" } }, WT)).toBe(
+      expect(deriveBankId({ bankId: "static", mapPathToBank: { [WT]: "mapped" } }, WT)).toBe(
         "mapped"
       );
     });
 
     it("tolerates trailing slashes in map keys", () => {
-      expect(deriveBankId({ directoryBankMap: { [`${WT}/`]: "mapped" } }, `${WT}/sub`)).toBe(
+      expect(deriveBankId({ mapPathToBank: { [`${WT}/`]: "mapped" } }, `${WT}/sub`)).toBe(
         "mapped"
       );
     });

@@ -6,7 +6,7 @@
  * main worktree's basename and therefore shares one bank.
  *
  * Resolution order:
- *   1. `directoryBankMap` — absolute path -> bank; LONGEST matching prefix wins, so mapping a
+ *   1. `mapPathToBank` — absolute path -> bank; LONGEST matching prefix wins, so mapping a
  *      repo root covers every subdirectory (and worktree paths can be pinned individually).
  *      Overrides everything, including an explicit bankId.
  *   2. static — when `dynamicBankId` is false, or left unset WITH an explicit `bankId`
@@ -27,7 +27,7 @@ export interface BankConfig {
   bankId?: string;
   dynamicBankId?: boolean;
   bankIdTemplate?: string;
-  directoryBankMap?: Record<string, string>;
+  mapPathToBank?: Record<string, string>;
   resolveWorktrees?: boolean; // default true: worktrees share the main repo's bank
 }
 
@@ -80,8 +80,8 @@ function mapLookup(map: Record<string, string>, directory: string): string | und
 /** Derive the bank id for a working directory (see module doc for the resolution order). */
 export function deriveBankId(config: BankConfig, directory: string, harness = "coding"): string {
   const mapped =
-    directory && config.directoryBankMap
-      ? mapLookup(config.directoryBankMap, directory)
+    directory && config.mapPathToBank
+      ? mapLookup(config.mapPathToBank, directory)
       : undefined;
   if (mapped) return mapped;
 
