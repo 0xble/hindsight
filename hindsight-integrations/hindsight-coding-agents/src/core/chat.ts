@@ -99,19 +99,25 @@ export async function retainLiveSession(
   client: HindsightClient,
   sessionId: string,
   turns: TransportTurn[],
-  startTs: string
+  startTs: string,
+  harness?: string
 ): Promise<void> {
   const refId = `conversation:${sessionId}`;
   await client.retain(
     renderSessionJsonl(refId, turns, startTs),
     "coding agent session",
     refId,
-    ["source:chat"],
+    ["source:chat", ...(harness ? [`harness:${harness}`] : [])],
     "conversation",
     {
       timestamp: startTs,
       async: true,
-      metadata: { source: "chat", session_id: sessionId, ref_id: refId },
+      metadata: {
+        source: "chat",
+        session_id: sessionId,
+        ref_id: refId,
+        ...(harness ? { harness } : {}),
+      },
     }
   );
 }

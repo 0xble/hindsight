@@ -357,18 +357,27 @@ describe("npx-cache guard", () => {
   });
 });
 
-describe("claude-code skill install", () => {
-  it("copies the packaged skill into ~/.claude/skills and uninstall removes it", () => {
+describe("skill install across skills-capable hosts", () => {
+  it("copies the packaged skill for claude/codex(~/.agents)/gemini/cursor and uninstall removes each", () => {
     const home = mkdtempSync(join(tmpdir(), "hs-inst-skill-"));
     const pkgRoot = mkdtempSync(join(tmpdir(), "hs-pkg-"));
     mkdirSync(join(pkgRoot, "skill"), { recursive: true });
     writeFileSync(join(pkgRoot, "skill", "SKILL.md"), "---\nname: hindsight-coding-agent\n---\nbody");
     const ctx = { home, pkgRoot, dist: join(pkgRoot, "dist"), claudeMcp: vi.fn(() => true) };
-    run(["install", "claude-code"], ctx);
-    const dst = join(home, ".claude", "skills", "hindsight-coding-agent", "SKILL.md");
-    expect(existsSync(dst)).toBe(true);
-    run(["uninstall", "claude-code"], ctx);
-    expect(existsSync(dst)).toBe(false);
+    const targets: [string, string][] = [
+      ["claude-code", join(home, ".claude", "skills")],
+      ["codex", join(home, ".agents", "skills")],
+      ["gemini", join(home, ".gemini", "skills")],
+      ["cursor-cli", join(home, ".cursor", "skills")],
+    ];
+    run(["install", ...targets.map(([h]) => h)], ctx);
+    for (const [, base] of targets) {
+      expect(existsSync(join(base, "hindsight-coding-agent", "SKILL.md"))).toBe(true);
+    }
+    run(["uninstall", ...targets.map(([h]) => h)], ctx);
+    for (const [, base] of targets) {
+      expect(existsSync(join(base, "hindsight-coding-agent"))).toBe(false);
+    }
     rmSync(home, { recursive: true, force: true });
     rmSync(pkgRoot, { recursive: true, force: true });
   });

@@ -59,7 +59,7 @@ describe("buildRetain", () => {
     expect(parsed[2]).toMatchObject({ role: "assistant", content: "noted, zod it is" });
     // Verbose `session` extraction, not the ≤2-fact `chat` extractor.
     expect(strategy).toBe("conversation");
-    expect(tags).toEqual(["source:chat"]);
+    expect(tags).toEqual(["source:chat", "harness:claude-code"]);
   });
 
   it("empty transcript -> no retain", async () => {

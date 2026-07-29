@@ -46,7 +46,7 @@ export class RuntimeCore {
 
   /** The hindsight_* knowledge + recall tools, bound to this bank, for the harness to register natively. */
   toolSpecs(): ToolSpec[] {
-    return buildKnowledgeTools(this.client, this.bankId);
+    return buildKnowledgeTools(this.client, this.bankId, { harness: HARNESS });
   }
 
   get writeBackEnabled(): boolean {
@@ -191,7 +191,7 @@ export class RuntimeCore {
     if (users - st.retainedUsers >= this.cfg.retainEveryTurns) {
       st.retainedUsers = users;
       const t0 = Date.now();
-      void retainLiveSession(this.client, sessionId, turns, st.startTs)
+      void retainLiveSession(this.client, sessionId, turns, st.startTs, HARNESS)
         .then(() =>
           diag(HARNESS, "retain_ok", {
             ms: Date.now() - t0,

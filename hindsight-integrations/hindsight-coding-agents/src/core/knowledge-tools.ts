@@ -57,7 +57,7 @@ function guarded(fn: (args: any) => Promise<unknown>): (args: any) => Promise<To
 export function buildKnowledgeTools(
   client: HindsightClient,
   bankId: string,
-  opts: { repoDir?: string } = {}
+  opts: { repoDir?: string; harness?: string } = {}
 ): ToolSpec[] {
   return [
     {
@@ -187,9 +187,14 @@ export function buildKnowledgeTools(
             .toLowerCase()
             .replace(/[^a-z0-9]+/g, "-")
             .replace(/^-+|-+$/g, "") || "doc";
-        await client.retain(content, "ingested document", docId, ["source:upload"], "document", {
-          async: true,
-        });
+        await client.retain(
+          content,
+          "ingested document",
+          docId,
+          ["source:upload", ...(opts.harness ? [`harness:${opts.harness}`] : [])],
+          "document",
+          { async: true, metadata: opts.harness ? { harness: opts.harness } : undefined }
+        );
         return { ok: true, doc_id: docId };
       }),
     },

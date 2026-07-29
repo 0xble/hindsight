@@ -70,6 +70,20 @@ const cmdHook = (dist: string, file: string, timeout: number) => ({
   hooks: [{ type: "command", command: `node "${join(dist, file)}"`, timeout }],
 });
 
+/** Copy the packaged companion SKILL into a host's skills directory (idempotent overwrite). */
+function installSkill(c: InstallCtx, skillsBase: string): void {
+  const src = join(c.pkgRoot, "skill");
+  if (!existsSync(join(src, "SKILL.md"))) return;
+  const dst = join(skillsBase, "hindsight-coding-agent");
+  mkdirSync(skillsBase, { recursive: true });
+  cpSync(src, dst, { recursive: true });
+  c.log?.(`skill installed at ${dst}`);
+}
+
+function uninstallSkill(c: InstallCtx, skillsBase: string): void {
+  rmSync(join(skillsBase, "hindsight-coding-agent"), { recursive: true, force: true });
+}
+
 // ── per-harness adapters ────────────────────────────────────────────────────────
 
 export interface HarnessInstaller {
@@ -133,15 +147,9 @@ const claudeCode: HarnessInstaller = {
     );
     writeJson(path, settings);
     c.log?.(`claude-code: hooks merged into ${path}`);
-    // The companion SKILL teaches the agent how this memory works ("store this in hindsight",
-    // per-repo config, debugging) — shipped with the package, installed as a Claude Code skill.
-    const skillSrc = join(c.pkgRoot, "skill");
-    if (existsSync(join(skillSrc, "SKILL.md"))) {
-      const skillDst = join(c.home, ".claude", "skills", "hindsight-coding-agent");
-      mkdirSync(dirname(skillDst), { recursive: true });
-      cpSync(skillSrc, skillDst, { recursive: true });
-      c.log?.(`claude-code: skill installed at ${skillDst}`);
-    }
+    // Companion SKILL: every skills-capable host gets it (claude/gemini/cursor native dirs;
+    // codex via the ~/.agents/skills standard).
+    installSkill(c, join(c.home, ".claude", "skills"));
     const mcp = c.claudeMcp ?? defaultClaudeMcp;
     if (
       mcp([
@@ -177,10 +185,7 @@ const claudeCode: HarnessInstaller = {
     }
     const mcp = c.claudeMcp ?? defaultClaudeMcp;
     mcp(["mcp", "remove", "--scope", "user", "hindsight"]);
-    rmSync(join(c.home, ".claude", "skills", "hindsight-coding-agent"), {
-      recursive: true,
-      force: true,
-    });
+    uninstallSkill(c, join(c.home, ".claude", "skills"));
     c.log?.("claude-code: hooks + MCP registration + skill removed");
   },
 };
@@ -241,6 +246,7 @@ const codex: HarnessInstaller = {
       writeFileSync(tomlPath, `${toml.replace(/\n*$/, "\n\n")}${additions.join("\n\n")}\n`);
       c.log?.(`codex: appended ${additions.length} section(s) to ${tomlPath}`);
     }
+    installSkill(c, join(c.home, ".agents", "skills")); // agentskills-standard shared dir
   },
   uninstall(c) {
     const hooksPath = join(c.home, ".codex", "hooks.json");
@@ -253,6 +259,7 @@ const codex: HarnessInstaller = {
         writeJson(hooksPath, cfg);
       }
     }
+    uninstallSkill(c, join(c.home, ".agents", "skills"));
     const tomlPath = join(c.home, ".codex", "config.toml");
     if (existsSync(tomlPath)) {
       const toml = readFileSync(tomlPath, "utf8");
@@ -263,7 +270,7 @@ const codex: HarnessInstaller = {
       if (cleaned !== toml) writeFileSync(tomlPath, cleaned);
     }
     c.log?.(
-      "codex: hooks + MCP section removed (codex_hooks flag left as-is — other hooks may use it)"
+      "codex: hooks + MCP section + skill removed ([features] hooks flag left as-is — other hooks may use it)"
     );
   },
 };
@@ -298,6 +305,7 @@ const gemini: HarnessInstaller = {
     };
     writeJson(path, settings);
     c.log?.(`gemini: hooks + mcpServers merged into ${path}`);
+    installSkill(c, join(c.home, ".gemini", "skills"));
   },
   uninstall(c) {
     const path = join(c.home, ".gemini", "settings.json");
@@ -311,7 +319,8 @@ const gemini: HarnessInstaller = {
     }
     if (settings.mcpServers?.hindsight) delete settings.mcpServers.hindsight;
     writeJson(path, settings);
-    c.log?.("gemini: hooks + mcpServers.hindsight removed");
+    uninstallSkill(c, join(c.home, ".gemini", "skills"));
+    c.log?.("gemini: hooks + mcpServers.hindsight + skill removed");
   },
 };
 
@@ -334,6 +343,7 @@ const cursor: HarnessInstaller = {
     };
     writeJson(mcpPath, mcp);
     c.log?.(`cursor-cli: hook merged into ${hooksPath}, MCP into ${mcpPath}`);
+    installSkill(c, join(c.home, ".cursor", "skills"));
   },
   uninstall(c) {
     const hooksPath = join(c.home, ".cursor", "hooks.json");
@@ -353,7 +363,8 @@ const cursor: HarnessInstaller = {
         writeJson(mcpPath, mcp);
       }
     }
-    c.log?.("cursor-cli: hook + MCP entry removed");
+    uninstallSkill(c, join(c.home, ".cursor", "skills"));
+    c.log?.("cursor-cli: hook + MCP entry + skill removed");
   },
 };
 

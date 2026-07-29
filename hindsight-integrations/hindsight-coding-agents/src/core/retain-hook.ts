@@ -67,7 +67,7 @@ export async function buildRetain(args: {
   const startTs = turns[0]?.timestamp ?? new Date().toISOString();
   const t0 = Date.now();
   try {
-    await retainLiveSession(client as HindsightClient, sessionId, turns, startTs);
+    await retainLiveSession(client as HindsightClient, sessionId, turns, startTs, harness);
     diag(harness, "retain_ok", { ms: Date.now() - t0, turns: turns.length, session: sessionId });
   } catch (e) {
     log.warn(harness, "session write-back failed", {
