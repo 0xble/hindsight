@@ -356,3 +356,20 @@ describe("npx-cache guard", () => {
     expect(logs.join("\n")).toContain("npm install -g");
   });
 });
+
+describe("claude-code skill install", () => {
+  it("copies the packaged skill into ~/.claude/skills and uninstall removes it", () => {
+    const home = mkdtempSync(join(tmpdir(), "hs-inst-skill-"));
+    const pkgRoot = mkdtempSync(join(tmpdir(), "hs-pkg-"));
+    mkdirSync(join(pkgRoot, "skill"), { recursive: true });
+    writeFileSync(join(pkgRoot, "skill", "SKILL.md"), "---\nname: hindsight-coding-agent\n---\nbody");
+    const ctx = { home, pkgRoot, dist: join(pkgRoot, "dist"), claudeMcp: vi.fn(() => true) };
+    run(["install", "claude-code"], ctx);
+    const dst = join(home, ".claude", "skills", "hindsight-coding-agent", "SKILL.md");
+    expect(existsSync(dst)).toBe(true);
+    run(["uninstall", "claude-code"], ctx);
+    expect(existsSync(dst)).toBe(false);
+    rmSync(home, { recursive: true, force: true });
+    rmSync(pkgRoot, { recursive: true, force: true });
+  });
+});

@@ -12,6 +12,7 @@
     "hindsight-codex-hook": "dist/codex-hook.js"
   },
   "files": [
+    "skill",
     "dist"
   ],
   "scripts": {

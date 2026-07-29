@@ -18,7 +18,7 @@
  * missing. Backups: the first time we touch an existing file we write `<file>.hindsight-backup`.
  */
 import { execFileSync } from "node:child_process";
-import { copyFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { copyFileSync, cpSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -133,6 +133,15 @@ const claudeCode: HarnessInstaller = {
     );
     writeJson(path, settings);
     c.log?.(`claude-code: hooks merged into ${path}`);
+    // The companion SKILL teaches the agent how this memory works ("store this in hindsight",
+    // per-repo config, debugging) — shipped with the package, installed as a Claude Code skill.
+    const skillSrc = join(c.pkgRoot, "skill");
+    if (existsSync(join(skillSrc, "SKILL.md"))) {
+      const skillDst = join(c.home, ".claude", "skills", "hindsight-coding-agent");
+      mkdirSync(dirname(skillDst), { recursive: true });
+      cpSync(skillSrc, skillDst, { recursive: true });
+      c.log?.(`claude-code: skill installed at ${skillDst}`);
+    }
     const mcp = c.claudeMcp ?? defaultClaudeMcp;
     if (
       mcp([
@@ -168,7 +177,11 @@ const claudeCode: HarnessInstaller = {
     }
     const mcp = c.claudeMcp ?? defaultClaudeMcp;
     mcp(["mcp", "remove", "--scope", "user", "hindsight"]);
-    c.log?.("claude-code: hooks + MCP registration removed");
+    rmSync(join(c.home, ".claude", "skills", "hindsight-coding-agent"), {
+      recursive: true,
+      force: true,
+    });
+    c.log?.("claude-code: hooks + MCP registration + skill removed");
   },
 };
 
