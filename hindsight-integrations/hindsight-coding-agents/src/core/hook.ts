@@ -43,9 +43,11 @@ export interface HookEventFields {
 export interface HookSpec {
   /** Harness name — config `harnesses.<name>` section, {harness} template field, diag records. */
   harness: string;
-  /** Harnesses with NO SessionStart-equivalent hook (Cursor): fire the ingestion engine from the
-   *  FIRST prompt of each session instead, so auto-ingestion parity doesn't depend on a hook the
-   *  host doesn't offer. */
+  /** Harnesses with NO SessionStart-equivalent hook (Cursor): ALSO fire the cold-repo survey from
+   *  the first prompt (hosts with a SessionStart hook run the survey there; double-triggering it
+   *  from the prompt too would race two headless survey agents). The ingestion ENGINE itself is
+   *  fired from the first prompt on EVERY harness — it is lock-protected and idempotent, and it is
+   *  the safety net for sessions that predate the install (their SessionStart never fired). */
   ensureSeed?: boolean;
   /** Read the fields out of the harness's stdin event (shapes differ per harness). */
   parse(event: Record<string, unknown>): HookEventFields;
@@ -239,11 +241,14 @@ export async function runHook(
     `${sessionId || "no-session"}.json`
   );
 
-  // SessionStart-parity for hosts without a session-start hook: on the session's FIRST prompt
-  // (no cache file yet), fire the idempotent ingestion engine, and the cold-only survey.
-  if (spec.ensureSeed && cfg.autoSeed !== false && !existsSync(cacheFile)) {
+  // Safety net on EVERY harness: on the session's FIRST prompt (no cache file yet), fire the
+  // ingestion engine. Normally SessionStart already did — the engine's per-bank lock makes this a
+  // no-op — but a session that PREDATES the install has no SessionStart behind it, and without
+  // this its bank silently never gets pages/gitlog (seen in the wild: empty knowledge pages with
+  // no error anywhere). The survey stays SessionStart-owned except for hosts without one.
+  if (cfg.autoSeed !== false && !existsSync(cacheFile)) {
     startBackgroundSeed(cwd, { limit: cfg.seedLimit });
-    if (cfg.codebaseSurvey !== false && client.listDocumentIds) {
+    if (spec.ensureSeed && cfg.codebaseSurvey !== false && client.listDocumentIds) {
       void client
         .listDocumentIds("source:git")
         .then((ids) => {
