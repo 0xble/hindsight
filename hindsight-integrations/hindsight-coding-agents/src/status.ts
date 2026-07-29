@@ -26,14 +26,16 @@ if (!BANK) {
   process.exit(1);
 }
 
-const cfg = BANK ? applyBankConfig(cfg0, BANK) : cfg0;
+const resolved0 = BANK ? applyBankConfig(cfg0, BANK) : { cfg: cfg0, bankId: BANK };
+const cfg = resolved0.cfg;
+const FINAL_BANK = resolved0.bankId ?? BANK;
 const client = new HindsightClient({
   apiUrl: arg("api-url") ?? cfg.apiUrl,
   apiToken: arg("api-token") ?? cfg.apiToken,
-  bank: BANK,
+  bank: FINAL_BANK!,
 });
 
-syncStatus(client, BANK, REPO)
+syncStatus(client, FINAL_BANK!, REPO)
   .then((s) => console.log(JSON.stringify(s)))
   .catch((e) => {
     console.error("status failed:", (e as Error).message || e);

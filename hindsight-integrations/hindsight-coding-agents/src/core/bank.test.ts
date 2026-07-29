@@ -131,27 +131,3 @@ describe("deriveBankId", () => {
   });
 });
 
-describe("bankAliases (post-resolution remap)", () => {
-  const base = { resolveWorktrees: false } as const;
-  it("remaps whatever the resolution produced — template, static, and map paths", () => {
-    expect(
-      deriveBankId({ ...base, bankAliases: { "coding-agent::x": "team::shared" } } as never, "/tmp/x")
-    ).toBe(deriveBankId(base as never, "/tmp/x") === "coding-agent::x" ? "team::shared" : deriveBankId(base as never, "/tmp/x"));
-    expect(
-      deriveBankId({ ...base, bankId: "static-a", bankAliases: { "static-a": "renamed-a" } } as never, "/tmp/x")
-    ).toBe("renamed-a");
-    expect(
-      deriveBankId(
-        { ...base, directoryBankMap: { "/tmp/x": "mapped-b" }, bankAliases: { "mapped-b": "renamed-b" } } as never,
-        "/tmp/x"
-      )
-    ).toBe("renamed-b");
-  });
-  it("single hop — an alias target is literal, never re-aliased (two ids may converge)", () => {
-    const cfg = { ...base, bankId: "a", bankAliases: { a: "b", b: "c" } } as never;
-    expect(deriveBankId(cfg, "/tmp/x")).toBe("b"); // NOT "c"
-  });
-  it("no alias entry -> id unchanged", () => {
-    expect(deriveBankId({ ...base, bankId: "plain", bankAliases: {} } as never, "/tmp/x")).toBe("plain");
-  });
-});

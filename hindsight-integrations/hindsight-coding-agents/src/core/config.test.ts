@@ -90,12 +90,12 @@ describe("banks.<bankId> overrides (per-repo opt-in/out, applied AFTER bank reso
         "coding-agent::mono": { gitIngest: "full", retainSessions: false },
       },
     });
-    expect(applyBankConfig(cfg, "coding-agent::secret").disabled).toBe(true);
-    const mono = applyBankConfig(cfg, "coding-agent::mono");
+    expect(applyBankConfig(cfg, "coding-agent::secret").cfg.disabled).toBe(true);
+    const mono = applyBankConfig(cfg, "coding-agent::mono").cfg;
     expect(mono.gitIngest).toBe("full");
     expect(mono.retainSessions).toBe(false);
     expect(mono.disabled).toBe(false);
-    const other = applyBankConfig(cfg, "coding-agent::other");
+    const other = applyBankConfig(cfg, "coding-agent::other").cfg;
     expect(other.disabled).toBe(false);
     expect(other.gitIngest).toBe("message");
   });
@@ -106,7 +106,7 @@ describe("banks.<bankId> overrides (per-repo opt-in/out, applied AFTER bank reso
         b1: { bankId: "evil", directoryBankMap: { "/x": "evil" }, disabled: true } as never,
       },
     });
-    const out = applyBankConfig(cfg, "b1");
+    const out = applyBankConfig(cfg, "b1").cfg;
     expect(out.disabled).toBe(true);
     expect(out.bankId).toBe(cfg.bankId); // untouched
     expect(out.directoryBankMap).toBe(cfg.directoryBankMap);
@@ -114,8 +114,32 @@ describe("banks.<bankId> overrides (per-repo opt-in/out, applied AFTER bank reso
 
   it("an override only changes the fields it names (defaults don't reset the rest)", () => {
     const cfg = resolveConfig({ retainSessions: false, banks: { b: { gitIngest: "none" } } });
-    const out = applyBankConfig(cfg, "b");
+    const out = applyBankConfig(cfg, "b").cfg;
     expect(out.gitIngest).toBe("none");
     expect(out.retainSessions).toBe(false); // kept from the base, not reset to default true
+  });
+});
+
+describe("banks.<id>.bank — rename inside the banks tree", () => {
+  it("renames the destination bank; other fields still apply; unmatched ids unchanged", () => {
+    const cfg = resolveConfig({
+      banks: { "coding-agent::old": { bank: "team::shared", gitIngest: "full" } },
+    });
+    const r = applyBankConfig(cfg, "coding-agent::old");
+    expect(r.bankId).toBe("team::shared");
+    expect(r.cfg.gitIngest).toBe("full");
+    expect(applyBankConfig(cfg, "coding-agent::other").bankId).toBe("coding-agent::other");
+  });
+
+  it("single hop: the rename target's own section is NOT consulted (no chaining)", () => {
+    const cfg = resolveConfig({
+      banks: {
+        a: { bank: "b" },
+        b: { bank: "c", disabled: true }, // must not apply to the a->b hop
+      },
+    });
+    const r = applyBankConfig(cfg, "a");
+    expect(r.bankId).toBe("b"); // not "c"
+    expect(r.cfg.disabled).toBe(false);
   });
 });

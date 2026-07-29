@@ -32,8 +32,7 @@ async function main() {
   // resolution mirrors that harness's hooks — config `harnesses.<name>` section + `{harness}` template.
   const harness = process.env.HINDSIGHT_MCP_HARNESS || "claude-code";
   const cfg0 = loadConfig({ harness });
-  const bankId = deriveBankId(cfg0, cwd, harness);
-  const cfg = applyBankConfig(cfg0, bankId);
+  const { cfg, bankId } = applyBankConfig(cfg0, deriveBankId(cfg0, cwd, harness));
   const client = new HindsightClient({ apiUrl: cfg.apiUrl, apiToken: cfg.apiToken, bank: bankId });
 
   const server = new McpServer({ name: "hindsight", version: "0.1.0" });

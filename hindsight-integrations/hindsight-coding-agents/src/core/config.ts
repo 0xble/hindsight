@@ -55,18 +55,15 @@ export interface RawConfig {
   /** Per-harness overrides of any of the fields above, keyed by harness name ("opencode",
    *  "claude-code", ...). Lets one config file give each agent its own bank/settings. */
   harnesses?: Record<string, Omit<RawConfig, "harnesses">>;
-  /** Remap RESOLVED bank ids to other names, applied as the LAST step of bank resolution — e.g.
-   *  point every harness's "coding-agent::legacy-name" at "team::shared" without touching the
-   *  template. Keys are resolved ids (what the banner shows); values are the final bank names.
-   *  `banks.<id>` overrides key on the POST-alias (final) name. */
-  bankAliases?: Record<string, string>;
-  /** Per-BANK overrides, applied AFTER bank resolution — the per-repo opt-in/out surface, keyed by
-   *  the RESOLVED bank id (run a session once or check the banner to see it). Behavioral fields
-   *  only: bank-resolution fields (bankId/template/map/...) are ignored here — they can't change
-   *  the id that selected the section. Example:
+  /** Per-BANK overrides, applied AFTER bank resolution — the per-repo opt-in/out surface, keyed
+   *  by the RESOLVED bank id (run a session once or check the banner to see it). Any behavioral
+   *  field, plus `bank` to RENAME the destination (single hop: the section is selected by the
+   *  resolved id, the rename is literal — several ids may converge on one shared bank).
+   *  Bank-resolution fields (bankId/template/map/...) are ignored here. Example:
    *    "banks": { "coding-agent::secret-client": { "disabled": true },
+   *               "coding-agent::old-name": { "bank": "team::shared" },
    *               "coding-agent::big-mono": { "gitIngest": "full", "retainSessions": false } } */
-  banks?: Record<string, Omit<RawConfig, "banks" | "harnesses">>;
+  banks?: Record<string, Omit<RawConfig, "banks" | "harnesses"> & { bank?: string }>;
 }
 
 /** Fully-resolved config: every field present. */
@@ -91,8 +88,7 @@ export interface Config {
   surveyBudgetUsd: number;
   surveyRefreshCommits: number;
   gitIngest: "message" | "full" | "none";
-  bankAliases: Record<string, string>;
-  banks: Record<string, Omit<RawConfig, "banks" | "harnesses">>;
+  banks: Record<string, Omit<RawConfig, "banks" | "harnesses"> & { bank?: string }>;
   logLevel: "debug" | "info" | "warn" | "error";
 }
 
@@ -121,7 +117,6 @@ export function resolveConfig(raw: RawConfig = {}): Config {
     gitIngest: ["message", "full", "none"].includes(raw.gitIngest as string)
       ? (raw.gitIngest as "message" | "full" | "none")
       : "message",
-    bankAliases: raw.bankAliases && typeof raw.bankAliases === "object" ? raw.bankAliases : {},
     banks: raw.banks && typeof raw.banks === "object" ? raw.banks : {},
     logLevel: ["debug", "info", "warn", "error"].includes(raw.logLevel as string)
       ? (raw.logLevel as "debug" | "info" | "warn" | "error")
@@ -177,7 +172,6 @@ export function loadConfig(opts: LoadOptions | string = {}): Config {
 /** Bank-resolution fields are meaningless inside a `banks.<id>` section (they can't change the id
  *  that selected it) — strip them so a typo there can't silently re-route memory. */
 const BANK_OVERRIDE_EXCLUDED = [
-  "bankAliases",
   "bankId",
   "bankIdTemplate",
   "directoryBankMap",
@@ -191,13 +185,20 @@ const BANK_OVERRIDE_EXCLUDED = [
  * that runs AFTER bank resolution, giving per-repo opt-in/out (disable, retainSessions, gitIngest,
  * survey settings, ...) from the ONE global config file.
  */
-export function applyBankConfig(cfg: Config, bankId: string): Config {
-  const section = cfg.banks[bankId];
-  if (!section) return cfg;
+export function applyBankConfig(
+  cfg: Config,
+  resolvedId: string
+): { cfg: Config; bankId: string } {
+  const section = cfg.banks[resolvedId];
+  if (!section) return { cfg, bankId: resolvedId };
   const safe: Record<string, unknown> = { ...section };
   for (const k of BANK_OVERRIDE_EXCLUDED) delete safe[k];
-  delete (safe as Record<string, unknown>).banks;
-  return { ...cfg, ...resolvePartial(cfg, safe as RawConfig) };
+  delete safe.banks;
+  // `bank` renames the destination — single hop, selected by the ORIGINAL resolved id (the
+  // target's own banks section, if any, is deliberately NOT consulted: no chaining).
+  const bankId = typeof safe.bank === "string" && safe.bank ? (safe.bank as string) : resolvedId;
+  delete safe.bank;
+  return { cfg: { ...cfg, ...resolvePartial(cfg, safe as RawConfig) }, bankId };
 }
 
 /** Resolve just the fields present in `patch`, defaulting against the CURRENT cfg (not the global

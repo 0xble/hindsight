@@ -48,9 +48,11 @@ const REPO = arg("repo");
 const cfg0 = loadConfig({ harness: arg("harness") ?? undefined, path: arg("config") });
 const BANK =
   arg("bank") ?? (REPO ? deriveBankId(cfg0, REPO, arg("harness") ?? cfg0.harness) : cfg0.bankId);
-const cfg = BANK ? applyBankConfig(cfg0, BANK) : cfg0;
+const resolved0 = BANK ? applyBankConfig(cfg0, BANK) : { cfg: cfg0, bankId: BANK };
+const cfg = resolved0.cfg;
+const FINAL_BANK = resolved0.bankId ?? BANK;
 if (cfg.disabled) {
-  console.log(`deepen: bank ${BANK} is disabled (banks override) — nothing to do`);
+  console.log(`deepen: bank ${FINAL_BANK} is disabled (banks override) — nothing to do`);
   process.exit(0);
 }
 const HARNESS = arg("harness") ?? cfg0.harness;
@@ -83,7 +85,7 @@ const log = (m: string) => {
 // Scratch, not state: the lock only guards against concurrent double-ingest cost. In the OS
 // temp dir so ~/.hindsight holds ONLY the config file (a reboot clearing it is harmless).
 const LOCK_DIR = join(tmpdir(), "hindsight-coding-agent");
-const LOCK = join(LOCK_DIR, `deepen-${encodeURIComponent(BANK)}.lock`);
+const LOCK = join(LOCK_DIR, `deepen-${encodeURIComponent(FINAL_BANK ?? "")}.lock`);
 
 function acquireLock(): boolean {
   try {
@@ -103,15 +105,15 @@ function acquireLock(): boolean {
 
 async function main() {
   if (!acquireLock()) {
-    log(`deepen: another run holds the lock for ${BANK} — nothing to do`);
+    log(`deepen: another run holds the lock for ${FINAL_BANK} — nothing to do`);
     return;
   }
   const t0 = Date.now();
-  diag("deepen", "deepen_started", { bank: BANK });
+  diag("deepen", "deepen_started", { bank: FINAL_BANK });
   try {
     const harness = await getHarness(HARNESS);
-    const client = new HindsightClient({ apiUrl: API_URL, apiToken: API_TOKEN, bank: BANK!, log });
-    log(`deepen -> ${client.apiUrl} bank=${BANK} harness=${harness.name}`);
+    const client = new HindsightClient({ apiUrl: API_URL, apiToken: API_TOKEN, bank: FINAL_BANK!, log });
+    log(`deepen -> ${client.apiUrl} bank=${FINAL_BANK} harness=${harness.name}`);
 
     await client.configureBank();
 
@@ -202,7 +204,7 @@ async function main() {
 
     const failures = chatFails + gitFails;
     diag("deepen", "deepen_done", {
-      bank: BANK,
+      bank: FINAL_BANK,
       ms: Date.now() - t0,
       newChats: sessions.length,
       failures,
@@ -221,7 +223,7 @@ async function main() {
 
 main().catch((e) => {
   diag("deepen", "deepen_failed", {
-    bank: BANK,
+    bank: FINAL_BANK,
     error: String((e as Error)?.message || e).slice(0, 200),
   });
   console.error("deepen failed:", (e as Error).message || e);

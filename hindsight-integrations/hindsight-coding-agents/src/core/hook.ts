@@ -230,8 +230,9 @@ export async function runHook(
   const out = (context: string | undefined, notice?: string) =>
     process.stdout.write(JSON.stringify(spec.emit(context ?? "", notice)));
 
-  const bankId = deriveBankId(cfg, cwd, spec.harness);
-  cfg = applyBankConfig(cfg, bankId);
+  const resolved = applyBankConfig(cfg, deriveBankId(cfg, cwd, spec.harness));
+  cfg = resolved.cfg;
+  const bankId = resolved.bankId;
   if (cfg.disabled) {
     log.debug(spec.harness, "hook skipped: bank disabled via banks override", { bank: bankId });
     return;

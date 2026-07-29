@@ -29,8 +29,9 @@ const HindsightCodingAgentsPlugin: Plugin = async (input) => {
   let cfg = loadConfig({ harness: "opencode" });
   if (cfg.disabled) return {}; // inert: same agent, no memory (baseline parity)
 
-  const bankId = deriveBankId(cfg, projectDir || process.cwd(), "opencode");
-  cfg = applyBankConfig(cfg, bankId);
+  const resolved = applyBankConfig(cfg, deriveBankId(cfg, projectDir || process.cwd(), "opencode"));
+  cfg = resolved.cfg;
+  const bankId = resolved.bankId;
   if (cfg.disabled) return {}; // per-bank opt-out (banks.<id> override)
   const client = new HindsightClient({ apiUrl: cfg.apiUrl, apiToken: cfg.apiToken, bank: bankId });
   const core = new RuntimeCore(client, bankId, cfg);

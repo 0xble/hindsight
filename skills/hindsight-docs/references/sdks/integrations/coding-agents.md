@@ -92,8 +92,8 @@ variables; exceptions: `HINDSIGHT_CONFIG` to relocate the file, `HINDSIGHT_DIAG_
 `HINDSIGHT_LOG_FILE` / `HINDSIGHT_LOG_LEVEL` for diagnostics). Later wins per field: built-in
 defaults → the file's top level → its `harnesses.<name>` section for the asking agent → the
 `banks.<resolvedBankId>` section for the repo's bank (applied AFTER bank resolution). There is no
-repo-carried config — per-repo routing is `directoryBankMap`/`bankAliases`, per-repo behavior is
-`banks.<id>`, per-agent differences are `harnesses.<name>`.
+repo-carried config — per-repo routing is `directoryBankMap`, per-repo behavior (including renaming
+the bank) is `banks.<id>`, per-agent differences are `harnesses.<name>`.
 
 Each entry point knows which harness it *is*, so one shared config serves several agents side by
 side:
@@ -105,11 +105,9 @@ side:
     "opencode":    { "reflectTimeoutMs": 60000 },
     "claude-code": { "disabled": true }          // memory off for Claude only
   },
-  "bankAliases": {
-    "coding-agent::old-name": "team::shared"     // remap a resolved bank id (final step)
-  },
   "banks": {
-    "coding-agent::secret-client": { "disabled": true },   // per-repo blacklist
+    "coding-agent::secret-client": { "disabled": true },      // per-repo blacklist
+    "coding-agent::old-name": { "bank": "team::shared" },     // rename / converge banks
     "coding-agent::big-mono": { "gitIngest": "full", "retainSessions": false }
   }
 }
@@ -136,8 +134,7 @@ side:
 | `autoSeed` / `seedLimit` | `true` / `300` | automatic cold-repo seeding and its commit-message cap |
 | `codebaseSurvey` / `surveyModel` / `surveyBudgetUsd` | `true` / `haiku` / `2` | cold-repo structural survey (runs under your agent's own CLI, read-only, spend-capped) |
 | `surveyRefreshCommits` | `0` (off) | re-run the survey after N new commits so structural pages track an evolving architecture |
-| `bankAliases` | — | remap **resolved** bank ids to other names (final resolution step; single hop) |
-| `banks.<bankId>` | — | per-repo opt-in/out: any behavioral field, keyed by the resolved bank id (resolution fields ignored inside) |
+| `banks.<bankId>` | — | per-repo opt-in/out keyed by the resolved bank id: any behavioral field, plus `bank` to rename/converge the destination (single hop); resolution fields ignored inside |
 | `harnesses.<name>` | — | per-harness override of any field above |
 
 ### Bank resolution — per-repo by default
@@ -155,8 +152,9 @@ Coding memory is **per repository**. Resolution order for the working directory:
    - `{harness}` — the entry point asking (`opencode`, `claude-code`, `codex`, `cursor-cli`)
    - `{channel}` / `{user}` — `$HINDSIGHT_CHANNEL_ID` / `$HINDSIGHT_USER_ID`
 
-4. **Aliases last**: `bankAliases` remaps whatever id steps 1–3 produced — rename a bank or point
-   several resolved ids at one shared bank without touching the template.
+4. **`banks.<id>` last**: the resolved id selects its section, whose `bank` field (if any) renames
+   the destination — rename a bank or converge several onto one shared bank without touching the
+   template.
 
 The default template means **all agents share one memory per repo** — use
 `"{harness}-{gitProject}"` to split per agent instead.

@@ -157,22 +157,8 @@ hook by Codex...), so one shared config serves several agents side by side:
 | `retainEveryTurns`      | `1`                                  | opencode write-back cadence (user turns)                                                                                                                              |
 | `logLevel`              | `"info"`                             | plugin-log verbosity (`"debug"` \| `"info"` \| `"warn"` \| `"error"`); `HINDSIGHT_LOG_LEVEL` env overrides                                                             |
 | `gitIngest`             | `"message"`                             | git depth for seeding AND staying current (same engine): `"message"` = commit messages only (one doc, re-upserted when HEAD moves); `"full"` = messages + per-commit full diffs (progressive, newest first); `"none"` = git off |
-| `bankAliases`           | —                                    | remap **resolved** bank ids (final resolution step, single hop) — rename or converge banks                                                                             |
 | `harnesses.<name>`      | —                                    | per-harness override of any field above                                                                                                                               |
 | `harness`               | `opencode`                           | **deepen engine only**: which session format `--conversations` is read as                                                                                                  |
-
-### Renaming / converging banks — `bankAliases`
-
-`bankAliases` remaps a **resolved** bank id as the last resolution step — whatever produced it
-(template, static id, or directory map):
-
-```jsonc
-{ "bankAliases": { "coding-agent::my-repo": "team::shared-memory" } }
-```
-
-Single hop (targets are literal, never re-aliased), so several resolved ids can deliberately
-converge on one shared bank. `banks.<id>` overrides key on the **final** (post-alias) name — the
-one the session banner shows.
 
 ### Per-repo opt-in/out — `banks.<bankId>`
 
@@ -184,13 +170,16 @@ survives directory moves:
 {
   "banks": {
     "coding-agent::secret-client": { "disabled": true },          // blacklist: no memory at all
+    "coding-agent::old-name":      { "bank": "team::shared" },    // rename / converge banks
     "coding-agent::big-mono":      { "gitIngest": "full", "retainSessions": false }
   }
 }
 ```
 
-Any behavioral field can be overridden per bank; bank-resolution fields are ignored inside a bank
-section (an override can't re-route the bank that selected it).
+Any behavioral field can be overridden per bank, and `bank` **renames the destination** (single
+hop: the section is selected by the resolved id, the target is literal — several ids may converge
+on one shared bank, and the target's own section is not consulted). Other bank-resolution fields
+are ignored inside a bank section.
 
 ### Bank resolution
 

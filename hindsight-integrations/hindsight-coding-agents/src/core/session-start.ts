@@ -306,8 +306,9 @@ export async function runSessionStartHook(
     setLogLevel(cfg.logLevel);
     if (cfg.disabled) return;
 
-    const bankId = deriveBankId(cfg, cwd, harness);
-    cfg = applyBankConfig(cfg, bankId);
+    const resolved = applyBankConfig(cfg, deriveBankId(cfg, cwd, harness));
+    cfg = resolved.cfg;
+    const bankId = resolved.bankId;
     if (cfg.disabled) return; // per-bank opt-out (banks.<id> override)
     const client = makeClient({ apiUrl: cfg.apiUrl, apiToken: cfg.apiToken, bank: bankId });
 
