@@ -85,6 +85,8 @@ export interface HookOutput {
   context?: string;
   /** User-facing line(s) — set only on the reflect turn (its goal + result preview). */
   notice?: string;
+  /** Page count from the session's roster cache — 0 signals a bank the engine never built. */
+  pagesKnown?: number;
 }
 
 /**
@@ -198,7 +200,7 @@ export async function buildHookOutput(args: {
       `↳ ${preview.length > 140 ? `${preview.slice(0, 140)}…` : preview}`;
   }
 
-  return { context: kept.length ? kept.join("\n\n") : undefined, notice };
+  return { context: kept.length ? kept.join("\n\n") : undefined, notice, pagesKnown: pages.length };
 }
 
 /** Run one hook invocation: stdin event in, (maybe) an injection object on stdout. */
@@ -270,5 +272,11 @@ export async function runHook(
   }
 
   const output = await buildHookOutput({ harness: spec.harness, prompt, cfg, client, cacheFile });
+  // Mid-session heal: a bank with ZERO pages means the engine never built it (e.g. the session
+  // predates the install, so no SessionStart and the first-prompt net already passed). Fire the
+  // idempotent engine — the per-bank lock makes repeats free while it builds.
+  if (cfg.autoSeed !== false && output.pagesKnown === 0) {
+    startBackgroundSeed(cwd, { limit: cfg.seedLimit });
+  }
   if (output.context || output.notice) out(output.context, output.notice);
 }
