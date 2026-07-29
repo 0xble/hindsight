@@ -19,14 +19,16 @@ export function withRefId(refId: string, turns: TransportTurn[], baseTs: string)
 }
 
 /**
- * Render normalized turns as a JSON transcript for the live session write-back — the SAME shape as
- * the backfilled chats (`ingestChats`): a `JSON.stringify` array of `{role, content, timestamp}`
- * turns led by the REF-ID system turn. One transcript format everywhere means the extractor and the
- * bank's chat-tuned strategies see live sessions and backfilled history identically; the session's
- * tool activity is already compacted into `role:"action"` turns by the transcript readers.
+ * Render normalized turns as a JSONL transcript (ONE turn per line) — the same shape everywhere:
+ * live write-back and backfilled chats alike. JSONL beats a JSON array on both ends: appending a
+ * turn never rewrites the document, and the server's structured chunker treats each line as an
+ * atomic unit (`retain_structured_chunk_size`), so a turn is never split mid-thought. The REF-ID
+ * system turn leads; tool activity is already compacted into `role:"action"` turns.
  */
-export function renderSessionJson(refId: string, turns: TransportTurn[], baseTs: string): string {
-  return JSON.stringify(withRefId(refId, turns, baseTs));
+export function renderSessionJsonl(refId: string, turns: TransportTurn[], baseTs: string): string {
+  return withRefId(refId, turns, baseTs)
+    .map((t) => JSON.stringify(t))
+    .join("\n");
 }
 
 /** Backfill: ingest past sessions RAW as JSON transcripts under the `conversation` strategy. */
@@ -40,7 +42,7 @@ export async function ingestChats(
     log("[chat] no sessions; skipping");
     return 0;
   }
-  log(`[chat] ingesting ${sessions.length} chats (RAW, JSON user/assistant transcript) …`);
+  log(`[chat] ingesting ${sessions.length} chats (RAW, JSONL transcript — one turn per line) …`);
   const NOW = Date.now(); // anchor synthesized times to a real, ABSOLUTE clock (not a fabricated epoch)
   let failures = 0;
   await pool(
@@ -64,7 +66,7 @@ export async function ingestChats(
         baseIso
       );
       await client.retain(
-        JSON.stringify(turns),
+        turns.map((x) => JSON.stringify(x)).join("\n"),
         "developer chat",
         `chat:${id}`,
         ["source:chat"],
@@ -80,7 +82,7 @@ export async function ingestChats(
       log(`  ! chat ${i} failed to enqueue: ${(e as Error).message?.slice(0, 120)}`);
     }
   );
-  log(`[chat] done: ${sessions.length} chats ingested (JSON) under strategy 'chat'`);
+  log(`[chat] done: ${sessions.length} chats ingested (JSONL) under strategy 'chat'`);
   return failures;
 }
 
@@ -101,7 +103,7 @@ export async function retainLiveSession(
 ): Promise<void> {
   const refId = `conversation:${sessionId}`;
   await client.retain(
-    renderSessionJson(refId, turns, startTs),
+    renderSessionJsonl(refId, turns, startTs),
     "coding agent session",
     refId,
     ["source:chat"],

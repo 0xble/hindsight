@@ -118,6 +118,43 @@ describe("readCodexTranscript", () => {
     expect(turns).toEqual([{ role: "user", content: "Why retry?" }]);
   });
 
+  it("strips <hook_prompt> transport wrappers from user messages: a pure hook_prompt yields no turn; mixed content keeps only the real text", () => {
+    // A user message that is ONLY a hook_prompt block (codex surfaces hook stdout/errors this
+    // way — transport noise, not the user's work): stripped fully → no turn at all.
+    writeFileSync(
+      file,
+      item({
+        type: "message",
+        role: "user",
+        content: [
+          {
+            type: "input_text",
+            text: '<hook_prompt hook_run_id="stop:4:abc">python3: can\'t open file \'/tmp/check.py\': [Errno 2] No such file or directory</hook_prompt>',
+          },
+        ],
+      })
+    );
+    expect(readCodexTranscript(file)).toEqual([]);
+
+    // A hook_prompt block followed by real user text: only the real text survives.
+    writeFileSync(
+      file,
+      item({
+        type: "message",
+        role: "user",
+        content: [
+          {
+            type: "input_text",
+            text: '<hook_prompt hook_run_id="stop:5:def">noise</hook_prompt>\nplease fix the uploader',
+          },
+        ],
+      })
+    );
+    expect(readCodexTranscript(file)).toEqual([
+      { role: "user", content: "please fix the uploader" },
+    ]);
+  });
+
   it("a function_call with unparsable arguments still yields the bare tool name", () => {
     writeFileSync(file, item({ type: "function_call", name: "shell", arguments: "not json" }));
     expect(readCodexTranscript(file)).toEqual([{ role: "action", content: "shell" }]);

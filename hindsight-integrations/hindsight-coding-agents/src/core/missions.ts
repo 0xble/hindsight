@@ -23,7 +23,7 @@ export const GITLOG_MISSION =
   "identifiers and literal values verbatim when quoting a subject line.";
 
 export const CONVERSATION_MISSION =
-  "You are ingesting a developer conversation as a JSON transcript of turns ({role, content}): the " +
+  "You are ingesting a developer conversation as a JSONL transcript (one {role, content} turn per line): the " +
   "user's requests, the assistant's narration, and compact 'action' turns naming each tool use and " +
   'its target (e.g. "Edit boltons/strutils.py") with no arguments or outputs. It may be a SHORT ' +
   "decision chat or a LONG working session — scale the facts to the substance, never to the message " +

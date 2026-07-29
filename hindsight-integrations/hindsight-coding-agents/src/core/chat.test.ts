@@ -1,18 +1,17 @@
 import { describe, expect, it, vi } from "vitest";
 import type { HindsightClient } from "./hindsight";
-import { renderSessionJson, retainLiveSession, type TransportTurn } from "./chat";
+import { renderSessionJsonl, retainLiveSession, type TransportTurn } from "./chat";
 
-describe("renderSessionJson", () => {
+describe("renderSessionJsonl", () => {
   const turns: TransportTurn[] = [
     { role: "user", content: "Add retry backoff", timestamp: "2026-01-01T00:00:00Z" },
     { role: "assistant", content: "On it.", timestamp: "2026-01-01T00:00:01Z" },
     { role: "action", content: "Edit uploader.ts" },
   ];
 
-  it("renders a JSON array led by the REF-ID system turn, preserving roles/content/timestamps", () => {
-    const json = renderSessionJson("conversation:s1", turns, "2026-01-01T00:00:00Z");
-    const parsed = JSON.parse(json) as TransportTurn[];
-    expect(Array.isArray(parsed)).toBe(true);
+  it("renders JSONL (one JSON object per line) led by the REF-ID system turn, preserving roles/content/timestamps", () => {
+    const jsonl = renderSessionJsonl("conversation:s1", turns, "2026-01-01T00:00:00Z");
+    const parsed = jsonl.split("\n").map((line) => JSON.parse(line) as TransportTurn);
     expect(parsed).toHaveLength(4);
     expect(parsed[0]).toEqual({
       role: "system",
@@ -33,18 +32,19 @@ describe("renderSessionJson", () => {
     expect(parsed[3]).toEqual({ role: "action", content: "Edit uploader.ts" });
   });
 
-  it("empty turn list still yields the REF-ID system turn alone", () => {
-    const parsed = JSON.parse(
-      renderSessionJson("r", [], "2026-01-01T00:00:00Z")
-    ) as TransportTurn[];
-    expect(parsed).toEqual([
-      { role: "system", content: "REF-ID: r", timestamp: "2026-01-01T00:00:00Z" },
-    ]);
+  it("empty turn list still yields the REF-ID system turn alone (exactly one line)", () => {
+    const lines = renderSessionJsonl("r", [], "2026-01-01T00:00:00Z").split("\n");
+    expect(lines).toHaveLength(1);
+    expect(JSON.parse(lines[0]) as TransportTurn).toEqual({
+      role: "system",
+      content: "REF-ID: r",
+      timestamp: "2026-01-01T00:00:00Z",
+    });
   });
 });
 
 describe("retainLiveSession", () => {
-  it("upserts the JSON transcript under conversation:<id> with the unified conversation strategy", async () => {
+  it("upserts the JSONL transcript under conversation:<id> with the unified conversation strategy", async () => {
     const retain = vi.fn().mockResolvedValue(undefined);
     const client = { retain } as unknown as HindsightClient;
     const turns: TransportTurn[] = [
@@ -55,9 +55,9 @@ describe("retainLiveSession", () => {
 
     expect(retain).toHaveBeenCalledTimes(1);
     const [content, context, documentId, tags, strategy, opts] = retain.mock.calls[0];
-    // The retained content IS the renderSessionJson transcript.
-    expect(content).toBe(renderSessionJson("conversation:s2", turns, "2026-01-01T00:00:00Z"));
-    const parsed = JSON.parse(content) as TransportTurn[];
+    // The retained content IS the renderSessionJsonl transcript.
+    expect(content).toBe(renderSessionJsonl("conversation:s2", turns, "2026-01-01T00:00:00Z"));
+    const parsed = (content as string).split("\n").map((line) => JSON.parse(line) as TransportTurn);
     expect(parsed[0]).toEqual({
       role: "system",
       content: "REF-ID: conversation:s2",
