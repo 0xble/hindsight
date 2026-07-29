@@ -181,6 +181,34 @@ hop: the section is selected by the resolved id, the target is literal — sever
 on one shared bank, and the target's own section is not consulted). Other bank-resolution fields
 are ignored inside a bank section.
 
+#### Recipe: two repos, one shared bank
+
+Two ways, by what the natural key is:
+
+**By resolved id** — you know the repo names; works wherever the repos live (and keeps working if
+they move). Both ids converge on one literal target:
+
+```jsonc
+{
+  "banks": {
+    "coding-agent::backend":  { "bank": "team::product" },
+    "coding-agent::frontend": { "bank": "team::product" }
+  }
+}
+```
+
+**By path prefix** — the repos live under one directory; a single `directoryBankMap` entry covers
+every repo (present and future) beneath it:
+
+```jsonc
+{
+  "directoryBankMap": { "/Users/me/work/client-x": "client-x-memory" }
+}
+```
+
+Rule of thumb: converge by **id** for a hand-picked set of repos; map by **path** when a folder is
+the boundary ("everything I clone under `work/client-x` shares memory").
+
 ### Bank resolution
 
 Coding memory is **per repository**. Resolution order for the working directory:

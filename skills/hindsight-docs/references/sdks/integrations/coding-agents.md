@@ -159,6 +159,35 @@ Coding memory is **per repository**. Resolution order for the working directory:
 The default template means **all agents share one memory per repo** — use
 `"{harness}-{gitProject}"` to split per agent instead.
 
+#### Recipe: two repos, one shared bank
+
+Two ways, by what the natural key is:
+
+**By resolved id** — you know the repo names; works wherever the repos live (and keeps working if
+they move). Both ids converge on one literal target:
+
+```jsonc
+{
+  "banks": {
+    "coding-agent::backend":  { "bank": "team::product" },
+    "coding-agent::frontend": { "bank": "team::product" }
+  }
+}
+```
+
+**By path prefix** — the repos live under one directory; a single `directoryBankMap` entry covers
+every repo (present and future) beneath it:
+
+```jsonc
+{
+  "directoryBankMap": { "/Users/me/work/client-x": "client-x-memory" }
+}
+```
+
+Rule of thumb: converge by **id** for a hand-picked set of repos; map by **path** when a folder is
+the boundary ("everything I clone under `work/client-x` shares memory").
+
+
 ## Diagnostics
 
 Every reflect and page-fetch outcome is appended as a JSON line to `/tmp/hindsight-plugin.log` (override with
