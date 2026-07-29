@@ -12,7 +12,9 @@ export const GIT_MISSION =
   "technical DECISION and the CAUSE/INVARIANT it encodes, bound to the specific code entities " +
   "(functions, methods, files) and behaviors it changes. Preserve exact identifiers, paths, and " +
   "literal values verbatim. Preserve the 'REF-ID: <token>' marker verbatim in every fact. Capture " +
-  "both WHAT changed and WHY.";
+  "both WHAT changed and WHY. Issue/PR references (#123, GH-123, PROJ-123) are load-bearing: keep " +
+  "them VERBATIM in the fact text and emit each as an ENTITY, so a later question about that issue " +
+  "or PR retrieves this decision.";
 
 export const GITLOG_MISSION =
   "You are ingesting an aggregated block of git commit MESSAGES ONLY (no diffs) — the project's " +
@@ -20,7 +22,9 @@ export const GITLOG_MISSION =
   "ENHANCEMENTS, and notable changes or THEMES over time — what the project has been working on and " +
   "how it has evolved. Do NOT extract per-line code detail (there is no diff to draw it from). Group " +
   "related commits into a coherent initiative/theme where the messages make that clear; preserve exact " +
-  "identifiers and literal values verbatim when quoting a subject line.";
+  "identifiers and literal values verbatim when quoting a subject line. Keep issue/PR references " +
+  "(#123, GH-123) VERBATIM and emit each as an ENTITY — they are how future sessions will ask about " +
+  "this work.";
 
 export const CONVERSATION_MISSION =
   "You are ingesting a developer conversation as a JSONL transcript (one {role, content} turn per line): the " +
@@ -35,7 +39,8 @@ export const CONVERSATION_MISSION =
   "itself — record ONLY the FINAL state as what is in effect; a superseded proposal appears ONLY " +
   "inside the rejected fact, NEVER as its own 'decided' fact; if the same setting changes several " +
   "times keep only the LAST, and make unmistakably clear which choice WON. Do NOT emit one fact per " +
-  "message, per intermediate proposal, or per action turn. Preserve the 'REF-ID: <token>' marker " +
+  "message, per intermediate proposal, or per action turn. Keep issue/PR references (#123, GH-123) " +
+  "VERBATIM and emit each as an ENTITY. Preserve the 'REF-ID: <token>' marker " +
   "verbatim in every fact. Do not invent; capture only what was actually settled.";
 
 export const REFLECT_MISSION =
@@ -47,7 +52,9 @@ export const REFLECT_MISSION =
   "'the project standard'). If memories CONFLICT on the same rule, the LATEST decision wins — " +
   "prefer facts that explicitly amend or supersede an earlier one, state the superseded rule as " +
   "no longer in effect, and never present it as the fix. Name the function/file to change and " +
-  "cite the REF-ID(s).";
+  "cite the REF-ID(s). If NOTHING in memory genuinely explains THIS symptom, say exactly that in " +
+  "one short sentence — a wrong-but-confident nearest match is worse than an honest miss; never " +
+  "stretch an unrelated decision to fit.";
 
 export const DOCUMENT_MISSION =
   "You are ingesting a standalone document (notes, docs, or structural findings). Extract the " +

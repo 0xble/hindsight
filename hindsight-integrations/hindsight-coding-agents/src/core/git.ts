@@ -7,6 +7,7 @@
  */
 import { execFileSync } from "node:child_process";
 import { resolve } from "node:path";
+import { projectNameOf } from "./bank";
 import type { HindsightClient } from "./hindsight";
 import { pool } from "./util";
 
@@ -17,10 +18,11 @@ function git(repo: string, ...args: string[]): string {
   return execFileSync("git", ["-C", repo, ...args], { encoding: "utf8", maxBuffer: 1 << 28 });
 }
 
-/** The bank-facing name for a repo (its directory basename). Resolves relative paths ("." must
- *  name the directory, not literally "."), so document ids stay stable however the path is spelled. */
+/** The bank-facing name for a repo — WORKTREE-AWARE (all worktrees produce the main checkout's
+ *  name, mirroring bank resolution) and path-spelling-proof ("." names the directory). Document
+ *  ids derived from this must be identical from every worktree of the same repo. */
 export function repoNameOf(repo: string): string {
-  return resolve(repo).replace(/\/+$/, "").split("/").pop() || "repo";
+  return projectNameOf(resolve(repo));
 }
 
 /** HEAD's sha, or null on any failure (empty repo, not a repo). */

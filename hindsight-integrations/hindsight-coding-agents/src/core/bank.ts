@@ -56,6 +56,13 @@ export function getProjectRootFromGit(directory: string): string | null {
   }
 }
 
+/** Worktree-aware repo name for DOCUMENT IDS (gitlog:<name>, commit context): all worktrees of a
+ *  repo must produce the SAME name, or each worktree writes its own gitlog document into the
+ *  shared bank (seen in the wild: gitlog:hindsight-wt7 next to gitlog:memory-poc). */
+export function projectNameOf(directory: string): string {
+  return gitProjectName(directory, true);
+}
+
 function gitProjectName(directory: string, resolveWorktrees: boolean): string {
   if (resolveWorktrees) {
     const root = getProjectRootFromGit(directory);

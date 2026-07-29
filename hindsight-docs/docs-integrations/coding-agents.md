@@ -1,15 +1,15 @@
 ---
 sidebar_position: 6
 title: "Coding Agents Memory Plugin (opencode, Claude Code, Codex, Cursor) | Integration Guide"
-description: "One Hindsight memory plugin for coding agents: per-repo memory banks from git history and past conversations, injected into opencode, Claude Code, Codex CLI, and Cursor CLI at the moment the agent starts working."
+description: "One Hindsight memory plugin for coding agents — opencode, Claude Code, Codex CLI, Gemini CLI, Cursor CLI: per-repo memory banks built automatically from git history and sessions, session-level memory synthesis, and knowledge-page search."
 ---
 
 # Coding Agents
 
 Long-term **project memory** for coding agents, from one package: a shared reflect-and-inject core
-with a thin entry point per agent — **opencode**, **Claude Code**, **Codex CLI**, **Cursor CLI** —
-plus a one-shot **backfill** CLI that ingests a repo's git history and past developer conversations
-into a [Hindsight](https://vectorize.io/hindsight) memory bank.
+with a thin entry point per agent — **opencode**, **Claude Code**, **Codex CLI**, **Gemini CLI**, **Cursor CLI** —
+Ingestion into a [Hindsight](https://vectorize.io/hindsight) memory bank is fully automatic — no
+setup command: git history and conversations flow in as you work.
 
 The premise: most of a real fix is derivable from the code, but the *last mile* often hinges on a
 project-specific decision that isn't in the code at all — a rounding rule, a retry allowlist, a
@@ -18,21 +18,32 @@ in front of the agent at the moment it starts working.
 
 ## How it works
 
-1. **Backfill (once per repo).** `hindsight-coding-backfill --repo .` ingests every git commit
-   (message + diff) and, optionally, past developer conversations, under two retain strategies tuned
-   per content type (`git`: verbose decision extraction; `chat`: at most two coherent facts per
-   conversation — the final decision and the notable rejected alternative). It then synthesizes
-   **knowledge pages** (a codebase mental map) and tags every item with a `REF-ID` so any surfaced
-   fact traces back to its commit or session.
+1. **Automatic ingestion (no setup).** A cold repo is seeded in the background the first time an
+   agent opens it (aggregated commit-message history + a headless codebase survey), and every
+   session start fires an idempotent background **deepen engine** that ingests recent commits
+   individually with their full diffs — newest first, a bounded batch per session — plus any
+   conversations not yet in the bank. Retain strategies are tuned per content type, knowledge pages
+   are synthesized from the extracted facts, and every item carries a `REF-ID` tracer. The
+   `hindsight_sync_status` tool reports where ingestion stands (`synced: true` = seeded memory
+   fully queryable).
 2. **Reflect once per session.** On the session's first task message, the entry point sends that
    message to Hindsight `reflect`, which reasons over the bank and returns a synthesized
    **root-cause answer** — the exact rule and literal values that were decided, with citations.
-3. **Inject every turn.** The answer is pushed into the agent's context (system prompt on opencode;
-   hook context on Claude/Codex/Cursor, cached per session and re-injected on later prompts) so it
-   survives long sessions and correction rounds.
-4. **Never break the agent — never fail silently.** A failed reflect degrades to no-memory, but
-   every outcome (`reflect_ok` / `reflect_empty` / `reflect_failed`, with duration and error) is
-   appended to a diagnostics file, so a memory-less session can't masquerade as a memory session.
+3. **Inject every turn.** The reflect answer is pushed into the agent's context (system prompt on
+   opencode; hook context on the hook harnesses, cached per session and re-injected on later
+   prompts) so it survives long sessions and correction rounds. Alongside it, the repo's
+   **knowledge pages** are matched *locally* against each prompt (a lexical section index — no
+   server round-trip, no LLM call) and the top-scoring page sections are injected with provenance
+   and a pointer to the full page; below a relevance floor nothing is injected.
+4. **Write back.** Each session is upserted into the bank as a JSON transcript — user/assistant
+   turns plus a compact `action` turn per tool call (tool name + primary target, no arguments or
+   outputs) — so sessions compound into memory. On Stop for the hook harnesses, every few turns for
+   the opencode plugin. Cold repos are auto-seeded (aggregated git log + a short headless codebase
+   survey) the first time an agent opens them.
+5. **Never break the agent — never fail silently.** A failed reflect or page fetch degrades to
+   no-memory, but every outcome (`reflect_ok` / `reflect_empty` / `reflect_failed`, `pages_ok` /
+   `pages_failed`, with duration and error) is appended to a diagnostics file, so a memory-less
+   session can't masquerade as a memory session.
 
 When memories **conflict** on the same rule, reflect prefers the latest/superseding decision — a
 rule amended in a later conversation wins over the original, and the superseded rule is reported as
@@ -45,7 +56,22 @@ no longer in effect.
 | `opencode`    | persistent plugin | package default export  | add the package dir to `opencode.json` → `"plugin": [...]` |
 | `claude-code` | per-prompt hook   | `hindsight-claude-hook` | `UserPromptSubmit` hook in Claude Code `settings.json` |
 | `codex`       | per-prompt hook   | `hindsight-codex-hook`  | `UserPromptSubmit` hook in `~/.codex/hooks.json` (+ `codex_hooks = true`, Codex CLI ≥ 0.116) |
+| `gemini`      | per-prompt hooks  | gemini wrapper hooks    | `SessionStart` + `BeforeAgent` + `SessionEnd` in `~/.gemini/settings.json` (Gemini CLI ≥ 0.52.0) |
 | `cursor-cli`  | per-prompt hook   | `hindsight-cursor-hook` | `beforeSubmitPrompt` hook in Cursor `hooks.json` |
+
+One-command install (detects the coding agents on the machine, wires each natively — hooks + MCP;
+idempotent, with `uninstall` removing exactly what it added):
+
+```bash
+npm install -g hindsight-coding-agents && hindsight-coding-agents install
+```
+
+On Claude Code the install also ships a companion skill (`hindsight-coding-agent`) so the agent
+answers "how does this memory work / store this in hindsight / configure per-repo memory" from an
+authoritative reference. Update with `npm update -g hindsight-coding-agents` — wired paths stay valid; re-run `install`
+(idempotent) only when a release notes a wiring change.
+
+Manual wiring per harness:
 
 ```json title="opencode.json"
 { "plugin": ["/path/to/hindsight-coding-agents"] }
@@ -60,21 +86,21 @@ no longer in effect.
 { "hooks": { "beforeSubmitPrompt": [ { "command": "hindsight-cursor-hook" } ] } }
 ```
 
-The opencode plugin additionally exposes an on-demand **`memory_reflect` tool** (same synthesized
-reflect, callable mid-task) and opt-in **incremental git-sync** and **live session write-back**
-(see the configuration reference).
+Every harness gets the same agent tools (`hindsight_search_knowledge_pages`, `hindsight_reflect`,
+page list/read, `hindsight_capture_initiative`, `hindsight_ingest_document`,
+`hindsight_sync_status`) — natively on opencode, via the bundled MCP server elsewhere. Session
+write-back is on by default everywhere; staying current with git needs no separate sync — the
+ingestion engine re-runs idempotently at every session start.
 
 ## Configuration
 
-All configuration is **JSON files, no environment variables** (exception: `HINDSIGHT_DIAG_FILE` for
-the diagnostics path). Layering, later wins per field:
-
-1. built-in defaults
-2. `~/.hindsight/coding-agent.json` — user-global
-3. its `harnesses.<name>` section — per-agent override
-4. the **nearest** `<dir>/.hindsight/coding-agent.json` at or above the working directory —
-   project-local (the natural home for per-repo settings)
-5. its `harnesses.<name>` section
+All configuration is **one JSON file**: `~/.hindsight/coding-agent.json` (no environment
+variables; exceptions: `HINDSIGHT_CONFIG` to relocate the file, `HINDSIGHT_DIAG_FILE` /
+`HINDSIGHT_LOG_FILE` / `HINDSIGHT_LOG_LEVEL` for diagnostics). Later wins per field: built-in
+defaults → the file's top level → its `harnesses.<name>` section for the asking agent → the
+`banks.<resolvedBankId>` section for the repo's bank (applied AFTER bank resolution). There is no
+repo-carried config — per-repo routing is `mapPathToBank`, per-repo behavior (including renaming
+the bank) is `banks.<id>`, per-agent differences are `harnesses.<name>`.
 
 Each entry point knows which harness it *is*, so one shared config serves several agents side by
 side:
@@ -84,7 +110,12 @@ side:
   "apiUrl": "http://localhost:8888",
   "harnesses": {
     "opencode":    { "reflectTimeoutMs": 60000 },
-    "claude-code": { "disabled": true }          // e.g. memory off for Claude only
+    "claude-code": { "disabled": true }          // memory off for Claude only
+  },
+  "banks": {
+    "coding-agent::secret-client": { "disabled": true },      // per-repo blacklist
+    "coding-agent::old-name": { "bank": "team::shared" },     // rename / converge banks
+    "coding-agent::big-mono": { "gitIngest": "full", "retainSessions": false }
   }
 }
 ```
@@ -98,23 +129,26 @@ side:
 | `bankId` | — | **explicit static bank**; unset ⇒ per-repo dynamic resolution (below) |
 | `dynamicBankId` | dynamic iff no `bankId` | force dynamic (`true`) or static (`false`) resolution |
 | `bankIdTemplate` | `"{gitProject}"` | dynamic bank id format, e.g. `"hindsight-{gitProject}"` |
-| `directoryBankMap` | — | absolute path → bank; **longest prefix wins**; overrides everything |
+| `mapPathToBank` | — | absolute path → bank; **longest prefix wins**; overrides everything |
 | `resolveWorktrees` | `true` | `{gitProject}`: linked worktrees share the main repo's bank |
 | `disabled` | `false` | hard off-switch (inert plugin/hook — a no-memory baseline) |
-| `reflectTimeoutMs` | `120000` | reflect timeout; on timeout the agent runs without memory (recorded in diagnostics) |
-| `retainSessions` | `false` | opencode only: upsert the live transcript into the bank every N turns |
-| `retainEveryTurns` | `5` | write-back cadence (user turns) |
-| `gitSync.enabled` | `false` | opencode only: on load, retain commits new since the backfill |
-| `gitSync.ref` | `origin/main` | git-sync target ref (falls back to `HEAD`) |
-| `gitSync.fetch` | `false` | `git fetch` the ref before diffing |
+| `reflectTimeoutMs` | `120000` | session-reflect timeout (hook harnesses cap it at 25s to fit the host's hook window); on timeout the session runs without reflect (recorded in diagnostics) |
+| `pageRefreshEveryTurns` | `10` | refetch the knowledge pages and re-inject the page roster + tool guide every N user turns |
+| `retainSessions` | `true` | opencode write-back: async upsert every turn (set `false` to opt out; hook harnesses always write on Stop) |
+| `retainEveryTurns` | `1` | write-back cadence (user turns) |
+| `gitIngest` | `"message"` | git depth for seeding and staying current: `"message"` (messages only), `"full"` (messages + per-commit diffs), `"none"` |
+| `logLevel` | `"info"` | plugin-log verbosity (`"debug"` \| `"info"` \| `"warn"` \| `"error"`); `HINDSIGHT_LOG_LEVEL` env overrides |
+| `autoSeed` / `seedLimit` | `true` / `300` | automatic cold-repo seeding and its commit-message cap |
+| `codebaseSurvey` / `surveyModel` / `surveyBudgetUsd` | `true` / `haiku` / `2` | cold-repo structural survey (runs under your agent's own CLI, read-only, spend-capped) |
+| `surveyRefreshCommits` | `0` (off) | re-run the survey after N new commits so structural pages track an evolving architecture |
+| `banks.<bankId>` | — | per-repo opt-in/out keyed by the resolved bank id: any behavioral field, plus `bank` to rename/converge the destination (single hop); resolution fields ignored inside |
 | `harnesses.<name>` | — | per-harness override of any field above |
-| `harness` | `opencode` | **backfill only**: which session format `--conversations` is read as |
 
 ### Bank resolution — per-repo by default
 
 Coding memory is **per repository**. Resolution order for the working directory:
 
-1. `directoryBankMap` — longest matching absolute-path prefix (mapping a repo root covers every
+1. `mapPathToBank` — longest matching absolute-path prefix (mapping a repo root covers every
    subdirectory; deeper mappings win; overrides even an explicit `bankId`).
 2. Static — `bankId` set (or `dynamicBankId: false`).
 3. Dynamic — `bankIdTemplate` with placeholders:
@@ -125,29 +159,45 @@ Coding memory is **per repository**. Resolution order for the working directory:
    - `{harness}` — the entry point asking (`opencode`, `claude-code`, `codex`, `cursor-cli`)
    - `{channel}` / `{user}` — `$HINDSIGHT_CHANNEL_ID` / `$HINDSIGHT_USER_ID`
 
-The default `"{gitProject}"` means **all agents share one memory per repo** — use
+4. **`banks.<id>` last**: the resolved id selects its section, whose `bank` field (if any) renames
+   the destination — rename a bank or converge several onto one shared bank without touching the
+   template.
+
+The default template means **all agents share one memory per repo** — use
 `"{harness}-{gitProject}"` to split per agent instead.
 
-## Backfill
+#### Recipe: two repos, one shared bank
 
-```bash
-hindsight-coding-backfill --repo /path/to/repo \
-  [--bank myproject] [--harness opencode] [--conversations sessions.json] \
-  [--api-url http://localhost:8888] [--api-token X] [--config <path>] \
-  [--limit 100] [--reset] [--no-pages] [--concurrency 8]
+Two ways, by what the natural key is:
+
+**By resolved id** — you know the repo names; works wherever the repos live (and keeps working if
+they move). Both ids converge on one literal target:
+
+```jsonc
+{
+  "banks": {
+    "coding-agent::backend":  { "bank": "team::product" },
+    "coding-agent::frontend": { "bank": "team::product" }
+  }
+}
 ```
 
-- Without `--bank`, the **same per-repo resolution** the runtime uses is applied to `--repo`, so
-  `hindsight-coding-backfill --repo .` fills exactly the bank the agents will read.
-- `sessions.json` is a normalized interchange format any exporter can emit:
-  `[{ "id": "s1", "turns": [{ "role": "user", "text": "...", "timestamp?": "ISO" }, ...] }, ...]`.
-  Session list order is **chronological** — a later chat can amend an earlier one, and recency
-  follows list order (last = newest).
-- Tip: validate a setup with `--limit 100` before a full-history ingest.
+**By path prefix** — the repos live under one directory; a single `mapPathToBank` entry covers
+every repo (present and future) beneath it:
+
+```jsonc
+{
+  "mapPathToBank": { "/Users/me/work/client-x": "client-x-memory" }
+}
+```
+
+Rule of thumb: converge by **id** for a hand-picked set of repos; map by **path** when a folder is
+the boundary ("everything I clone under `work/client-x` shares memory").
+
 
 ## Diagnostics
 
-Every reflect outcome is appended as a JSON line to `/tmp/hindsight-plugin.log` (override with
+Every reflect and page-fetch outcome is appended as a JSON line to `/tmp/hindsight-plugin.log` (override with
 `HINDSIGHT_DIAG_FILE`):
 
 ```json

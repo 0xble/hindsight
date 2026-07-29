@@ -130,6 +130,11 @@ export class HindsightClient {
     );
   }
 
+  /** Delete one document (cascades its memory units/links). Used by deepen's self-cleanup. */
+  async deleteDocument(documentId: string): Promise<void> {
+    await this.req("DELETE", this.bankUrl(`/documents/${encodeURIComponent(documentId)}`));
+  }
+
   /** Count of operations still ACTIVE on this bank — the list includes terminal ops (completed/
    *  failed/cancelled), so filter by status. Powers syncStatus's "extractions drained" check. */
   async activeOperations(): Promise<number> {

@@ -189,7 +189,6 @@ every repo (present and future) beneath it:
 Rule of thumb: converge by **id** for a hand-picked set of repos; map by **path** when a folder is
 the boundary ("everything I clone under `work/client-x` shares memory").
 
-
 ## Diagnostics
 
 Every reflect and page-fetch outcome is appended as a JSON line to `/tmp/hindsight-plugin.log` (override with

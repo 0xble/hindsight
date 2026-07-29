@@ -148,6 +148,21 @@ async function main() {
       } else {
         gitFails += await ingestGitLog(client, REPO!, { limit: GITLOG_LIMIT, log });
       }
+      // Self-cleanup: earlier versions named the gitlog doc per WORKTREE (gitlog:my-repo-wt2 …),
+      // duplicating the history in the shared bank. Delete any gitlog doc that isn't the
+      // canonical (worktree-aware) id.
+      try {
+        const canonical = `gitlog:${repoNameOf(REPO!)}`;
+        const logDocs = await client.listDocumentIds("source:git-log");
+        for (const id of logDocs) {
+          if (id !== canonical) {
+            await client.deleteDocument(id);
+            log(`[gitlog] removed stale duplicate ${id} (canonical: ${canonical})`);
+          }
+        }
+      } catch {
+        /* cleanup is best-effort */
+      }
 
       if (GIT_INGEST === "full") {
         // progressive depth: next batch of un-ingested commits, newest first, full message + diff.
