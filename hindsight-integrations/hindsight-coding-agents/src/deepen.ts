@@ -25,7 +25,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { deriveBankId } from "./core/bank";
 import { ingestChats } from "./core/chat";
-import { loadConfig } from "./core/config";
+import { applyBankConfig, loadConfig } from "./core/config";
 import { gitHeadSha, ingestGitLog, repoNameOf, retainCommit } from "./core/git";
 import { HindsightClient } from "./core/hindsight";
 import { DEEPEN_DIFF_TARGET } from "./core/status";
@@ -45,10 +45,15 @@ function arg(name: string, def?: string): string | undefined {
 }
 
 const REPO = arg("repo");
-const cfg = loadConfig({ harness: arg("harness") ?? undefined, path: arg("config") });
+const cfg0 = loadConfig({ harness: arg("harness") ?? undefined, path: arg("config") });
 const BANK =
-  arg("bank") ?? (REPO ? deriveBankId(cfg, REPO, arg("harness") ?? cfg.harness) : cfg.bankId);
-const HARNESS = arg("harness") ?? cfg.harness;
+  arg("bank") ?? (REPO ? deriveBankId(cfg0, REPO, arg("harness") ?? cfg0.harness) : cfg0.bankId);
+const cfg = BANK ? applyBankConfig(cfg0, BANK) : cfg0;
+if (cfg.disabled) {
+  console.log(`deepen: bank ${BANK} is disabled (banks override) — nothing to do`);
+  process.exit(0);
+}
+const HARNESS = arg("harness") ?? cfg0.harness;
 const API_URL = arg("api-url") ?? cfg.apiUrl;
 const API_TOKEN = arg("api-token") ?? cfg.apiToken;
 const CONV = arg("conversations");

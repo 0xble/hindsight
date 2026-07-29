@@ -22,7 +22,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { deriveBankId } from "./bank";
 import type { Config } from "./config";
-import { loadConfig } from "./config";
+import { applyBankConfig, loadConfig } from "./config";
 import { diag } from "./diag";
 import { log, setLogLevel } from "./log";
 import { startBackgroundSeed } from "./seed";
@@ -220,7 +220,7 @@ export async function runHook(
   const prompt = (rawPrompt || "").trim();
   if (!prompt) return;
 
-  const cfg = loadConfig({ harness: spec.harness });
+  let cfg = loadConfig({ harness: spec.harness });
   setLogLevel(cfg.logLevel);
   if (cfg.disabled) {
     log.debug(spec.harness, "hook skipped: disabled");
@@ -230,11 +230,13 @@ export async function runHook(
   const out = (context: string | undefined, notice?: string) =>
     process.stdout.write(JSON.stringify(spec.emit(context ?? "", notice)));
 
-  const client = makeClient({
-    apiUrl: cfg.apiUrl,
-    apiToken: cfg.apiToken,
-    bank: deriveBankId(cfg, cwd, spec.harness),
-  });
+  const bankId = deriveBankId(cfg, cwd, spec.harness);
+  cfg = applyBankConfig(cfg, bankId);
+  if (cfg.disabled) {
+    log.debug(spec.harness, "hook skipped: bank disabled via banks override", { bank: bankId });
+    return;
+  }
+  const client = makeClient({ apiUrl: cfg.apiUrl, apiToken: cfg.apiToken, bank: bankId });
   const cacheFile = join(
     tmpdir(),
     `hindsight-${spec.harness}`,

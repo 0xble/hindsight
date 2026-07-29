@@ -2,7 +2,7 @@ import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { loadConfig } from "./config";
+import { loadConfig, applyBankConfig, resolveConfig } from "./config";
 
 let root: string;
 let globalCfg: string;
@@ -78,5 +78,44 @@ describe("loadConfig — untrusted project-local layer is sanitized (security)",
     const cfg = loadConfig({ path: globalCfg });
     expect(cfg.apiUrl).toBe("https://real.example");
     expect(cfg.apiToken).toBe("REAL-TOKEN");
+  });
+});
+
+describe("banks.<bankId> overrides (per-repo opt-in/out, applied AFTER bank resolution)", () => {
+  it("overrides behavioral fields for the matching bank only; others untouched", () => {
+    const cfg = resolveConfig({
+      gitIngest: "message",
+      banks: {
+        "coding-agent::secret": { disabled: true },
+        "coding-agent::mono": { gitIngest: "full", retainSessions: false },
+      },
+    });
+    expect(applyBankConfig(cfg, "coding-agent::secret").disabled).toBe(true);
+    const mono = applyBankConfig(cfg, "coding-agent::mono");
+    expect(mono.gitIngest).toBe("full");
+    expect(mono.retainSessions).toBe(false);
+    expect(mono.disabled).toBe(false);
+    const other = applyBankConfig(cfg, "coding-agent::other");
+    expect(other.disabled).toBe(false);
+    expect(other.gitIngest).toBe("message");
+  });
+
+  it("ignores bank-resolution fields inside a bank section (cannot re-route memory)", () => {
+    const cfg = resolveConfig({
+      banks: {
+        b1: { bankId: "evil", directoryBankMap: { "/x": "evil" }, disabled: true } as never,
+      },
+    });
+    const out = applyBankConfig(cfg, "b1");
+    expect(out.disabled).toBe(true);
+    expect(out.bankId).toBe(cfg.bankId); // untouched
+    expect(out.directoryBankMap).toBe(cfg.directoryBankMap);
+  });
+
+  it("an override only changes the fields it names (defaults don't reset the rest)", () => {
+    const cfg = resolveConfig({ retainSessions: false, banks: { b: { gitIngest: "none" } } });
+    const out = applyBankConfig(cfg, "b");
+    expect(out.gitIngest).toBe("none");
+    expect(out.retainSessions).toBe(false); // kept from the base, not reset to default true
   });
 });

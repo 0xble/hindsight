@@ -7,7 +7,7 @@
  * usage: node status.js --repo <path> [--bank <id>] [--harness <name>] [--api-url U] [--api-token X] [--config path]
  */
 import { deriveBankId } from "./core/bank";
-import { loadConfig } from "./core/config";
+import { applyBankConfig, loadConfig } from "./core/config";
 import { HindsightClient } from "./core/hindsight";
 import { syncStatus } from "./core/status";
 
@@ -18,14 +18,15 @@ function arg(name: string): string | undefined {
 }
 
 const REPO = arg("repo");
-const cfg = loadConfig({ harness: arg("harness") ?? undefined, path: arg("config") });
+const cfg0 = loadConfig({ harness: arg("harness") ?? undefined, path: arg("config") });
 const BANK =
-  arg("bank") ?? (REPO ? deriveBankId(cfg, REPO, arg("harness") ?? cfg.harness) : cfg.bankId);
+  arg("bank") ?? (REPO ? deriveBankId(cfg0, REPO, arg("harness") ?? cfg0.harness) : cfg0.bankId);
 if (!BANK) {
   console.error("usage: node status.js --repo <path> [--bank <id>] [--api-url U]");
   process.exit(1);
 }
 
+const cfg = BANK ? applyBankConfig(cfg0, BANK) : cfg0;
 const client = new HindsightClient({
   apiUrl: arg("api-url") ?? cfg.apiUrl,
   apiToken: arg("api-token") ?? cfg.apiToken,

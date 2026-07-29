@@ -160,6 +160,24 @@ hook by Codex...), so one shared config serves several agents side by side:
 | `harnesses.<name>`      | —                                    | per-harness override of any field above                                                                                                                               |
 | `harness`               | `opencode`                           | **deepen engine only**: which session format `--conversations` is read as                                                                                                  |
 
+### Per-repo opt-in/out — `banks.<bankId>`
+
+Per-repo control lives in the SAME file, keyed by the **resolved bank id** (shown in the session
+banner) and applied AFTER bank resolution — so it works regardless of where the repo lives, and
+survives directory moves:
+
+```jsonc
+{
+  "banks": {
+    "coding-agent::secret-client": { "disabled": true },          // blacklist: no memory at all
+    "coding-agent::big-mono":      { "gitIngest": "full", "retainSessions": false }
+  }
+}
+```
+
+Any behavioral field can be overridden per bank; bank-resolution fields are ignored inside a bank
+section (an override can't re-route the bank that selected it).
+
 ### Bank resolution
 
 Coding memory is **per repository**. Resolution order for the working directory:

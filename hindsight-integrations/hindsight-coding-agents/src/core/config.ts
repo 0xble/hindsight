@@ -55,6 +55,13 @@ export interface RawConfig {
   /** Per-harness overrides of any of the fields above, keyed by harness name ("opencode",
    *  "claude-code", ...). Lets one config file give each agent its own bank/settings. */
   harnesses?: Record<string, Omit<RawConfig, "harnesses">>;
+  /** Per-BANK overrides, applied AFTER bank resolution — the per-repo opt-in/out surface, keyed by
+   *  the RESOLVED bank id (run a session once or check the banner to see it). Behavioral fields
+   *  only: bank-resolution fields (bankId/template/map/...) are ignored here — they can't change
+   *  the id that selected the section. Example:
+   *    "banks": { "coding-agent::secret-client": { "disabled": true },
+   *               "coding-agent::big-mono": { "gitIngest": "full", "retainSessions": false } } */
+  banks?: Record<string, Omit<RawConfig, "banks" | "harnesses">>;
 }
 
 /** Fully-resolved config: every field present. */
@@ -79,6 +86,7 @@ export interface Config {
   surveyBudgetUsd: number;
   surveyRefreshCommits: number;
   gitIngest: "message" | "full" | "none";
+  banks: Record<string, Omit<RawConfig, "banks" | "harnesses">>;
   logLevel: "debug" | "info" | "warn" | "error";
 }
 
@@ -107,6 +115,7 @@ export function resolveConfig(raw: RawConfig = {}): Config {
     gitIngest: ["message", "full", "none"].includes(raw.gitIngest as string)
       ? (raw.gitIngest as "message" | "full" | "none")
       : "message",
+    banks: raw.banks && typeof raw.banks === "object" ? raw.banks : {},
     logLevel: ["debug", "info", "warn", "error"].includes(raw.logLevel as string)
       ? (raw.logLevel as "debug" | "info" | "warn" | "error")
       : "info",
@@ -124,10 +133,10 @@ function readRaw(path: string): RawConfig {
   }
 }
 
-/** Shallow-merge b over a; `harnesses` never survives into a layer. */
+/** Shallow-merge b over a; `harnesses` never survives into a layer; `banks` merges by bank id. */
 function mergeRaw(a: RawConfig, b: RawConfig): RawConfig {
   const { harnesses: _drop, ...flat } = b;
-  return { ...a, ...flat };
+  return { ...a, ...flat, banks: { ...(a.banks ?? {}), ...(b.banks ?? {}) } };
 }
 
 /**
@@ -156,4 +165,40 @@ function applyLayer(raw: RawConfig, layer: RawConfig, harness?: string): RawConf
 export function loadConfig(opts: LoadOptions | string = {}): Config {
   const o: LoadOptions = typeof opts === "string" ? { path: opts } : opts; // legacy: loadConfig(path)
   return resolveConfig(applyLayer({}, readRaw(o.path ?? CONFIG_PATH), o.harness));
+}
+
+/** Bank-resolution fields are meaningless inside a `banks.<id>` section (they can't change the id
+ *  that selected it) — strip them so a typo there can't silently re-route memory. */
+const BANK_OVERRIDE_EXCLUDED = [
+  "bankId",
+  "bankIdTemplate",
+  "directoryBankMap",
+  "dynamicBankId",
+  "resolveWorktrees",
+  "harness",
+] as const;
+
+/**
+ * Apply the `banks.<bankId>` override section (if any) to an already-resolved config — the step
+ * that runs AFTER bank resolution, giving per-repo opt-in/out (disable, retainSessions, gitIngest,
+ * survey settings, ...) from the ONE global config file.
+ */
+export function applyBankConfig(cfg: Config, bankId: string): Config {
+  const section = cfg.banks[bankId];
+  if (!section) return cfg;
+  const safe: Record<string, unknown> = { ...section };
+  for (const k of BANK_OVERRIDE_EXCLUDED) delete safe[k];
+  delete (safe as Record<string, unknown>).banks;
+  return { ...cfg, ...resolvePartial(cfg, safe as RawConfig) };
+}
+
+/** Resolve just the fields present in `patch`, defaulting against the CURRENT cfg (not the global
+ *  defaults) so an override only changes what it names. */
+function resolvePartial(cfg: Config, patch: RawConfig): Partial<Config> {
+  const full = resolveConfig(patch);
+  const out: Partial<Config> = {};
+  for (const key of Object.keys(patch) as (keyof RawConfig)[]) {
+    if (key in full) (out as Record<string, unknown>)[key] = (full as unknown as Record<string, unknown>)[key];
+  }
+  return out;
 }

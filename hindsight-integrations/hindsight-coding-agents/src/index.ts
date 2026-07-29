@@ -17,7 +17,7 @@
  */
 import type { Plugin } from "@opencode-ai/plugin";
 import { deriveBankId } from "./core/bank";
-import { loadConfig } from "./core/config";
+import { applyBankConfig, loadConfig } from "./core/config";
 import { HindsightClient } from "./core/hindsight";
 import { RuntimeCore } from "./core/runtime";
 import { opencodeAdapter } from "./harness/opencode";
@@ -26,10 +26,12 @@ const HindsightCodingAgentsPlugin: Plugin = async (input) => {
   // This entry is loaded BY opencode, so the harness is known — not chosen by config. Per-agent
   // settings come from the config's `harnesses.opencode` section (and a project-local file, if any).
   const projectDir = input?.worktree || input?.directory;
-  const cfg = loadConfig({ harness: "opencode" });
+  let cfg = loadConfig({ harness: "opencode" });
   if (cfg.disabled) return {}; // inert: same agent, no memory (baseline parity)
 
   const bankId = deriveBankId(cfg, projectDir || process.cwd(), "opencode");
+  cfg = applyBankConfig(cfg, bankId);
+  if (cfg.disabled) return {}; // per-bank opt-out (banks.<id> override)
   const client = new HindsightClient({ apiUrl: cfg.apiUrl, apiToken: cfg.apiToken, bank: bankId });
   const core = new RuntimeCore(client, bankId, cfg);
 

@@ -14,7 +14,7 @@
 import { readFileSync } from "node:fs";
 import { deriveBankId } from "./bank";
 import { retainLiveSession } from "./chat";
-import { loadConfig } from "./config";
+import { applyBankConfig, loadConfig } from "./config";
 import { diag } from "./diag";
 import { log, setLogLevel } from "./log";
 import type { ClientOpts } from "./hindsight";
@@ -99,17 +99,16 @@ export async function runRetainHook(
   const { sessionId, transcriptPath, cwd: rawCwd } = spec.parse(ev);
   const cwd = rawCwd || process.cwd();
 
-  const cfg = loadConfig({ harness: spec.harness });
+  let cfg = loadConfig({ harness: spec.harness });
   setLogLevel(cfg.logLevel);
   if (cfg.disabled) return;
 
   if (!transcriptPath) return;
 
-  const client = makeClient({
-    apiUrl: cfg.apiUrl,
-    apiToken: cfg.apiToken,
-    bank: deriveBankId(cfg, cwd, spec.harness),
-  });
+  const bankId = deriveBankId(cfg, cwd, spec.harness);
+  cfg = applyBankConfig(cfg, bankId);
+  if (cfg.disabled) return;
+  const client = makeClient({ apiUrl: cfg.apiUrl, apiToken: cfg.apiToken, bank: bankId });
 
   await buildRetain({
     harness: spec.harness,

@@ -23,7 +23,7 @@ import { gitHeadSha, hasGitHistory, commitsSince } from "./git";
 import { DEEPEN_DIFF_TARGET } from "./status";
 import { startBackgroundSeed } from "./seed";
 import { SURVEY_DOC_IDS, startCodebaseSurvey, type SurveyHarness } from "./survey";
-import { loadConfig } from "./config";
+import { applyBankConfig, loadConfig } from "./config";
 import type { Config } from "./config";
 import { deriveBankId } from "./bank";
 import { brandWord } from "./brand";
@@ -302,11 +302,13 @@ export async function runSessionStartHook(
     }
     const cwd = (ev.cwd as string) || process.cwd();
 
-    const cfg = loadConfig({ harness });
+    let cfg = loadConfig({ harness });
     setLogLevel(cfg.logLevel);
     if (cfg.disabled) return;
 
     const bankId = deriveBankId(cfg, cwd, harness);
+    cfg = applyBankConfig(cfg, bankId);
+    if (cfg.disabled) return; // per-bank opt-out (banks.<id> override)
     const client = makeClient({ apiUrl: cfg.apiUrl, apiToken: cfg.apiToken, bank: bankId });
 
     const out = await buildSessionStartContext({ cwd, bankId, cfg, client, harness });
