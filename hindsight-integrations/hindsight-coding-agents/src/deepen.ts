@@ -26,7 +26,8 @@ import { join } from "node:path";
 import { deriveBankId } from "./core/bank";
 import { ingestChats } from "./core/chat";
 import { applyBankConfig, loadConfig } from "./core/config";
-import { gitHeadSha, ingestGitLog, repoNameOf, retainCommit } from "./core/git";
+import { commitsSince, gitHeadSha, ingestGitLog, repoNameOf, retainCommit } from "./core/git";
+import { SURVEY_DOC_IDS } from "./core/survey";
 import { HindsightClient } from "./core/hindsight";
 import { DEEPEN_DIFF_TARGET } from "./core/status";
 import { pool } from "./core/util";
@@ -200,6 +201,38 @@ async function main() {
           log("[deepen] no git history — skipping diff deepening");
         }
       }
+    }
+
+    // Survey-marker cosmetics: once the survey's findings exist, flip the newest reachable
+    // baseline marker from "researching…" to "completed" (lazy — the detached survey agent can't
+    // reliably do it itself). The `survey-state:done` tag makes this a one-time upsert.
+    try {
+      const uploads = await client.listDocumentIds("source:upload").catch(() => new Set<string>());
+      if (SURVEY_DOC_IDS.some((id) => uploads.has(id))) {
+        const markers = await client.listDocumentIds("source:survey-baseline");
+        const done = await client.listDocumentIds("survey-state:done").catch(() => new Set<string>());
+        let best: { id: string; sha: string; behind: number } | undefined;
+        for (const id of markers) {
+          if (done.has(id)) continue;
+          const sha = id.replace(/^survey-baseline:/, "");
+          const behind = commitsSince(REPO!, sha);
+          if (behind !== null && (!best || behind < best.behind)) best = { id, sha, behind };
+        }
+        if (best) {
+          await client.retain(
+            `✅ Codebase survey completed — baseline commit ${best.sha.slice(0, 12)}. ` +
+              `(Internal marker: no memories are extracted from this document.)`,
+            "hindsight codebase-survey baseline",
+            best.id,
+            ["source:survey-baseline", "survey-state:done"],
+            "marker",
+            { async: true }
+          );
+          log(`[survey] marker ${best.id} flipped to completed`);
+        }
+      }
+    } catch {
+      /* cosmetics — best-effort */
     }
 
     await client.drain(client.opIds, "extraction");

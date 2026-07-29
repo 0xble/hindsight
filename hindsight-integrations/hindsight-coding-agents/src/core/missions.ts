@@ -93,6 +93,16 @@ export const RETAIN_STRATEGIES = {
     retain_extraction_mode: "verbose",
     retain_chunk_size: 12000,
   },
+  // Internal SYSTEM MARKER documents (survey baseline, future state markers): human-readable in
+  // the dashboard, but they must contribute ZERO memories — custom extraction that returns an
+  // empty fact list, replacing the default extractor entirely.
+  marker: {
+    retain_extraction_mode: "custom",
+    retain_custom_instructions:
+      "This document is an INTERNAL SYSTEM MARKER for the Hindsight coding-agent plugin (state " +
+      "bookkeeping such as codebase-survey baselines). It contains NO project knowledge. Extract " +
+      "NOTHING: return an empty list of facts, regardless of the content.",
+  },
 } as const;
 
 // ── passive tier tagging (entity_labels) ───────────────────────────────────────

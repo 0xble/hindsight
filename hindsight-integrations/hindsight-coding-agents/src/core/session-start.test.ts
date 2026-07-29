@@ -244,11 +244,11 @@ describe("buildSessionStartContext — periodic re-survey (bank-stored commit co
     retain,
   });
   const marker = (sha: string) => [
-    sha,
+    expect.stringContaining(sha.slice(0, 12)), // human-readable content carrying the sha
     expect.any(String),
     `survey-baseline:${sha}`,
     ["source:survey-baseline"],
-    "document",
+    "marker", // zero-extraction system-marker strategy
     expect.anything(),
   ];
 

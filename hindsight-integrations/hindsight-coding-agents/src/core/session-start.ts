@@ -156,11 +156,12 @@ export async function buildSessionStartContext(args: {
       // Fire-and-forget; Promise.resolve tolerates a non-Promise return (e.g. a test spy).
       void Promise.resolve(
         client.retain(
-          sha,
+          `🛰️ Hindsight is researching this codebase — survey started at commit ${sha.slice(0, 12)}. ` +
+            `(Internal marker: no memories are extracted from this document.)`,
           "hindsight codebase-survey baseline",
           `${SURVEY_BASELINE_PREFIX}${sha}`,
           [SURVEY_BASELINE_TAG],
-          "document",
+          "marker",
           { async: true }
         )
       ).catch(() => {});
