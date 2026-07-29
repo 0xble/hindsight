@@ -141,7 +141,7 @@ describe("codex installer", () => {
     const ctx = makeCtx();
     run(["install", "codex"], ctx);
     const toml = readFileSync(tomlPath(ctx), "utf8");
-    expect(toml).toContain("[features]\ncodex_hooks = true");
+    expect(toml).toContain("[features]\nhooks = true");
     expect(toml).toContain("[mcp_servers.hindsight]");
     expect(toml).toContain(join(ctx.dist, "mcp-server.js"));
   });
@@ -154,18 +154,18 @@ describe("codex installer", () => {
     run(["install", "codex"], ctx);
     const toml = readFileSync(tomlPath(ctx), "utf8");
     expect(toml.match(/^\[features\]/gm)).toHaveLength(1);
-    expect(toml).not.toContain("codex_hooks = true"); // user is told to add it manually
+    expect(toml).not.toContain("hooks = true"); // user is told to add it manually
     expect(toml).toContain("[mcp_servers.hindsight]");
     expect(readFileSync(`${tomlPath(ctx)}.hindsight-backup`, "utf8")).toBe(original);
   });
 
-  it("appends nothing features-related when codex_hooks is already present", () => {
+  it("appends nothing features-related when hooks is already present", () => {
     const ctx = makeCtx();
     mkdirSync(join(ctx.home, ".codex"), { recursive: true });
-    writeFileSync(tomlPath(ctx), "[features]\ncodex_hooks = true\n");
+    writeFileSync(tomlPath(ctx), "[features]\nhooks = true\n");
     run(["install", "codex"], ctx);
     const toml = readFileSync(tomlPath(ctx), "utf8");
-    expect(toml.match(/codex_hooks/g)).toHaveLength(1);
+    expect(toml.match(/hooks/g)).toHaveLength(1);
     expect(toml.match(/^\[features\]/gm)).toHaveLength(1);
     expect(toml).toContain("[mcp_servers.hindsight]");
   });
@@ -176,7 +176,7 @@ describe("codex installer", () => {
     run(["uninstall", "codex"], ctx);
     const toml = readFileSync(tomlPath(ctx), "utf8");
     expect(toml).not.toContain("[mcp_servers.hindsight]");
-    expect(toml).toContain("codex_hooks = true"); // flag deliberately left in place
+    expect(toml).toContain("hooks = true"); // flag deliberately left in place
     const hooks = readJson(hooksPath(ctx)).hooks;
     expect(Object.keys(hooks)).toHaveLength(0);
   });

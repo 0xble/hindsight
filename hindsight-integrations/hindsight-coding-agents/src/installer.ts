@@ -204,13 +204,15 @@ const codex: HarnessInstaller = {
     const tomlPath = join(c.home, ".codex", "config.toml");
     let toml = existsSync(tomlPath) ? readFileSync(tomlPath, "utf8") : "";
     const additions: string[] = [];
-    if (!/^\s*codex_hooks\s*=/m.test(toml)) {
+    // Codex ≥ 0.145 deprecates `codex_hooks` for `[features].hooks`; accept either as "already
+    // enabled", write the modern name for new installs.
+    if (!/^\s*(codex_hooks|hooks)\s*=/m.test(toml)) {
       if (/^\[features\]/m.test(toml)) {
         c.log?.(
-          "codex: add `codex_hooks = true` under your existing [features] section in ~/.codex/config.toml"
+          "codex: add `hooks = true` under your existing [features] section in ~/.codex/config.toml"
         );
       } else {
-        additions.push("[features]\ncodex_hooks = true");
+        additions.push("[features]\nhooks = true");
       }
     }
     if (!toml.includes("[mcp_servers.hindsight]")) {
