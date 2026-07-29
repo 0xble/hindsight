@@ -21,7 +21,8 @@
  *      is harness-neutral "coding-agent::{gitProject}" so every coding agent shares ONE memory per repo.
  */
 import { execFileSync } from "node:child_process";
-import { basename, dirname, normalize, sep } from "node:path";
+import { homedir } from "node:os";
+import { basename, dirname, join, normalize, sep } from "node:path";
 
 export interface BankConfig {
   bankId?: string;
@@ -76,7 +77,8 @@ function mapLookup(map: Record<string, string>, directory: string): string | und
   const cwd = normalize(directory);
   let best: { len: number; bank: string } | undefined;
   for (const [dir, bank] of Object.entries(map)) {
-    const p = normalize(dir).replace(new RegExp(`\\${sep}+$`), "");
+    const expanded = dir === "~" || dir.startsWith("~/") ? join(homedir(), dir.slice(1)) : dir;
+    const p = normalize(expanded).replace(new RegExp(`\\${sep}+$`), "");
     if (cwd === p || cwd.startsWith(p + sep)) {
       if (!best || p.length > best.len) best = { len: p.length, bank };
     }

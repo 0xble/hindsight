@@ -191,6 +191,16 @@ every repo (present and future) beneath it:
 }
 ```
 
+**Blacklist a whole directory tree** — compose the two primitives: map the tree to one bank, disable
+that bank. Every current and future directory beneath the prefix (`~` expands) is memory-off:
+
+```jsonc
+{
+  "mapPathToBank": { "~/scratch": "scratch" },
+  "banks": { "scratch": { "disabled": true } }
+}
+```
+
 Rule of thumb: converge by **id** for a hand-picked set of repos; map by **path** when a folder is
 the boundary ("everything I clone under `work/client-x` shares memory").
 

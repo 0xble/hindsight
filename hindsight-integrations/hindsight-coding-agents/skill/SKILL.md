@@ -68,6 +68,9 @@ at 25s), `pageRefreshEveryTurns` (10), `autoSeed`/`seedLimit` (true/300),
 `codebaseSurvey`/`surveyModel`/`surveyBudgetUsd` (true/haiku/2), `surveyRefreshCommits` (0=off),
 `logLevel` ("info").
 
+Blacklist a whole directory tree: map it to one bank and disable that bank —
+`"mapPathToBank": {"~/scratch": "scratch"}` + `"banks": {"scratch": {"disabled": true}}`.
+
 Bank resolution order: `mapPathToBank` longest prefix → static `bankId` → template
 (default `coding-agent::{gitProject}`) → the matching `banks.<id>` section (its `bank` field
 renames the destination). Two repos share memory by converging their `banks.<id>.bank` on one

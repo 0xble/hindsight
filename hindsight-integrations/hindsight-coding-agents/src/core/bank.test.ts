@@ -126,3 +126,11 @@ describe("deriveBankId", () => {
     });
   });
 });
+
+describe("mapPathToBank ~ expansion", () => {
+  it("expands a leading ~ to the home directory (prefix match included)", () => {
+    const cfg = { mapPathToBank: { "~/scratch-zone": "scratch" } } as never;
+    expect(deriveBankId(cfg, `${process.env.HOME}/scratch-zone/some/repo`)).toBe("scratch");
+    expect(deriveBankId(cfg, "/elsewhere/scratch-zone")).not.toBe("scratch");
+  });
+});
