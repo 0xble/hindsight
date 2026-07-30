@@ -11,19 +11,6 @@
  * outcomes recorded in the diagnostic file. Config: the layered files (~/.hindsight/coding-agent.json
  * + nearest project file), harness name "claude-code".
  */
-import { runHook } from "./core/hook";
+import { runHarnessPrompt } from "./harness/hook-lifecycle";
 
-void runHook({
-  harness: "claude-code",
-  parse: (ev) => ({
-    prompt: ev.prompt as string | undefined,
-    cwd: ev.cwd as string | undefined,
-    sessionId: ev.session_id as string | undefined,
-  }),
-  emit: (context, notice) => ({
-    // systemMessage is the USER-visible line (memory must be seen working, not inferred);
-    // additionalContext stays model-only.
-    ...(notice ? { systemMessage: notice } : {}),
-    hookSpecificOutput: { hookEventName: "UserPromptSubmit", additionalContext: context },
-  }),
-});
+void runHarnessPrompt("claude-code");

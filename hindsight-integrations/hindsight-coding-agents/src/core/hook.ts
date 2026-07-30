@@ -101,9 +101,11 @@ export async function buildHookOutput(args: {
   const turns = (cached.turns ?? 0) + 1;
 
   // ── reflect: once per session, on the first prompt ────────────────────────────
+  // autoReflect false = tool-only mode: no injected synthesis; the roster's tool guide instead
+  // instructs the agent to call hindsight_reflect itself when a new goal is set.
   let reflectAnswer = cached.reflectAnswer;
   let reflectRanThisTurn = false;
-  if (reflectAnswer === undefined) {
+  if (cfg.autoReflect && reflectAnswer === undefined) {
     reflectRanThisTurn = true;
     const t0 = Date.now();
     try {
@@ -176,7 +178,7 @@ export async function buildHookOutput(args: {
   // every turn (even a plain "yes") read as phantom research. The roster below keeps the tool
   // and the page names in front of the agent.
   if (cadence > 0 && turns % cadence === 0) {
-    blocks.push(buildRosterRefresh(pages));
+    blocks.push(buildRosterRefresh(pages, { reflectOnNewGoals: !cfg.autoReflect }));
   }
   const kept = blocks.filter(Boolean);
 

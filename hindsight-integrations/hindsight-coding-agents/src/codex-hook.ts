@@ -14,19 +14,6 @@
  * the first prompt and cache the outcome so later prompts recall only. Reflect outcomes recorded
  * in the diagnostic file. Config: the layered files, harness name "codex".
  */
-import { runHook } from "./core/hook";
+import { runHarnessPrompt } from "./harness/hook-lifecycle";
 
-void runHook({
-  harness: "codex",
-  parse: (ev) => ({
-    prompt: (ev.prompt as string | undefined) ?? (ev.user_prompt as string | undefined),
-    cwd: ev.cwd as string | undefined,
-    sessionId: ev.session_id as string | undefined,
-  }),
-  emit: (context, notice) => ({
-    // systemMessage is the USER-visible line (memory must be seen working, not inferred);
-    // additionalContext stays model-only.
-    ...(notice ? { systemMessage: notice } : {}),
-    hookSpecificOutput: { hookEventName: "UserPromptSubmit", additionalContext: context },
-  }),
-});
+void runHarnessPrompt("codex");

@@ -52,7 +52,7 @@ no longer in effect.
 | `claude-code` | per-prompt hook   | `hindsight-claude-hook` | `UserPromptSubmit` hook in Claude Code `settings.json` |
 | `codex`       | per-prompt hook   | `hindsight-codex-hook`  | `UserPromptSubmit` hook in `~/.codex/hooks.json` (+ `codex_hooks = true`, Codex CLI ≥ 0.116) |
 | `gemini`      | per-prompt hooks  | gemini wrapper hooks    | `SessionStart` + `BeforeAgent` + `SessionEnd` in `~/.gemini/settings.json` (Gemini CLI ≥ 0.52.0) |
-| `cursor-cli`  | per-prompt hook   | `hindsight-cursor-hook` | `beforeSubmitPrompt` hook in Cursor `hooks.json` |
+| `cursor-cli`  | lifecycle hooks   | `hindsight-cursor-hook` | `sessionStart` seeds/pages; `beforeSubmitPrompt` recalls; `stop` retains in Cursor `hooks.json` |
 
 One-command install (detects the coding agents on the machine, wires each natively — hooks + MCP;
 idempotent, with `uninstall` removing exactly what it added):
@@ -78,7 +78,7 @@ Manual wiring per harness:
 ```
 
 ```json title="Cursor hooks.json"
-{ "hooks": { "beforeSubmitPrompt": [ { "command": "hindsight-cursor-hook" } ] } }
+{ "hooks": { "sessionStart": [ { "command": "hindsight-cursor-sessionstart-hook" } ], "beforeSubmitPrompt": [ { "command": "hindsight-cursor-hook" } ], "stop": [ { "command": "hindsight-cursor-stop-hook" } ] } }
 ```
 
 Every harness gets the same agent tools (`hindsight_search_knowledge_pages`, `hindsight_reflect`,
@@ -128,6 +128,7 @@ side:
 | `resolveWorktrees` | `true` | `{gitProject}`: linked worktrees share the main repo's bank |
 | `disabled` | `false` | hard off-switch (inert plugin/hook — a no-memory baseline) |
 | `reflectTimeoutMs` | `120000` | session-reflect timeout (hook harnesses cap it at 25s to fit the host's hook window); on timeout the session runs without reflect (recorded in diagnostics) |
+| `autoReflect` | `true` | inject a one-time reflect synthesis on the session's first prompt; `false` = tool-only mode — nothing is injected, and the tool guide instead instructs the agent to call `hindsight_reflect` itself whenever a new task/goal is set |
 | `pageRefreshEveryTurns` | `10` | refetch the knowledge pages and re-inject the page roster + tool guide every N user turns |
 | `retainSessions` | `true` | opencode write-back: async upsert every turn (set `false` to opt out; hook harnesses always write on Stop) |
 | `retainEveryTurns` | `1` | write-back cadence (user turns) |

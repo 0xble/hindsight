@@ -65,7 +65,7 @@ tools → write-back); they differ only in how that surface is delivered.
 | `claude-code` | per-prompt hooks  | `SessionStart` (seed) + `UserPromptSubmit` (reflect + pages) + `Stop` (write-back) + MCP                                        | the [`../claude-code-v2`](../claude-code-v2) wrapper's dev-installer |
 | `codex`       | per-prompt hooks  | same three hooks in `~/.codex/hooks.json` (+ `codex_hooks = true`, CLI ≥ 0.116)                                                 | the [`../codex-v2`](../codex-v2) wrapper's dev-installer             |
 | `gemini`      | per-prompt hooks  | `SessionStart` + `BeforeAgent` (reflect + pages) + `SessionEnd` (write-back) + MCP, in `~/.gemini/settings.json` (CLI ≥ 0.52.0) | the [`../gemini-v2`](../gemini-v2) wrapper's dev-installer           |
-| `cursor-cli`  | lifecycle hooks   | `beforeSubmitPrompt` (reflect + pages) + `stop` (write-back)                                                                    | hooks in Cursor `hooks.json`                                         |
+| `cursor-cli`  | lifecycle hooks   | `sessionStart` (seed + pages) + `beforeSubmitPrompt` (reflect) + `stop` (write-back)                                            | hooks in Cursor `hooks.json`                                         |
 
 The hook-based harnesses share one runtime (`src/core/hook.ts`) plus their SessionStart/Stop
 entrypoints; opencode is the cleanest platform — a real per-turn event, a working system-prompt

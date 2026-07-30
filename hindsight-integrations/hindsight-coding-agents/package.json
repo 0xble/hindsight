@@ -9,6 +9,7 @@
     "hindsight-coding-agents": "dist/installer.js",
     "hindsight-claude-hook": "dist/claude-hook.js",
     "hindsight-cursor-hook": "dist/cursor-hook.js",
+    "hindsight-cursor-sessionstart-hook": "dist/cursor-sessionstart-hook.js",
     "hindsight-cursor-stop-hook": "dist/cursor-stop-hook.js",
     "hindsight-codex-hook": "dist/codex-hook.js"
   },

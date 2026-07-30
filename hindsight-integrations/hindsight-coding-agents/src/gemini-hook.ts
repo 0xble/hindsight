@@ -14,17 +14,6 @@
  * Behavior (shared hook runtime, core/hook.ts): recall every prompt, inject the memories block;
  * outcomes recorded in the diagnostic file. Config/diag/bank resolution use the harness name "gemini".
  */
-import { runHook } from "./core/hook";
+import { runHarnessPrompt } from "./harness/hook-lifecycle";
 
-void runHook({
-  harness: "gemini",
-  parse: (ev) => ({
-    prompt: ev.prompt as string | undefined,
-    cwd: ev.cwd as string | undefined,
-    sessionId: ev.session_id as string | undefined,
-  }),
-  emit: (context, notice) => ({
-    ...(notice ? { systemMessage: notice } : {}),
-    hookSpecificOutput: { hookEventName: "BeforeAgent", additionalContext: context },
-  }),
-});
+void runHarnessPrompt("gemini");

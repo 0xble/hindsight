@@ -14,18 +14,6 @@
  * conversation on the first prompt and cache the outcome so later prompts recall only. Reflect
  * outcomes recorded in the diagnostic file. Config: the layered files, harness name "cursor-cli".
  */
-import { runHook } from "./core/hook";
+import { runHarnessPrompt } from "./harness/hook-lifecycle";
 
-void runHook({
-  harness: "cursor-cli",
-  ensureSeed: true, // Cursor has no SessionStart hook — ingestion fires from the first prompt
-  parse: (ev) => ({
-    prompt: (ev.prompt as string | undefined) ?? (ev.user_prompt as string | undefined),
-    cwd:
-      (ev.cwd as string | undefined) ??
-      (ev.workspace_root as string | undefined) ??
-      (Array.isArray(ev.workspace_roots) ? (ev.workspace_roots[0] as string) : undefined),
-    sessionId: (ev.conversation_id as string | undefined) ?? (ev.session_id as string | undefined),
-  }),
-  emit: (context) => ({ continue: true, additional_context: context }),
-});
+void runHarnessPrompt("cursor-cli");

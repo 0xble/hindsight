@@ -4,6 +4,6 @@
  *  the Claude/Codex entry points; harness is "gemini" so config/diag/bank resolution use the gemini
  *  identity. Gemini's SessionStart supports both `hookSpecificOutput.additionalContext` (model
  *  context) and `systemMessage` (user-visible), which runSessionStartHook already emits. */
-import { runSessionStartHook } from "./core/session-start";
+import { runHarnessSessionStart } from "./harness/hook-lifecycle";
 
-void runSessionStartHook("gemini");
+void runHarnessSessionStart("gemini");

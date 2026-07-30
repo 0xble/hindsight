@@ -50,11 +50,11 @@ const HindsightCodingAgentsPlugin: Plugin = async (input) => {
     core.setNotifier((title, message) => {
       const wait = Math.max(0, 3000 - (Date.now() - initAt));
       setTimeout(() => {
-        void oc
-          .tui!.showToast!({ body: { title, message, variant: "info", duration: 6000 } })
+        void oc.tui!.showToast!({ body: { title, message, variant: "info", duration: 6000 } })
           .then((r: unknown) => {
             const err = (r as { error?: unknown })?.error;
-            if (err) log.debug("opencode", "toast rejected", { error: JSON.stringify(err).slice(0, 200) });
+            if (err)
+              log.debug("opencode", "toast rejected", { error: JSON.stringify(err).slice(0, 200) });
           })
           .catch((e: unknown) =>
             log.debug("opencode", "toast failed", { error: String(e).slice(0, 120) })

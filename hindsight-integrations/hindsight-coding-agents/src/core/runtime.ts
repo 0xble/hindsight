@@ -106,9 +106,11 @@ export class RuntimeCore {
     this.turnCount.set(sessionId, turns);
 
     // ── reflect: once per session, on its first prompt ──────────────────────────
+    // autoReflect false = tool-only mode: no injected synthesis; the roster's tool guide instead
+    // instructs the agent to call hindsight_reflect itself when a new goal is set.
     let reflectAnswer = this.reflectBySession.get(sessionId);
     let reflectRanThisTurn = false;
-    if (reflectAnswer === undefined) {
+    if (this.cfg.autoReflect && reflectAnswer === undefined) {
       reflectRanThisTurn = true;
       const t0 = Date.now();
       try {
@@ -170,7 +172,7 @@ export class RuntimeCore {
       this.notify?.("Hindsight · recalled past decisions", preview);
     }
     if (refreshDue) {
-      blocks.push(buildRosterRefresh(this.pagesCache));
+      blocks.push(buildRosterRefresh(this.pagesCache, { reflectOnNewGoals: !this.cfg.autoReflect }));
     }
     const block = blocks.filter(Boolean).join("\n\n");
     this.injection.set(sessionId, block);

@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { buildSessionStartContext, runSessionStartHook } from "./session-start";
 import { resolveConfig } from "./config";
+import { HOOK_HARNESSES } from "../harness/hook-lifecycle";
 
 /** Default roster the mock client returns; asserted on by name below. */
 const listPagesOk = async () => ({ items: [{ id: "p1", name: "Component map" }] });
@@ -219,7 +220,7 @@ describe("runSessionStartHook anti-recursion guard", () => {
     // No stdin is provided/mocked here — if the guard didn't return before `readFileSync(0, ...)`,
     // this call would attempt to read the real process stdin. Resolving without calling makeClient
     // proves the guard fired first.
-    await runSessionStartHook("claude-code", makeClient);
+    await runSessionStartHook(HOOK_HARNESSES["claude-code"].sessionStart, makeClient);
     expect(makeClient).not.toHaveBeenCalled();
   });
 });

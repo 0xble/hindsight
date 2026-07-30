@@ -10,7 +10,7 @@
  *   claude-code  3 hooks in ~/.claude/settings.json + `claude mcp add` (user scope)
  *   codex        3 hooks in ~/.codex/hooks.json + [features]/[mcp_servers] in config.toml
  *   gemini       3 hooks + mcpServers in ~/.gemini/settings.json
- *   cursor-cli   beforeSubmitPrompt + stop hooks in ~/.cursor/hooks.json + ~/.cursor/mcp.json
+ *   cursor-cli   sessionStart + beforeSubmitPrompt + stop hooks in ~/.cursor/hooks.json + ~/.cursor/mcp.json
  *
  * IDEMPOTENT: our entries are recognized by the package path in their command ("hindsight-coding-
  * agents"), replaced on re-install (so moving the package just needs `install` again) and removed
@@ -30,6 +30,7 @@ import {
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { HOOK_HARNESSES, type HookHarnessName } from "./harness/hook-lifecycle";
 
 export const MARKER = "hindsight-coding-agents";
 
@@ -77,6 +78,32 @@ function setOrDelete(obj: Record<string, any>, key: string, arr: any[]): void {
 const cmdHook = (dist: string, file: string, timeout: number) => ({
   hooks: [{ type: "command", command: `node "${join(dist, file)}"`, timeout }],
 });
+
+/** Install/uninstall consume the same lifecycle declaration as the runtime entrypoints. Keeping
+ * event names and command files here would allow a host to run a different lifecycle than it installs. */
+function mergeHarnessHooks(
+  hooks: Record<string, any>,
+  harness: HookHarnessName,
+  dist: string
+): void {
+  const spec = HOOK_HARNESSES[harness];
+  for (const hook of Object.values(spec.install)) {
+    const entry =
+      spec.configStyle === "nested"
+        ? cmdHook(dist, hook.entry, hook.timeout!)
+        : {
+            command: `node "${join(dist, hook.entry)}"`,
+            ...(hook.timeout ? { timeout: hook.timeout } : {}),
+          };
+    hooks[hook.event] = mergeHookEvent(hooks[hook.event], entry);
+  }
+}
+
+function stripHarnessHooks(hooks: Record<string, any>, harness: HookHarnessName): void {
+  for (const hook of Object.values(HOOK_HARNESSES[harness].install)) {
+    setOrDelete(hooks, hook.event, stripOurs(hooks[hook.event]));
+  }
+}
 
 /** Copy the packaged companion SKILL into a host's skills directory (idempotent overwrite). */
 function installSkill(c: InstallCtx, skillsBase: string): void {
@@ -141,18 +168,7 @@ const claudeCode: HarnessInstaller = {
     const path = join(c.home, ".claude", "settings.json");
     const settings = readJson(path);
     settings.hooks = settings.hooks ?? {};
-    settings.hooks.SessionStart = mergeHookEvent(
-      settings.hooks.SessionStart,
-      cmdHook(c.dist, "claude-sessionstart-hook.js", 30)
-    );
-    settings.hooks.UserPromptSubmit = mergeHookEvent(
-      settings.hooks.UserPromptSubmit,
-      cmdHook(c.dist, "claude-hook.js", 30)
-    );
-    settings.hooks.Stop = mergeHookEvent(
-      settings.hooks.Stop,
-      cmdHook(c.dist, "claude-stop-hook.js", 60)
-    );
+    mergeHarnessHooks(settings.hooks, "claude-code", c.dist);
     writeJson(path, settings);
     c.log?.(`claude-code: hooks merged into ${path}`);
     // Companion SKILL: every skills-capable host gets it (claude/gemini/cursor native dirs;
@@ -184,9 +200,7 @@ const claudeCode: HarnessInstaller = {
     if (existsSync(path)) {
       const settings = readJson(path);
       if (settings.hooks) {
-        for (const ev of ["SessionStart", "UserPromptSubmit", "Stop"]) {
-          setOrDelete(settings.hooks, ev, stripOurs(settings.hooks[ev]));
-        }
+        stripHarnessHooks(settings.hooks, "claude-code");
         if (!Object.keys(settings.hooks).length) delete settings.hooks;
         writeJson(path, settings);
       }
@@ -214,15 +228,7 @@ const codex: HarnessInstaller = {
     const hooksPath = join(c.home, ".codex", "hooks.json");
     const cfg = readJson(hooksPath);
     cfg.hooks = cfg.hooks ?? {};
-    cfg.hooks.SessionStart = mergeHookEvent(
-      cfg.hooks.SessionStart,
-      cmdHook(c.dist, "codex-sessionstart-hook.js", 30)
-    );
-    cfg.hooks.UserPromptSubmit = mergeHookEvent(
-      cfg.hooks.UserPromptSubmit,
-      cmdHook(c.dist, "codex-hook.js", 30)
-    );
-    cfg.hooks.Stop = mergeHookEvent(cfg.hooks.Stop, cmdHook(c.dist, "codex-stop-hook.js", 60));
+    mergeHarnessHooks(cfg.hooks, "codex", c.dist);
     writeJson(hooksPath, cfg);
     c.log?.(`codex: hooks merged into ${hooksPath}`);
 
@@ -261,9 +267,7 @@ const codex: HarnessInstaller = {
     if (existsSync(hooksPath)) {
       const cfg = readJson(hooksPath);
       if (cfg.hooks) {
-        for (const ev of ["SessionStart", "UserPromptSubmit", "Stop"]) {
-          setOrDelete(cfg.hooks, ev, stripOurs(cfg.hooks[ev]));
-        }
+        stripHarnessHooks(cfg.hooks, "codex");
         writeJson(hooksPath, cfg);
       }
     }
@@ -290,19 +294,8 @@ const gemini: HarnessInstaller = {
     const path = join(c.home, ".gemini", "settings.json");
     const settings = readJson(path);
     settings.hooks = settings.hooks ?? {};
-    // Gemini hook timeouts are MILLISECONDS (unlike claude/codex seconds).
-    settings.hooks.SessionStart = mergeHookEvent(
-      settings.hooks.SessionStart,
-      cmdHook(c.dist, "gemini-sessionstart-hook.js", 15000)
-    );
-    settings.hooks.BeforeAgent = mergeHookEvent(
-      settings.hooks.BeforeAgent,
-      cmdHook(c.dist, "gemini-hook.js", 15000)
-    );
-    settings.hooks.SessionEnd = mergeHookEvent(
-      settings.hooks.SessionEnd,
-      cmdHook(c.dist, "gemini-stop-hook.js", 30000)
-    );
+    // Gemini hook timeouts are milliseconds; those values live in the shared lifecycle registry.
+    mergeHarnessHooks(settings.hooks, "gemini", c.dist);
     settings.mcpServers = {
       ...(settings.mcpServers ?? {}),
       hindsight: {
@@ -320,9 +313,7 @@ const gemini: HarnessInstaller = {
     if (!existsSync(path)) return;
     const settings = readJson(path);
     if (settings.hooks) {
-      for (const ev of ["SessionStart", "BeforeAgent", "SessionEnd"]) {
-        setOrDelete(settings.hooks, ev, stripOurs(settings.hooks[ev]));
-      }
+      stripHarnessHooks(settings.hooks, "gemini");
       if (!Object.keys(settings.hooks).length) delete settings.hooks;
     }
     if (settings.mcpServers?.hindsight) delete settings.mcpServers.hindsight;
@@ -339,15 +330,7 @@ const cursor: HarnessInstaller = {
     const hooksPath = join(c.home, ".cursor", "hooks.json");
     const cfg = readJson(hooksPath);
     cfg.hooks = cfg.hooks ?? {};
-    cfg.hooks.beforeSubmitPrompt = mergeHookEvent(cfg.hooks.beforeSubmitPrompt, {
-      command: `node "${join(c.dist, "cursor-hook.js")}"`,
-    });
-    // Cursor's stop event is fire-and-forget, so its handler owns the complete, fail-open
-    // transcript upsert rather than trying to return data to the agent loop.
-    cfg.hooks.stop = mergeHookEvent(cfg.hooks.stop, {
-      command: `node "${join(c.dist, "cursor-stop-hook.js")}"`,
-      timeout: 30,
-    });
+    mergeHarnessHooks(cfg.hooks, "cursor-cli", c.dist);
     writeJson(hooksPath, cfg);
     const mcpPath = join(c.home, ".cursor", "mcp.json");
     const mcp = readJson(mcpPath);
@@ -364,8 +347,7 @@ const cursor: HarnessInstaller = {
     if (existsSync(hooksPath)) {
       const cfg = readJson(hooksPath);
       if (cfg.hooks) {
-        setOrDelete(cfg.hooks, "beforeSubmitPrompt", stripOurs(cfg.hooks.beforeSubmitPrompt));
-        setOrDelete(cfg.hooks, "stop", stripOurs(cfg.hooks.stop));
+        stripHarnessHooks(cfg.hooks, "cursor-cli");
         if (!Object.keys(cfg.hooks).length) delete cfg.hooks;
         writeJson(hooksPath, cfg);
       }

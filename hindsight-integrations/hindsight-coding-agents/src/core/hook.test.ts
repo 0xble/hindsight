@@ -156,6 +156,30 @@ describe("buildHookOutput", () => {
     });
   });
 
+  it("autoReflect false: never calls reflect, injects no memory block", async () => {
+    const cfg = resolveConfig({ autoReflect: false });
+    const client = makeClient();
+    const out = await buildHookOutput({
+      harness: "claude-code",
+      prompt: "the prompt",
+      cfg,
+      client,
+      cacheFile,
+    });
+    expect(client.reflect).not.toHaveBeenCalled();
+    expect(out.context ?? "").not.toContain("<hindsight_memory>");
+    // Tool-only mode's pull trigger: the roster refresh must carry the reflect-on-new-goals rule.
+    const cfg2 = resolveConfig({ autoReflect: false, pageRefreshEveryTurns: 1 });
+    const out2 = await buildHookOutput({
+      harness: "claude-code",
+      prompt: "next",
+      cfg: cfg2,
+      client,
+      cacheFile,
+    });
+    expect(out2.context ?? "").toContain("NEW task or goal");
+  });
+
   it("fetches the page ROSTER (ids + titles, no content) on the first turn; nothing injected from it", async () => {
     const cfg = resolveConfig({});
     const client = makeClient();

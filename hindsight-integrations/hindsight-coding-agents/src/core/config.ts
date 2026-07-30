@@ -38,6 +38,7 @@ export interface RawConfig {
   retainSessions?: boolean; // opencode plugin write-back (default true; set false to opt out). Hook harnesses always write back on Stop and ignore this flag.
   retainEveryTurns?: number; // write-back cadence in user turns (default 1: async upsert every turn)
   reflectTimeoutMs?: number; // session-start reflect timeout (default 120000; hooks cap lower internally)
+  autoReflect?: boolean; // inject a one-time reflect synthesis on the session's first prompt (default true; false = the agent reflects only via the hindsight_reflect tool, and the tool guide tells it to do so on new goals)
   pageRefreshEveryTurns?: number; // knowledge-page refresh cadence in user turns (default 10)
   autoSeed?: boolean; // SessionStart: auto-seed a cold repo's bank from git history (default true)
   seedLimit?: number; // SessionStart auto-seed: most-recent-N-commits cap (default 300)
@@ -81,6 +82,7 @@ export interface Config {
   retainSessions: boolean;
   retainEveryTurns: number;
   reflectTimeoutMs: number;
+  autoReflect: boolean;
   pageRefreshEveryTurns: number;
   autoSeed: boolean;
   seedLimit: number;
@@ -108,6 +110,7 @@ export function resolveConfig(raw: RawConfig = {}): Config {
     retainSessions: raw.retainSessions ?? true, // opencode: write back by default (parity with hook-harness Stop)
     retainEveryTurns: raw.retainEveryTurns || 1,
     reflectTimeoutMs: raw.reflectTimeoutMs || 120000,
+    autoReflect: raw.autoReflect ?? true,
     pageRefreshEveryTurns: raw.pageRefreshEveryTurns || 10,
     autoSeed: raw.autoSeed ?? true,
     seedLimit: raw.seedLimit || DEFAULT_SEED_LIMIT,

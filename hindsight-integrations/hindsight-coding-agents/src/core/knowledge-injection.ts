@@ -45,19 +45,38 @@ const TOOL_GUIDE =
   "- hindsight_ingest_document(title, content) — save an external document or durable notes/findings you want " +
   "remembered (not the current conversation — that is captured automatically at session end).";
 
+/**
+ * autoReflect=false replaces the injected first-prompt synthesis, so the pull trigger must be
+ * explicit and prominent: without it the agent has no reason to suspect the bank holds anything
+ * about a fresh goal, and the session silently runs memoryless.
+ */
+const REFLECT_ON_GOALS =
+  "- The user just set a NEW task or goal → call hindsight_reflect with that goal FIRST, before " +
+  "planning: no memory is injected automatically in this configuration, so this call is the only " +
+  "way past decisions, constraints, and failed attempts relevant to the goal reach you.\n";
+
+export interface ToolGuideOpts {
+  /** Add the reflect-on-new-goals trigger (tool-only reflect mode, cfg.autoReflect=false). */
+  reflectOnNewGoals?: boolean;
+}
+
+function toolGuide(opts?: ToolGuideOpts): string {
+  return (opts?.reflectOnNewGoals ? REFLECT_ON_GOALS : "") + TOOL_GUIDE;
+}
+
 /** SessionStart: teach the whole tool suite + when to use each, and list what pages exist. Empty-state aware. */
-export function buildKnowledgePreamble(pages: PageRef[]): string {
+export function buildKnowledgePreamble(pages: PageRef[], opts?: ToolGuideOpts): string {
   const body = pages.length
     ? `Knowledge pages currently in this repository:\n${roster(pages)}`
     : "No knowledge pages yet — Hindsight is still learning this repo; they'll appear as it processes.";
   return (
     "<hindsight_knowledge>\n" +
-    "  ALSO your correction tool: when you verify a Hindsight memory is wrong or stale, ingest a " +
-    '"Correction: <topic>" doc stating what memory claimed, what is true now, and the evidence — ' +
-    "newer facts supersede older ones." +
     "This repository has a Hindsight memory + knowledge base (curated, continuously-updated pages plus the raw " +
     "memory behind them). The tools below are registered, but you must actually CALL them at the right moments:\n" +
-    `${TOOL_GUIDE}\n` +
+    `${toolGuide(opts)}\n` +
+    "ALSO your correction tool: when you verify a Hindsight memory is wrong or stale, ingest a " +
+    '"Correction: <topic>" doc stating what memory claimed, what is true now, and the evidence — ' +
+    "newer facts supersede older ones.\n" +
     `${body}\n` +
     "This tool guide and the page list are re-injected for you periodically as things change.\n" +
     "</hindsight_knowledge>"
@@ -70,7 +89,7 @@ export function buildKnowledgePreamble(pages: PageRef[]): string {
  * building its first features. The page roster is included only when pages exist; the reminder of
  * which tools exist and WHEN to call each is unconditional.
  */
-export function buildRosterRefresh(pages: PageRef[]): string {
+export function buildRosterRefresh(pages: PageRef[], opts?: ToolGuideOpts): string {
   const rosterBlock = pages.length
     ? `Current Hindsight knowledge pages (may have changed):\n${roster(pages)}\n`
     : "";
@@ -78,7 +97,7 @@ export function buildRosterRefresh(pages: PageRef[]): string {
     "<hindsight_knowledge_refresh>\n" +
     rosterBlock +
     "Reminder — this repo's Hindsight tools are available; call them at the right moments:\n" +
-    `${TOOL_GUIDE}\n` +
+    `${toolGuide(opts)}\n` +
     "</hindsight_knowledge_refresh>"
   );
 }

@@ -1,5 +1,5 @@
 /**
- * Claude Code `SessionStart` hook: deterministically auto-seeds a cold repo's bank from its git
+ * Shared `SessionStart` lifecycle: deterministically auto-seeds a cold repo's bank from its git
  * history (in the background, non-blocking), keeps warm banks deepening on every start, and
  * injects a short visible note plus the live
  * knowledge-page roster + guidance preamble that tells the agent to consult the repo's pages.
@@ -110,6 +110,13 @@ async function gitSyncNote(args: {
 export interface SessionStartOutput {
   systemMessage?: string;
   additionalContext?: string;
+}
+
+/** Host-specific adapter for the shared SessionStart core. Claude, Codex, and Gemini use the
+ * Claude-compatible envelope; Cursor's native hooks require snake-case `additional_context`. */
+export interface SessionStartHookSpec {
+  harness: string;
+  emit(output: SessionStartOutput): unknown;
 }
 
 /**
@@ -261,7 +268,7 @@ export async function buildSessionStartContext(args: {
   // Inject the live knowledge-page roster + guidance preamble. Fail-open: a listPages rejection
   // yields an empty roster (empty-state preamble) and never disturbs the seed logic above.
   const pages = parsePageList(await client.listPages().catch(() => null));
-  const additionalContext = buildKnowledgePreamble(pages);
+  const additionalContext = buildKnowledgePreamble(pages, { reflectOnNewGoals: !cfg.autoReflect });
 
   // The banner shows on EVERY session — Hindsight's presence is part of the product, not a
   // one-time setup note. Wording tracks the bank state: cold = "learning", else "remembering";
@@ -286,7 +293,7 @@ export async function buildSessionStartContext(args: {
 
 /** Run one SessionStart hook invocation: stdin event in, (maybe) an additionalContext object on stdout. */
 export async function runSessionStartHook(
-  harness = "claude-code",
+  spec: SessionStartHookSpec,
   makeClient: (opts: ClientOpts) => SeedContextClient = (o) => new HindsightClient(o)
 ): Promise<void> {
   // Anti-recursion: the codebase survey's own headless claude session (core/survey.ts) sets this
@@ -303,7 +310,14 @@ export async function runSessionStartHook(
     } catch {
       return; // no/invalid event: stay silent
     }
-    const cwd = (ev.cwd as string) || process.cwd();
+    const { harness } = spec;
+    const cwd =
+      (ev.cwd as string) ||
+      (ev.workspace_root as string) ||
+      (Array.isArray(ev.workspace_roots)
+        ? (ev.workspace_roots[0] as string | undefined)
+        : undefined) ||
+      process.cwd();
 
     let cfg = loadConfig({ harness });
     setLogLevel(cfg.logLevel);
@@ -317,14 +331,8 @@ export async function runSessionStartHook(
     const client = makeClient({ apiUrl: cfg.apiUrl, apiToken: cfg.apiToken, bank: bankId });
 
     const out = await buildSessionStartContext({ cwd, bankId, cfg, client, harness });
-    // `systemMessage` is top-level (Claude Code renders it to the USER); `additionalContext`
-    // nests under hookSpecificOutput (model context only).
-    const payload: {
-      systemMessage?: string;
-      hookSpecificOutput: { hookEventName: string; additionalContext?: string };
-    } = { hookSpecificOutput: { hookEventName: "SessionStart" } };
-    if (out.systemMessage) payload.systemMessage = out.systemMessage;
-    if (out.additionalContext) payload.hookSpecificOutput.additionalContext = out.additionalContext;
+    // The lifecycle computes one host-neutral output; the registry owns each host's wire schema.
+    const payload = spec.emit(out);
     if (out.systemMessage || out.additionalContext) {
       process.stdout.write(JSON.stringify(payload));
     }

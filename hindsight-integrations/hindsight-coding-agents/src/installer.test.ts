@@ -267,10 +267,13 @@ describe("cursor-cli installer", () => {
   const hooksPath = (ctx: InstallCtx) => join(ctx.home, ".cursor", "hooks.json");
   const mcpPath = (ctx: InstallCtx) => join(ctx.home, ".cursor", "mcp.json");
 
-  it("install writes beforeSubmitPrompt and stop hooks plus the mcp.json server entry", () => {
+  it("install writes sessionStart, beforeSubmitPrompt, and stop hooks plus the mcp.json server entry", () => {
     const ctx = makeCtx();
     expect(run(["install", "cursor-cli"], ctx)).toBe(0);
     const hooks = readJson(hooksPath(ctx)).hooks;
+    expect(hooks.sessionStart).toHaveLength(1);
+    expect(hooks.sessionStart[0].command).toContain(join(ctx.dist, "cursor-sessionstart-hook.js"));
+    expect(hooks.sessionStart[0].timeout).toBe(30);
     expect(hooks.beforeSubmitPrompt).toHaveLength(1);
     expect(hooks.beforeSubmitPrompt[0].command).toContain(join(ctx.dist, "cursor-hook.js"));
     expect(hooks.stop).toHaveLength(1);
