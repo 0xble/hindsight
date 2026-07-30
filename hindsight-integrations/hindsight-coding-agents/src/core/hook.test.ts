@@ -128,7 +128,7 @@ describe("buildHookOutput", () => {
     const client = makeClient();
     await buildHookOutput({
       harness: "claude-code",
-      prompt: "the prompt",
+      prompt: "investigate the failing retry tests",
       cfg,
       client,
       cacheFile,
@@ -144,7 +144,7 @@ describe("buildHookOutput", () => {
     const client = makeClient();
     await buildHookOutput({
       harness: "claude-code",
-      prompt: "the prompt",
+      prompt: "investigate the failing retry tests",
       cfg,
       client,
       cacheFile,
@@ -324,5 +324,31 @@ describe("runHook anti-recursion guard", () => {
     // alone without calling makeClient) proves the guard fired first.
     await runHook({ harness: "claude-code", parse: () => ({}), emit: (c) => ({ c }) }, makeClient);
     expect(makeClient).not.toHaveBeenCalled();
+  });
+});
+
+describe("trivial-prompt reflect deferral", () => {
+  it("does not spend the session's reflect on a greeting; the next substantive prompt gets it", async () => {
+    const cfg = resolveConfig({});
+    const client = makeClient();
+    const t1 = await buildHookOutput({ harness: "claude-code", prompt: "hi", cfg, client, cacheFile });
+    expect(client.reflect).not.toHaveBeenCalled();
+    expect(t1.context ?? "").not.toContain("REFLECT_ANSWER");
+    const t2 = await buildHookOutput({
+      harness: "claude-code",
+      prompt: "why does the retry policy lock accounts?",
+      cfg,
+      client,
+      cacheFile,
+    });
+    expect(client.reflect).toHaveBeenCalledTimes(1);
+    expect(t2.context).toContain("REFLECT_ANSWER");
+  });
+
+  it("short-but-substantive prompts still reflect immediately", async () => {
+    const cfg = resolveConfig({});
+    const client = makeClient();
+    await buildHookOutput({ harness: "claude-code", prompt: "fix bug #123", cfg, client, cacheFile });
+    expect(client.reflect).toHaveBeenCalledTimes(1);
   });
 });

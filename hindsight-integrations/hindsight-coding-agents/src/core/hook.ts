@@ -65,6 +65,14 @@ interface HookClient {
   listDocumentIds?(tag: string): Promise<Set<string>>;
 }
 
+/** A prompt too slight to be the session's goal ("hi", "hello there") — deferring reflect keeps
+ *  the once-per-session synthesis for the first message with substance. Deliberately crude: ≤2
+ *  words AND <20 chars; a terse real goal ("fix tests") just reflects one turn later. */
+export function isTrivialPrompt(prompt: string): boolean {
+  const p = prompt.trim();
+  return p.length < 20 && p.split(/\s+/).length <= 2;
+}
+
 /**
  * Cap on the once-per-session reflect. INVARIANT: this MUST stay below every harness's
  * UserPromptSubmit/BeforeAgent hook timeout (currently 30s in claude-code-v2/hooks/hooks.json,
@@ -113,7 +121,7 @@ export async function buildHookOutput(args: {
   // ── reflect: once per session, on the first prompt ────────────────────────────
   let reflectAnswer = cached.reflectAnswer;
   let reflectRanThisTurn = false;
-  if (reflectAnswer === undefined) {
+  if (reflectAnswer === undefined && !isTrivialPrompt(prompt)) {
     reflectRanThisTurn = true;
     const t0 = Date.now();
     try {
