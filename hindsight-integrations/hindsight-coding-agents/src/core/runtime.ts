@@ -15,7 +15,7 @@
  */
 import type { Config } from "./config";
 import { diag } from "./diag";
-import { setLogLevel } from "./log";
+import { log, setLogLevel } from "./log";
 import type { HindsightClient } from "./hindsight";
 import type { PageRef } from "./knowledge-injection";
 import { buildRosterRefresh, parsePageList } from "./knowledge-injection";
@@ -74,7 +74,8 @@ export class RuntimeCore {
       });
       // The seed note is user-facing; opencode has no visible-system channel at load, so surface it
       // on stderr (shows in the plugin log / console) rather than dropping it.
-      if (out.systemMessage) console.error(out.systemMessage);
+      // Banner: opencode renders plugin stderr inside the TUI — log it instead of printing.
+      if (out.systemMessage) log.info(HARNESS, out.systemMessage.replace(/\x1b\[[0-9;]*m/g, ""));
       this.preamble = out.additionalContext ?? "";
     } catch {
       /* seeding + preamble are best-effort — a cold-check failure never breaks the agent */
@@ -146,13 +147,15 @@ export class RuntimeCore {
     if (reflectAnswer) blocks.push(buildSystemInjection(reflectAnswer));
     // Knowledge pages are NOT auto-injected (phantom-research problem) — the agent pulls them
     // via the hindsight_search_knowledge_pages tool. Reflect-turn visibility only:
+    // No terminal output here: opencode gives plugins no user-message channel, and stderr bleeds
+    // into the TUI at the cursor position (rendered wedged against the input bar). The reflect
+    // trail lives in the plugin log instead.
     if (reflectRanThisTurn && reflectAnswer) {
       const q = prompt.replace(/\s+/g, " ").trim();
-      const excerpt = q.length > 48 ? `${q.slice(0, 48)}…` : q;
-      const preview = reflectAnswer.replace(/\s+/g, " ").trim().slice(0, 140);
-      console.error(
-        `${brandWord()} · goal: recall this repo's past decisions about “${excerpt}”\n↳ ${preview}…`
-      );
+      log.info(HARNESS, "reflect goal", {
+        query: q.slice(0, 80),
+        preview: reflectAnswer.replace(/\s+/g, " ").trim().slice(0, 140),
+      });
     }
     if (refreshDue) {
       blocks.push(buildRosterRefresh(this.pagesCache));
