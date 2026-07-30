@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { HindsightClient } from "./hindsight";
+import { PAGE_MAX_TOKENS, PAGES } from "./missions";
 
 afterEach(() => vi.restoreAllMocks());
 
@@ -17,148 +18,207 @@ function stubFetch(calls: any[], jsonImpl: () => Promise<unknown> = async () => 
   );
 }
 
-describe("HindsightClient knowledge-page CRUD", () => {
-  it("listPages GETs mental-models?detail=metadata", async () => {
+/** The knowledge-base surface is the ONLY page surface: nothing here may touch /mental-models,
+ *  or ids stop resolving (search returns kp-… node ids) and seeded pages fall out of the search
+ *  corpus (it joins through knowledge_pages). */
+describe("HindsightClient knowledge-page reads", () => {
+  it("listPages reads the knowledge-base tree — never /mental-models", async () => {
     const calls: any[] = [];
-    stubFetch(calls, async () => ({ pages: [] }));
+    stubFetch(calls, async () => ({ roots: [] }));
     const c = new HindsightClient({ apiUrl: "http://x", bank: "repo-a" });
-    const result = await c.listPages();
-    expect(result).toEqual({ pages: [] });
+    await c.listPages();
     expect(calls).toHaveLength(1);
     expect(calls[0].method).toBe("GET");
-    expect(calls[0].url).toContain("/v1/default/banks/repo-a/mental-models?detail=metadata");
+    expect(calls[0].url).toContain("/v1/default/banks/repo-a/knowledge-base/tree");
+    expect(calls.some((k) => k.url.includes("/mental-models"))).toBe(false);
   });
 
-  it("getPage GETs mental-models/{id}?detail=content", async () => {
+  it("listPages flattens nested pages, drops folders, and keeps the containing folder name", async () => {
     const calls: any[] = [];
-    stubFetch(calls, async () => ({ id: "p1" }));
+    stubFetch(calls, async () => ({
+      roots: [
+        { id: "kp-1", kind: "page", name: "Component map", description: "what are the parts?" },
+        {
+          id: "kf-1",
+          kind: "folder",
+          name: "Initiatives",
+          children: [{ id: "kp-2", kind: "page", name: "Retry backoff" }],
+        },
+      ],
+    }));
     const c = new HindsightClient({ apiUrl: "http://x", bank: "repo-a" });
-    const result = await c.getPage("p1");
-    expect(result).toEqual({ id: "p1" });
-    expect(calls[0].method).toBe("GET");
-    expect(calls[0].url).toContain("/mental-models/p1?detail=content");
-  });
-
-  it("createPage POSTs to mental-models with the exact payload shape", async () => {
-    const calls: any[] = [];
-    stubFetch(calls, async () => ({ page_id: "p1" }));
-    const c = new HindsightClient({ apiUrl: "http://x", bank: "repo-a" });
-    const result = await c.createPage("p1", "My Page", "how do we X?");
-    expect(result).toEqual({ page_id: "p1" });
-    expect(calls[0].method).toBe("POST");
-    expect(calls[0].url.endsWith("/mental-models")).toBe(true);
-    expect(calls[0].body).toEqual({
-      id: "p1",
-      name: "My Page",
-      source_query: "how do we X?",
-      max_tokens: 4096,
-      trigger: {
-        mode: "delta",
-        refresh_after_consolidation: true,
-        fact_types: ["observation"],
-        exclude_mental_models: true,
-      },
+    expect(await c.listPages()).toEqual({
+      items: [
+        { id: "kp-1", name: "Component map", description: "what are the parts?" },
+        { id: "kp-2", name: "Retry backoff", folder: "Initiatives" },
+      ],
     });
   });
 
-  it("updatePage PATCHes only the provided fields (name only)", async () => {
-    const calls: any[] = [];
-    stubFetch(calls, async () => ({ id: "p1" }));
-    const c = new HindsightClient({ apiUrl: "http://x", bank: "repo-a" });
-    const result = await c.updatePage("p1", { name: "New" });
-    expect(result).toEqual({ id: "p1" });
-    expect(calls[0].method).toBe("PATCH");
-    expect(calls[0].url).toContain("/mental-models/p1");
-    expect(calls[0].body).toEqual({ name: "New" });
-    expect(calls[0].body).not.toHaveProperty("source_query");
-  });
-
-  it("updatePage PATCHes only the provided fields (sourceQuery only)", async () => {
-    const calls: any[] = [];
-    stubFetch(calls, async () => ({ id: "p1" }));
-    const c = new HindsightClient({ apiUrl: "http://x", bank: "repo-a" });
-    const result = await c.updatePage("p1", { sourceQuery: "new query?" });
-    expect(result).toEqual({ id: "p1" });
-    expect(calls[0].body).toEqual({ source_query: "new query?" });
-    expect(calls[0].body).not.toHaveProperty("name");
-  });
-
-  it("updatePage with neither field short-circuits without calling fetch", async () => {
-    const calls: any[] = [];
-    stubFetch(calls);
-    const fetchSpy = vi.fn();
-    vi.stubGlobal("fetch", fetchSpy);
-    const c = new HindsightClient({ apiUrl: "http://x", bank: "repo-a" });
-    const result = await c.updatePage("p1", {});
-    expect(result).toEqual({ error: "Provide name or sourceQuery to update" });
-    expect(fetchSpy).not.toHaveBeenCalled();
-  });
-
-  it("deletePage DELETEs mental-models/{id}", async () => {
-    const calls: any[] = [];
-    stubFetch(calls, async () => ({ deleted: true }));
-    const c = new HindsightClient({ apiUrl: "http://x", bank: "repo-a" });
-    const result = await c.deletePage("p1");
-    expect(result).toEqual({ deleted: true });
-    expect(calls[0].method).toBe("DELETE");
-    expect(calls[0].url).toContain("/mental-models/p1");
-  });
-
-  it("deletePage falls back to { ok: true } when the response body isn't JSON", async () => {
-    const calls: any[] = [];
+  it("listPages degrades to an empty roster when the tree body isn't JSON", async () => {
     vi.stubGlobal(
       "fetch",
-      vi.fn(async (url: string, init: any) => {
-        calls.push({ url, method: init?.method });
-        return {
-          ok: true,
-          status: 200,
-          json: async () => {
-            throw new Error("Unexpected end of JSON input");
-          },
-        } as any;
-      })
+      vi.fn(async () => ({
+        ok: true,
+        status: 200,
+        json: async () => {
+          throw new Error("Unexpected end of JSON input");
+        },
+      })) as any
     );
     const c = new HindsightClient({ apiUrl: "http://x", bank: "repo-a" });
-    const result = await c.deletePage("p1");
-    expect(result).toEqual({ ok: true });
+    expect(await c.listPages()).toEqual({ items: [] });
   });
 
-  it("URL-encodes pageId in getPage/updatePage/deletePage suffixes", async () => {
+  it("getPage GETs knowledge-base/pages/{id}", async () => {
+    const calls: any[] = [];
+    stubFetch(calls, async () => ({ id: "kp-1" }));
+    const c = new HindsightClient({ apiUrl: "http://x", bank: "repo-a" });
+    const result = await c.getPage("kp-1");
+    expect(result).toEqual({ id: "kp-1" });
+    expect(calls[0].method).toBe("GET");
+    expect(calls[0].url).toContain("/knowledge-base/pages/kp-1");
+  });
+
+  it("getPage resolves the id shape searchKnowledgePages hands back", async () => {
+    const calls: any[] = [];
+    stubFetchRouted(calls, [
+      {
+        match: (m, u) => m === "GET" && u.includes("/knowledge-base/search"),
+        json: { results: [{ id: "kp-abc", name: "Component map", snippet: "…", score: 0.5 }] },
+      },
+      {
+        match: (m, u) => m === "GET" && u.includes("/knowledge-base/pages/"),
+        json: { id: "kp-abc" },
+      },
+    ]);
+    const c = new HindsightClient({ apiUrl: "http://x", bank: "repo-a" });
+    const [hit] = await c.searchKnowledgePages("components");
+    await c.getPage(hit.id);
+    // The read must land on the page endpoint for the very id search returned — the old
+    // /mental-models read 404'd on every kp-… id search produced.
+    expect(calls[1].url).toContain("/knowledge-base/pages/kp-abc");
+  });
+
+  it("URL-encodes pageId in the getPage suffix", async () => {
     const calls: any[] = [];
     stubFetch(calls, async () => ({ ok: true }));
     const c = new HindsightClient({ apiUrl: "http://x", bank: "repo-a" });
     await c.getPage("p 1/x");
-    expect(calls[0].url).toContain(`/mental-models/${encodeURIComponent("p 1/x")}?detail=content`);
+    expect(calls[0].url).toContain(`/knowledge-base/pages/${encodeURIComponent("p 1/x")}`);
   });
 
-  function stub404() {
+  it("getPage throws on 404 instead of returning the error envelope", async () => {
     vi.stubGlobal(
       "fetch",
       vi.fn(
         async () => ({ ok: false, status: 404, json: async () => ({ detail: "not found" }) }) as any
       )
     );
-  }
-
-  it("getPage throws on 404 instead of returning the error envelope", async () => {
-    stub404();
     const c = new HindsightClient({ apiUrl: "http://x", bank: "repo-a" });
     await expect(c.getPage("missing")).rejects.toThrow("knowledge page not found: missing");
   });
+});
 
-  it("updatePage throws on 404 instead of returning the error envelope", async () => {
-    stub404();
+describe("HindsightClient.seedPages", () => {
+  it("creates every seeded page through /knowledge-base/pages on an empty bank", async () => {
+    const calls: any[] = [];
+    stubFetchRouted(calls, [
+      { match: (m, u) => m === "GET" && u.endsWith("/knowledge-base/tree"), json: { roots: [] } },
+    ]);
     const c = new HindsightClient({ apiUrl: "http://x", bank: "repo-a" });
-    await expect(c.updatePage("missing", { name: "New" })).rejects.toThrow(
-      "knowledge page not found: missing"
+    await c.seedPages();
+
+    const posts = calls.filter(
+      (k) => k.method === "POST" && k.url.endsWith("/knowledge-base/pages")
     );
+    expect(posts).toHaveLength(PAGES.length);
+    expect(posts.map((p) => p.body.name).sort()).toEqual(PAGES.map((p) => p.name).sort());
+    for (const post of posts) {
+      expect(post.body.tags).toHaveLength(1);
+      expect(post.body.tags[0]).toMatch(
+        /^knowledge:(feature-work|decision|convention|component|concept)$/
+      );
+      expect(post.body.max_tokens).toBe(PAGE_MAX_TOKENS);
+      expect(post.body.trigger.refresh_after_consolidation).toBe(true);
+      expect(post.body.parent_id).toBeUndefined(); // seeded at the tree root
+    }
+    // Nothing on the mental-models surface.
+    expect(calls.some((k) => k.url.includes("/mental-models"))).toBe(false);
   });
 
-  it("deletePage throws on 404 instead of returning { ok: true }", async () => {
-    stub404();
+  it("is idempotent: an already-seeded bank issues no writes at all", async () => {
+    const calls: any[] = [];
+    stubFetchRouted(calls, [
+      {
+        match: (m, u) => m === "GET" && u.endsWith("/knowledge-base/tree"),
+        json: {
+          roots: PAGES.map((p, i) => ({
+            id: `kp-${i}`,
+            kind: "page",
+            name: p.name,
+            description: p.source_query,
+          })),
+        },
+      },
+    ]);
     const c = new HindsightClient({ apiUrl: "http://x", bank: "repo-a" });
-    await expect(c.deletePage("missing")).rejects.toThrow("knowledge page not found: missing");
+    await c.seedPages();
+    expect(calls).toHaveLength(1); // the tree GET only
+    expect(calls.every((k) => k.method === "GET")).toBe(true);
+  });
+
+  it("tolerates a 409 from a concurrent run that seeded the same name first", async () => {
+    const calls: any[] = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: string, init: any) => {
+        calls.push({ url, method: init?.method });
+        const conflict = init?.method === "POST" && url.endsWith("/knowledge-base/pages");
+        return {
+          ok: !conflict,
+          status: conflict ? 409 : 200,
+          json: async () => ({ roots: [] }),
+          text: async () => "already exists",
+        } as any;
+      })
+    );
+    const c = new HindsightClient({ apiUrl: "http://x", bank: "repo-a" });
+    // A losing race must not fail the deepen run — the page exists either way.
+    await expect(c.seedPages()).resolves.toBeUndefined();
+    expect(
+      calls.filter((k) => k.method === "POST" && k.url.endsWith("/knowledge-base/pages"))
+    ).toHaveLength(PAGES.length);
+  });
+
+  it("matches by name case-insensitively and PATCHes a page whose source query drifted", async () => {
+    const calls: any[] = [];
+    const drifted = PAGES[0];
+    stubFetchRouted(calls, [
+      {
+        match: (m, u) => m === "GET" && u.endsWith("/knowledge-base/tree"),
+        json: {
+          roots: PAGES.map((p, i) => ({
+            id: `kp-${i}`,
+            kind: "page",
+            name: p.name.toUpperCase(),
+            description: p === drifted ? "an older wording of the query" : p.source_query,
+          })),
+        },
+      },
+    ]);
+    const c = new HindsightClient({ apiUrl: "http://x", bank: "repo-a" });
+    await c.seedPages();
+
+    // Case difference alone must NOT look like a missing page.
+    expect(calls.some((k) => k.method === "POST")).toBe(false);
+    const patches = calls.filter((k) => k.method === "PATCH");
+    expect(patches).toHaveLength(1);
+    expect(patches[0].url).toContain("/knowledge-base/nodes/kp-0");
+    expect(patches[0].body).toEqual({
+      source_query: drifted.source_query,
+      tags: drifted.tags,
+    });
   });
 });
 
@@ -306,15 +366,17 @@ describe("HindsightClient.captureInitiative", () => {
 });
 
 describe("HindsightClient.configureBank template import", () => {
-  it("POSTs the full CODING_BANK_TEMPLATE manifest to /import in exactly one call", async () => {
+  it("POSTs the CODING_BANK_TEMPLATE manifest to /import, then seeds pages via the knowledge base", async () => {
     const calls: any[] = [];
-    stubFetch(calls, async () => ({ ok: true }));
+    stubFetchRouted(calls, [
+      { match: (m, u) => m === "GET" && u.endsWith("/knowledge-base/tree"), json: { roots: [] } },
+    ]);
     const c = new HindsightClient({ apiUrl: "http://x", bank: "repo-a" });
     await c.configureBank();
 
     const importPosts = calls.filter((k) => k.method === "POST" && k.url.endsWith("/import"));
     expect(importPosts).toHaveLength(1);
-    expect(calls).toHaveLength(1); // the import POST is the ONLY request (no PUT bank, no PATCH /config)
+    expect(calls[0]).toBe(importPosts[0]); // config first — page seeding needs the bank to exist
 
     const body = importPosts[0].body;
     expect(body.version).toBe("1");
@@ -330,25 +392,22 @@ describe("HindsightClient.configureBank template import", () => {
     );
     expect(body.bank.entities_allow_free_form).toBe(true);
 
-    // seeded knowledge pages, matched server-side by stable slug id
-    expect(body.mental_models).toHaveLength(5);
-    for (const page of body.mental_models) {
-      expect(page.id).toMatch(/^[a-z0-9-]+$/);
-      expect(page.tags).toHaveLength(1);
-      expect(page.tags[0]).toMatch(
-        /^knowledge:(feature-work|decision|convention|component|concept)$/
-      );
-      expect(page.trigger.refresh_after_consolidation).toBe(true);
-    }
+    // The manifest must NOT carry pages: the template's mental_models key creates mental models
+    // with no knowledge-base node, which are invisible to page search and unreadable by node id.
+    expect(body).not.toHaveProperty("mental_models");
+    expect(
+      calls.filter((k) => k.method === "POST" && k.url.endsWith("/knowledge-base/pages"))
+    ).toHaveLength(PAGES.length);
   });
 
   it("configureBank({reset: true}) DELETEs the bank before the import POST", async () => {
     const calls: any[] = [];
-    stubFetch(calls, async () => ({ ok: true }));
+    stubFetchRouted(calls, [
+      { match: (m, u) => m === "GET" && u.endsWith("/knowledge-base/tree"), json: { roots: [] } },
+    ]);
     const c = new HindsightClient({ apiUrl: "http://x", bank: "repo-a" });
     await c.configureBank({ reset: true });
 
-    expect(calls).toHaveLength(2);
     expect(calls[0].method).toBe("DELETE");
     expect(calls[0].url.endsWith("/import")).toBe(false);
     expect(calls[1].method).toBe("POST");

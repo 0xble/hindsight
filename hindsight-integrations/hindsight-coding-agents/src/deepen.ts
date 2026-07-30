@@ -253,9 +253,9 @@ async function main() {
       log(`[deepen] waiting for ${active} server-side op(s) to settle …`);
       await new Promise((r) => setTimeout(r, 5000));
     }
-    // (knowledge pages need no separate pass: configureBank's template import upserts them
-    // by stable id every run — syncStatus's `synced` stays sound because it also requires the
-    // gitlog seed present AND zero active extraction operations.)
+    // (knowledge pages need no separate pass: configureBank seeds them through the knowledge-base
+    // API every run, matched by name — syncStatus's `synced` stays sound because it also requires
+    // the gitlog seed present AND zero active extraction operations.)
 
     const failures = chatFails + gitFails;
     diag("deepen", "deepen_done", {

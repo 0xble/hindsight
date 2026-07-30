@@ -5,8 +5,18 @@
  * (missions + git/chat retain strategies), retains memories, reflects, drains async operations, and
  * creates knowledge pages. Nothing here knows about opencode/claude-code/etc.
  */
-import { CODING_BANK_TEMPLATE } from "./missions";
+import { CODING_BANK_TEMPLATE, PAGE_MAX_TOKENS, PAGE_TRIGGER, PAGES } from "./missions";
 import { sleep } from "./util";
+
+/** One node of GET /knowledge-base/tree. Only the fields this client reads. */
+export interface KnowledgeNode {
+  id: string;
+  kind: "folder" | "page";
+  name: string;
+  /** The page's source query (OKF `description`) — what a re-sync compares against. */
+  description?: string;
+  children?: KnowledgeNode[];
+}
 
 export interface ClientOpts {
   apiUrl: string;
@@ -47,7 +57,13 @@ export class HindsightClient {
     return `${this.apiUrl}/v1/default/banks/${encodeURIComponent(this.bank)}${suffix}`;
   }
 
-  async req(method: string, url: string, body?: unknown): Promise<Response> {
+  /** `tolerate` adds statuses that are returned to the caller instead of thrown (404 always is). */
+  async req(
+    method: string,
+    url: string,
+    body?: unknown,
+    tolerate: number[] = []
+  ): Promise<Response> {
     // Hard cap on EVERY request: a stalled server (pool deadlock, network) must degrade to a
     // memoryless turn — never hang a host that awaits us (opencode blocks its BOOT on plugin init).
     const r = await fetch(url, {
@@ -56,7 +72,7 @@ export class HindsightClient {
       body: body ? JSON.stringify(body) : undefined,
       signal: AbortSignal.timeout(15_000),
     });
-    if (!r.ok && r.status !== 404)
+    if (!r.ok && r.status !== 404 && !tolerate.includes(r.status))
       throw new Error(`${method} ${url} -> ${r.status} ${await r.text()}`);
     return r;
   }
@@ -117,10 +133,9 @@ export class HindsightClient {
     return ids;
   }
 
-  /** Configure the bank in ONE SHOT: POST the coding bank template manifest to /import —
-   *  missions, retain strategies, entity labels, AND the seeded knowledge pages (matched by
-   *  stable id server-side, so re-applying every deepen run updates instead of duplicating).
-   *  Creates the bank if missing. */
+  /** Configure the bank: POST the coding bank template manifest to /import (missions, retain
+   *  strategies, entity labels), then seed the knowledge pages. Both halves are idempotent, so the
+   *  deepen engine can re-run this every pass. Creates the bank if missing. */
   async configureBank(opts: { reset?: boolean } = {}): Promise<void> {
     if (opts.reset) {
       await this.req("DELETE", this.bankUrl());
@@ -129,8 +144,9 @@ export class HindsightClient {
     await this.req("POST", this.bankUrl("/import"), CODING_BANK_TEMPLATE);
     this.log(
       `[bank] template applied to ${this.bank}: missions, entity_labels {knowledge}, ` +
-        `strategies {git, gitlog, conversation, document}, ${CODING_BANK_TEMPLATE.mental_models.length} knowledge pages`
+        `strategies {git, gitlog, conversation, document}`
     );
+    await this.seedPages();
   }
 
   /** Delete one document (cascades its memory units/links). Used by deepen's self-cleanup. */
@@ -211,25 +227,57 @@ export class HindsightClient {
   }
 
   /**
-   * List knowledge pages (ids + names only — no synthesized content).
-   * detail=metadata (not the full/content default) keeps list payloads small: pages can carry
-   * up to ~100KB of synthesized content each, which callers don't need just to enumerate them.
+   * The bank's knowledge-base tree (folders + pages, nested). The tree carries names, source
+   * queries and staleness but NOT synthesized content, so it is cheap enough to poll.
    */
-  async listPages(): Promise<unknown> {
-    const r = await this.req("GET", this.bankUrl("/mental-models?detail=metadata"));
-    return await r.json();
+  async tree(): Promise<KnowledgeNode[]> {
+    const r = await this.req("GET", this.bankUrl("/knowledge-base/tree"));
+    try {
+      return ((await r.json()) as { roots?: KnowledgeNode[] }).roots ?? [];
+    } catch {
+      return [];
+    }
   }
 
   /**
-   * Read one knowledge page's synthesized content by id.
-   * detail=content (not detail=full) — full additionally includes `reflect_response`, the
-   * internal trace metadata used to build the page, which is 70-95% of the response bytes and
-   * can blow past an MCP host's per-tool-result token cap.
+   * List knowledge pages (ids + names only — no synthesized content), flattened out of the tree
+   * and shaped as `{items:[…]}` for `parsePageList`. Folders are dropped: they carry no content
+   * to read, and a caller enumerating pages wants leaves, not structure.
+   *
+   * NOTE the ids are knowledge-base node ids (`kp-…`), NOT the backing mental-model ids. Every
+   * page read/update in this client goes through the same knowledge-base ids, so a page id from
+   * here, from `searchKnowledgePages`, or from a `[[page:<id>]]` link all resolve identically.
+   */
+  async listPages(): Promise<unknown> {
+    const items: { id: string; name: string; description?: string; folder?: string }[] = [];
+    const walk = (nodes: KnowledgeNode[], folder?: string): void => {
+      for (const n of nodes) {
+        if (!n?.id || !n?.name) continue;
+        if (n.kind === "page") {
+          items.push({
+            id: n.id,
+            name: n.name,
+            ...(n.description ? { description: n.description } : {}),
+            ...(folder ? { folder } : {}),
+          });
+        }
+        if (n.children?.length) walk(n.children, n.kind === "folder" ? n.name : folder);
+      }
+    };
+    walk(await this.tree());
+    return { items };
+  }
+
+  /**
+   * Read one knowledge page's synthesized content by knowledge-base id, as an OKF document
+   * (YAML frontmatter + markdown body). The endpoint omits the internal reflect trace that built
+   * the page — that is 70-95% of the raw bytes and can blow past an MCP host's per-tool-result
+   * token cap.
    */
   async getPage(pageId: string): Promise<unknown> {
     const r = await this.req(
       "GET",
-      this.bankUrl(`/mental-models/${encodeURIComponent(pageId)}?detail=content`)
+      this.bankUrl(`/knowledge-base/pages/${encodeURIComponent(pageId)}`)
     );
     if (r.status === 404) throw new Error(`knowledge page not found: ${pageId}`);
     return await r.json();
@@ -256,59 +304,50 @@ export class HindsightClient {
   }
 
   /**
-   * Create ONE custom knowledge page (used by seeding + captureInitiative; not exposed as an agent MCP tool).
-   * NOT the same as `createPages()` below, which batch-synthesizes the fixed `PAGES` set at
-   * backfill time from extracted facts — this creates a single page from a caller-chosen
-   * `sourceQuery`, re-run on each consolidation.
+   * Seed the fixed `PAGES` taxonomy as knowledge-base pages at the tree root, idempotently.
+   *
+   * Matched by NAME, not id: `/knowledge-base/pages` mints its own `kp-…` id, so a stable
+   * client-chosen id isn't available to match on (unlike the old mental-model path, which keyed
+   * off a slug). Names are unique per folder server-side, which makes them a sound key.
+   *
+   * An existing page is PATCHed rather than recreated so a plugin upgrade that rewords a
+   * `source_query` re-syncs onto the live page instead of orphaning its synthesized content.
    */
-  async createPage(pageId: string, name: string, sourceQuery: string): Promise<unknown> {
-    const r = await this.req("POST", this.bankUrl("/mental-models"), {
-      id: pageId,
-      name,
-      source_query: sourceQuery,
-      max_tokens: 4096,
-      trigger: {
-        mode: "delta",
-        refresh_after_consolidation: true,
-        fact_types: ["observation"],
-        exclude_mental_models: true,
-      },
-    });
-    return await r.json();
-  }
-
-  /** Update a page's name and/or source query. No-op (no request) if neither is provided. */
-  async updatePage(
-    pageId: string,
-    updates: { name?: string; sourceQuery?: string }
-  ): Promise<unknown> {
-    const body: Record<string, string> = {};
-    if (updates.name) body.name = updates.name;
-    if (updates.sourceQuery) body.source_query = updates.sourceQuery;
-    if (Object.keys(body).length === 0) {
-      return { error: "Provide name or sourceQuery to update" };
+  async seedPages(): Promise<void> {
+    const existing = new Map<string, KnowledgeNode>();
+    for (const n of await this.tree()) {
+      if (n.kind === "page" && n.name) existing.set(n.name.toLowerCase(), n);
     }
-    const r = await this.req(
-      "PATCH",
-      this.bankUrl(`/mental-models/${encodeURIComponent(pageId)}`),
-      body
-    );
-    if (r.status === 404) throw new Error(`knowledge page not found: ${pageId}`);
-    return await r.json();
-  }
-
-  /** Permanently delete a knowledge page. */
-  async deletePage(pageId: string): Promise<unknown> {
-    const r = await this.req(
-      "DELETE",
-      this.bankUrl(`/mental-models/${encodeURIComponent(pageId)}`)
-    );
-    if (r.status === 404) throw new Error(`knowledge page not found: ${pageId}`);
-    try {
-      return await r.json();
-    } catch {
-      return { ok: true };
+    let created = 0;
+    let updated = 0;
+    for (const page of PAGES) {
+      const hit = existing.get(page.name.toLowerCase());
+      const body = {
+        name: page.name,
+        source_query: page.source_query,
+        tags: page.tags,
+        max_tokens: PAGE_MAX_TOKENS,
+        trigger: PAGE_TRIGGER,
+      };
+      if (!hit) {
+        // 409 = another deepen run seeded this name between our tree read and this POST. That is
+        // the outcome we wanted anyway, so tolerate it rather than failing the whole run.
+        const r = await this.req("POST", this.bankUrl("/knowledge-base/pages"), body, [409]);
+        if (r.status !== 409) created++;
+      } else if (hit.description !== page.source_query) {
+        // Only the source query can drift — the name IS the match key, so it can't.
+        await this.req(
+          "PATCH",
+          this.bankUrl(`/knowledge-base/nodes/${encodeURIComponent(hit.id)}`),
+          { source_query: page.source_query, tags: page.tags }
+        );
+        updated++;
+      }
     }
+    this.log(
+      `[bank] knowledge pages seeded on ${this.bank}: ${created} created, ${updated} re-synced, ` +
+        `${PAGES.length - created - updated} unchanged`
+    );
   }
 
   /** URL/id-safe slug: lowercase, non-alphanumerics → "-", trim dashes, cap length; fallback "initiative". */

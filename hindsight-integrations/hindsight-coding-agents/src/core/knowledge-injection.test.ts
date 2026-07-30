@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { parsePageList, buildKnowledgePreamble, buildRosterRefresh } from "./knowledge-injection";
 
 describe("parsePageList", () => {
-  it("extracts {id,title} from the mental-model list shape, tolerating junk", () => {
+  it("extracts {id,title} from the page list shape, tolerating junk", () => {
     const raw = {
       items: [
         { id: "p1", name: "Component map" },

@@ -3,7 +3,9 @@ export interface PageRef {
   title: string;
 }
 
-/** Defensive parse of HindsightClient.listPages() (GET /mental-models?detail=metadata → {items:[{id,name}]}). */
+/** Defensive parse of HindsightClient.listPages() ({items:[{id,name}]}, flattened from the
+ *  knowledge-base tree). The ids are knowledge-base node ids — the same id space the agent passes
+ *  back to hindsight_read_knowledge_page. */
 export function parsePageList(raw: unknown): PageRef[] {
   const items = (raw as { items?: unknown })?.items;
   if (!Array.isArray(items)) return [];

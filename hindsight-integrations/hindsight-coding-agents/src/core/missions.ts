@@ -233,12 +233,23 @@ export const PAGES: KnowledgePage[] = [
   },
 ];
 
-// ── the ONE-SHOT bank template ─────────────────────────────────────────────────
-// Everything a coding bank needs — missions, retain strategies, entity labels, and the seeded
-// knowledge pages — as a single template manifest for POST /banks/{id}/import. Idempotent: config
-// fields apply as per-bank overrides and mental models match by stable id (update, not duplicate),
-// so the deepen engine can apply it every run. Replaces the old configureBank PUT+PATCH plus the
-// separate createPages pass.
+// Refresh policy shared by every seeded page: a living document, rebuilt from all three fact
+// tiers whenever consolidation produces new material.
+export const PAGE_MAX_TOKENS = 4096;
+export const PAGE_TRIGGER = {
+  fact_types: ["world", "experience", "observation"],
+  refresh_after_consolidation: true,
+} as const;
+
+// ── the bank template ──────────────────────────────────────────────────────────
+// The bank's CONFIG — missions, retain strategies, entity labels — as a single manifest for
+// POST /banks/{id}/import. Idempotent (config fields apply as per-bank overrides), so the deepen
+// engine can apply it every run. Replaces the old configureBank PUT+PATCH.
+//
+// The seeded pages are NOT part of this manifest: the template's `mental_models` key creates bare
+// mental models with no knowledge-base node, which leaves them invisible to page search (it joins
+// through `knowledge_pages`) and unreadable by node id. Pages are seeded separately, through the
+// knowledge-base API, by `HindsightClient.seedPages()`.
 export const CODING_BANK_TEMPLATE = {
   version: "1",
   bank: {
@@ -252,18 +263,4 @@ export const CODING_BANK_TEMPLATE = {
     entity_labels: [KNOWLEDGE_LABELS],
     entities_allow_free_form: true,
   },
-  mental_models: PAGES.map((p) => ({
-    id: p.name
-      .toLowerCase()
-      .replace(/[^a-z0-9]+/g, "-")
-      .replace(/^-+|-+$/g, ""),
-    name: p.name,
-    source_query: p.source_query,
-    tags: p.tags,
-    max_tokens: 4096,
-    trigger: {
-      fact_types: ["world", "experience", "observation"],
-      refresh_after_consolidation: true,
-    },
-  })),
 } as const;
