@@ -43,6 +43,7 @@ import {
   FolderPlus,
   Info,
   Loader2,
+  Pencil,
   Search,
   Trash2,
   X,
@@ -111,6 +112,11 @@ export function KnowledgeBaseView() {
   const [creating, setCreating] = useState(false);
   const [deleteTarget, setDeleteTarget] = useState<KnowledgeNode | null>(null);
   const [deleting, setDeleting] = useState(false);
+
+  // Editing the open page's options (name / source query / tags).
+  const [editing, setEditing] = useState(false);
+  const [editForm, setEditForm] = useState({ name: "", sourceQuery: "", tags: "" });
+  const [savingEdit, setSavingEdit] = useState(false);
 
   // `silent` skips the loading spinner so the background auto-refresh poll
   // doesn't flicker the tree every tick.
@@ -346,6 +352,46 @@ export function KnowledgeBaseView() {
     }
   };
 
+  const openEdit = () => {
+    if (!selected) return;
+    // Pre-fill tags from the tree node's RAW tags (which keep the `type:` tag),
+    // not selected.tags — the page projection strips `type:` for display, and
+    // editing from that would silently drop it on save.
+    const rawTags = allNodes.find((n) => n.id === selected.id)?.tags ?? selected.tags ?? [];
+    setEditForm({
+      name: selected.name,
+      // `description` carries the page's source query (the question that rebuilds it).
+      sourceQuery: selected.description ?? "",
+      tags: rawTags.join(", "),
+    });
+    setEditing(true);
+  };
+
+  const handleUpdatePage = async () => {
+    if (!currentBank || !selected || !editForm.name.trim()) return;
+    setSavingEdit(true);
+    try {
+      const tags = editForm.tags
+        .split(",")
+        .map((s) => s.trim())
+        .filter(Boolean);
+      await client.updateKnowledgeNode(currentBank, selected.id, {
+        name: editForm.name.trim(),
+        source_query: editForm.sourceQuery.trim(),
+        tags,
+      });
+      setEditing(false);
+      await loadTree();
+      // Pull the (possibly re-synthesizing) page back into its open tab.
+      const p = await client.getKnowledgePage(currentBank, selected.id);
+      setTabs((prev) => prev.map((x) => (x.id === p.id ? p : x)));
+    } catch {
+      // toast handled by interceptor
+    } finally {
+      setSavingEdit(false);
+    }
+  };
+
   const handleDelete = async () => {
     if (!currentBank || !deleteTarget) return;
     setDeleting(true);
@@ -491,7 +537,13 @@ export function KnowledgeBaseView() {
             </div>
           ) : selected ? (
             <div className="p-8 max-w-3xl mx-auto">
-              <h1 className="text-2xl font-bold text-foreground">{selected.name}</h1>
+              <div className="flex items-start justify-between gap-3">
+                <h1 className="text-2xl font-bold text-foreground">{selected.name}</h1>
+                <Button variant="outline" size="sm" onClick={openEdit} className="shrink-0">
+                  <Pencil className="w-3.5 h-3.5 mr-1.5" />
+                  {t("editButton")}
+                </Button>
+              </div>
 
               {/* Provenance: this wiki isn't written, it's grounded. Links back
                   into the memory substrate the page was synthesized from. */}
@@ -642,6 +694,52 @@ export function KnowledgeBaseView() {
             >
               {creating ? <Loader2 className="w-4 h-4 mr-1 animate-spin" /> : null}
               {t("create")}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Edit page dialog — updates the open page's name / source query / tags. */}
+      <Dialog open={editing} onOpenChange={(o) => !o && setEditing(false)}>
+        <DialogContent className="sm:max-w-lg">
+          <DialogHeader>
+            <DialogTitle>{t("editPageTitle")}</DialogTitle>
+            <DialogDescription>{t("editPageDescription")}</DialogDescription>
+          </DialogHeader>
+          <div className="space-y-4 py-2">
+            <div className="space-y-2">
+              <label className="text-sm font-medium text-foreground">{t("fieldName")}</label>
+              <Input
+                value={editForm.name}
+                onChange={(e) => setEditForm({ ...editForm, name: e.target.value })}
+              />
+            </div>
+            <div className="space-y-2">
+              <label className="text-sm font-medium text-foreground">{t("fieldSourceQuery")}</label>
+              <Textarea
+                value={editForm.sourceQuery}
+                onChange={(e) => setEditForm({ ...editForm, sourceQuery: e.target.value })}
+                className="min-h-[100px]"
+              />
+              <p className="text-xs text-muted-foreground">{t("editSourceQueryHint")}</p>
+            </div>
+            <div className="space-y-2">
+              <label className="text-sm font-medium text-foreground">{t("fieldTags")}</label>
+              <Input
+                value={editForm.tags}
+                onChange={(e) => setEditForm({ ...editForm, tags: e.target.value })}
+                placeholder={t("fieldTagsPlaceholder")}
+              />
+              <p className="text-xs text-muted-foreground">{t("fieldTagsHint")}</p>
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setEditing(false)} disabled={savingEdit}>
+              {t("cancel")}
+            </Button>
+            <Button onClick={handleUpdatePage} disabled={savingEdit || !editForm.name.trim()}>
+              {savingEdit ? <Loader2 className="w-4 h-4 mr-1 animate-spin" /> : null}
+              {t("saveChanges")}
             </Button>
           </DialogFooter>
         </DialogContent>

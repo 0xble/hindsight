@@ -257,6 +257,32 @@ class TestMoveRenameDelete:
         assert resp.status_code == 200, resp.text
         assert resp.json()["name"] == "Compliance"
 
+    async def test_update_page_options(self, api_client, kb_bank):
+        bank_id, ids = kb_bank
+        resp = await api_client.patch(
+            f"/v1/default/banks/{_enc(bank_id)}/knowledge-base/nodes/{ids.orders}",
+            json={
+                "source_query": "summarize every order fact and its revenue",
+                "tags": ["type:runbook", "sales", "priority"],
+                "max_tokens": 2048,
+            },
+        )
+        assert resp.status_code == 200, resp.text
+        node = resp.json()
+        assert node["kind"] == "page"
+        assert set(node["tags"]) == {"type:runbook", "sales", "priority"}
+        # source_query persists — it surfaces as the OKF `description` on the page.
+        page = (await api_client.get(f"/v1/default/banks/{_enc(bank_id)}/knowledge-base/pages/{ids.orders}")).json()
+        assert page["description"] == "summarize every order fact and its revenue"
+
+    async def test_update_requires_a_field(self, api_client, kb_bank):
+        bank_id, ids = kb_bank
+        resp = await api_client.patch(
+            f"/v1/default/banks/{_enc(bank_id)}/knowledge-base/nodes/{ids.orders}",
+            json={},
+        )
+        assert resp.status_code == 400
+
     async def test_move_into_folder(self, api_client, kb_bank):
         bank_id, ids = kb_bank
         # move the Loose root page under Policies

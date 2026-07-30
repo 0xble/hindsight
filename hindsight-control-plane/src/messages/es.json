@@ -1760,7 +1760,12 @@
     "searchEmpty": "No hay páginas coincidentes.",
     "fieldTags": "Etiquetas",
     "fieldTagsPlaceholder": "type:policy, revenue, …",
-    "fieldTagsHint": "Separadas por comas. Una etiqueta type:<x> define el tipo OKF de la página."
+    "fieldTagsHint": "Separadas por comas. Una etiqueta type:<x> define el tipo OKF de la página.",
+    "editButton": "Editar",
+    "editPageTitle": "Editar página",
+    "editPageDescription": "Actualiza el nombre de la página, la pregunta que la reconstruye y sus etiquetas.",
+    "editSourceQueryHint": "Cambiar esto reconstruye el contenido de la página a partir de tus memorias.",
+    "saveChanges": "Guardar cambios"
   },
   "home": {
     "title": "Home",

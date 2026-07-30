@@ -2476,8 +2476,8 @@
         "tags": [
           "Knowledge Base"
         ],
-        "summary": "Rename or move a knowledge-base node",
-        "description": "Rename a node (set `name`) and/or move it under another folder (set `parent_id`, null for the root).",
+        "summary": "Rename/move a knowledge-base node or update a page's options",
+        "description": "Rename a node (set `name`), move it under another folder (set `parent_id`, null for the root), and/or update a page's options (`source_query`, `tags`, `max_tokens`). Changing `source_query` schedules an async refresh so the page rebuilds against the new question.",
         "operationId": "update_knowledge_node",
         "parameters": [
           {
@@ -13996,11 +13996,47 @@
               }
             ],
             "title": "Parent Id"
+          },
+          "source_query": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source Query"
+          },
+          "tags": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Tags"
+          },
+          "max_tokens": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Max Tokens"
           }
         },
         "type": "object",
         "title": "UpdateNodeRequest",
-        "description": "Rename and/or move a node. Each field applies only when present."
+        "description": "Rename/move a node and/or update a page's options. Each field applies only\nwhen present in the request body."
       },
       "UpdateWebhookRequest": {
         "properties": {

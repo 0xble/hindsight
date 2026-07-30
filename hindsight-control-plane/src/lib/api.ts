@@ -691,12 +691,19 @@ export class ControlPlaneClient {
   }
 
   /**
-   * Rename and/or move a node. Pass `parent_id: null` to move to the root.
+   * Rename/move a node and/or update a page's options. Pass `parent_id: null`
+   * to move to the root. Changing `source_query` rebuilds the page's content.
    */
   async updateKnowledgeNode(
     bankId: string,
     nodeId: string,
-    body: { name?: string; parent_id?: string | null }
+    body: {
+      name?: string;
+      parent_id?: string | null;
+      source_query?: string;
+      tags?: string[];
+      max_tokens?: number;
+    }
   ) {
     return this.fetchApi<KnowledgeNode>(
       `/api/knowledge-base/nodes/${encodeURIComponent(nodeId)}?bank_id=${encodeURIComponent(bankId)}`,

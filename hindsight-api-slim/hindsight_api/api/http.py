@@ -2222,10 +2222,16 @@ class CreatePageRequest(BaseModel):
 
 
 class UpdateNodeRequest(BaseModel):
-    """Rename and/or move a node. Each field applies only when present."""
+    """Rename/move a node and/or update a page's options. Each field applies only
+    when present in the request body."""
 
     name: str | None = None
     parent_id: str | None = None
+    # Page-only options (updated on the backing mental model). Changing
+    # source_query schedules an async refresh so the page rebuilds.
+    source_query: str | None = None
+    tags: list[str] | None = None
+    max_tokens: int | None = None
 
 
 class CreateKnowledgePageResponse(BaseModel):
@@ -5492,9 +5498,10 @@ def _register_routes(app: FastAPI):
     @app.patch(
         "/v1/default/banks/{bank_id}/knowledge-base/nodes/{node_id}",
         response_model=KnowledgeNode,
-        summary="Rename or move a knowledge-base node",
-        description="Rename a node (set `name`) and/or move it under another folder (set `parent_id`, "
-        "null for the root).",
+        summary="Rename/move a knowledge-base node or update a page's options",
+        description="Rename a node (set `name`), move it under another folder (set `parent_id`, null "
+        "for the root), and/or update a page's options (`source_query`, `tags`, `max_tokens`). "
+        "Changing `source_query` schedules an async refresh so the page rebuilds against the new question.",
         operation_id="update_knowledge_node",
         tags=["Knowledge Base"],
     )
@@ -5504,7 +5511,7 @@ def _register_routes(app: FastAPI):
         body: UpdateNodeRequest,
         request_context: RequestContext = Depends(get_request_context),
     ):
-        """Rename and/or move a node."""
+        """Rename/move a node and/or update a page's options."""
         try:
             updated: dict[str, Any] | None = None
             did_change = False
@@ -5520,8 +5527,30 @@ def _register_routes(app: FastAPI):
                 updated = await app.state.memory.move_knowledge_node(
                     bank_id=bank_id, node_id=node_id, new_parent_id=body.parent_id, request_context=request_context
                 )
+            # Page options live on the backing mental model; each applies only when
+            # present in the body (so tags=[] clears, distinct from "not provided").
+            page_fields = {"source_query", "tags", "max_tokens"} & body.model_fields_set
+            if page_fields:
+                did_change = True
+                updated = await app.state.memory.update_knowledge_page(
+                    bank_id=bank_id,
+                    page_id=node_id,
+                    source_query=body.source_query if "source_query" in page_fields else None,
+                    tags=body.tags if "tags" in page_fields else None,
+                    max_tokens=body.max_tokens if "max_tokens" in page_fields else None,
+                    request_context=request_context,
+                )
+                # A new source query means the content is stale — rebuild it.
+                if updated is not None and "source_query" in page_fields and updated.get("mental_model_id"):
+                    await app.state.memory.submit_async_refresh_mental_model(
+                        bank_id=bank_id,
+                        mental_model_id=updated["mental_model_id"],
+                        request_context=request_context,
+                    )
             if not did_change:
-                raise HTTPException(status_code=400, detail="Provide name and/or parent_id to update")
+                raise HTTPException(
+                    status_code=400, detail="Provide name, parent_id, source_query, tags, and/or max_tokens to update"
+                )
             if updated is None:
                 raise HTTPException(status_code=404, detail=f"Knowledge node '{node_id}' not found")
             return _knowledge_node_model(updated)

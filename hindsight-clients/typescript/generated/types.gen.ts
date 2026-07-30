@@ -4254,7 +4254,8 @@ export type UpdateMentalModelRequest = {
 /**
  * UpdateNodeRequest
  *
- * Rename and/or move a node. Each field applies only when present.
+ * Rename/move a node and/or update a page's options. Each field applies only
+ * when present in the request body.
  */
 export type UpdateNodeRequest = {
   /**
@@ -4265,6 +4266,18 @@ export type UpdateNodeRequest = {
    * Parent Id
    */
   parent_id?: string | null;
+  /**
+   * Source Query
+   */
+  source_query?: string | null;
+  /**
+   * Tags
+   */
+  tags?: Array<string> | null;
+  /**
+   * Max Tokens
+   */
+  max_tokens?: number | null;
 };
 
 /**

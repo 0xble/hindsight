@@ -12489,6 +12489,55 @@ class MemoryEngine(MemoryEngineInterface):
             )
         return self._row_to_knowledge_node(row) if row else None
 
+    async def update_knowledge_page(
+        self,
+        bank_id: str,
+        page_id: str,
+        *,
+        source_query: str | None = None,
+        tags: list[str] | None = None,
+        max_tokens: int | None = None,
+        trigger: dict[str, Any] | None = None,
+        request_context: "RequestContext",
+    ) -> dict[str, Any] | None:
+        """Update a page's editable options on its backing mental model.
+
+        Covers the source query (the question that rebuilds the page), tags,
+        token budget, and refresh trigger — each applied only when provided.
+        Returns the refreshed node (carrying ``mental_model_id``) or ``None`` when
+        the page doesn't exist. Changing the source query does not rebuild content
+        here; the API layer schedules an async refresh so the page re-synthesizes
+        against the new question.
+        """
+        await self._authenticate_tenant(request_context)
+        backend = await self._get_backend()
+        async with acquire_with_retry(backend) as conn:
+            row = await conn.fetchrow(
+                f"SELECT mental_model_id FROM {fq_table('knowledge_pages')} "
+                f"WHERE bank_id = $1 AND id = $2 AND kind = 'page'",
+                bank_id,
+                page_id,
+            )
+        if row is None or row["mental_model_id"] is None:
+            return None
+        await self.update_mental_model(
+            bank_id=bank_id,
+            mental_model_id=row["mental_model_id"],
+            source_query=source_query,
+            tags=tags,
+            max_tokens=max_tokens,
+            trigger=trigger,
+            request_context=request_context,
+        )
+        async with acquire_with_retry(backend) as conn:
+            node_row = await conn.fetchrow(
+                f"SELECT {self._KP_PAGE_SELECT} FROM {self._kp_join()} "
+                f"WHERE kp.bank_id = $1 AND kp.id = $2 AND kp.kind = 'page'",
+                bank_id,
+                page_id,
+            )
+        return self._row_to_knowledge_node(node_row) if node_row else None
+
     async def move_knowledge_node(
         self, bank_id: str, node_id: str, new_parent_id: str | None, *, request_context: "RequestContext"
     ) -> dict[str, Any] | None:

@@ -1760,7 +1760,12 @@
     "searchEmpty": "No matching pages.",
     "fieldTags": "Tags",
     "fieldTagsPlaceholder": "type:policy, revenue, …",
-    "fieldTagsHint": "Comma-separated. A type:<x> tag sets the page's OKF type."
+    "fieldTagsHint": "Comma-separated. A type:<x> tag sets the page's OKF type.",
+    "editButton": "Edit",
+    "editPageTitle": "Edit page",
+    "editPageDescription": "Update the page's name, the question that rebuilds it, and its tags.",
+    "editSourceQueryHint": "Changing this rebuilds the page's content from your memories.",
+    "saveChanges": "Save changes"
   },
   "home": {
     "title": "Home",

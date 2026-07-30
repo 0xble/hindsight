@@ -793,9 +793,9 @@ export const deleteKnowledgeNode = <ThrowOnError extends boolean = false>(
   >({ url: "/v1/default/banks/{bank_id}/knowledge-base/nodes/{node_id}", ...options });
 
 /**
- * Rename or move a knowledge-base node
+ * Rename/move a knowledge-base node or update a page's options
  *
- * Rename a node (set `name`) and/or move it under another folder (set `parent_id`, null for the root).
+ * Rename a node (set `name`), move it under another folder (set `parent_id`, null for the root), and/or update a page's options (`source_query`, `tags`, `max_tokens`). Changing `source_query` schedules an async refresh so the page rebuilds against the new question.
  */
 export const updateKnowledgeNode = <ThrowOnError extends boolean = false>(
   options: Options<UpdateKnowledgeNodeData, ThrowOnError>
