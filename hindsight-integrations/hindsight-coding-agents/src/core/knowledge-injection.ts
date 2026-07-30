@@ -50,9 +50,9 @@ export function buildKnowledgePreamble(pages: PageRef[]): string {
     : "No knowledge pages yet — Hindsight is still learning this repo; they'll appear as it processes.";
   return (
     "<hindsight_knowledge>\n" +
-  "  ALSO your correction tool: when you verify a Hindsight memory is wrong or stale, ingest a " +
-  "\"Correction: <topic>\" doc stating what memory claimed, what is true now, and the evidence — " +
-  "newer facts supersede older ones." +
+    "  ALSO your correction tool: when you verify a Hindsight memory is wrong or stale, ingest a " +
+    '"Correction: <topic>" doc stating what memory claimed, what is true now, and the evidence — ' +
+    "newer facts supersede older ones." +
     "This repository has a Hindsight memory + knowledge base (curated, continuously-updated pages plus the raw " +
     "memory behind them). The tools below are registered, but you must actually CALL them at the right moments:\n" +
     `${TOOL_GUIDE}\n` +

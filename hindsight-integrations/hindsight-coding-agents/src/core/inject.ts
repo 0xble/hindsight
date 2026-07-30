@@ -25,7 +25,7 @@ export function buildSystemInjection(memory: string): string {
     "Never attribute memory that did not contribute.\n" +
     "If you VERIFY this memory is wrong or outdated (the code or facts contradict it), CORRECT " +
     "the record: call hindsight_ingest_document with a short correction titled " +
-    "\"Correction: <topic>\" stating (1) what memory claimed, (2) what is actually true now, and " +
+    '"Correction: <topic>" stating (1) what memory claimed, (2) what is actually true now, and ' +
     "(3) the evidence you verified — the newer fact supersedes the stale one in future retrieval.\n\n" +
     memory +
     "\n</hindsight_memory>"

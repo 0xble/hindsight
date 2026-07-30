@@ -235,8 +235,8 @@ describe("buildHookOutput", () => {
     });
     expect(t2.context).toContain("<hindsight_knowledge_refresh>");
     expect(t2.context).toContain("Uploader guide (p1)");
-    // reflect answer still present alongside the refresh block
-    expect(t2.context).toContain("REFLECT_ANSWER");
+    // reflect block is NOT re-injected on cadence turns (injected once, on the reflect turn)
+    expect(t2.context).not.toContain("REFLECT_ANSWER");
   });
 
   it("listPages rejection: no throw, reflect block still returned, turn still counted", async () => {
