@@ -20,7 +20,6 @@ import type { HindsightClient } from "./hindsight";
 import type { PageRef } from "./knowledge-injection";
 import { buildRosterRefresh, parsePageList } from "./knowledge-injection";
 import { brandWord } from "./brand";
-import { isTrivialPrompt } from "./hook";
 import { buildSystemInjection } from "./inject";
 import { buildKnowledgeTools, type ToolSpec } from "./knowledge-tools";
 import { retainLiveSession, type TransportTurn } from "./chat";
@@ -98,7 +97,7 @@ export class RuntimeCore {
     // ── reflect: once per session, on its first prompt ──────────────────────────
     let reflectAnswer = this.reflectBySession.get(sessionId);
     let reflectRanThisTurn = false;
-    if (reflectAnswer === undefined && !isTrivialPrompt(prompt)) {
+    if (reflectAnswer === undefined) {
       reflectRanThisTurn = true;
       const t0 = Date.now();
       try {
