@@ -1,13 +1,13 @@
 ---
 sidebar_position: 6
-title: "Coding Agents Memory Plugin (opencode, Claude Code, Codex, Cursor) | Integration Guide"
-description: "One Hindsight memory plugin for coding agents — opencode, Claude Code, Codex CLI, Gemini CLI, Cursor CLI: per-repo memory banks built automatically from git history and sessions, session-level memory synthesis, and knowledge-page search."
+title: "Coding Agents Memory Plugin (opencode, Claude Code, Codex, Antigravity, Cursor, Copilot, Grok) | Integration Guide"
+description: "One Hindsight memory plugin for coding agents — opencode, Claude Code, Codex CLI, Antigravity CLI, Cursor CLI, GitHub Copilot CLI, Grok Build: per-repo memory banks built automatically from git history and sessions, session-level memory synthesis, and knowledge-page search."
 ---
 
 # Coding Agents
 
 Long-term **project memory** for coding agents, from one package: a shared reflect-and-inject core
-with a thin entry point per agent — **opencode**, **Claude Code**, **Codex CLI**, **Gemini CLI**, **Cursor CLI** —
+with a thin entry point per agent — **opencode**, **Claude Code**, **Codex CLI**, **Antigravity CLI**, **Cursor CLI**, **GitHub Copilot CLI**, **Grok Build** —
 Ingestion into a [Hindsight](https://vectorize.io/hindsight) memory bank is fully automatic — no
 setup command: git history and conversations flow in as you work.
 
@@ -56,8 +56,10 @@ no longer in effect.
 | `opencode`    | persistent plugin | package default export  | add the package dir to `opencode.json` → `"plugin": [...]` |
 | `claude-code` | per-prompt hook   | `hindsight-claude-hook` | `UserPromptSubmit` hook in Claude Code `settings.json` |
 | `codex`       | per-prompt hook   | `hindsight-codex-hook`  | `UserPromptSubmit` hook in `~/.codex/hooks.json` (+ `codex_hooks = true`, Codex CLI ≥ 0.116) |
-| `gemini`      | per-prompt hooks  | gemini wrapper hooks    | `SessionStart` + `BeforeAgent` + `SessionEnd` in `~/.gemini/settings.json` (Gemini CLI ≥ 0.52.0) |
+| `antigravity-cli` | lifecycle hooks | Antigravity hooks | `PreInvocation` + `Stop` in `~/.gemini/config/hooks.json`; MCP in `~/.gemini/config/mcp_config.json`; native colored `Hindsight · <bank>` status line |
 | `cursor-cli`  | lifecycle hooks   | `hindsight-cursor-hook` | `sessionStart` seeds/pages; `beforeSubmitPrompt` recalls; `stop` retains in Cursor `hooks.json` |
+| `copilot-cli` | lifecycle hooks   | `hindsight-copilot-hook` | `sessionStart` seeds/pages; `userPromptTransformed` appends recall to the model-facing prompt; `agentStop` retains in `~/.copilot/hooks/` |
+| `grok-build` | lifecycle hooks   | `hindsight-grok-hook` | native `SessionStart` seeds the bank and `Stop` retains in `~/.grok/config.toml`; MCP is registered there too — no Claude Code dependency |
 
 One-command install (detects the coding agents on the machine, wires each natively — hooks + MCP;
 idempotent, with `uninstall` removing exactly what it added):
@@ -70,6 +72,19 @@ On Claude Code the install also ships a companion skill (`hindsight-coding-agent
 answers "how does this memory work / store this in hindsight / configure per-repo memory" from an
 authoritative reference. Update with `npm update -g hindsight-coding-agents` — wired paths stay valid; re-run `install`
 (idempotent) only when a release notes a wiring change.
+
+Antigravity's status line is a local formatter that identifies the resolved Hindsight bank without
+calling the API during TUI redraws. An existing custom Antigravity status-line command is preserved
+and is not replaced by the installer.
+
+### Grok Build limitation
+
+Grok Build's `UserPromptSubmit` hook is **passive**: it runs the Hindsight reflect request, but
+Grok ignores hook stdout, so it cannot place the resulting `<hindsight_memory>` block, bank banner,
+or automatic first-prompt synthesis into the model-visible conversation. The Grok integration
+therefore provides native bank setup and session retention, plus the Hindsight MCP tools and
+companion skill. Ask Grok to call `hindsight_reflect` or `hindsight_search_knowledge_pages` when
+memory is useful. Automatic prompt injection requires a future Grok prompt-transform API.
 
 Manual wiring per harness:
 
@@ -84,6 +99,28 @@ Manual wiring per harness:
 
 ```json title="Cursor hooks.json"
 { "hooks": { "sessionStart": [ { "command": "hindsight-cursor-sessionstart-hook" } ], "beforeSubmitPrompt": [ { "command": "hindsight-cursor-hook" } ], "stop": [ { "command": "hindsight-cursor-stop-hook" } ] } }
+```
+
+```json title="GitHub Copilot CLI ~/.copilot/hooks/hindsight-coding-agents.json"
+{ "version": 1, "hooks": { "sessionStart": [ { "command": "hindsight-copilot-sessionstart-hook" } ], "userPromptTransformed": [ { "command": "hindsight-copilot-hook" } ], "agentStop": [ { "command": "hindsight-copilot-stop-hook" } ] } }
+```
+
+```toml title="Grok Build ~/.grok/config.toml"
+[[hooks.SessionStart]]
+  [[hooks.SessionStart.hooks]]
+  type = "command"
+  command = "hindsight-grok-sessionstart-hook"
+  timeout = 30
+
+[[hooks.Stop]]
+  [[hooks.Stop.hooks]]
+  type = "command"
+  command = "hindsight-grok-stop-hook"
+  timeout = 60
+
+[mcp_servers.hindsight]
+command = "node"
+args = ["/absolute/path/to/hindsight-coding-agents/dist/mcp-server.js"]
 ```
 
 Every harness gets the same agent tools (`hindsight_search_knowledge_pages`, `hindsight_reflect`,
@@ -157,7 +194,7 @@ Coding memory is **per repository**. Resolution order for the working directory:
      worktree's basename, so all worktrees of a repo share one bank (bare repos use the bare dir
      name; non-git directories fall back to the dir basename)
    - `{project}` — plain working-directory basename
-   - `{harness}` — the entry point asking (`opencode`, `claude-code`, `codex`, `cursor-cli`)
+   - `{harness}` — the entry point asking (`opencode`, `claude-code`, `codex`, `antigravity-cli`, `cursor-cli`, `copilot-cli`, `grok-build`)
    - `{channel}` / `{user}` — `$HINDSIGHT_CHANNEL_ID` / `$HINDSIGHT_USER_ID`
 
 4. **`banks.<id>` last**: the resolved id selects its section, whose `bank` field (if any) renames

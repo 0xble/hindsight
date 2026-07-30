@@ -9,8 +9,10 @@
  *   opencode     add this package to `plugin` in ~/.config/opencode/opencode.json
  *   claude-code  3 hooks in ~/.claude/settings.json + `claude mcp add` (user scope)
  *   codex        3 hooks in ~/.codex/hooks.json + [features]/[mcp_servers] in config.toml
- *   gemini       3 hooks + mcpServers in ~/.gemini/settings.json
+ *   antigravity-cli PreInvocation + Stop hooks, Hindsight status line + MCP
+ *   devin-cli     SessionStart + UserPromptSubmit + Stop hooks in ~/.config/devin/config.json + MCP
  *   cursor-cli   sessionStart + beforeSubmitPrompt + stop hooks in ~/.cursor/hooks.json + ~/.cursor/mcp.json
+ *   copilot-cli  sessionStart + userPromptTransformed + agentStop hooks in ~/.copilot/hooks/ + MCP
  *
  * IDEMPOTENT: our entries are recognized by the package path in their command ("hindsight-coding-
  * agents"), replaced on re-install (so moving the package just needs `install` again) and removed
@@ -87,7 +89,12 @@ function mergeHarnessHooks(
   dist: string
 ): void {
   const spec = HOOK_HARNESSES[harness];
+  const installedEvents = new Set<string>();
   for (const hook of Object.values(spec.install)) {
+    // Antigravity has no SessionStart event. Its first PreInvocation performs the same seed guard,
+    // so both conceptual lifecycle names intentionally resolve to one native hook entry.
+    if (installedEvents.has(hook.event)) continue;
+    installedEvents.add(hook.event);
     const entry =
       spec.configStyle === "nested"
         ? cmdHook(dist, hook.entry, hook.timeout!)
@@ -100,7 +107,10 @@ function mergeHarnessHooks(
 }
 
 function stripHarnessHooks(hooks: Record<string, any>, harness: HookHarnessName): void {
+  const strippedEvents = new Set<string>();
   for (const hook of Object.values(HOOK_HARNESSES[harness].install)) {
+    if (strippedEvents.has(hook.event)) continue;
+    strippedEvents.add(hook.event);
     setOrDelete(hooks, hook.event, stripOurs(hooks[hook.event]));
   }
 }
@@ -171,7 +181,7 @@ const claudeCode: HarnessInstaller = {
     mergeHarnessHooks(settings.hooks, "claude-code", c.dist);
     writeJson(path, settings);
     c.log?.(`claude-code: hooks merged into ${path}`);
-    // Companion SKILL: every skills-capable host gets it (claude/gemini/cursor native dirs;
+    // Companion SKILL: every skills-capable host gets it (claude/antigravity/cursor native dirs;
     // codex via the ~/.agents/skills standard).
     installSkill(c, join(c.home, ".claude", "skills"));
     const mcp = c.claudeMcp ?? defaultClaudeMcp;
@@ -287,39 +297,134 @@ const codex: HarnessInstaller = {
   },
 };
 
-const gemini: HarnessInstaller = {
-  name: "gemini",
-  detect: (c) => onPath("gemini") || existsSync(join(c.home, ".gemini")),
+const antigravity: HarnessInstaller = {
+  name: "antigravity-cli",
+  detect: (c) => onPath("agy") || existsSync(join(c.home, ".gemini", "antigravity-cli")),
   install(c) {
-    const path = join(c.home, ".gemini", "settings.json");
-    const settings = readJson(path);
-    settings.hooks = settings.hooks ?? {};
-    // Gemini hook timeouts are milliseconds; those values live in the shared lifecycle registry.
-    mergeHarnessHooks(settings.hooks, "gemini", c.dist);
-    settings.mcpServers = {
-      ...(settings.mcpServers ?? {}),
+    const hooksPath = join(c.home, ".gemini", "config", "hooks.json");
+    const hooks = readJson(hooksPath);
+    // Antigravity's hooks.json is a map of named customizations, not a direct event map. Keep
+    // Hindsight in its own namespace so it cannot collide with other global hook bundles.
+    hooks[MARKER] = hooks[MARKER] ?? {};
+    mergeHarnessHooks(hooks[MARKER], "antigravity-cli", c.dist);
+    // Clean up the short-lived root-level shape written by the first Antigravity adapter release.
+    // stripOurs only removes commands bearing our marker, preserving a user's own root hooks.
+    for (const event of ["PreInvocation", "Stop"]) {
+      setOrDelete(hooks, event, stripOurs(hooks[event]));
+    }
+    writeJson(hooksPath, hooks);
+    const mcpPath = join(c.home, ".gemini", "config", "mcp_config.json");
+    const mcp = readJson(mcpPath);
+    mcp.mcpServers = {
+      ...(mcp.mcpServers ?? {}),
       hindsight: {
         command: "node",
         args: [join(c.dist, "mcp-server.js")],
-        env: { HINDSIGHT_MCP_HARNESS: "gemini" },
+        env: { HINDSIGHT_MCP_HARNESS: "antigravity-cli" },
       },
     };
-    writeJson(path, settings);
-    c.log?.(`gemini: hooks + mcpServers merged into ${path}`);
-    installSkill(c, join(c.home, ".gemini", "skills"));
+    writeJson(mcpPath, mcp);
+    const settingsPath = join(c.home, ".gemini", "antigravity-cli", "settings.json");
+    const settings = readJson(settingsPath);
+    // A custom status-line command owns the whole rendered line. Do not overwrite a user's
+    // formatter; Hindsight can only add its native indicator when no formatter is already set.
+    if (!settings.statusLine) {
+      settings.statusLine = {
+        type: "command",
+        command: `node "${join(c.dist, "antigravity-statusline.js")}"`,
+      };
+      writeJson(settingsPath, settings);
+      c.log?.(`antigravity-cli: Hindsight status line enabled in ${settingsPath}`);
+    } else if (JSON.stringify(settings.statusLine).includes(MARKER)) {
+      settings.statusLine = {
+        type: "command",
+        command: `node "${join(c.dist, "antigravity-statusline.js")}"`,
+      };
+      writeJson(settingsPath, settings);
+    } else {
+      c.log?.(
+        "antigravity-cli: existing custom status line preserved (Hindsight indicator not added)"
+      );
+    }
+    c.log?.(`antigravity-cli: hooks merged into ${hooksPath}, MCP into ${mcpPath}`);
+    installSkill(c, join(c.home, ".gemini", "config", "skills"));
   },
   uninstall(c) {
-    const path = join(c.home, ".gemini", "settings.json");
-    if (!existsSync(path)) return;
-    const settings = readJson(path);
-    if (settings.hooks) {
-      stripHarnessHooks(settings.hooks, "gemini");
-      if (!Object.keys(settings.hooks).length) delete settings.hooks;
+    const hooksPath = join(c.home, ".gemini", "config", "hooks.json");
+    if (existsSync(hooksPath)) {
+      const hooks = readJson(hooksPath);
+      if (hooks[MARKER]) {
+        stripHarnessHooks(hooks[MARKER], "antigravity-cli");
+        if (!Object.keys(hooks[MARKER]).length) delete hooks[MARKER];
+      }
+      // Also remove any root-level entries from the first adapter release.
+      for (const event of ["PreInvocation", "Stop"]) {
+        setOrDelete(hooks, event, stripOurs(hooks[event]));
+      }
+      writeJson(hooksPath, hooks);
     }
-    if (settings.mcpServers?.hindsight) delete settings.mcpServers.hindsight;
-    writeJson(path, settings);
-    uninstallSkill(c, join(c.home, ".gemini", "skills"));
-    c.log?.("gemini: hooks + mcpServers.hindsight + skill removed");
+    const mcpPath = join(c.home, ".gemini", "config", "mcp_config.json");
+    if (existsSync(mcpPath)) {
+      const mcp = readJson(mcpPath);
+      if (mcp.mcpServers?.hindsight) {
+        delete mcp.mcpServers.hindsight;
+        writeJson(mcpPath, mcp);
+      }
+    }
+    const settingsPath = join(c.home, ".gemini", "antigravity-cli", "settings.json");
+    if (existsSync(settingsPath)) {
+      const settings = readJson(settingsPath);
+      if (JSON.stringify(settings.statusLine ?? {}).includes(MARKER)) {
+        delete settings.statusLine;
+        writeJson(settingsPath, settings);
+      }
+    }
+    uninstallSkill(c, join(c.home, ".gemini", "config", "skills"));
+    c.log?.("antigravity-cli: hooks + MCP entry + status line + skill removed");
+  },
+};
+
+const devin: HarnessInstaller = {
+  name: "devin-cli",
+  detect: (c) => onPath("devin") || existsSync(join(c.home, ".config", "devin")),
+  install(c) {
+    const configPath = join(c.home, ".config", "devin", "config.json");
+    const config = readJson(configPath);
+    config.hooks = config.hooks ?? {};
+    mergeHarnessHooks(config.hooks, "devin-cli", c.dist);
+    writeJson(configPath, config);
+    const mcpPath = join(c.home, ".config", "devin", "mcp_config.json");
+    const mcp = readJson(mcpPath);
+    mcp.mcpServers = {
+      ...(mcp.mcpServers ?? {}),
+      hindsight: {
+        command: "node",
+        args: [join(c.dist, "mcp-server.js")],
+        env: { HINDSIGHT_MCP_HARNESS: "devin-cli" },
+      },
+    };
+    writeJson(mcpPath, mcp);
+    c.log?.(`devin-cli: hooks merged into ${configPath}, MCP into ${mcpPath}`);
+  },
+  uninstall(c) {
+    const configPath = join(c.home, ".config", "devin", "config.json");
+    if (existsSync(configPath)) {
+      const config = readJson(configPath);
+      if (config.hooks) {
+        stripHarnessHooks(config.hooks, "devin-cli");
+        if (!Object.keys(config.hooks).length) delete config.hooks;
+        writeJson(configPath, config);
+      }
+    }
+    const mcpPath = join(c.home, ".config", "devin", "mcp_config.json");
+    if (existsSync(mcpPath)) {
+      const mcp = readJson(mcpPath);
+      if (mcp.mcpServers?.hindsight) {
+        delete mcp.mcpServers.hindsight;
+        writeJson(mcpPath, mcp);
+      }
+    }
+    c.log?.("devin-cli: hooks + MCP entry removed");
   },
 };
 
@@ -365,7 +470,95 @@ const cursor: HarnessInstaller = {
   },
 };
 
-export const INSTALLERS: HarnessInstaller[] = [opencode, claudeCode, codex, gemini, cursor];
+const copilot: HarnessInstaller = {
+  name: "copilot-cli",
+  detect: (c) => onPath("copilot") || existsSync(join(c.home, ".copilot")),
+  install(c) {
+    const hooksPath = join(c.home, ".copilot", "hooks", "hindsight-coding-agents.json");
+    const hooks: Record<string, any> = {};
+    mergeHarnessHooks(hooks, "copilot-cli", c.dist);
+    writeJson(hooksPath, { version: 1, hooks });
+
+    const mcpPath = join(c.home, ".copilot", "mcp-config.json");
+    const mcp = readJson(mcpPath);
+    mcp.mcpServers = {
+      ...(mcp.mcpServers ?? {}),
+      hindsight: { command: "node", args: [join(c.dist, "mcp-server.js")] },
+    };
+    writeJson(mcpPath, mcp);
+    installSkill(c, join(c.home, ".copilot", "skills"));
+    c.log?.(`copilot-cli: hooks installed at ${hooksPath}, MCP into ${mcpPath}`);
+  },
+  uninstall(c) {
+    rmSync(join(c.home, ".copilot", "hooks", "hindsight-coding-agents.json"), {
+      force: true,
+    });
+    const mcpPath = join(c.home, ".copilot", "mcp-config.json");
+    if (existsSync(mcpPath)) {
+      const mcp = readJson(mcpPath);
+      if (mcp.mcpServers?.hindsight) {
+        delete mcp.mcpServers.hindsight;
+        writeJson(mcpPath, mcp);
+      }
+    }
+    uninstallSkill(c, join(c.home, ".copilot", "skills"));
+    c.log?.("copilot-cli: hooks + MCP entry + skill removed");
+  },
+};
+
+const GROK_MARKER_START = "# HINDSIGHT_CODING_AGENTS_GROK_START";
+const GROK_MARKER_END = "# HINDSIGHT_CODING_AGENTS_GROK_END";
+
+const grok: HarnessInstaller = {
+  name: "grok-build",
+  detect: (c) => onPath("grok") || existsSync(join(c.home, ".grok")),
+  install(c) {
+    const path = join(c.home, ".grok", "config.toml");
+    const existing = existsSync(path) ? readFileSync(path, "utf8") : "";
+    if (!existing.includes(GROK_MARKER_START)) {
+      // Grok executes this shell command verbatim. Quote the absolute script path so a globally
+      // installed package still works when its installation directory contains spaces.
+      const command = (entry: string) => JSON.stringify(`node "${join(c.dist, entry)}"`);
+      const tomlString = (value: string) => JSON.stringify(value);
+      const block =
+        `\n${GROK_MARKER_START}\n` +
+        `[[hooks.SessionStart]]\n  [[hooks.SessionStart.hooks]]\n  type = \"command\"\n  command = ${command("grok-sessionstart-hook.js")}\n  timeout = 30\n\n` +
+        `[[hooks.UserPromptSubmit]]\n  [[hooks.UserPromptSubmit.hooks]]\n  type = \"command\"\n  command = ${command("grok-hook.js")}\n  timeout = 30\n\n` +
+        `[[hooks.Stop]]\n  [[hooks.Stop.hooks]]\n  type = \"command\"\n  command = ${command("grok-stop-hook.js")}\n  timeout = 60\n\n` +
+        `[mcp_servers.hindsight]\ncommand = \"node\"\nargs = [${tomlString(join(c.dist, "mcp-server.js"))}]\n${GROK_MARKER_END}\n`;
+      if (existsSync(path) && !existsSync(`${path}.hindsight-backup`))
+        copyFileSync(path, `${path}.hindsight-backup`);
+      mkdirSync(dirname(path), { recursive: true });
+      writeFileSync(path, `${existing.replace(/\n*$/, "\n")}${block}`);
+    }
+    installSkill(c, join(c.home, ".grok", "skills"));
+    c.log?.(`grok-build: native hooks + MCP installed in ${path}`);
+  },
+  uninstall(c) {
+    const path = join(c.home, ".grok", "config.toml");
+    if (existsSync(path)) {
+      const existing = readFileSync(path, "utf8");
+      const cleaned = existing.replace(
+        new RegExp(`\\n?${GROK_MARKER_START}[\\s\\S]*?${GROK_MARKER_END}\\n?`),
+        "\n"
+      );
+      if (cleaned !== existing) writeFileSync(path, cleaned);
+    }
+    uninstallSkill(c, join(c.home, ".grok", "skills"));
+    c.log?.("grok-build: native hooks + MCP + skill removed");
+  },
+};
+
+export const INSTALLERS: HarnessInstaller[] = [
+  opencode,
+  claudeCode,
+  codex,
+  antigravity,
+  devin,
+  cursor,
+  copilot,
+  grok,
+];
 
 // ── CLI ─────────────────────────────────────────────────────────────────────────
 

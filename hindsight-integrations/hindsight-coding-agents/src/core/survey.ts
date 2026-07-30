@@ -9,14 +9,14 @@
  * ingests structural findings as documents, and the existing pages (missions.ts PAGES) synthesize
  * from them on the next consolidation, same as git history and chat transcripts do.
  *
- * **Harness-portable.** The survey used to hardcode headless `claude`, so a Codex/Gemini/opencode
+ * **Harness-portable.** The survey used to hardcode headless `claude`, so a Codex/Antigravity/opencode
  * user without the `claude` binary silently lost the survey (the git-log seed still ran). It now
  * builds a per-agent headless recipe and runs the survey under **the current harness's own CLI**
  * (falling back to any other available agent), so whichever agent you use can seed its own repo:
  *   - claude : `claude -p … --mcp-config <inline> --disallowedTools …`   (inline MCP, self-contained)
  *   - codex  : `codex exec --sandbox read-only -c mcp_servers.hindsight…` (inline MCP, self-contained)
- *   - gemini : `gemini -p … --approval-mode plan --allowed-mcp-server-names hindsight --skip-trust`
- *              (read-only; MCP from ~/.gemini/settings.json, i.e. requires gemini-v2 installed)
+ *   - antigravity : `agy -p … --mode=plan --cwd <repo>` (read-only planning mode; MCP from the
+ *                  global Antigravity customization config)
  *   - opencode: `opencode run --agent plan …` (read-only agent; tools from the loaded plugin, which
  *               under HINDSIGHT_DISABLE_HOOKS registers tools but skips seed/recall/write-back)
  * Each is read-only sandboxed (prompt-injection safety, since the survey reads untrusted repo files)
@@ -41,7 +41,7 @@ export const SURVEY_DOC_IDS = [
   "repository-tech-stack-and-features",
 ] as const;
 
-export type SurveyHarness = "claude-code" | "codex" | "gemini" | "opencode";
+export type SurveyHarness = "claude-code" | "codex" | "antigravity-cli" | "opencode";
 
 /** Resolve the claude CLI binary for a detached spawn (a shell alias won't apply to child_process).
  *  Order: explicit arg -> env HINDSIGHT_CLAUDE_BIN -> ~/.claude/local/claude (native installer) ->
@@ -66,8 +66,8 @@ function resolveAgentBin(harness: SurveyHarness, claudeBin?: string): string {
       return resolveClaudeBin(claudeBin);
     case "codex":
       return process.env.HINDSIGHT_CODEX_BIN || "codex";
-    case "gemini":
-      return process.env.HINDSIGHT_GEMINI_BIN || "gemini";
+    case "antigravity-cli":
+      return process.env.HINDSIGHT_ANTIGRAVITY_BIN || "agy";
     case "opencode":
       return process.env.HINDSIGHT_OPENCODE_BIN || "opencode";
   }
@@ -127,7 +127,7 @@ export const SURVEY_PROMPT =
  * Bash/Write access despite `--allowedTools` omitting them, because `--permission-mode
  * bypassPermissions` overrides the allow-list). `--disallowedTools` DOES reliably block, with or
  * without a permission-mode flag, so it — not bypassPermissions — is the actual sandbox boundary
- * for the claude recipe. (codex uses `--sandbox read-only`; gemini `--approval-mode plan`; opencode
+ * for the claude recipe. (codex uses `--sandbox read-only`; Antigravity `--mode=plan`; opencode
  * the read-only `plan` agent.) See survey.test.ts / the live acceptance test for verification.
  */
 const SURVEY_DISALLOWED_TOOLS = [
@@ -221,23 +221,13 @@ function buildSurveyPlan(
         env,
       };
     }
-    case "gemini": {
-      // `gemini -p` non-interactive; `--approval-mode plan` is read-only mode (the injection
-      // boundary). MCP comes from ~/.gemini/settings.json (gemini-v2 registers the `hindsight`
-      // server), scoped with `--allowed-mcp-server-names`. `--skip-trust` + GEMINI_CLI_TRUST_WORKSPACE
-      // are needed to run headless in an untrusted dir. Model left to Gemini's configured default.
+    case "antigravity-cli": {
+      // Antigravity's documented `-p` mode supports one-shot surveys. `--mode=plan` is the
+      // read-only boundary, and the installed MCP server comes from ~/.gemini/config/mcp_config.json.
       return {
         bin,
-        args: [
-          "-p",
-          SURVEY_PROMPT,
-          "--approval-mode",
-          "plan",
-          "--allowed-mcp-server-names",
-          "hindsight",
-          "--skip-trust",
-        ],
-        env: { ...env, GEMINI_CLI_TRUST_WORKSPACE: "true" },
+        args: ["-p", SURVEY_PROMPT, "--mode=plan"],
+        env,
       };
     }
     case "opencode": {
@@ -257,7 +247,7 @@ function buildSurveyPlan(
 /**
  * Spawn a DETACHED headless agent to survey `repoDir` and ingest structural findings via the
  * `hindsight_ingest_document` tool. Runs the survey under the current harness's own CLI when
- * available, else falls back to any available agent (claude → codex → gemini → opencode — claude and
+ * available, else falls back to any available agent (claude → codex → antigravity → opencode — claude and
  * codex first because their inline-MCP recipes are self-contained). Fire-and-forget; never throws.
  */
 export function startCodebaseSurvey(
@@ -280,7 +270,13 @@ export function startCodebaseSurvey(
 
     // Survey-agent priority: the current harness's own CLI first, then any other available agent.
     const preferred = opts.harness ?? "claude-code";
-    const order: SurveyHarness[] = [preferred, "claude-code", "codex", "gemini", "opencode"];
+    const order: SurveyHarness[] = [
+      preferred,
+      "claude-code",
+      "codex",
+      "antigravity-cli",
+      "opencode",
+    ];
     const seen = new Set<SurveyHarness>();
 
     for (const harness of order) {

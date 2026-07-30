@@ -4,15 +4,22 @@ import { getHarness, HARNESS_NAMES } from "./registry";
 describe("HARNESS_NAMES", () => {
   it("lists all registered harnesses", () => {
     expect(HARNESS_NAMES).toEqual(
-      expect.arrayContaining(["opencode", "claude-code", "cursor-cli", "codex"])
+      expect.arrayContaining([
+        "opencode",
+        "claude-code",
+        "cursor-cli",
+        "codex",
+        "antigravity-cli",
+        "devin-cli",
+      ])
     );
-    expect(HARNESS_NAMES).toHaveLength(4);
+    expect(HARNESS_NAMES).toHaveLength(6);
   });
 });
 
 describe("getHarness", () => {
   it("resolves hook harnesses without touching the opencode adapter", async () => {
-    for (const name of ["claude-code", "cursor-cli", "codex"]) {
+    for (const name of ["claude-code", "cursor-cli", "codex", "antigravity-cli", "devin-cli"]) {
       const adapter = await getHarness(name);
       expect(adapter.name).toBe(name);
       // Lightweight hook adapters have no persistent runtime — createRuntime always throws before

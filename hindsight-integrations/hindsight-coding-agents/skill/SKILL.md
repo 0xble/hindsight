@@ -95,7 +95,7 @@ name, or by one `mapPathToBank` prefix over their parent directory.
 
 ```bash
 npm install -g hindsight-coding-agents && hindsight-coding-agents install   # detects all agents
-hindsight-coding-agents install codex        # or specific: opencode|claude-code|codex|gemini|cursor-cli
+hindsight-coding-agents install codex        # or specific: opencode|claude-code|codex|antigravity-cli|cursor-cli
 hindsight-coding-agents uninstall            # removes exactly what install added
 npm update -g hindsight-coding-agents        # update; wired paths stay valid
 ```

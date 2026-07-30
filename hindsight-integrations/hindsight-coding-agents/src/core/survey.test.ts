@@ -111,26 +111,18 @@ describe("startCodebaseSurvey", () => {
     expect(options.env.HINDSIGHT_DISABLE_HOOKS).toBe("1");
   });
 
-  // ── gemini recipe (plan read-only mode + settings.json MCP) ────────────────────────────────────
-  it("gemini: spawns `gemini -p` in plan mode, scoped MCP, skip-trust", () => {
+  // ── Antigravity recipe (plan read-only mode + global MCP config) ───────────────────────────────
+  it("antigravity: spawns `agy -p` in plan mode", () => {
     const spawn = fakeSpawn();
     startCodebaseSurvey("/repo", {
-      harness: "gemini",
+      harness: "antigravity-cli",
       spawn,
-      exists: (b) => b === "gemini",
+      exists: (b) => b === "agy",
     });
     const [bin, argv, options] = spawn.mock.calls[0];
-    expect(bin).toBe("gemini");
-    expect(argv).toContain("-p");
-    expect(argv).toContain(SURVEY_PROMPT);
-    expect(
-      argv.slice(argv.indexOf("--approval-mode"), argv.indexOf("--approval-mode") + 2)
-    ).toEqual(["--approval-mode", "plan"]);
-    expect(argv).toContain("--allowed-mcp-server-names");
-    expect(argv).toContain("hindsight");
-    expect(argv).toContain("--skip-trust");
+    expect(bin).toBe("agy");
+    expect(argv).toEqual(["-p", SURVEY_PROMPT, "--mode=plan"]);
     expect(options.env.HINDSIGHT_DISABLE_HOOKS).toBe("1");
-    expect(options.env.GEMINI_CLI_TRUST_WORKSPACE).toBe("true");
   });
 
   // ── opencode recipe (read-only plan agent; tools from the loaded plugin) ───────────────────────
@@ -161,9 +153,9 @@ describe("startCodebaseSurvey", () => {
 
   it("falls back to another available agent when the preferred harness's CLI is missing", () => {
     const spawn = fakeSpawn();
-    // Prefer gemini, but only codex is installed → survey runs under codex.
+    // Prefer Antigravity, but only codex is installed → survey runs under codex.
     startCodebaseSurvey("/repo", {
-      harness: "gemini",
+      harness: "antigravity-cli",
       mcpServerPath: "/x/mcp-server.js",
       spawn,
       exists: (b) => b === "codex",
@@ -175,7 +167,7 @@ describe("startCodebaseSurvey", () => {
 
   it("no capable agent found → no spawn (fail open; the git-log seed still ran)", () => {
     const spawn = fakeSpawn();
-    startCodebaseSurvey("/repo", { harness: "gemini", spawn, exists: () => false });
+    startCodebaseSurvey("/repo", { harness: "antigravity-cli", spawn, exists: () => false });
     expect(spawn).not.toHaveBeenCalled();
   });
 

@@ -33,6 +33,7 @@ import { setLogLevel } from "./log";
 import { parsePageList, buildKnowledgePreamble } from "./knowledge-injection";
 import type { ClientOpts } from "./hindsight";
 import { HindsightClient } from "./hindsight";
+import { sessionCacheFile, writeSessionCache } from "./session-cache";
 
 /** Minimal client shape `buildSessionStartContext` needs. */
 interface SeedContextClient {
@@ -110,12 +111,15 @@ async function gitSyncNote(args: {
 export interface SessionStartOutput {
   systemMessage?: string;
   additionalContext?: string;
+  /** Internal lifecycle signal: defer one auto-reflect while a new bank gains useful content. */
+  deferInitialReflect?: boolean;
 }
 
-/** Host-specific adapter for the shared SessionStart core. Claude, Codex, and Gemini use the
+/** Host-specific adapter for the shared SessionStart core. Claude and Codex use the
  * Claude-compatible envelope; Cursor's native hooks require snake-case `additional_context`. */
 export interface SessionStartHookSpec {
   harness: string;
+  parse(event: Record<string, unknown>): { cwd?: string; sessionId?: string };
   emit(output: SessionStartOutput): unknown;
 }
 
@@ -265,10 +269,18 @@ export async function buildSessionStartContext(args: {
     }
   }
 
-  // Inject the live knowledge-page roster + guidance preamble. Fail-open: a listPages rejection
-  // yields an empty roster (empty-state preamble) and never disturbs the seed logic above.
-  const pages = parsePageList(await client.listPages().catch(() => null));
+  // An actual empty roster, like a cold git-doc result, means this bank has no useful material to
+  // synthesize yet. A failed roster request is NOT evidence of that, so keep the two cases apart.
+  let pages = [];
+  let pageListKnown = false;
+  try {
+    pages = parsePageList(await client.listPages());
+    pageListKnown = true;
+  } catch {
+    /* fail-open preamble; preserve first-prompt reflect eligibility on a transient outage */
+  }
   const additionalContext = buildKnowledgePreamble(pages, { reflectOnNewGoals: !cfg.autoReflect });
+  const deferInitialReflect = cold === true || (pageListKnown && pages.length === 0);
 
   // The banner shows on EVERY session — Hindsight's presence is part of the product, not a
   // one-time setup note. Wording tracks the bank state: cold = "learning", else "remembering";
@@ -288,7 +300,7 @@ export async function buildSessionStartContext(args: {
   // ALWAYS record the session start (warm sessions used to log nothing — undebuggable).
   diag(harness, "session_start", { bank: bankId, cold, pages: pages.length, ms: Date.now() - t0 });
 
-  return { systemMessage, additionalContext };
+  return { systemMessage, additionalContext, deferInitialReflect };
 }
 
 /** Run one SessionStart hook invocation: stdin event in, (maybe) an additionalContext object on stdout. */
@@ -311,13 +323,8 @@ export async function runSessionStartHook(
       return; // no/invalid event: stay silent
     }
     const { harness } = spec;
-    const cwd =
-      (ev.cwd as string) ||
-      (ev.workspace_root as string) ||
-      (Array.isArray(ev.workspace_roots)
-        ? (ev.workspace_roots[0] as string | undefined)
-        : undefined) ||
-      process.cwd();
+    const { cwd: rawCwd, sessionId } = spec.parse(ev);
+    const cwd = rawCwd || process.cwd();
 
     let cfg = loadConfig({ harness });
     setLogLevel(cfg.logLevel);
@@ -331,6 +338,9 @@ export async function runSessionStartHook(
     const client = makeClient({ apiUrl: cfg.apiUrl, apiToken: cfg.apiToken, bank: bankId });
 
     const out = await buildSessionStartContext({ cwd, bankId, cfg, client, harness });
+    if (out.deferInitialReflect && sessionId) {
+      writeSessionCache(sessionCacheFile(harness, sessionId), { deferInitialReflect: true });
+    }
     // The lifecycle computes one host-neutral output; the registry owns each host's wire schema.
     const payload = spec.emit(out);
     if (out.systemMessage || out.additionalContext) {

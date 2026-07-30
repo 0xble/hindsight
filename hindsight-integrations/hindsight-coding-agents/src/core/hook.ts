@@ -17,9 +17,7 @@
  * in `buildHookOutput` (client + cache file in, injection string out) so it's unit-testable
  * without stdin/stdout; `runHook` is thin plumbing around it, with a `makeClient` seam for tests.
  */
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { existsSync, readFileSync } from "node:fs";
 import { deriveBankId } from "./bank";
 import type { Config } from "./config";
 import { applyBankConfig, loadConfig } from "./config";
@@ -32,6 +30,12 @@ import { brandWord } from "./brand";
 import { buildReflectQuery, buildSystemInjection } from "./inject";
 import type { PageRef } from "./knowledge-injection";
 import { buildRosterRefresh, parsePageList } from "./knowledge-injection";
+import {
+  readSessionCache,
+  sessionCacheFile,
+  writeSessionCache,
+  type SessionCache,
+} from "./session-cache";
 
 export interface HookEventFields {
   prompt?: string;
@@ -44,9 +48,12 @@ export interface HookSpec {
   harness: string;
   /** Read the fields out of the harness's stdin event (shapes differ per harness). */
   parse(event: Record<string, unknown>): HookEventFields;
+  /** Some hosts execute hook commands from their global config directory. Those hosts must provide
+   * a workspace path in the event; falling back to process.cwd() would create a bank for config. */
+  requireCwd?: boolean;
   /** Wrap injected context (and an optional user-facing notice) in the harness's native
    *  hook-output schema. Harnesses whose schema has no user-visible channel ignore `notice`. */
-  emit(context: string, notice?: string): unknown;
+  emit(context: string, notice?: string, event?: Record<string, unknown>): unknown;
 }
 
 /** Minimal client shape `buildHookOutput` needs — `HindsightClient` satisfies it structurally. */
@@ -57,18 +64,12 @@ interface HookClient {
 
 /**
  * Cap on the once-per-session reflect. INVARIANT: this MUST stay below every harness's
- * UserPromptSubmit/BeforeAgent hook timeout (currently 30s in claude-code-v2/hooks/hooks.json,
- * codex-v2 + gemini-v2 dev-install) — otherwise the host kills the hook mid-reflect before the
+ * UserPromptSubmit/PreInvocation hook timeout (currently 30s in the supported hook harnesses) —
+ * otherwise the host kills the hook mid-reflect before the
  * result is cached, so the injection is discarded AND the reflect re-fires (uncached) every turn.
  * Raise the harness timeout in lockstep if you raise this.
  */
 const HOOK_REFLECT_CAP_MS = 25_000;
-
-interface SessionCache {
-  turns?: number;
-  reflectAnswer?: string; // present (even "") = reflect already ran this session
-  pages?: { atTurn: number; list: PageRef[] };
-}
 
 export interface HookOutput {
   /** The model-facing injection block, or undefined when there's nothing to inject. */
@@ -92,12 +93,7 @@ export async function buildHookOutput(args: {
 }): Promise<HookOutput> {
   const { harness, prompt, cfg, client, cacheFile } = args;
 
-  let cached: SessionCache = {};
-  try {
-    cached = JSON.parse(readFileSync(cacheFile, "utf8")) as SessionCache;
-  } catch {
-    /* missing/invalid cache — first prompt of the session */
-  }
+  const cached = readSessionCache(cacheFile);
   const turns = (cached.turns ?? 0) + 1;
 
   // ── reflect: once per session, on the first prompt ────────────────────────────
@@ -105,7 +101,12 @@ export async function buildHookOutput(args: {
   // instructs the agent to call hindsight_reflect itself when a new goal is set.
   let reflectAnswer = cached.reflectAnswer;
   let reflectRanThisTurn = false;
-  if (cfg.autoReflect && reflectAnswer === undefined) {
+  const deferInitialReflect = cached.deferInitialReflect === true;
+  if (deferInitialReflect) {
+    // A new bank has no useful history yet. Do not burn the once-per-session synthesis on prompt
+    // one; this marker is deliberately consumed below so prompt two remains eligible to reflect.
+    diag(harness, "reflect_deferred_new_bank", { query: prompt.slice(0, 80) });
+  } else if (cfg.autoReflect && reflectAnswer === undefined) {
     reflectRanThisTurn = true;
     const t0 = Date.now();
     try {
@@ -151,20 +152,11 @@ export async function buildHookOutput(args: {
     }
   }
 
-  // Persist the session cache (best-effort).
-  try {
-    mkdirSync(dirname(cacheFile), { recursive: true });
-    writeFileSync(
-      cacheFile,
-      JSON.stringify({
-        turns,
-        reflectAnswer,
-        pages: { atTurn: stale ? turns : (cached.pages?.atTurn ?? turns), list: pages },
-      } satisfies SessionCache)
-    );
-  } catch {
-    /* cache is best-effort */
-  }
+  writeSessionCache(cacheFile, {
+    turns,
+    reflectAnswer,
+    pages: { atTurn: stale ? turns : (cached.pages?.atTurn ?? turns), list: pages },
+  } satisfies SessionCache);
 
   const blocks: string[] = [];
   // Hook-injected context lands in the USER MESSAGE and persists in the transcript — unlike a
@@ -213,6 +205,7 @@ export async function runHook(
     return; // no/invalid event: stay silent
   }
   const { prompt: rawPrompt, cwd: rawCwd, sessionId } = spec.parse(ev);
+  if (spec.requireCwd && !rawCwd) return;
   const cwd = rawCwd || process.cwd();
   const prompt = (rawPrompt || "").trim();
   if (!prompt) return;
@@ -225,7 +218,7 @@ export async function runHook(
   }
 
   const out = (context: string | undefined, notice?: string) =>
-    process.stdout.write(JSON.stringify(spec.emit(context ?? "", notice)));
+    process.stdout.write(JSON.stringify(spec.emit(context ?? "", notice, ev)));
 
   const resolved = applyBankConfig(cfg, deriveBankId(cfg, cwd, spec.harness));
   cfg = resolved.cfg;
@@ -235,18 +228,14 @@ export async function runHook(
     return;
   }
   const client = makeClient({ apiUrl: cfg.apiUrl, apiToken: cfg.apiToken, bank: bankId });
-  const cacheFile = join(
-    tmpdir(),
-    `hindsight-${spec.harness}`,
-    `${sessionId || "no-session"}.json`
-  );
+  const cacheFile = sessionCacheFile(spec.harness, sessionId || "no-session");
 
   // Safety net on EVERY harness: on the session's FIRST prompt (no cache file yet), fire the
   // ingestion engine. Normally the shared SessionStart lifecycle already did — the engine's
   // per-bank lock makes this a no-op — but a session that predates installation never received
   // SessionStart. This limited fallback heals that case without duplicating any survey logic.
   if (cfg.autoSeed !== false && !existsSync(cacheFile)) {
-    startBackgroundSeed(cwd, { limit: cfg.seedLimit });
+    startBackgroundSeed(cwd, { limit: cfg.seedLimit, harness: spec.harness });
   }
 
   const output = await buildHookOutput({ harness: spec.harness, prompt, cfg, client, cacheFile });
@@ -254,7 +243,7 @@ export async function runHook(
   // predates the install, so no SessionStart and the first-prompt net already passed). Fire the
   // idempotent engine — the per-bank lock makes repeats free while it builds.
   if (cfg.autoSeed !== false && output.pagesKnown === 0) {
-    startBackgroundSeed(cwd, { limit: cfg.seedLimit });
+    startBackgroundSeed(cwd, { limit: cfg.seedLimit, harness: spec.harness });
   }
   if (output.context || output.notice) out(output.context, output.notice);
 }

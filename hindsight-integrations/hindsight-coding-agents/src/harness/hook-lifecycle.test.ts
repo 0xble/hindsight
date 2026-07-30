@@ -1,7 +1,14 @@
 import { describe, expect, it } from "vitest";
 import { HOOK_HARNESSES, type HookHarnessName } from "./hook-lifecycle";
 
-const HOOK_HARNESS_NAMES: HookHarnessName[] = ["claude-code", "codex", "gemini", "cursor-cli"];
+const HOOK_HARNESS_NAMES: HookHarnessName[] = [
+  "claude-code",
+  "codex",
+  "antigravity-cli",
+  "cursor-cli",
+  "copilot-cli",
+  "grok-build",
+];
 
 describe("HOOK_HARNESSES lifecycle contract", () => {
   it("declares every lifecycle once for every hook-based harness", () => {
@@ -39,6 +46,40 @@ describe("HOOK_HARNESSES lifecycle contract", () => {
     expect(claude.sessionStart.emit({ additionalContext: "context" })).toEqual({
       hookSpecificOutput: {
         hookEventName: "SessionStart",
+        additionalContext: "context",
+      },
+    });
+
+    const antigravity = HOOK_HARNESSES["antigravity-cli"];
+    expect(antigravity.prompt.requireCwd).toBe(true);
+    expect(antigravity.install).toMatchObject({
+      sessionStart: { event: "PreInvocation", entry: "antigravity-hook.js", timeout: 30 },
+      prompt: { event: "PreInvocation", entry: "antigravity-hook.js", timeout: 30 },
+      stop: { event: "Stop", entry: "antigravity-stop-hook.js", timeout: 30 },
+    });
+    expect(antigravity.prompt.emit("context")).toEqual({
+      injectSteps: [{ ephemeralMessage: "context" }],
+    });
+
+    const copilot = HOOK_HARNESSES["copilot-cli"];
+    expect(copilot.install).toMatchObject({
+      sessionStart: { event: "sessionStart", entry: "copilot-sessionstart-hook.js" },
+      prompt: { event: "userPromptTransformed", entry: "copilot-hook.js" },
+      stop: { event: "agentStop", entry: "copilot-stop-hook.js" },
+    });
+    expect(copilot.prompt.emit("context", undefined, { transformedPrompt: "original" })).toEqual({
+      modifiedTransformedPrompt: "original\n\ncontext",
+    });
+
+    const grok = HOOK_HARNESSES["grok-build"];
+    expect(grok.install).toMatchObject({
+      sessionStart: { event: "SessionStart", entry: "grok-sessionstart-hook.js", timeout: 30 },
+      prompt: { event: "UserPromptSubmit", entry: "grok-hook.js", timeout: 30 },
+      stop: { event: "Stop", entry: "grok-stop-hook.js", timeout: 60 },
+    });
+    expect(grok.prompt.emit("context")).toEqual({
+      hookSpecificOutput: {
+        hookEventName: "UserPromptSubmit",
         additionalContext: "context",
       },
     });

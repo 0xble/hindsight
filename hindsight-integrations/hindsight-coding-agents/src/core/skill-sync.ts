@@ -15,7 +15,7 @@ import { fileURLToPath } from "node:url";
 const SKILL_DIRS: Record<string, string[]> = {
   "claude-code": [".claude", "skills"],
   codex: [".agents", "skills"], // agentskills-standard shared dir
-  gemini: [".gemini", "skills"],
+  "antigravity-cli": [".gemini", "config", "skills"],
   "cursor-cli": [".cursor", "skills"],
 };
 

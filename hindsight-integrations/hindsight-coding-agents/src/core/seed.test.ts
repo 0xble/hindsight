@@ -42,6 +42,28 @@ describe("startBackgroundSeed", () => {
     );
   });
 
+  it("passes the calling harness to deepen so its config override is retained", () => {
+    const spawn = fakeSpawn();
+    startBackgroundSeed("/some/repo", {
+      enginePath: "/dist/deepen.js",
+      harness: "antigravity-cli",
+      spawn,
+    });
+    expect(spawn).toHaveBeenCalledWith(
+      "node",
+      [
+        "/dist/deepen.js",
+        "--repo",
+        "/some/repo",
+        "--gitlog-limit",
+        String(DEFAULT_SEED_LIMIT),
+        "--harness",
+        "antigravity-cli",
+      ],
+      { detached: true, stdio: expect.anything() }
+    );
+  });
+
   it("fail-safe: a spawn that throws does not throw out of startBackgroundSeed", () => {
     const spawn = vi.fn().mockImplementation(() => {
       throw new Error("spawn EMFILE");

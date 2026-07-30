@@ -94,6 +94,34 @@ describe("buildHookOutput", () => {
     expect(JSON.parse(readFileSync(cacheFile, "utf8")).turns).toBe(2);
   });
 
+  it("defers the first automatic reflect for a new bank, then reflects on prompt two", async () => {
+    mkdirSync(join(root, "cache"), { recursive: true });
+    writeFileSync(cacheFile, JSON.stringify({ deferInitialReflect: true }));
+    const cfg = resolveConfig({});
+    const client = makeClient();
+
+    const first = await buildHookOutput({
+      harness: "claude-code",
+      prompt: "first task while the bank is seeding",
+      cfg,
+      client,
+      cacheFile,
+    });
+    expect(client.reflect).not.toHaveBeenCalled();
+    expect(first.context).toBeUndefined();
+    expect(JSON.parse(readFileSync(cacheFile, "utf8")).deferInitialReflect).toBeUndefined();
+
+    const second = await buildHookOutput({
+      harness: "claude-code",
+      prompt: "second task after the bank has had time to populate",
+      cfg,
+      client,
+      cacheFile,
+    });
+    expect(client.reflect).toHaveBeenCalledTimes(1);
+    expect(second.context).toContain("REFLECT_ANSWER");
+  });
+
   it("reflect rejection: caches '' (no retry next turn), no throw, no context at all", async () => {
     const cfg = resolveConfig({});
     const client = makeClient({

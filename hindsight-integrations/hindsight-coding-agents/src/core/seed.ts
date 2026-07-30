@@ -20,7 +20,7 @@ export const DEFAULT_SEED_LIMIT = 300;
  *  the child outlives this process; extraction is server-side/async so nothing here blocks. Never throws. */
 export function startBackgroundSeed(
   repoDir: string,
-  opts: { limit?: number; enginePath?: string; spawn?: typeof realSpawn } = {}
+  opts: { limit?: number; harness?: string; enginePath?: string; spawn?: typeof realSpawn } = {}
 ): void {
   try {
     const spawnFn = opts.spawn ?? realSpawn;
@@ -31,7 +31,14 @@ export function startBackgroundSeed(
     // fully detached — no fd redirect to manage.
     const child = spawnFn(
       "node",
-      [enginePath, "--repo", repoDir, "--gitlog-limit", String(limit)],
+      [
+        enginePath,
+        "--repo",
+        repoDir,
+        "--gitlog-limit",
+        String(limit),
+        ...(opts.harness ? ["--harness", opts.harness] : []),
+      ],
       {
         detached: true,
         stdio: "ignore",

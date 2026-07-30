@@ -2,7 +2,7 @@
 
 Long-term project memory for **coding agents**, backed by [Hindsight](https://vectorize.io/hindsight).
 One package, several agents: a shared reflect-and-inject core with a thin entry point per agent
-(**opencode**, **Claude Code**, **Codex CLI**, **Gemini CLI**, **Cursor CLI**). Ingestion is fully
+(**opencode**, **Claude Code**, **Codex CLI**, **Antigravity CLI**, **Cursor CLI**, **GitHub Copilot CLI**, **Grok Build**). Ingestion is fully
 automatic — there is no setup command: a repo's git history and conversations flow into its memory
 bank in the background as you work.
 
@@ -17,7 +17,7 @@ in front of the agent at the moment it starts working, and keeps a curated set o
 1. **Seed a cold repo (automatic, once).** The first time an agent opens a repo whose bank is empty,
    the entry point deterministically kicks off a background **seed**: it aggregates the last N commit
    **messages** into a single cheap document (`gitlog` strategy) and spawns a short headless
-   **codebase survey** — run under the current agent's own CLI (claude/codex/gemini/opencode),
+   **codebase survey** — run under the current agent's own CLI (claude/codex/antigravity/opencode),
    read-only sandboxed — to map the structure. Both feed the knowledge pages.
 1. **Deepen progressively (automatic, every session).** Every session start also fires the
    idempotent background **deepen engine**: it ingests any conversations not yet in the bank and the
@@ -59,19 +59,33 @@ amended in a later conversation wins over the original.
 Every harness runs the same surface (seed → session reflect → per-turn page sections → knowledge
 tools → write-back); they differ only in how that surface is delivered.
 
-| harness       | kind              | lifecycle wiring                                                                                                                | install                                                              |
-| ------------- | ----------------- | ------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------- |
-| `opencode`    | persistent plugin | one process: load-time seed, session reflect + page sections, native tools, write-back                                          | add the package dir to `opencode.json` → `"plugin": [...]`           |
-| `claude-code` | per-prompt hooks  | `SessionStart` (seed) + `UserPromptSubmit` (reflect + pages) + `Stop` (write-back) + MCP                                        | the [`../claude-code-v2`](../claude-code-v2) wrapper's dev-installer |
-| `codex`       | per-prompt hooks  | same three hooks in `~/.codex/hooks.json` (+ `codex_hooks = true`, CLI ≥ 0.116)                                                 | the [`../codex-v2`](../codex-v2) wrapper's dev-installer             |
-| `gemini`      | per-prompt hooks  | `SessionStart` + `BeforeAgent` (reflect + pages) + `SessionEnd` (write-back) + MCP, in `~/.gemini/settings.json` (CLI ≥ 0.52.0) | the [`../gemini-v2`](../gemini-v2) wrapper's dev-installer           |
-| `cursor-cli`  | lifecycle hooks   | `sessionStart` (seed + pages) + `beforeSubmitPrompt` (reflect) + `stop` (write-back)                                            | hooks in Cursor `hooks.json`                                         |
+| harness           | kind              | lifecycle wiring                                                                                                               | install                                                              |
+| ----------------- | ----------------- | ------------------------------------------------------------------------------------------------------------------------------ | -------------------------------------------------------------------- |
+| `opencode`        | persistent plugin | one process: load-time seed, session reflect + page sections, native tools, write-back                                         | add the package dir to `opencode.json` → `"plugin": [...]`           |
+| `claude-code`     | per-prompt hooks  | `SessionStart` (seed) + `UserPromptSubmit` (reflect + pages) + `Stop` (write-back) + MCP                                       | the [`../claude-code-v2`](../claude-code-v2) wrapper's dev-installer |
+| `codex`           | per-prompt hooks  | same three hooks in `~/.codex/hooks.json` (+ `codex_hooks = true`, CLI ≥ 0.116)                                                | the [`../codex-v2`](../codex-v2) wrapper's dev-installer             |
+| `antigravity-cli` | lifecycle hooks   | `PreInvocation` (seed + reflect) + `Stop` (write-back) + MCP, plus a native colored `Hindsight · <bank>` status-line indicator | `hindsight-coding-agents install antigravity-cli`                    |
+| `cursor-cli`      | lifecycle hooks   | `sessionStart` (seed + pages) + `beforeSubmitPrompt` (reflect) + `stop` (write-back)                                           | hooks in Cursor `hooks.json`                                         |
+| `copilot-cli`     | lifecycle hooks   | `sessionStart` (seed + pages) + `userPromptTransformed` (reflect) + `agentStop` (write-back) + MCP                             | `~/.copilot/hooks/hindsight-coding-agents.json` + `mcp-config.json`  |
+| `grok-build`      | lifecycle hooks   | `SessionStart` (seed) + `Stop` (write-back) + MCP                                                                              | native `~/.grok/config.toml` — no Claude Code dependency             |
 
 The hook-based harnesses share one runtime (`src/core/hook.ts`) plus their SessionStart/Stop
 entrypoints; opencode is the cleanest platform — a real per-turn event, a working system-prompt
 injection channel, transcript access, and native tool registration — so the whole surface rides four
 plugin hooks (`src/harness/opencode.ts`) with **no MCP server needed**. It also supports opt-in
 **incremental git-sync** (retain commits new since the seed on load).
+
+Antigravity renders the Hindsight indicator with its documented custom status-line command. It is
+local and never calls the Hindsight API while the TUI redraws. If you already configured an
+Antigravity custom status line, the installer leaves it untouched rather than replacing it.
+
+### Grok Build limitation
+
+Grok Build executes `UserPromptSubmit` hooks but ignores their stdout. Hindsight can therefore not
+inject a reflect result, memory block, or banner into Grok's model-visible conversation. Grok still
+gets native bank setup and transcript retention plus Hindsight MCP tools and the companion skill;
+ask it to call `hindsight_reflect` or `hindsight_search_knowledge_pages` when needed. Automatic
+injection requires a future Grok prompt-transform API.
 
 ### Install — one command, every agent
 
@@ -153,7 +167,7 @@ hook by Codex...), so one shared config serves several agents side by side:
 | `pageRefreshEveryTurns` | `10`                                 | refetch the knowledge pages and re-inject the page roster + tool guide every N user turns                                                                                                                                       |
 | `autoSeed`              | `true`                               | SessionStart: auto-seed a cold repo's bank from git history                                                                                                                                                                     |
 | `seedLimit`             | `300`                                | auto-seed: most-recent-N-commits cap                                                                                                                                                                                            |
-| `codebaseSurvey`        | `true`                               | SessionStart: headless survey of a cold repo's structure, run under the current harness's own CLI (claude/codex/gemini/opencode), falling back to any available agent                                                           |
+| `codebaseSurvey`        | `true`                               | SessionStart: headless survey of a cold repo's structure, run under the current harness's own CLI (claude/codex/antigravity/opencode), falling back to any available agent                                                      |
 | `surveyModel`           | `haiku`                              | model for the survey — Claude recipe only (`claude -p --model`); other agents use their configured default                                                                                                                      |
 | `surveyBudgetUsd`       | `2`                                  | survey spend cap — Claude recipe only (`claude -p --max-budget-usd`); other agents rely on their read-only sandbox                                                                                                              |
 | `retainSessions`        | `true`                               | opencode write-back: async upsert of the session transcript every turn (set `false` to opt out; hook harnesses always write on Stop)                                                                                            |
@@ -224,7 +238,7 @@ Coding memory is **per repository**. Resolution order for the working directory:
      linked worktree to the **main** worktree's basename, so all worktrees of a repo share one bank
      (bare repos use the bare dir name; non-git directories fall back to the dir basename)
    - `{project}` — plain working-directory basename
-   - `{harness}` — the entry point asking (`opencode`, `claude-code`, `codex`, `gemini`, `cursor-cli`)
+   - `{harness}` — the entry point asking (`opencode`, `claude-code`, `codex`, `antigravity-cli`, `cursor-cli`, `copilot-cli`)
    - `{channel}` / `{user}` — `$HINDSIGHT_CHANNEL_ID` / `$HINDSIGHT_USER_ID`
 
 The default `"coding-agent::{gitProject}"` is **harness-neutral**, so opencode, Claude Code, and Codex
@@ -300,12 +314,13 @@ src/
                  # git + chat ingest, git-sync, seed + survey, pages-index (local section matching),
                  # knowledge-injection, knowledge-tools, session-start, transcript readers,
                  # hook runtime, RuntimeCore
-  harness/       # per-agent adapters + registry (opencode persistent; claude/codex/gemini/cursor as hooks)
+  harness/       # per-agent adapters + registry (opencode persistent; claude/codex/antigravity/cursor/copilot as hooks)
   index.ts       # opencode plugin entrypoint
   claude-hook.ts / claude-sessionstart-hook.ts / claude-stop-hook.ts   # Claude Code entrypoints
   codex-hook.ts  / codex-sessionstart-hook.ts  / codex-stop-hook.ts    # Codex CLI entrypoints
-  gemini-hook.ts / gemini-sessionstart-hook.ts / gemini-stop-hook.ts   # Gemini CLI entrypoints
+  antigravity-hook.ts / antigravity-stop-hook.ts # Antigravity CLI entrypoints
   cursor-hook.ts # Cursor CLI hook entrypoint   (bin: hindsight-cursor-hook)
+  copilot-*.ts   # GitHub Copilot CLI SessionStart/prompt/agentStop entrypoints
   mcp-server.ts  # hindsight_* knowledge/recall tools for the hook harnesses (MCP)
   backfill.ts    # backfill CLI                  (bin: hindsight-coding-backfill)
 ```

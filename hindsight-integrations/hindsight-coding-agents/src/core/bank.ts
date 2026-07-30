@@ -14,7 +14,7 @@
  *   3. dynamic — `bankIdTemplate` (default "coding-agent::{gitProject}") with placeholders:
  *        {gitProject}  worktree-aware repo name (all worktrees share it; non-git: dir basename)
  *        {project}     working-directory basename (no git involved)
- *        {harness}     the entry point asking ("opencode", "claude-code", "codex", "gemini", ...)
+ *        {harness}     the entry point asking ("opencode", "claude-code", "codex", "antigravity-cli", ...)
  *        {channel}     $HINDSIGHT_CHANNEL_ID or "default"
  *        {user}        $HINDSIGHT_USER_ID or "anonymous"
  *      e.g. "hindsight-{gitProject}" or "{harness}-{gitProject}" to split per agent. The default

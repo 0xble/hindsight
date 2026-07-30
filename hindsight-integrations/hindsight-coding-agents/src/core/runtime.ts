@@ -1,9 +1,7 @@
 /**
- * Harness-agnostic runtime for PERSISTENT-PLUGIN harnesses (opencode): the recall → inject →
- * write-back state machine, held in memory across a long-lived process. It is the plugin-side
- * sibling of core/hook.ts (which drives the fresh-process HOOK harnesses); both share the same core
- * primitives — `buildSystemInjection`/`formatPageInjection`, `buildKnowledgePreamble`/`buildRosterRefresh`, `buildKnowledgeTools`,
- * `buildSessionStartContext` — so opencode reaches full v2 parity with Claude Code / Codex.
+ * Host adapter runtime for PERSISTENT-PLUGIN harnesses (opencode). It delegates SessionStart and
+ * prompt behavior to the same core lifecycle as fresh-process hook harnesses; this class keeps only
+ * the host-specific injection, toast, and incremental-transcript responsibilities.
  *
  * A harness adapter feeds it three normalized events and reads two values back:
  *   - seedIfCold(repoPath)          : plugin load -> cold-check auto-seed + compute the page preamble
@@ -17,13 +15,11 @@ import type { Config } from "./config";
 import { diag } from "./diag";
 import { log, setLogLevel } from "./log";
 import type { HindsightClient } from "./hindsight";
-import type { PageRef } from "./knowledge-injection";
-import { buildRosterRefresh, parsePageList } from "./knowledge-injection";
-import { brandWord } from "./brand";
-import { buildReflectQuery, buildSystemInjection } from "./inject";
 import { buildKnowledgeTools, type ToolSpec } from "./knowledge-tools";
 import { retainLiveSession, type TransportTurn } from "./chat";
 import { buildSessionStartContext } from "./session-start";
+import { buildHookOutput } from "./hook";
+import { sessionCacheFile, writeSessionCache } from "./session-cache";
 
 const HARNESS = "opencode";
 
@@ -32,10 +28,9 @@ export class RuntimeCore {
   private readonly turnCount = new Map<string, number>(); // sessionId -> user-turn counter (cadence)
   private readonly sessionState = new Map<string, { startTs: string; retainedUsers: number }>();
   private lastInjection = ""; // most recent turn's injection block, keyed by nothing (see getInjection)
-  private readonly reflectBySession = new Map<string, string>(); // sessionId -> cached reflect ("" = ran, nothing)
+  private deferInitialReflect = false;
   /** Host-notice channel (opencode: client.tui.showToast via the adapter). Optional, fail-open. */
   private notify?: (title: string, message: string) => void;
-  private pagesCache: PageRef[] | undefined; // page roster (ids + titles), refreshed on cadence
   private preamble = ""; // SessionStart-equivalent knowledge preamble, computed once at seedIfCold
 
   constructor(
@@ -87,17 +82,16 @@ export class RuntimeCore {
         this.notify?.("Hindsight", plain.replace(/^Hindsight is /, "Is "));
       }
       this.preamble = out.additionalContext ?? "";
+      this.deferInitialReflect = out.deferInitialReflect === true;
     } catch {
       /* seeding + preamble are best-effort — a cold-check failure never breaks the agent */
     }
   }
 
   /**
-   * Each user turn: build this turn's injection block (reflect-once + page sections). Mirrors core/hook.ts's
-   * `buildHookOutput`, but state lives in memory (persistent plugin) instead of a tmp cache file:
-   *   - turn 1: prepend the knowledge preamble (the SessionStart-equivalent tool guide + page roster)
-   *   - every turn: the recalled `<hindsight_memories>` block (attribution + user-feedback framing)
-   *   - every pageRefreshEveryTurns: append the page-roster refresh so the tool guide keeps re-appearing
+   * Each user turn delegates to the same `buildHookOutput` used by hook harnesses. The cache file
+   * intentionally replaces the old in-memory reflect/page state, keeping lifecycle behavior
+   * identical across hosts while this adapter retains only delivery-specific state.
    */
   async onPrompt(sessionId: string | undefined, prompt: string): Promise<void> {
     if (process.env.HINDSIGHT_DISABLE_HOOKS) return; // anti-recursion (see seedIfCold)
@@ -105,74 +99,33 @@ export class RuntimeCore {
     const turns = (this.turnCount.get(sessionId) ?? 0) + 1;
     this.turnCount.set(sessionId, turns);
 
-    // ── reflect: once per session, on its first prompt ──────────────────────────
-    // autoReflect false = tool-only mode: no injected synthesis; the roster's tool guide instead
-    // instructs the agent to call hindsight_reflect itself when a new goal is set.
-    let reflectAnswer = this.reflectBySession.get(sessionId);
-    let reflectRanThisTurn = false;
-    if (this.cfg.autoReflect && reflectAnswer === undefined) {
-      reflectRanThisTurn = true;
-      const t0 = Date.now();
-      try {
-        reflectAnswer = await this.client.reflect(buildReflectQuery(prompt), {
-          budget: "high",
-          timeoutMs: this.cfg.reflectTimeoutMs,
-        });
-        diag(HARNESS, reflectAnswer ? "reflect_ok" : "reflect_empty", {
-          ms: Date.now() - t0,
-          chars: reflectAnswer.length,
-          query: prompt.slice(0, 80),
-          // Verbatim injected synthesis — the ONLY durable record of what the agent actually saw
-          // (post-mortems otherwise depend on the harness happening to persist hook context).
-          answer: reflectAnswer.slice(0, 8000),
-        });
-      } catch (e) {
-        reflectAnswer = ""; // ran and failed — don't retry every turn; the diag trail records it
-        diag(HARNESS, "reflect_failed", {
-          ms: Date.now() - t0,
-          error: String((e as Error)?.message || e).slice(0, 200),
-          query: prompt.slice(0, 80),
-        });
-      }
-      this.reflectBySession.set(sessionId, reflectAnswer);
+    const cacheFile = sessionCacheFile(HARNESS, sessionId);
+    if (this.deferInitialReflect) {
+      // `seedIfCold` has no session id. Transfer its SessionStart decision to the first concrete
+      // session here; `buildHookOutput` consumes it exactly once, like hook harnesses do.
+      this.deferInitialReflect = false;
+      writeSessionCache(cacheFile, { deferInitialReflect: true });
     }
-
-    // ── knowledge pages: refetch on cadence, match locally every turn ───────────
-    const refreshDue =
-      this.cfg.pageRefreshEveryTurns > 0 && turns % this.cfg.pageRefreshEveryTurns === 0;
-    if (refreshDue || this.pagesCache === undefined) {
-      const t0 = Date.now();
-      try {
-        this.pagesCache = parsePageList(await this.client.listPages());
-        diag(HARNESS, "pages_ok", { ms: Date.now() - t0, count: this.pagesCache.length });
-      } catch (e) {
-        this.pagesCache = this.pagesCache ?? [];
-        diag(HARNESS, "pages_failed", {
-          ms: Date.now() - t0,
-          error: String((e as Error)?.message || e).slice(0, 200),
-        });
-      }
-    }
+    const output = await buildHookOutput({
+      harness: HARNESS,
+      prompt,
+      cfg: this.cfg,
+      client: this.client,
+      cacheFile,
+    });
 
     const blocks: string[] = [];
     // The preamble is the SessionStart-equivalent; inject it once, on the first turn (later turns get
     // the periodic refresh below). Empty until seedIfCold resolves — if the first prompt races ahead
     // of plugin-load seeding, the roster refresh still delivers the tool guide on cadence.
     if (turns === 1 && this.preamble) blocks.push(this.preamble);
-    if (reflectAnswer) blocks.push(buildSystemInjection(reflectAnswer));
-    // Knowledge pages are NOT auto-injected (phantom-research problem) — the agent pulls them
-    // via the hindsight_search_knowledge_pages tool. Reflect-turn visibility only:
-    // No terminal output here: opencode gives plugins no user-message channel, and stderr bleeds
-    // into the TUI at the cursor position (rendered wedged against the input bar). The reflect
-    // trail lives in the plugin log instead.
-    if (reflectRanThisTurn && reflectAnswer) {
-      const q = prompt.replace(/\s+/g, " ").trim();
-      const preview = reflectAnswer.replace(/\s+/g, " ").trim().slice(0, 140);
-      log.info(HARNESS, "reflect goal", { query: q.slice(0, 80), preview });
+    if (output.context) blocks.push(output.context);
+    // OpenCode has no user-message hook channel; use its native toast instead of stderr, which
+    // renders inside the TUI input line. The shared output owns when a notice exists.
+    if (output.notice) {
+      const preview = output.notice.replace(/\s+/g, " ").trim().slice(0, 140);
+      log.info(HARNESS, "reflect goal", { preview });
       this.notify?.("Hindsight · recalled past decisions", preview);
-    }
-    if (refreshDue) {
-      blocks.push(buildRosterRefresh(this.pagesCache, { reflectOnNewGoals: !this.cfg.autoReflect }));
     }
     const block = blocks.filter(Boolean).join("\n\n");
     this.injection.set(sessionId, block);

@@ -37,6 +37,7 @@ describe("buildSessionStartContext", () => {
     // contains a "🧠 From Hindsight memory" attribution example, so match on banner text.)
     expect(out.additionalContext).not.toContain("memory bank");
     expect(out.additionalContext).not.toContain("is learning this repo");
+    expect(out.deferInitialReflect).toBe(true);
   });
 
   it("cold git repo + codebaseSurvey:false -> starts the seed but NOT the survey", async () => {
@@ -80,6 +81,22 @@ describe("buildSessionStartContext", () => {
     expect(out.additionalContext).toContain("- Component map (p1)");
     // banner shows on EVERY session now; non-cold paths use the "remembering" wording
     expect(out.systemMessage).toContain("is tracking the decisions");
+    expect(out.deferInitialReflect).toBe(false);
+  });
+
+  it("an empty but reachable page roster defers first reflect even when git documents already exist", async () => {
+    const out = await buildSessionStartContext({
+      cwd: "/repo/dir",
+      bankId: "bank-1",
+      cfg: resolveConfig(),
+      client: {
+        listDocumentIds: async () => new Set(["git:abc"]),
+        listPages: async () => ({ items: [] }),
+      },
+      hasGit: () => true,
+      startSeed: vi.fn(),
+    });
+    expect(out.deferInitialReflect).toBe(true);
   });
 
   // The old "declined state -> no seed" test is gone with the seed-state file itself: the live

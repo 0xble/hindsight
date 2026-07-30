@@ -182,50 +182,58 @@ describe("codex installer", () => {
   });
 });
 
-describe("gemini installer", () => {
-  const settingsPath = (ctx: InstallCtx) => join(ctx.home, ".gemini", "settings.json");
+describe("antigravity-cli installer", () => {
+  const hooksPath = (ctx: InstallCtx) => join(ctx.home, ".gemini", "config", "hooks.json");
+  const mcpPath = (ctx: InstallCtx) => join(ctx.home, ".gemini", "config", "mcp_config.json");
+  const settingsPath = (ctx: InstallCtx) =>
+    join(ctx.home, ".gemini", "antigravity-cli", "settings.json");
 
-  it("install writes SessionStart/BeforeAgent/SessionEnd (ms timeouts) plus mcpServers.hindsight", () => {
+  it("installs PreInvocation and Stop hooks plus mcpServers.hindsight", () => {
     const ctx = makeCtx();
-    expect(run(["install", "gemini"], ctx)).toBe(0);
-    const settings = readJson(settingsPath(ctx));
-    const inner = (ev: string) => settings.hooks[ev][0].hooks[0];
-    expect(inner("SessionStart").command).toContain("gemini-sessionstart-hook.js");
-    expect(inner("BeforeAgent").command).toContain("gemini-hook.js");
-    expect(inner("SessionEnd").command).toContain("gemini-stop-hook.js");
-    expect(inner("SessionStart").timeout).toBe(15000);
-    expect(inner("BeforeAgent").timeout).toBe(15000);
-    expect(inner("SessionEnd").timeout).toBe(30000);
-    expect(settings.mcpServers.hindsight).toEqual({
+    expect(run(["install", "antigravity-cli"], ctx)).toBe(0);
+    const hooks = readJson(hooksPath(ctx));
+    expect(hooks[MARKER].PreInvocation[0].command).toContain("antigravity-hook.js");
+    expect(hooks[MARKER].PreInvocation[0].timeout).toBe(30);
+    expect(hooks[MARKER].Stop[0].command).toContain("antigravity-stop-hook.js");
+    expect(hooks[MARKER].Stop[0].timeout).toBe(30);
+    expect(readJson(mcpPath(ctx)).mcpServers.hindsight).toEqual({
       command: "node",
       args: [join(ctx.dist, "mcp-server.js")],
-      env: { HINDSIGHT_MCP_HARNESS: "gemini" },
+      env: { HINDSIGHT_MCP_HARNESS: "antigravity-cli" },
+    });
+    expect(readJson(settingsPath(ctx)).statusLine).toEqual({
+      type: "command",
+      command: `node "${join(ctx.dist, "antigravity-statusline.js")}"`,
     });
   });
 
   it("preserves existing unrelated settings keys", () => {
     const ctx = makeCtx();
-    writeJsonAt(settingsPath(ctx), { auth: { selectedType: "oauth" }, theme: "dark" });
-    run(["install", "gemini"], ctx);
-    const settings = readJson(settingsPath(ctx));
-    expect(settings.auth).toEqual({ selectedType: "oauth" });
-    expect(settings.theme).toBe("dark");
+    writeJsonAt(hooksPath(ctx), { foreign: { enabled: false } });
+    run(["install", "antigravity-cli"], ctx);
+    expect(readJson(hooksPath(ctx)).foreign).toEqual({ enabled: false });
+  });
+
+  it("preserves an existing custom status line", () => {
+    const ctx = makeCtx();
+    writeJsonAt(settingsPath(ctx), { statusLine: { type: "command", command: "my-statusline" } });
+    run(["install", "antigravity-cli"], ctx);
+    expect(readJson(settingsPath(ctx)).statusLine.command).toBe("my-statusline");
   });
 
   it("uninstall removes only our hooks and mcp server", () => {
     const ctx = makeCtx();
-    writeJsonAt(settingsPath(ctx), {
-      auth: { selectedType: "oauth" },
+    writeJsonAt(mcpPath(ctx), {
       mcpServers: { other: { command: "other-tool" } },
     });
-    run(["install", "gemini"], ctx);
-    run(["uninstall", "gemini"], ctx);
-    const settings = readJson(settingsPath(ctx));
-    expect(settings.hooks).toBeUndefined();
-    expect(settings.mcpServers.hindsight).toBeUndefined();
-    expect(settings.mcpServers.other).toEqual({ command: "other-tool" });
-    expect(settings.auth).toEqual({ selectedType: "oauth" });
-    expect(JSON.stringify(settings)).not.toContain(MARKER);
+    run(["install", "antigravity-cli"], ctx);
+    run(["uninstall", "antigravity-cli"], ctx);
+    expect(readJson(hooksPath(ctx))).toEqual({});
+    const mcp = readJson(mcpPath(ctx));
+    expect(mcp.mcpServers.hindsight).toBeUndefined();
+    expect(mcp.mcpServers.other).toEqual({ command: "other-tool" });
+    expect(JSON.stringify(mcp)).not.toContain(MARKER);
+    expect(readJson(settingsPath(ctx)).statusLine).toBeUndefined();
   });
 });
 
@@ -295,6 +303,37 @@ describe("cursor-cli installer", () => {
   });
 });
 
+describe("grok-build installer", () => {
+  const configPath = (ctx: InstallCtx) => join(ctx.home, ".grok", "config.toml");
+
+  it("installs native Grok lifecycle hooks and MCP without Claude configuration", () => {
+    const ctx = makeCtx();
+    expect(run(["install", "grok-build"], ctx)).toBe(0);
+    const config = readFileSync(configPath(ctx), "utf8");
+    expect(config).toContain("[[hooks.SessionStart]]");
+    expect(config).toContain("[[hooks.UserPromptSubmit]]");
+    expect(config).toContain("[[hooks.Stop]]");
+    expect(config).toContain(join(ctx.dist, "grok-sessionstart-hook.js"));
+    expect(config).toContain(join(ctx.dist, "grok-hook.js"));
+    expect(config).toContain(join(ctx.dist, "grok-stop-hook.js"));
+    expect(config).toContain("[mcp_servers.hindsight]");
+    expect(config).toContain(join(ctx.dist, "mcp-server.js"));
+    expect(existsSync(join(ctx.home, ".claude"))).toBe(false);
+  });
+
+  it("removes only its marked Grok TOML block", () => {
+    const ctx = makeCtx();
+    mkdirSync(dirname(configPath(ctx)), { recursive: true });
+    writeFileSync(configPath(ctx), '[ui]\ntheme = "dark"\n');
+    run(["install", "grok-build"], ctx);
+    run(["uninstall", "grok-build"], ctx);
+    const config = readFileSync(configPath(ctx), "utf8");
+    expect(config).toContain('[ui]\ntheme = "dark"');
+    expect(config).not.toContain("HINDSIGHT_CODING_AGENTS_GROK");
+    expect(config).not.toContain("[mcp_servers.hindsight]");
+  });
+});
+
 describe("run() CLI behavior", () => {
   it("returns 1 for an unknown harness name and touches nothing", () => {
     const ctx = makeCtx();
@@ -322,28 +361,31 @@ describe("run() CLI behavior", () => {
   it("explicit harness names bypass detection — installs into an empty home", () => {
     const ctx = makeCtx();
     // nothing pre-exists in this fresh home, yet the named harness installs fine
-    expect(run(["install", "gemini", "opencode"], ctx)).toBe(0);
-    expect(existsSync(join(ctx.home, ".gemini", "settings.json"))).toBe(true);
+    expect(run(["install", "antigravity-cli", "opencode"], ctx)).toBe(0);
+    expect(existsSync(join(ctx.home, ".gemini", "config", "hooks.json"))).toBe(true);
     expect(existsSync(join(ctx.home, ".config", "opencode", "opencode.json"))).toBe(true);
   });
 
   it("first write to a pre-existing json creates <file>.hindsight-backup with the original content", () => {
     const ctx = makeCtx();
-    const path = join(ctx.home, ".gemini", "settings.json");
+    const path = join(ctx.home, ".gemini", "config", "hooks.json");
     writeJsonAt(path, { auth: { selectedType: "oauth" } });
     const original = readFileSync(path, "utf8");
-    run(["install", "gemini"], ctx);
-    run(["install", "gemini"], ctx); // second write must NOT overwrite the backup
+    run(["install", "antigravity-cli"], ctx);
+    run(["install", "antigravity-cli"], ctx); // second write must NOT overwrite the backup
     expect(readFileSync(`${path}.hindsight-backup`, "utf8")).toBe(original);
   });
 
-  it("exposes the five expected harnesses", () => {
+  it("exposes the supported harnesses", () => {
     expect(INSTALLERS.map((i) => i.name)).toEqual([
       "opencode",
       "claude-code",
       "codex",
-      "gemini",
+      "antigravity-cli",
+      "devin-cli",
       "cursor-cli",
+      "copilot-cli",
+      "grok-build",
     ]);
   });
 });
@@ -364,7 +406,7 @@ describe("npx-cache guard", () => {
 });
 
 describe("skill install across skills-capable hosts", () => {
-  it("copies the packaged skill for claude/codex(~/.agents)/gemini/cursor and uninstall removes each", () => {
+  it("copies the packaged skill for claude/codex(~/.agents)/antigravity/cursor and uninstall removes each", () => {
     const home = mkdtempSync(join(tmpdir(), "hs-inst-skill-"));
     const pkgRoot = mkdtempSync(join(tmpdir(), "hs-pkg-"));
     mkdirSync(join(pkgRoot, "skill"), { recursive: true });
@@ -376,7 +418,7 @@ describe("skill install across skills-capable hosts", () => {
     const targets: [string, string][] = [
       ["claude-code", join(home, ".claude", "skills")],
       ["codex", join(home, ".agents", "skills")],
-      ["gemini", join(home, ".gemini", "skills")],
+      ["antigravity-cli", join(home, ".gemini", "config", "skills")],
       ["cursor-cli", join(home, ".cursor", "skills")],
     ];
     run(["install", ...targets.map(([h]) => h)], ctx);

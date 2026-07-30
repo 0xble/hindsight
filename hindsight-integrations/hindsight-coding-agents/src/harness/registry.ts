@@ -38,12 +38,21 @@ const noRuntimeAdapter = (name: string, hint: string): HarnessAdapter => ({
   },
 });
 
-export const HARNESS_NAMES = ["opencode", "claude-code", "cursor-cli", "codex"];
+export const HARNESS_NAMES = [
+  "opencode",
+  "claude-code",
+  "cursor-cli",
+  "codex",
+  "antigravity-cli",
+  "devin-cli",
+];
 
 const HOOK_BINS: Record<string, string> = {
   "claude-code": "hindsight-claude-hook",
   "cursor-cli": "hindsight-cursor-hook",
   codex: "hindsight-codex-hook",
+  "antigravity-cli": "hindsight-antigravity-hook",
+  "devin-cli": "hindsight-devin-hook",
   // more hook harnesses: add a HookSpec entry point (see src/cursor-hook.ts) + a registration here.
 };
 
