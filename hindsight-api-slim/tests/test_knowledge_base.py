@@ -1,7 +1,7 @@
 """HTTP + engine integration tests for the knowledge base (folders + pages).
 
 Pages are seeded directly via the engine (deterministic content, no LLM) so the
-tree, OKF projection, move/rename, and cascade-delete behaviour can be asserted
+tree, markdown rendering, move/rename, and cascade-delete behaviour can be asserted
 without consolidation.
 """
 
@@ -271,7 +271,7 @@ class TestMoveRenameDelete:
         node = resp.json()
         assert node["kind"] == "page"
         assert set(node["tags"]) == {"type:runbook", "sales", "priority"}
-        # source_query persists — it surfaces as the OKF `description` on the page.
+        # source_query persists — it surfaces as the `description` on the page.
         page = (await api_client.get(f"/v1/default/banks/{_enc(bank_id)}/knowledge-base/pages/{ids.orders}")).json()
         assert page["description"] == "summarize every order fact and its revenue"
 
