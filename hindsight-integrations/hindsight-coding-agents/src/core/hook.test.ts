@@ -133,7 +133,7 @@ describe("buildHookOutput", () => {
       client,
       cacheFile,
     });
-    expect(client.reflect).toHaveBeenCalledWith("the prompt", {
+    expect(client.reflect).toHaveBeenCalledWith("investigate the failing retry tests", {
       budget: "high",
       timeoutMs: 25000,
     });
@@ -149,7 +149,7 @@ describe("buildHookOutput", () => {
       client,
       cacheFile,
     });
-    expect(client.reflect).toHaveBeenCalledWith("the prompt", {
+    expect(client.reflect).toHaveBeenCalledWith("investigate the failing retry tests", {
       budget: "high",
       timeoutMs: 5000,
     });
