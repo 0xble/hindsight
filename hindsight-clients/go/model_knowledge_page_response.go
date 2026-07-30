@@ -19,17 +19,17 @@ import (
 // checks if the KnowledgePageResponse type satisfies the MappedNullable interface at compile time
 var _ MappedNullable = &KnowledgePageResponse{}
 
-// KnowledgePageResponse A knowledge page rendered as an OKF document.
+// KnowledgePageResponse A knowledge page rendered as a markdown document.
 type KnowledgePageResponse struct {
 	Id string `json:"id"`
 	Name string `json:"name"`
-	// OKF document type — from a `type:<x>` tag, else 'knowledge-page'.
+	// Page type — from a `type:<x>` tag, else 'knowledge-page'.
 	Type string `json:"type"`
 	Description NullableString `json:"description,omitempty"`
 	Tags []string `json:"tags,omitempty"`
 	Timestamp NullableString `json:"timestamp,omitempty"`
 	Body NullableString `json:"body,omitempty"`
-	// The full OKF document: YAML frontmatter + markdown body.
+	// The full markdown document: YAML frontmatter + markdown body.
 	Markdown string `json:"markdown"`
 }
 

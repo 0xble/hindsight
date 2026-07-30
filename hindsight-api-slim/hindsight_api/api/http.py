@@ -18,7 +18,7 @@ from typing import Any, Literal, TypeVar
 from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, Query, Request, UploadFile
 from fastapi.middleware.gzip import GZipMiddleware
 
-from hindsight_api.api import okf
+from hindsight_api.api import page_markdown
 from hindsight_api.api.disconnect import ClientDisconnectCancellationMiddleware, get_scope_cancellation_token
 from hindsight_api.cancellation import OperationCancelledError
 from hindsight_api.engine.audit import (
@@ -2168,7 +2168,7 @@ class MentalModelListResponse(BaseModel):
 
 
 # =========================================================================
-# KNOWLEDGE BASE (folders + pages over mental models, projected to OKF)
+# KNOWLEDGE BASE (folders + pages over mental models, rendered as markdown)
 # =========================================================================
 
 
@@ -2186,7 +2186,7 @@ class KnowledgeNode(BaseModel):
     parent_id: str | None = None
     mental_model_id: str | None = Field(default=None, description="Backing mental model id (pages only).")
     managed: bool = Field(default=False, description="Client-set flag: true = system-owned, false = hand-authored.")
-    description: str | None = Field(default=None, description="Page source query (OKF `description`).")
+    description: str | None = Field(default=None, description="Page source query (the page's `description`).")
     tags: list[str] = FieldWithDefault(list)
     timestamp: str | None = Field(default=None, description="Last refresh (page) or last update (folder).")
     is_stale: bool | None = Field(
@@ -2243,27 +2243,27 @@ class CreateKnowledgePageResponse(BaseModel):
 
 
 class KnowledgePageResponse(BaseModel):
-    """A knowledge page rendered as an OKF document."""
+    """A knowledge page rendered as a markdown document."""
 
     id: str
     name: str
-    type: str = Field(description="OKF document type — from a `type:<x>` tag, else 'knowledge-page'.")
+    type: str = Field(description="Page type — from a `type:<x>` tag, else 'knowledge-page'.")
     description: str | None = Field(default=None, description="The source query that rebuilds the page.")
     tags: list[str] = FieldWithDefault(list)
     timestamp: str | None = Field(default=None, description="Last refresh time (falls back to creation).")
     body: str | None = Field(default=None, description="The page's synthesized markdown body.")
-    markdown: str = Field(description="The full OKF document: YAML frontmatter + markdown body.")
+    markdown: str = Field(description="The full markdown document: YAML frontmatter + markdown body.")
 
 
 class KnowledgePageBundleFile(BaseModel):
-    """One file in a portable OKF bundle."""
+    """One file in a portable markdown bundle."""
 
     path: str
     content: str
 
 
 class KnowledgePageBundleResponse(BaseModel):
-    """A portable OKF bundle — a flat set of markdown files (index + pages + logs)."""
+    """A portable markdown bundle — a flat set of markdown files (index + pages + logs)."""
 
     files: list[KnowledgePageBundleFile]
 
@@ -2318,8 +2318,8 @@ def _build_knowledge_tree(nodes: list[dict[str, Any]]) -> list[KnowledgeNode]:
 
 
 def _knowledge_page_response(node: dict[str, Any]) -> KnowledgePageResponse:
-    """Project a page node (with merged mental-model content) into an OKF document."""
-    page = okf.page_type(node.get("tags"))
+    """Project a page node (with merged mental-model content) into a markdown document."""
+    page = page_markdown.page_type(node.get("tags"))
     return KnowledgePageResponse(
         id=node["id"],
         name=node["name"],
@@ -2328,7 +2328,7 @@ def _knowledge_page_response(node: dict[str, Any]) -> KnowledgePageResponse:
         tags=page.display_tags,
         timestamp=node.get("last_refreshed_at") or node.get("created_at"),
         body=node.get("content"),
-        markdown=okf.render_document(node),
+        markdown=page_markdown.render_document(node),
     )
 
 
@@ -5247,10 +5247,10 @@ def _register_routes(app: FastAPI):
             raise HTTPException(status_code=500, detail=str(e))
 
     # =========================================================================
-    # KNOWLEDGE BASE ENDPOINTS (folders + pages, Open Knowledge Format)
+    # KNOWLEDGE BASE ENDPOINTS (folders + pages, markdown)
     # =========================================================================
-    # A hierarchy of folders and pages over mental models. Pages project to OKF
-    # documents (markdown body + YAML frontmatter); see api/okf.py. The static
+    # A hierarchy of folders and pages over mental models. Pages render to markdown
+    # documents (markdown body + YAML frontmatter); see api/page_markdown.py. The static
     # sub-paths (/tree, /folders, /pages, /graph, /export) are declared before
     # the /pages/{id} and /nodes/{id} path-parameter routes so they win.
 
@@ -5375,8 +5375,8 @@ def _register_routes(app: FastAPI):
     @app.get(
         "/v1/default/banks/{bank_id}/knowledge-base/export",
         response_model=KnowledgePageBundleResponse,
-        summary="Export the knowledge base as an OKF bundle",
-        description="Return a portable OKF bundle: a nested index.md, one <id>.md per page, and history logs.",
+        summary="Export the knowledge base as a markdown bundle",
+        description="Return a portable markdown bundle: a nested index.md, one <id>.md per page, and history logs.",
         operation_id="export_knowledge_base",
         tags=["Knowledge Base"],
     )
@@ -5384,10 +5384,12 @@ def _register_routes(app: FastAPI):
         bank_id: str,
         request_context: RequestContext = Depends(get_request_context),
     ):
-        """Export a bank's knowledge base as a flat OKF markdown bundle."""
+        """Export a bank's knowledge base as a flat markdown bundle."""
         try:
             nodes = await app.state.memory.list_knowledge_nodes(bank_id=bank_id, request_context=request_context)
-            files = [KnowledgePageBundleFile(path=okf.INDEX_FILENAME, content=okf.render_index(nodes))]
+            files = [
+                KnowledgePageBundleFile(path=page_markdown.INDEX_FILENAME, content=page_markdown.render_index(nodes))
+            ]
             for node in nodes:
                 if node.get("kind") != "page":
                     continue
@@ -5397,7 +5399,9 @@ def _register_routes(app: FastAPI):
                 if page is None:
                     continue
                 files.append(
-                    KnowledgePageBundleFile(path=okf.page_filename(node["id"]), content=okf.render_document(page))
+                    KnowledgePageBundleFile(
+                        path=page_markdown.page_filename(node["id"]), content=page_markdown.render_document(page)
+                    )
                 )
                 if node.get("mental_model_id"):
                     history = (
@@ -5411,7 +5415,8 @@ def _register_routes(app: FastAPI):
                     if history:
                         files.append(
                             KnowledgePageBundleFile(
-                                path=okf.log_filename(node["id"]), content=okf.render_log(page, history)
+                                path=page_markdown.log_filename(node["id"]),
+                                content=page_markdown.render_log(page, history),
                             )
                         )
             return KnowledgePageBundleResponse(files=files)
@@ -5467,7 +5472,7 @@ def _register_routes(app: FastAPI):
         "/v1/default/banks/{bank_id}/knowledge-base/pages/{page_id}",
         response_model=KnowledgePageResponse,
         summary="Get a knowledge-base page",
-        description="Return a single page as an OKF document (frontmatter + markdown body).",
+        description="Return a single page as a markdown document (frontmatter + markdown body).",
         operation_id="get_knowledge_page",
         tags=["Knowledge Base"],
     )
@@ -5476,7 +5481,7 @@ def _register_routes(app: FastAPI):
         page_id: str,
         request_context: RequestContext = Depends(get_request_context),
     ):
-        """Get a single page as an OKF document."""
+        """Get a single page as a markdown document."""
         try:
             node = await app.state.memory.get_knowledge_page(
                 bank_id=bank_id, page_id=page_id, request_context=request_context

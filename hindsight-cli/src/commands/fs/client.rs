@@ -4,7 +4,7 @@
 //!
 //! Two endpoints, fetched once per sync:
 //!  - GET /knowledge-base/tree   → the folder/page hierarchy (no page bodies)
-//!  - GET /knowledge-base/export → every page's OKF markdown in one bundle
+//!  - GET /knowledge-base/export → every page's markdown in one bundle
 //! We join them by page id, so a bank of any size is two HTTP calls.
 
 use anyhow::{anyhow, Result};
@@ -41,7 +41,7 @@ impl KnowledgeNode {
 pub struct KnowledgeSnapshot {
     /// Top-level folder/page nodes (each with nested `children`).
     pub roots: Vec<KnowledgeNode>,
-    /// page id → its full OKF markdown document (frontmatter + body).
+    /// page id → its full markdown document (frontmatter + body).
     pub content: HashMap<String, String>,
 }
 

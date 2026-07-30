@@ -1,17 +1,13 @@
-"""Open Knowledge Format (OKF) projection for knowledge pages.
+"""Markdown rendering for knowledge pages.
 
-Knowledge pages are a *read-only* OKF view over the existing mental models: each
-mental model is projected into an OKF document — a markdown body with YAML
-frontmatter (``type`` required; ``title``/``description``/``tags``/``timestamp``
-optional).
-
-See the Open Knowledge Format spec:
-https://github.com/GoogleCloudPlatform/knowledge-catalog/tree/main/okf
+Knowledge pages render as *read-only* markdown documents over the existing mental
+models: each mental model becomes a markdown body with a YAML frontmatter block
+(``type`` required; ``title``/``description``/``tags``/``timestamp`` optional).
 
 This module is intentionally pure: every function transforms the mental-model
 dicts returned by ``MemoryEngine.list_mental_models`` / ``get_mental_model`` and
-never touches the database. That keeps the OKF contract unit-testable without a
-DB or LLM and lets the HTTP layer stay a thin wrapper.
+never touches the database. That keeps rendering unit-testable without a DB or
+LLM and lets the HTTP layer stay a thin wrapper.
 """
 
 from __future__ import annotations
@@ -19,13 +15,13 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
-# OKF requires exactly one frontmatter field — ``type``. We default to this when
-# a page does not declare one via a ``type:<x>`` tag.
+# Every page carries exactly one ``type`` frontmatter field. We default to this
+# when a page does not declare one via a ``type:<x>`` tag.
 DEFAULT_PAGE_TYPE = "knowledge-page"
 
-# A page declares its OKF ``type`` through a tag of the form ``type:runbook``.
-# This keeps the projection schema-free (no new mental_models column): the type
-# is lifted from the existing tags array.
+# A page declares its ``type`` through a tag of the form ``type:runbook``.
+# This keeps rendering schema-free (no new mental_models column): the type is
+# lifted from the existing tags array.
 TYPE_TAG_PREFIX = "type:"
 
 INDEX_FILENAME = "index.md"
@@ -33,7 +29,7 @@ INDEX_FILENAME = "index.md"
 
 @dataclass(frozen=True)
 class PageType:
-    """A page's OKF ``type`` and the tags that remain after the type tag is split off."""
+    """A page's ``type`` and the tags that remain after the type tag is split off."""
 
     type: str
     display_tags: list[str]
@@ -51,7 +47,7 @@ def _scalar(value: Any) -> str:
 
 
 def page_type(tags: list[str] | None) -> PageType:
-    """Split an OKF ``type`` out of the tag list.
+    """Split a ``type`` out of the tag list.
 
     The first ``type:<x>`` tag wins; all ``type:`` tags are removed from the
     returned ``display_tags`` so they don't leak into the page's displayed tags.
@@ -74,7 +70,7 @@ def _timestamp(mm: dict[str, Any]) -> str | None:
 
 
 def frontmatter(mm: dict[str, Any]) -> dict[str, Any]:
-    """Build the ordered OKF frontmatter mapping for a mental model.
+    """Build the ordered frontmatter mapping for a mental model.
 
     ``None``/empty values are dropped by :func:`render_frontmatter`.
     """
@@ -107,23 +103,23 @@ def render_frontmatter(fm: dict[str, Any]) -> str:
 
 
 def render_document(mm: dict[str, Any]) -> str:
-    """Render a full OKF document: frontmatter block + markdown body."""
+    """Render a full markdown document: frontmatter block + markdown body."""
     body = (mm.get("content") or "").strip()
     return f"{render_frontmatter(frontmatter(mm))}\n\n{body}\n" if body else f"{render_frontmatter(frontmatter(mm))}\n"
 
 
 def page_filename(page_id: str) -> str:
-    """OKF bundle filename for a page id."""
+    """Bundle filename for a page id."""
     return f"{page_id}.md"
 
 
 def log_filename(page_id: str) -> str:
-    """OKF reserved per-page history filename."""
+    """Reserved per-page history filename."""
     return f"{page_id}.log.md"
 
 
 def render_index(nodes: list[dict[str, Any]]) -> str:
-    """Render the reserved ``index.md`` — nested OKF navigation over the tree.
+    """Render the reserved ``index.md`` — nested markdown navigation over the tree.
 
     ``nodes`` is the flat folder/page list (each with ``id``, ``kind``, ``name``,
     ``parent_id``); folders nest their children, pages link to their ``.md``.

@@ -7,6 +7,10 @@ NULL). Hierarchy is a single self-referential ``parent_id`` so folders can nest
 arbitrarily. Content stays in ``mental_models`` — this table is metadata + tree
 structure only.
 
+``managed`` lets a client tag a node as system-owned vs. hand-authored; it
+carries no server-side behaviour. A partial unique index keeps page names unique
+within a folder (case-insensitive; root pages compared under an empty parent).
+
 Revision ID: a9b8c7d6e5f4
 Revises: a1c9e7f3b2d8
 Create Date: 2026-06-25
@@ -47,6 +51,7 @@ def _pg_upgrade() -> None:
             name TEXT NOT NULL,
             mental_model_id VARCHAR(64),
             sort_order INTEGER NOT NULL DEFAULT 0,
+            managed BOOLEAN NOT NULL DEFAULT false,
             created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT now(),
             updated_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT now(),
             CONSTRAINT pk_knowledge_pages PRIMARY KEY (id),
@@ -63,15 +68,25 @@ def _pg_upgrade() -> None:
     op.execute(
         f"CREATE INDEX IF NOT EXISTS idx_kp_bank_parent ON {schema}knowledge_pages (bank_id, parent_id, sort_order)"
     )
+    # COALESCE(parent_id, '') so root-level pages (NULL parent) are also unique by
+    # name — NULLs would otherwise compare distinct and allow duplicates.
+    op.execute(
+        "CREATE UNIQUE INDEX IF NOT EXISTS uq_kp_folder_pagename "
+        f"ON {schema}knowledge_pages (bank_id, COALESCE(parent_id, ''), lower(name)) "
+        "WHERE kind = 'page'"
+    )
 
 
 def _pg_downgrade() -> None:
     schema = _pg_schema_prefix()
+    op.execute(f"DROP INDEX IF EXISTS {schema}uq_kp_folder_pagename")
     op.execute(f"DROP INDEX IF EXISTS {schema}idx_kp_bank_parent")
     op.execute(f"DROP TABLE IF EXISTS {schema}knowledge_pages")
 
 
 def _oracle_upgrade() -> None:
+    # No case-insensitive unique index on Oracle: `name` is a CLOB and cannot be
+    # indexed with lower(); page-name uniqueness is enforced on PG only.
     op.execute(
         """
         CREATE TABLE IF NOT EXISTS knowledge_pages (
@@ -82,6 +97,7 @@ def _oracle_upgrade() -> None:
             name CLOB NOT NULL,
             mental_model_id VARCHAR2(64),
             sort_order NUMBER DEFAULT 0 NOT NULL,
+            managed NUMBER(1) DEFAULT 0 NOT NULL,
             created_at TIMESTAMP WITH TIME ZONE DEFAULT SYSTIMESTAMP NOT NULL,
             updated_at TIMESTAMP WITH TIME ZONE DEFAULT SYSTIMESTAMP NOT NULL,
             CONSTRAINT pk_knowledge_pages PRIMARY KEY (id),

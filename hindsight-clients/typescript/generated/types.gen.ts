@@ -2094,7 +2094,7 @@ export type KnowledgeNode = {
   /**
    * Description
    *
-   * Page source query (OKF `description`).
+   * Page source query (the page's `description`).
    */
   description?: string | null;
   /**
@@ -2122,7 +2122,7 @@ export type KnowledgeNode = {
 /**
  * KnowledgePageBundleFile
  *
- * One file in a portable OKF bundle.
+ * One file in a portable markdown bundle.
  */
 export type KnowledgePageBundleFile = {
   /**
@@ -2138,7 +2138,7 @@ export type KnowledgePageBundleFile = {
 /**
  * KnowledgePageBundleResponse
  *
- * A portable OKF bundle — a flat set of markdown files (index + pages + logs).
+ * A portable markdown bundle — a flat set of markdown files (index + pages + logs).
  */
 export type KnowledgePageBundleResponse = {
   /**
@@ -2150,7 +2150,7 @@ export type KnowledgePageBundleResponse = {
 /**
  * KnowledgePageResponse
  *
- * A knowledge page rendered as an OKF document.
+ * A knowledge page rendered as a markdown document.
  */
 export type KnowledgePageResponse = {
   /**
@@ -2164,7 +2164,7 @@ export type KnowledgePageResponse = {
   /**
    * Type
    *
-   * OKF document type — from a `type:<x>` tag, else 'knowledge-page'.
+   * Page type — from a `type:<x>` tag, else 'knowledge-page'.
    */
   type: string;
   /**
@@ -2192,7 +2192,7 @@ export type KnowledgePageResponse = {
   /**
    * Markdown
    *
-   * The full OKF document: YAML frontmatter + markdown body.
+   * The full markdown document: YAML frontmatter + markdown body.
    */
   markdown: string;
 };

@@ -2264,8 +2264,8 @@
         "tags": [
           "Knowledge Base"
         ],
-        "summary": "Export the knowledge base as an OKF bundle",
-        "description": "Return a portable OKF bundle: a nested index.md, one <id>.md per page, and history logs.",
+        "summary": "Export the knowledge base as a markdown bundle",
+        "description": "Return a portable markdown bundle: a nested index.md, one <id>.md per page, and history logs.",
         "operationId": "export_knowledge_base",
         "parameters": [
           {
@@ -2409,7 +2409,7 @@
           "Knowledge Base"
         ],
         "summary": "Get a knowledge-base page",
-        "description": "Return a single page as an OKF document (frontmatter + markdown body).",
+        "description": "Return a single page as a markdown document (frontmatter + markdown body).",
         "operationId": "get_knowledge_page",
         "parameters": [
           {
@@ -9965,7 +9965,7 @@
               }
             ],
             "title": "Description",
-            "description": "Page source query (OKF `description`)."
+            "description": "Page source query (the page's `description`)."
           },
           "tags": {
             "items": {
@@ -10034,7 +10034,7 @@
           "content"
         ],
         "title": "KnowledgePageBundleFile",
-        "description": "One file in a portable OKF bundle."
+        "description": "One file in a portable markdown bundle."
       },
       "KnowledgePageBundleResponse": {
         "properties": {
@@ -10051,7 +10051,7 @@
           "files"
         ],
         "title": "KnowledgePageBundleResponse",
-        "description": "A portable OKF bundle \u2014 a flat set of markdown files (index + pages + logs)."
+        "description": "A portable markdown bundle \u2014 a flat set of markdown files (index + pages + logs)."
       },
       "KnowledgePageResponse": {
         "properties": {
@@ -10066,7 +10066,7 @@
           "type": {
             "type": "string",
             "title": "Type",
-            "description": "OKF document type \u2014 from a `type:<x>` tag, else 'knowledge-page'."
+            "description": "Page type \u2014 from a `type:<x>` tag, else 'knowledge-page'."
           },
           "description": {
             "anyOf": [
@@ -10115,7 +10115,7 @@
           "markdown": {
             "type": "string",
             "title": "Markdown",
-            "description": "The full OKF document: YAML frontmatter + markdown body."
+            "description": "The full markdown document: YAML frontmatter + markdown body."
           }
         },
         "type": "object",
@@ -10126,7 +10126,7 @@
           "markdown"
         ],
         "title": "KnowledgePageResponse",
-        "description": "A knowledge page rendered as an OKF document."
+        "description": "A knowledge page rendered as a markdown document."
       },
       "KnowledgePageSearchResponse": {
         "properties": {

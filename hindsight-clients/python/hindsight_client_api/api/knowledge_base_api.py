@@ -970,9 +970,9 @@ class KnowledgeBaseApi:
         _headers: Optional[Dict[StrictStr, Any]] = None,
         _host_index: Annotated[StrictInt, Field(ge=0, le=0)] = 0,
     ) -> KnowledgePageBundleResponse:
-        """Export the knowledge base as an OKF bundle
+        """Export the knowledge base as a markdown bundle
 
-        Return a portable OKF bundle: a nested index.md, one <id>.md per page, and history logs.
+        Return a portable markdown bundle: a nested index.md, one <id>.md per page, and history logs.
 
         :param bank_id: (required)
         :type bank_id: str
@@ -1042,9 +1042,9 @@ class KnowledgeBaseApi:
         _headers: Optional[Dict[StrictStr, Any]] = None,
         _host_index: Annotated[StrictInt, Field(ge=0, le=0)] = 0,
     ) -> ApiResponse[KnowledgePageBundleResponse]:
-        """Export the knowledge base as an OKF bundle
+        """Export the knowledge base as a markdown bundle
 
-        Return a portable OKF bundle: a nested index.md, one <id>.md per page, and history logs.
+        Return a portable markdown bundle: a nested index.md, one <id>.md per page, and history logs.
 
         :param bank_id: (required)
         :type bank_id: str
@@ -1114,9 +1114,9 @@ class KnowledgeBaseApi:
         _headers: Optional[Dict[StrictStr, Any]] = None,
         _host_index: Annotated[StrictInt, Field(ge=0, le=0)] = 0,
     ) -> RESTResponseType:
-        """Export the knowledge base as an OKF bundle
+        """Export the knowledge base as a markdown bundle
 
-        Return a portable OKF bundle: a nested index.md, one <id>.md per page, and history logs.
+        Return a portable markdown bundle: a nested index.md, one <id>.md per page, and history logs.
 
         :param bank_id: (required)
         :type bank_id: str
@@ -1529,7 +1529,7 @@ class KnowledgeBaseApi:
     ) -> KnowledgePageResponse:
         """Get a knowledge-base page
 
-        Return a single page as an OKF document (frontmatter + markdown body).
+        Return a single page as a markdown document (frontmatter + markdown body).
 
         :param bank_id: (required)
         :type bank_id: str
@@ -1605,7 +1605,7 @@ class KnowledgeBaseApi:
     ) -> ApiResponse[KnowledgePageResponse]:
         """Get a knowledge-base page
 
-        Return a single page as an OKF document (frontmatter + markdown body).
+        Return a single page as a markdown document (frontmatter + markdown body).
 
         :param bank_id: (required)
         :type bank_id: str
@@ -1681,7 +1681,7 @@ class KnowledgeBaseApi:
     ) -> RESTResponseType:
         """Get a knowledge-base page
 
-        Return a single page as an OKF document (frontmatter + markdown body).
+        Return a single page as a markdown document (frontmatter + markdown body).
 
         :param bank_id: (required)
         :type bank_id: str

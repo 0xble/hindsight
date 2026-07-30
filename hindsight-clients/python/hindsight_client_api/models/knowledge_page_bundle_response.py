@@ -25,7 +25,7 @@ from typing_extensions import Self
 
 class KnowledgePageBundleResponse(BaseModel):
     """
-    A portable OKF bundle — a flat set of markdown files (index + pages + logs).
+    A portable markdown bundle — a flat set of markdown files (index + pages + logs).
     """ # noqa: E501
     files: List[KnowledgePageBundleFile]
     __properties: ClassVar[List[str]] = ["files"]

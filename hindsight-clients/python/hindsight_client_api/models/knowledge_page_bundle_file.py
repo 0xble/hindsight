@@ -24,7 +24,7 @@ from typing_extensions import Self
 
 class KnowledgePageBundleFile(BaseModel):
     """
-    One file in a portable OKF bundle.
+    One file in a portable markdown bundle.
     """ # noqa: E501
     path: StrictStr
     content: StrictStr

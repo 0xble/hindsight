@@ -24,16 +24,16 @@ from typing_extensions import Self
 
 class KnowledgePageResponse(BaseModel):
     """
-    A knowledge page rendered as an OKF document.
+    A knowledge page rendered as a markdown document.
     """ # noqa: E501
     id: StrictStr
     name: StrictStr
-    type: StrictStr = Field(description="OKF document type — from a `type:<x>` tag, else 'knowledge-page'.")
+    type: StrictStr = Field(description="Page type — from a `type:<x>` tag, else 'knowledge-page'.")
     description: Optional[StrictStr] = None
     tags: Optional[List[StrictStr]] = None
     timestamp: Optional[StrictStr] = None
     body: Optional[StrictStr] = None
-    markdown: StrictStr = Field(description="The full OKF document: YAML frontmatter + markdown body.")
+    markdown: StrictStr = Field(description="The full markdown document: YAML frontmatter + markdown body.")
     __properties: ClassVar[List[str]] = ["id", "name", "type", "description", "tags", "timestamp", "body", "markdown"]
 
     model_config = ConfigDict(

@@ -19,7 +19,7 @@ import (
 // checks if the KnowledgePageBundleFile type satisfies the MappedNullable interface at compile time
 var _ MappedNullable = &KnowledgePageBundleFile{}
 
-// KnowledgePageBundleFile One file in a portable OKF bundle.
+// KnowledgePageBundleFile One file in a portable markdown bundle.
 type KnowledgePageBundleFile struct {
 	Path string `json:"path"`
 	Content string `json:"content"`

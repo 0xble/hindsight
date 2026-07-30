@@ -650,7 +650,7 @@ export class ControlPlaneClient {
   }
 
   /**
-   * Get a single knowledge page rendered as an OKF document.
+   * Get a single knowledge page rendered as a markdown document.
    */
   async getKnowledgePage(bankId: string, pageId: string) {
     return this.fetchApi<{
@@ -722,7 +722,7 @@ export class ControlPlaneClient {
   }
 
   /**
-   * Export the knowledge base as a portable OKF bundle (markdown files).
+   * Export the knowledge base as a portable markdown bundle (markdown files).
    */
   async exportKnowledgeBase(bankId: string) {
     return this.fetchApi<{ files: Array<{ path: string; content: string }> }>(

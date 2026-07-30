@@ -179,7 +179,7 @@ fn page_content(node: &KnowledgeNode, snapshot: &KnowledgeSnapshot) -> String {
             };
         }
     }
-    // Fallback OKF-ish doc when the page body hasn't synthesized yet.
+    // Fallback placeholder doc when the page body hasn't synthesized yet.
     let fm = stringify_frontmatter(&[
         ("id", FmValue::Str(node.id.clone())),
         ("type", FmValue::Str("knowledge-page".to_string())),

@@ -12169,7 +12169,7 @@ class MemoryEngine(MemoryEngineInterface):
             "created_at": row["created_at"].isoformat() if row["created_at"] else None,
             "updated_at": row["updated_at"].isoformat() if row["updated_at"] else None,
         }
-        # Page rows are returned LEFT JOINed to mental_models so the OKF
+        # Page rows are returned LEFT JOINed to mental_models so the markdown
         # projection (type/tags/description) needs no second round-trip.
         if "mm_tags" in row:
             node["tags"] = list(row["mm_tags"] or [])
@@ -12308,7 +12308,7 @@ class MemoryEngine(MemoryEngineInterface):
             await self.delete_mental_model(bank_id, mm["id"], request_context=request_context)
             return None
         node = self._row_to_knowledge_node(row)
-        # Surface the mental-model metadata so the caller can render OKF or
+        # Surface the mental-model metadata so the caller can render markdown or
         # schedule a content refresh without a second fetch.
         node["tags"] = list(mm.get("tags") or [])
         node["source_query"] = mm.get("source_query")
@@ -12356,7 +12356,7 @@ class MemoryEngine(MemoryEngineInterface):
     async def get_knowledge_page(
         self, bank_id: str, page_id: str, *, request_context: "RequestContext"
     ) -> dict[str, Any] | None:
-        """Return a page node merged with its mental model's content (for OKF)."""
+        """Return a page node merged with its mental model's content (for markdown rendering)."""
         await self._authenticate_tenant(request_context)
         backend = await self._get_backend()
         async with acquire_with_retry(backend) as conn:

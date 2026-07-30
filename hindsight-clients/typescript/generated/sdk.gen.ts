@@ -738,9 +738,9 @@ export const createKnowledgePage = <ThrowOnError extends boolean = false>(
   });
 
 /**
- * Export the knowledge base as an OKF bundle
+ * Export the knowledge base as a markdown bundle
  *
- * Return a portable OKF bundle: a nested index.md, one <id>.md per page, and history logs.
+ * Return a portable markdown bundle: a nested index.md, one <id>.md per page, and history logs.
  */
 export const exportKnowledgeBase = <ThrowOnError extends boolean = false>(
   options: Options<ExportKnowledgeBaseData, ThrowOnError>
@@ -768,7 +768,7 @@ export const searchKnowledgeBase = <ThrowOnError extends boolean = false>(
 /**
  * Get a knowledge-base page
  *
- * Return a single page as an OKF document (frontmatter + markdown body).
+ * Return a single page as a markdown document (frontmatter + markdown body).
  */
 export const getKnowledgePage = <ThrowOnError extends boolean = false>(
   options: Options<GetKnowledgePageData, ThrowOnError>

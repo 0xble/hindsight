@@ -432,9 +432,9 @@ func (r ApiExportKnowledgeBaseRequest) Execute() (*KnowledgePageBundleResponse, 
 }
 
 /*
-ExportKnowledgeBase Export the knowledge base as an OKF bundle
+ExportKnowledgeBase Export the knowledge base as a markdown bundle
 
-Return a portable OKF bundle: a nested index.md, one <id>.md per page, and history logs.
+Return a portable markdown bundle: a nested index.md, one <id>.md per page, and history logs.
 
  @param ctx context.Context - for authentication, logging, cancellation, deadlines, tracing, etc. Passed from http.Request or context.Background().
  @param bankId
@@ -679,7 +679,7 @@ func (r ApiGetKnowledgePageRequest) Execute() (*KnowledgePageResponse, *http.Res
 /*
 GetKnowledgePage Get a knowledge-base page
 
-Return a single page as an OKF document (frontmatter + markdown body).
+Return a single page as a markdown document (frontmatter + markdown body).
 
  @param ctx context.Context - for authentication, logging, cancellation, deadlines, tracing, etc. Passed from http.Request or context.Background().
  @param bankId

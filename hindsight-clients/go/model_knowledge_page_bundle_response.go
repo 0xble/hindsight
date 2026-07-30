@@ -19,7 +19,7 @@ import (
 // checks if the KnowledgePageBundleResponse type satisfies the MappedNullable interface at compile time
 var _ MappedNullable = &KnowledgePageBundleResponse{}
 
-// KnowledgePageBundleResponse A portable OKF bundle — a flat set of markdown files (index + pages + logs).
+// KnowledgePageBundleResponse A portable markdown bundle — a flat set of markdown files (index + pages + logs).
 type KnowledgePageBundleResponse struct {
 	Files []KnowledgePageBundleFile `json:"files"`
 }

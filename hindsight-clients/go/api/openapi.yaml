@@ -1541,8 +1541,8 @@ paths:
       - Knowledge Base
   /v1/default/banks/{bank_id}/knowledge-base/export:
     get:
-      description: "Return a portable OKF bundle: a nested index.md, one <id>.md per\
-        \ page, and history logs."
+      description: "Return a portable markdown bundle: a nested index.md, one <id>.md\
+        \ per page, and history logs."
       operationId: export_knowledge_base
       parameters:
       - explode: false
@@ -1574,7 +1574,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
           description: Validation Error
-      summary: Export the knowledge base as an OKF bundle
+      summary: Export the knowledge base as a markdown bundle
       tags:
       - Knowledge Base
   /v1/default/banks/{bank_id}/knowledge-base/search:
@@ -1642,7 +1642,7 @@ paths:
       - Knowledge Base
   /v1/default/banks/{bank_id}/knowledge-base/pages/{page_id}:
     get:
-      description: Return a single page as an OKF document (frontmatter + markdown
+      description: Return a single page as a markdown document (frontmatter + markdown
         body).
       operationId: get_knowledge_page
       parameters:
@@ -6600,7 +6600,7 @@ components:
       - name
       title: KnowledgeNode
     KnowledgePageBundleFile:
-      description: One file in a portable OKF bundle.
+      description: One file in a portable markdown bundle.
       example:
         path: path
         content: content
@@ -6616,8 +6616,8 @@ components:
       - path
       title: KnowledgePageBundleFile
     KnowledgePageBundleResponse:
-      description: A portable OKF bundle — a flat set of markdown files (index + pages
-        + logs).
+      description: A portable markdown bundle — a flat set of markdown files (index
+        + pages + logs).
       example:
         files:
         - path: path
@@ -6633,7 +6633,7 @@ components:
       - files
       title: KnowledgePageBundleResponse
     KnowledgePageResponse:
-      description: A knowledge page rendered as an OKF document.
+      description: A knowledge page rendered as a markdown document.
       example:
         name: name
         markdown: markdown
@@ -6653,7 +6653,7 @@ components:
           title: Name
           type: string
         type:
-          description: "OKF document type — from a `type:<x>` tag, else 'knowledge-page'."
+          description: "Page type — from a `type:<x>` tag, else 'knowledge-page'."
           title: Type
           type: string
         description:
@@ -6671,7 +6671,7 @@ components:
           nullable: true
           type: string
         markdown:
-          description: "The full OKF document: YAML frontmatter + markdown body."
+          description: "The full markdown document: YAML frontmatter + markdown body."
           title: Markdown
           type: string
       required:
