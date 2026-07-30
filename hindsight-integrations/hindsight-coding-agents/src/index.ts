@@ -38,10 +38,11 @@ const HindsightCodingAgentsPlugin: Plugin = async (input) => {
 
   const runtime = opencodeAdapter.createRuntime(core) as Awaited<ReturnType<Plugin>>;
 
-  // SessionStart-equivalent: cold-check the bank and (if cold) kick off the background seed, and
-  // compute the knowledge preamble the first turn injects. Awaited so the preamble is ready before
-  // the first prompt; it is internally best-effort and bounded by the client's timeouts.
-  await core.seedIfCold(projectDir);
+  // SessionStart-equivalent: cold-check the bank, kick off the background engine, compute the
+  // knowledge preamble. Fire-and-forget — opencode BLOCKS ITS BOOT on plugin init, so this must
+  // never gate startup on a network round-trip (a stalled server froze the whole TUI). onPrompt
+  // already tolerates an empty preamble until this resolves.
+  void core.seedIfCold(projectDir);
 
   // Keeping the bank current needs no separate path: seedIfCold fired the deepen engine, and the
   // engine's idempotent git pass (cfg.gitIngest) ingests whatever is new — syncing IS re-seeding.

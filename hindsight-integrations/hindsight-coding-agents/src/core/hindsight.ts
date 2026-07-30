@@ -48,10 +48,13 @@ export class HindsightClient {
   }
 
   async req(method: string, url: string, body?: unknown): Promise<Response> {
+    // Hard cap on EVERY request: a stalled server (pool deadlock, network) must degrade to a
+    // memoryless turn — never hang a host that awaits us (opencode blocks its BOOT on plugin init).
     const r = await fetch(url, {
       method,
       headers: this.headers(),
       body: body ? JSON.stringify(body) : undefined,
+      signal: AbortSignal.timeout(15_000),
     });
     if (!r.ok && r.status !== 404)
       throw new Error(`${method} ${url} -> ${r.status} ${await r.text()}`);
