@@ -26,12 +26,10 @@ import { applyBankConfig, loadConfig } from "./config";
 import { diag } from "./diag";
 import { log, setLogLevel } from "./log";
 import { startBackgroundSeed } from "./seed";
-import { syncCompanionSkill } from "./skill-sync";
-import { startCodebaseSurvey, type SurveyHarness } from "./survey";
 import type { ClientOpts } from "./hindsight";
 import { HindsightClient } from "./hindsight";
 import { brandWord } from "./brand";
-import { buildSystemInjection } from "./inject";
+import { buildReflectQuery, buildSystemInjection } from "./inject";
 import type { PageRef } from "./knowledge-injection";
 import { buildRosterRefresh, parsePageList } from "./knowledge-injection";
 
@@ -44,12 +42,6 @@ export interface HookEventFields {
 export interface HookSpec {
   /** Harness name — config `harnesses.<name>` section, {harness} template field, diag records. */
   harness: string;
-  /** Harnesses with NO SessionStart-equivalent hook (Cursor): ALSO fire the cold-repo survey from
-   *  the first prompt (hosts with a SessionStart hook run the survey there; double-triggering it
-   *  from the prompt too would race two headless survey agents). The ingestion ENGINE itself is
-   *  fired from the first prompt on EVERY harness — it is lock-protected and idempotent, and it is
-   *  the safety net for sessions that predate the install (their SessionStart never fired). */
-  ensureSeed?: boolean;
   /** Read the fields out of the harness's stdin event (shapes differ per harness). */
   parse(event: Record<string, unknown>): HookEventFields;
   /** Wrap injected context (and an optional user-facing notice) in the harness's native
@@ -61,8 +53,6 @@ export interface HookSpec {
 interface HookClient {
   reflect(query: string, opts: { budget?: string; timeoutMs?: number }): Promise<string>;
   listPages(): Promise<unknown>;
-  /** Only needed by ensureSeed's cold check (optional so test doubles stay minimal). */
-  listDocumentIds?(tag: string): Promise<Set<string>>;
 }
 
 /**
@@ -117,7 +107,7 @@ export async function buildHookOutput(args: {
     reflectRanThisTurn = true;
     const t0 = Date.now();
     try {
-      reflectAnswer = await client.reflect(prompt, {
+      reflectAnswer = await client.reflect(buildReflectQuery(prompt), {
         budget: "high",
         timeoutMs: Math.min(cfg.reflectTimeoutMs, HOOK_REFLECT_CAP_MS),
       });
@@ -125,6 +115,9 @@ export async function buildHookOutput(args: {
         ms: Date.now() - t0,
         chars: reflectAnswer.length,
         query: prompt.slice(0, 80),
+        // Verbatim injected synthesis — the ONLY durable record of what the agent actually saw
+        // (post-mortems otherwise depend on the harness happening to persist hook context).
+        answer: reflectAnswer.slice(0, 8000),
       });
     } catch (e) {
       reflectAnswer = ""; // ran and failed — don't retry every turn; the diag trail records it
@@ -247,28 +240,11 @@ export async function runHook(
   );
 
   // Safety net on EVERY harness: on the session's FIRST prompt (no cache file yet), fire the
-  // ingestion engine. Normally SessionStart already did — the engine's per-bank lock makes this a
-  // no-op — but a session that PREDATES the install has no SessionStart behind it, and without
-  // this its bank silently never gets pages/gitlog (seen in the wild: empty knowledge pages with
-  // no error anywhere). The survey stays SessionStart-owned except for hosts without one.
+  // ingestion engine. Normally the shared SessionStart lifecycle already did — the engine's
+  // per-bank lock makes this a no-op — but a session that predates installation never received
+  // SessionStart. This limited fallback heals that case without duplicating any survey logic.
   if (cfg.autoSeed !== false && !existsSync(cacheFile)) {
     startBackgroundSeed(cwd, { limit: cfg.seedLimit });
-    syncCompanionSkill(spec.harness); // hosts without SessionStart still self-update the skill
-    if (spec.ensureSeed && cfg.codebaseSurvey !== false && client.listDocumentIds) {
-      void client
-        .listDocumentIds("source:git")
-        .then((ids) => {
-          if (ids.size === 0) {
-            diag(spec.harness, "seed_started", { bank: deriveBankId(cfg, cwd, spec.harness) });
-            startCodebaseSurvey(cwd, {
-              harness: spec.harness as SurveyHarness,
-              model: cfg.surveyModel,
-              budgetUsd: cfg.surveyBudgetUsd,
-            });
-          }
-        })
-        .catch(() => {});
-    }
   }
 
   const output = await buildHookOutput({ harness: spec.harness, prompt, cfg, client, cacheFile });

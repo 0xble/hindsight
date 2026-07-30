@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { resolveConfig } from "./config";
 import { buildHookOutput, runHook } from "./hook";
+import { buildReflectQuery } from "./inject";
 
 let root: string;
 let cacheFile: string;
@@ -133,7 +134,7 @@ describe("buildHookOutput", () => {
       client,
       cacheFile,
     });
-    expect(client.reflect).toHaveBeenCalledWith("the prompt", {
+    expect(client.reflect).toHaveBeenCalledWith(buildReflectQuery("the prompt"), {
       budget: "high",
       timeoutMs: 25000,
     });
@@ -149,7 +150,7 @@ describe("buildHookOutput", () => {
       client,
       cacheFile,
     });
-    expect(client.reflect).toHaveBeenCalledWith("the prompt", {
+    expect(client.reflect).toHaveBeenCalledWith(buildReflectQuery("the prompt"), {
       budget: "high",
       timeoutMs: 5000,
     });

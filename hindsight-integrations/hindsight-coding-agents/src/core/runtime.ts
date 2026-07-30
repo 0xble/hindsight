@@ -20,7 +20,7 @@ import type { HindsightClient } from "./hindsight";
 import type { PageRef } from "./knowledge-injection";
 import { buildRosterRefresh, parsePageList } from "./knowledge-injection";
 import { brandWord } from "./brand";
-import { buildSystemInjection } from "./inject";
+import { buildReflectQuery, buildSystemInjection } from "./inject";
 import { buildKnowledgeTools, type ToolSpec } from "./knowledge-tools";
 import { retainLiveSession, type TransportTurn } from "./chat";
 import { buildSessionStartContext } from "./session-start";
@@ -112,7 +112,7 @@ export class RuntimeCore {
       reflectRanThisTurn = true;
       const t0 = Date.now();
       try {
-        reflectAnswer = await this.client.reflect(prompt, {
+        reflectAnswer = await this.client.reflect(buildReflectQuery(prompt), {
           budget: "high",
           timeoutMs: this.cfg.reflectTimeoutMs,
         });
@@ -120,6 +120,9 @@ export class RuntimeCore {
           ms: Date.now() - t0,
           chars: reflectAnswer.length,
           query: prompt.slice(0, 80),
+          // Verbatim injected synthesis — the ONLY durable record of what the agent actually saw
+          // (post-mortems otherwise depend on the harness happening to persist hook context).
+          answer: reflectAnswer.slice(0, 8000),
         });
       } catch (e) {
         reflectAnswer = ""; // ran and failed — don't retry every turn; the diag trail records it
