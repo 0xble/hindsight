@@ -5,6 +5,7 @@ export default defineConfig({
     index: "src/index.ts",
     deepen: "src/deepen.ts",
     installer: "src/installer.ts",
+    "opencode-tui": "src/opencode-tui.ts",
     status: "src/status.ts",
     "claude-hook": "src/claude-hook.ts",
     "claude-stop-hook": "src/claude-stop-hook.ts",

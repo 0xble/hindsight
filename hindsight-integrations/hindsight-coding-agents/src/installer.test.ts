@@ -237,14 +237,14 @@ describe("opencode installer", () => {
     expect(run(["install", "opencode"], ctx)).toBe(0);
     run(["install", "opencode"], ctx);
     const cfg = readJson(cfgPath(ctx));
-    expect(cfg.plugin).toEqual([ctx.pkgRoot]);
+    expect(cfg.plugin).toEqual([ctx.pkgRoot, join(ctx.dist, "opencode-tui.js")]);
   });
 
   it("preserves other plugin entries", () => {
     const ctx = makeCtx();
     writeJsonAt(cfgPath(ctx), { plugin: ["some-other-plugin"] });
     run(["install", "opencode"], ctx);
-    expect(readJson(cfgPath(ctx)).plugin).toEqual(["some-other-plugin", ctx.pkgRoot]);
+    expect(readJson(cfgPath(ctx)).plugin).toEqual(["some-other-plugin", ctx.pkgRoot, join(ctx.dist, "opencode-tui.js")]);
   });
 
   it("uninstall removes our entry and deletes the plugin key when empty", () => {

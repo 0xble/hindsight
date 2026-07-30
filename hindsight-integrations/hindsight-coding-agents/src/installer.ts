@@ -117,7 +117,11 @@ const opencode: HarnessInstaller = {
     const path = join(c.home, ".config", "opencode", "opencode.json");
     const cfg = readJson(path);
     const plugins: string[] = Array.isArray(cfg.plugin) ? cfg.plugin : [];
-    cfg.plugin = [...plugins.filter((p) => !String(p).includes(MARKER)), c.pkgRoot];
+    cfg.plugin = [
+      ...plugins.filter((p) => !String(p).includes(MARKER)),
+      c.pkgRoot, // server plugin (memory runtime)
+      join(c.dist, "opencode-tui.js"), // TUI companion (banner + reflect toasts)
+    ];
     writeJson(path, cfg);
     c.log?.(`opencode: plugin registered in ${path}`);
   },
