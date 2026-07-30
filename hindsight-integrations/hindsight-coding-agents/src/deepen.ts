@@ -90,8 +90,21 @@ const LOCK = join(LOCK_DIR, `deepen-${encodeURIComponent(FINAL_BANK ?? "")}.lock
 
 function acquireLock(): boolean {
   try {
-    const held = JSON.parse(readFileSync(LOCK, "utf8")) as { ts?: number };
-    if (held.ts && Date.now() - held.ts < LOCK_STALE_MS) return false; // live run in progress
+    const held = JSON.parse(readFileSync(LOCK, "utf8")) as { pid?: number; ts?: number };
+    if (held.ts && Date.now() - held.ts < LOCK_STALE_MS) {
+      // TTL alone is not enough: a killed run would block its bank for LOCK_STALE_MS. The lock
+      // already records the holder's pid — if that process is gone, the lock is stale NOW.
+      let holderAlive = false;
+      if (held.pid) {
+        try {
+          process.kill(held.pid, 0);
+          holderAlive = true;
+        } catch {
+          /* ESRCH: holder is dead — treat as stale */
+        }
+      }
+      if (holderAlive) return false; // live run in progress
+    }
   } catch {
     /* no/invalid lock — free */
   }
