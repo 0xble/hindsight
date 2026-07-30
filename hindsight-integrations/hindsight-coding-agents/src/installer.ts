@@ -10,7 +10,7 @@
  *   claude-code  3 hooks in ~/.claude/settings.json + `claude mcp add` (user scope)
  *   codex        3 hooks in ~/.codex/hooks.json + [features]/[mcp_servers] in config.toml
  *   gemini       3 hooks + mcpServers in ~/.gemini/settings.json
- *   cursor-cli   beforeSubmitPrompt hook in ~/.cursor/hooks.json + ~/.cursor/mcp.json
+ *   cursor-cli   beforeSubmitPrompt + stop hooks in ~/.cursor/hooks.json + ~/.cursor/mcp.json
  *
  * IDEMPOTENT: our entries are recognized by the package path in their command ("hindsight-coding-
  * agents"), replaced on re-install (so moving the package just needs `install` again) and removed
@@ -117,11 +117,7 @@ const opencode: HarnessInstaller = {
     const path = join(c.home, ".config", "opencode", "opencode.json");
     const cfg = readJson(path);
     const plugins: string[] = Array.isArray(cfg.plugin) ? cfg.plugin : [];
-    cfg.plugin = [
-      ...plugins.filter((p) => !String(p).includes(MARKER)),
-      c.pkgRoot, // server plugin (memory runtime)
-      join(c.dist, "opencode-tui.js"), // TUI companion (banner + reflect toasts)
-    ];
+    cfg.plugin = [...plugins.filter((p) => !String(p).includes(MARKER)), c.pkgRoot];
     writeJson(path, cfg);
     c.log?.(`opencode: plugin registered in ${path}`);
   },
@@ -346,6 +342,12 @@ const cursor: HarnessInstaller = {
     cfg.hooks.beforeSubmitPrompt = mergeHookEvent(cfg.hooks.beforeSubmitPrompt, {
       command: `node "${join(c.dist, "cursor-hook.js")}"`,
     });
+    // Cursor's stop event is fire-and-forget, so its handler owns the complete, fail-open
+    // transcript upsert rather than trying to return data to the agent loop.
+    cfg.hooks.stop = mergeHookEvent(cfg.hooks.stop, {
+      command: `node "${join(c.dist, "cursor-stop-hook.js")}"`,
+      timeout: 30,
+    });
     writeJson(hooksPath, cfg);
     const mcpPath = join(c.home, ".cursor", "mcp.json");
     const mcp = readJson(mcpPath);
@@ -354,7 +356,7 @@ const cursor: HarnessInstaller = {
       hindsight: { command: "node", args: [join(c.dist, "mcp-server.js")] },
     };
     writeJson(mcpPath, mcp);
-    c.log?.(`cursor-cli: hook merged into ${hooksPath}, MCP into ${mcpPath}`);
+    c.log?.(`cursor-cli: hooks merged into ${hooksPath}, MCP into ${mcpPath}`);
     installSkill(c, join(c.home, ".cursor", "skills"));
   },
   uninstall(c) {
@@ -363,6 +365,7 @@ const cursor: HarnessInstaller = {
       const cfg = readJson(hooksPath);
       if (cfg.hooks) {
         setOrDelete(cfg.hooks, "beforeSubmitPrompt", stripOurs(cfg.hooks.beforeSubmitPrompt));
+        setOrDelete(cfg.hooks, "stop", stripOurs(cfg.hooks.stop));
         if (!Object.keys(cfg.hooks).length) delete cfg.hooks;
         writeJson(hooksPath, cfg);
       }
@@ -376,7 +379,7 @@ const cursor: HarnessInstaller = {
       }
     }
     uninstallSkill(c, join(c.home, ".cursor", "skills"));
-    c.log?.("cursor-cli: hook + MCP entry + skill removed");
+    c.log?.("cursor-cli: hooks + MCP entry + skill removed");
   },
 };
 

@@ -35,6 +35,13 @@ const HindsightCodingAgentsPlugin: Plugin = async (input) => {
   if (cfg.disabled) return {}; // per-bank opt-out (banks.<id> override)
   const client = new HindsightClient({ apiUrl: cfg.apiUrl, apiToken: cfg.apiToken, bank: bankId });
   const core = new RuntimeCore(client, bankId, cfg);
+  // Visible presence via opencode's own notice API (POST /tui/show-toast) — never stderr.
+  const oc = (input as { client?: { tui?: { showToast?: (o: unknown) => Promise<unknown> } } })?.client;
+  if (oc?.tui?.showToast) {
+    core.setNotifier((title, message) => {
+      void oc.tui!.showToast!({ body: { title, message, variant: "info", duration: 6000 } }).catch(() => {});
+    });
+  }
 
   const runtime = opencodeAdapter.createRuntime(core) as Awaited<ReturnType<Plugin>>;
 

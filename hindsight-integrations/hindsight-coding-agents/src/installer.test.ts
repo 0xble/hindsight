@@ -237,14 +237,14 @@ describe("opencode installer", () => {
     expect(run(["install", "opencode"], ctx)).toBe(0);
     run(["install", "opencode"], ctx);
     const cfg = readJson(cfgPath(ctx));
-    expect(cfg.plugin).toEqual([ctx.pkgRoot, join(ctx.dist, "opencode-tui.js")]);
+    expect(cfg.plugin).toEqual([ctx.pkgRoot]);
   });
 
   it("preserves other plugin entries", () => {
     const ctx = makeCtx();
     writeJsonAt(cfgPath(ctx), { plugin: ["some-other-plugin"] });
     run(["install", "opencode"], ctx);
-    expect(readJson(cfgPath(ctx)).plugin).toEqual(["some-other-plugin", ctx.pkgRoot, join(ctx.dist, "opencode-tui.js")]);
+    expect(readJson(cfgPath(ctx)).plugin).toEqual(["some-other-plugin", ctx.pkgRoot]);
   });
 
   it("uninstall removes our entry and deletes the plugin key when empty", () => {
@@ -267,12 +267,15 @@ describe("cursor-cli installer", () => {
   const hooksPath = (ctx: InstallCtx) => join(ctx.home, ".cursor", "hooks.json");
   const mcpPath = (ctx: InstallCtx) => join(ctx.home, ".cursor", "mcp.json");
 
-  it("install writes the beforeSubmitPrompt hook and the mcp.json server entry", () => {
+  it("install writes beforeSubmitPrompt and stop hooks plus the mcp.json server entry", () => {
     const ctx = makeCtx();
     expect(run(["install", "cursor-cli"], ctx)).toBe(0);
     const hooks = readJson(hooksPath(ctx)).hooks;
     expect(hooks.beforeSubmitPrompt).toHaveLength(1);
     expect(hooks.beforeSubmitPrompt[0].command).toContain(join(ctx.dist, "cursor-hook.js"));
+    expect(hooks.stop).toHaveLength(1);
+    expect(hooks.stop[0].command).toContain(join(ctx.dist, "cursor-stop-hook.js"));
+    expect(hooks.stop[0].timeout).toBe(30);
     const mcp = readJson(mcpPath(ctx));
     expect(mcp.mcpServers.hindsight).toEqual({
       command: "node",

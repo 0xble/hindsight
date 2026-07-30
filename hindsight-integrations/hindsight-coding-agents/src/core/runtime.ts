@@ -33,6 +33,8 @@ export class RuntimeCore {
   private readonly sessionState = new Map<string, { startTs: string; retainedUsers: number }>();
   private lastInjection = ""; // most recent turn's injection block, keyed by nothing (see getInjection)
   private readonly reflectBySession = new Map<string, string>(); // sessionId -> cached reflect ("" = ran, nothing)
+  /** Host-notice channel (opencode: client.tui.showToast via the adapter). Optional, fail-open. */
+  private notify?: (title: string, message: string) => void;
   private pagesCache: PageRef[] | undefined; // page roster (ids + titles), refreshed on cadence
   private preamble = ""; // SessionStart-equivalent knowledge preamble, computed once at seedIfCold
 
@@ -42,6 +44,10 @@ export class RuntimeCore {
     private readonly cfg: Config
   ) {
     setLogLevel(cfg.logLevel);
+  }
+
+  setNotifier(notify: (title: string, message: string) => void): void {
+    this.notify = notify;
   }
 
   /** The hindsight_* knowledge + recall tools, bound to this bank, for the harness to register natively. */
@@ -74,8 +80,12 @@ export class RuntimeCore {
       });
       // The seed note is user-facing; opencode has no visible-system channel at load, so surface it
       // on stderr (shows in the plugin log / console) rather than dropping it.
-      // Banner: opencode renders plugin stderr inside the TUI — log it instead of printing.
-      if (out.systemMessage) log.info(HARNESS, out.systemMessage.replace(/\x1b\[[0-9;]*m/g, ""));
+      // Banner: via the host's toast API when available (stderr corrupts the TUI); always logged.
+      if (out.systemMessage) {
+        const plain = out.systemMessage.replace(/\x1b\[[0-9;]*m/g, "");
+        log.info(HARNESS, plain);
+        this.notify?.("Hindsight", plain.replace(/^Hindsight is /, "Is "));
+      }
       this.preamble = out.additionalContext ?? "";
     } catch {
       /* seeding + preamble are best-effort — a cold-check failure never breaks the agent */
@@ -152,10 +162,9 @@ export class RuntimeCore {
     // trail lives in the plugin log instead.
     if (reflectRanThisTurn && reflectAnswer) {
       const q = prompt.replace(/\s+/g, " ").trim();
-      log.info(HARNESS, "reflect goal", {
-        query: q.slice(0, 80),
-        preview: reflectAnswer.replace(/\s+/g, " ").trim().slice(0, 140),
-      });
+      const preview = reflectAnswer.replace(/\s+/g, " ").trim().slice(0, 140);
+      log.info(HARNESS, "reflect goal", { query: q.slice(0, 80), preview });
+      this.notify?.("Hindsight · recalled past decisions", preview);
     }
     if (refreshDue) {
       blocks.push(buildRosterRefresh(this.pagesCache));
