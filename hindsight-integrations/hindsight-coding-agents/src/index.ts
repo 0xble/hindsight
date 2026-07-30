@@ -18,6 +18,7 @@
 import type { Plugin } from "@opencode-ai/plugin";
 import { deriveBankId } from "./core/bank";
 import { applyBankConfig, loadConfig } from "./core/config";
+import { log } from "./core/log";
 import { HindsightClient } from "./core/hindsight";
 import { RuntimeCore } from "./core/runtime";
 import { opencodeAdapter } from "./harness/opencode";
@@ -36,10 +37,29 @@ const HindsightCodingAgentsPlugin: Plugin = async (input) => {
   const client = new HindsightClient({ apiUrl: cfg.apiUrl, apiToken: cfg.apiToken, bank: bankId });
   const core = new RuntimeCore(client, bankId, cfg);
   // Visible presence via opencode's own notice API (POST /tui/show-toast) — never stderr.
-  const oc = (input as { client?: { tui?: { showToast?: (o: unknown) => Promise<unknown> } } })?.client;
+  const oc = (input as { client?: { tui?: { showToast?: (o: unknown) => Promise<unknown> } } })
+    ?.client;
+  // opencode injects the v1 SDK client: showToast takes {body: {...}} and RESOLVES with
+  // {data|error} (openapi-fetch style) instead of rejecting — inspect the result, not .catch.
+  log.debug("opencode", "toast channel", { wired: Boolean(oc?.tui?.showToast) });
   if (oc?.tui?.showToast) {
+    // The toast event is not durable: one published before the TUI mounts and subscribes to the
+    // event stream is silently lost. A warm bank makes the seed banner fire <1s after plugin init,
+    // well before mount — so hold any toast until ~3s past init (later toasts go out immediately).
+    const initAt = Date.now();
     core.setNotifier((title, message) => {
-      void oc.tui!.showToast!({ body: { title, message, variant: "info", duration: 6000 } }).catch(() => {});
+      const wait = Math.max(0, 3000 - (Date.now() - initAt));
+      setTimeout(() => {
+        void oc
+          .tui!.showToast!({ body: { title, message, variant: "info", duration: 6000 } })
+          .then((r: unknown) => {
+            const err = (r as { error?: unknown })?.error;
+            if (err) log.debug("opencode", "toast rejected", { error: JSON.stringify(err).slice(0, 200) });
+          })
+          .catch((e: unknown) =>
+            log.debug("opencode", "toast failed", { error: String(e).slice(0, 120) })
+          );
+      }, wait).unref?.();
     });
   }
 
