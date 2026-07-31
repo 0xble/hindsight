@@ -1,19 +1,19 @@
 ---
-title: "How to Actually Evaluate an Agent-Memory System (2026)"
-description: "A practical framework for evaluating agent memory: retrieval beyond vector similarity, conflict resolution, freshness, security, self-hosting, and how to read LongMemEval."
+title: "The 10 Things to Look For in an Agent-Memory System"
+description: "The 10 things that separate a real agent-memory system from a demo: retrieval, conflict resolution, freshness, security, self-hosting, observability, and more."
 authors: [benfrank241]
 slug: "2026/07/31/evaluate-agent-memory-system"
 date: 2026-07-31T12:00
-tags: [hindsight, agent-memory, evaluation, benchmark, longmemeval]
+tags: [hindsight, agent-memory, evaluation, benchmark, beam]
 image: /img/blog/evaluate-agent-memory-system.png
 hide_table_of_contents: true
 ---
 
-![Evaluating agent memory: a framework for judging retrieval, conflicts, freshness, and security](/img/blog/evaluate-agent-memory-system.png)
+![The 10 things to look for in an agent-memory system: retrieval, conflicts, freshness, security, and more](/img/blog/evaluate-agent-memory-system.png)
 
 Most agent-memory evaluations test one thing: given a query, did the system return the right chunk. Then the system ships, and the failures show up somewhere else entirely — a preference the agent never updated, a fact from six months ago it treated as current, a customer's card number sitting in a bank three tenants can read.
 
-Retrieval accuracy is table stakes. It's necessary and nowhere near sufficient. If you're choosing an agent-memory system (or building one), the real question is how it behaves on the dimensions that don't show up in a quickstart demo. This is a framework for evaluating those dimensions, plus a checklist you can run against any candidate.
+Retrieval accuracy is table stakes. It's necessary and nowhere near sufficient. If you're choosing an agent-memory system (or building one), the real question is how it behaves on the dimensions that don't show up in a quickstart demo. These are the ten things that actually separate a real system from a demo, plus a checklist you can run against any candidate.
 
 <!-- truncate -->
 
@@ -32,22 +32,22 @@ Almost every demo evaluates step four in isolation: seed a bank with clean facts
 
 So the first rule of evaluating agent memory: **test the whole lifecycle, not just the read.** Everything below is organized around that.
 
-## The agent-memory dimensions that actually matter
+## The 10 things to look for in an agent-memory system
 
-Here is the short version as a scannable table. Each row is a capability, what to test, and the red flag that tells you the system is weaker than its landing page.
+Here is the short version as a scannable table: ten things to look for, what to test for each, and the red flag that tells you the system is weaker than its landing page.
 
-| Dimension | What to test | Red flag |
-|---|---|---|
-| Retrieval beyond similarity | Multi-hop and entity/time-scoped queries, not just paraphrase lookups | Pure vector top-k, no reranking |
-| Extraction & consolidation | Store the same fact 5 ways; count duplicates and invented facts | Raw transcript storage, growing duplicates |
-| Entity resolution | Refer to one thing by three names across sessions | Three separate entities for one concept |
-| Conflict resolution | Change a stored preference; ask again | Both old and new returned, no supersession |
-| Freshness / temporal | "What did I say last week?"; superseded facts | No event dates, no valid-time model |
-| Test-time learning | Teach a fact mid-session; use it in the same session | New info ignored until a re-index job runs |
-| Security | Feed it a secret/PII; check what got stored and who can read it | Secrets stored verbatim, no scoping |
-| Data ownership | Can you self-host it with your own database? | Cloud-only, or bring-your-own external DBs |
-| Observability | Ask why a memory was recalled | Opaque; no trace of what matched and why |
-| Multi-tenant scoping | Store as tenant A, recall as tenant B | Leakage across users with default config |
+| # | What to look for | How to test | Red flag |
+|---|---|---|---|
+| 1 | Retrieval beyond similarity | Multi-hop and entity/time-scoped queries, not just paraphrase lookups | Pure vector top-k, no reranking |
+| 2 | Extraction & consolidation | Store the same fact 5 ways; count duplicates and invented facts | Raw transcript storage, growing duplicates |
+| 3 | Entity resolution | Refer to one thing by three names across sessions | Three separate entities for one concept |
+| 4 | Conflict resolution | Change a stored preference; ask again | Both old and new returned, no supersession |
+| 5 | Freshness / temporal | "What did I say last week?"; superseded facts | No event dates, no valid-time model |
+| 6 | Test-time learning | Teach a fact mid-session; use it in the same session | New info ignored until a re-index job runs |
+| 7 | Security | Feed it a secret/PII; check what got stored and who can read it | Secrets stored verbatim, no scoping |
+| 8 | Data ownership | Can you self-host it with your own database? | Cloud-only, or bring-your-own external DBs |
+| 9 | Observability | Ask why a memory was recalled | Opaque; no trace of what matched and why |
+| 10 | Multi-tenant scoping | Store as tenant A, recall as tenant B | Leakage across users with default config |
 
 The rest of this section takes the capability rows one at a time. The operational rows (security, ownership, observability, scoping) get their own section after.
 
@@ -117,11 +117,11 @@ If you serve more than one user, the single most important architectural questio
 
 ## How to read a benchmark without fooling yourself
 
-Benchmarks are useful and routinely misread. LongMemEval is the standard for long-term conversational memory, and it is more than a single number: it scores information extraction, cross-session reasoning, knowledge updating, temporal reasoning, and — the one people forget — **refusal of unknowns**, whether the system correctly says "I don't know" instead of confabulating. A high aggregate score built on weak refusal behavior is a liability, not an asset.
+Public benchmarks are useful context and a bad substitute for your own eval. The first trap is age. The benchmarks most people cite — LoCoMo, LongMemEval — were designed in the 32K-context era, when you physically could not fit a long history into one model call, so needing a memory system was the premise. With million-token windows, a naive "dump everything into context" baseline now scores competitively on them. A high number no longer distinguishes a real memory architecture from a context stuffer.
 
-Three habits keep you honest. Read the **split**: "94.6% on LongMemEval-s" means something specific, and a score with no split named means nothing. Read the **model**, because the same memory system swings several points depending on the LLM doing extraction and answering. And read the **methodology**, because a self-reported number with no reproducible harness is marketing.
+[BEAM](https://arxiv.org/pdf/2510.27246) ("Beyond a Million Tokens") is the one worth watching, because it tests at context lengths up to **10 million tokens**, where stuffing is physically impossible and only a system that can retrieve from a too-large pool survives. If you want a single public number to sanity-check retrieval at scale, look there rather than at the older datasets. (For the record, Hindsight currently leads BEAM's 10M tier at 64.1% versus the next-best 40.6% — [the details are here](/blog/2026/04/02/beam-sota) — but treat that as a reason to trust the architecture, not as your evaluation.)
 
-For reference, on the LongMemEval-s split, Hindsight scores 94.6%, the highest published score among major commercial agent-memory frameworks, on the public [Agent Memory Benchmark](https://agentmemorybenchmark.ai/) leaderboard; SuperMemory is at 81.6%, Zep at 71.2%, and Mem0 at 67.6%. Several newer research systems sit at or above Hindsight, so this is a claim about production-ready commercial frameworks, not a claim of universal supremacy. How that leaderboard is [actually run](/blog/2026/03/23/agent-memory-benchmark) — the harness, the prompts, the scoring — matters more than the ranking. The point is not which number is biggest. The point is that you now know how to interrogate any number a vendor hands you, including ours.
+Whatever number you look at, read it critically: what context length and split it used, which model did the extraction and answering (the same memory system swings several points across LLMs), and whether the harness is reproducible. Then set it aside. **No public benchmark reflects your data, your query mix, or your failure costs. The only eval that predicts your production behavior is the one you build on your own domain — which is the next section.**
 
 ## Run the eval yourself
 
@@ -137,20 +137,18 @@ You do not need a research lab to do this well. You need a small, honest harness
 
 Copy this. A candidate that cannot check most of these boxes is a demo, not a memory system.
 
-| ✅ | Capability |
-|---|---|
-| ☐ | Retrieval combines more than vector similarity (entity, temporal, graph) |
-| ☐ | Results are reranked, not raw top-k |
-| ☐ | Facts are extracted and deduplicated, not stored as raw transcript |
-| ☐ | Entity resolution merges aliases across sessions |
-| ☐ | Conflicting facts are superseded, with history retrievable |
-| ☐ | Facts carry event dates; relative-time queries work |
-| ☐ | New information is usable in the same session (or you know it isn't) |
-| ☐ | Secrets and PII are scrubbed before storage |
-| ☐ | Self-hostable with a license and datastore you accept |
-| ☐ | Retrieval is inspectable — you can see why something was recalled |
-| ☐ | Tenant isolation is explicit and you have tested a cross-tenant recall |
-| ☐ | Benchmark claims name a split, a model, and a reproducible method |
+| # | ✅ | What to look for |
+|---|---|---|
+| 1 | ☐ | Retrieval combines more than vector similarity (entity, temporal, graph) and reranks, not raw top-k |
+| 2 | ☐ | Facts are extracted and deduplicated, not stored as raw transcript |
+| 3 | ☐ | Entity resolution merges aliases across sessions |
+| 4 | ☐ | Conflicting facts are superseded, with history retrievable |
+| 5 | ☐ | Facts carry event dates; relative-time queries work |
+| 6 | ☐ | New information is usable in the same session (or you know it isn't) |
+| 7 | ☐ | Secrets and PII are scrubbed before storage |
+| 8 | ☐ | Self-hostable with a license and datastore you accept |
+| 9 | ☐ | Retrieval is inspectable — you can see why something was recalled |
+| 10 | ☐ | Tenant isolation is explicit and you have tested a cross-tenant recall |
 
 ## Evaluate the whole system, not the demo
 
