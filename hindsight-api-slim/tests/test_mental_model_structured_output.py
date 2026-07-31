@@ -57,9 +57,7 @@ class TestMentalModelStructuredOutput:
 
         async def fake_reflect_async(**kwargs):
             calls.append(kwargs)
-            return _canned_reflect_result(
-                "# Team\n\nRegenerated.", structured_output={"summary": "A small team."}
-            )
+            return _canned_reflect_result("# Team\n\nRegenerated.", structured_output={"summary": "A small team."})
 
         monkeypatch.setattr(memory, "reflect_async", fake_reflect_async)
 
