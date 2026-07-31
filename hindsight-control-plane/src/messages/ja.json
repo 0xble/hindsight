@@ -1468,7 +1468,8 @@
     "factTypeExperience": "経験",
     "factTypeObservation": "オブザベーション",
     "actionClearContent": "内容をクリア",
-    "structuredOutput": "構造化出力"
+    "structuredOutput": "構造化出力",
+    "responseSchemaTitle": "構造化出力スキーマ"
   },
   "constellation": {
     "instructions": "スクロールでズーム · ドラッグで移動 · ホバーで探索 · クリックで選択",

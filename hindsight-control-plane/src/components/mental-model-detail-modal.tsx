@@ -1202,6 +1202,16 @@ function ConfigurationTab({ mentalModel }: { mentalModel: MentalModel }) {
           </InfoCard>
         </div>
       )}
+
+      {trigger.response_schema && (
+        <div className="md:col-span-2">
+          <InfoCard title={t("responseSchemaTitle")} icon={<Settings className="w-3.5 h-3.5" />}>
+            <pre className="text-xs font-mono bg-muted/40 rounded p-3 overflow-x-auto border border-border/60">
+              {JSON.stringify(trigger.response_schema, null, 2)}
+            </pre>
+          </InfoCard>
+        </div>
+      )}
     </div>
   );
 }

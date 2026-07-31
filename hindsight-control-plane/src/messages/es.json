@@ -1468,7 +1468,8 @@
     "factTypeExperience": "experiencia",
     "factTypeObservation": "observación",
     "actionClearContent": "Borrar contenido",
-    "structuredOutput": "Salida estructurada"
+    "structuredOutput": "Salida estructurada",
+    "responseSchemaTitle": "Esquema de salida estructurada"
   },
   "constellation": {
     "instructions": "Desplaza para hacer zoom · Arrastra para mover · Pasa el cursor para explorar · Haz clic para seleccionar",

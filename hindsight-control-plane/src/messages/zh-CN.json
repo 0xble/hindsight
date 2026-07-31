@@ -1468,7 +1468,8 @@
     "factTypeExperience": "经验",
     "factTypeObservation": "观察",
     "actionClearContent": "清除内容",
-    "structuredOutput": "结构化输出"
+    "structuredOutput": "结构化输出",
+    "responseSchemaTitle": "结构化输出模式"
   },
   "constellation": {
     "instructions": "滚动缩放 · 拖拽平移 · 悬停探索 · 点击选择",

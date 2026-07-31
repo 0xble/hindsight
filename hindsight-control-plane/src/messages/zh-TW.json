@@ -1468,7 +1468,8 @@
     "factTypeExperience": "經驗",
     "factTypeObservation": "觀察",
     "actionClearContent": "清除內容",
-    "structuredOutput": "結構化輸出"
+    "structuredOutput": "結構化輸出",
+    "responseSchemaTitle": "結構化輸出結構描述"
   },
   "constellation": {
     "instructions": "滾動縮放 · 拖曳平移 · 懸停探索 · 按一下選取",

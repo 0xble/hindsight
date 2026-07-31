@@ -1468,7 +1468,8 @@
     "factTypeExperience": "경험",
     "factTypeObservation": "관찰",
     "actionClearContent": "콘텐츠 지우기",
-    "structuredOutput": "구조화된 출력"
+    "structuredOutput": "구조화된 출력",
+    "responseSchemaTitle": "구조화된 출력 스키마"
   },
   "constellation": {
     "instructions": "스크롤하여 확대/축소 · 드래그하여 이동 · 호버하여 탐색 · 클릭하여 선택",

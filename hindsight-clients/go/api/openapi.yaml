@@ -5674,6 +5674,8 @@ components:
           fact_types:
           - world
           - world
+          response_schema:
+            key: ""
           exclude_mental_model_ids:
           - exclude_mental_model_ids
           - exclude_mental_model_ids
@@ -7602,6 +7604,8 @@ components:
         fact_types:
         - world
         - world
+        response_schema:
+          key: ""
         exclude_mental_model_ids:
         - exclude_mental_model_ids
         - exclude_mental_model_ids
