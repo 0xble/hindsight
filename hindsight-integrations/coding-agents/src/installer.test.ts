@@ -428,6 +428,21 @@ describe("cursor-cli installer", () => {
 describe("grok-build installer", () => {
   const configPath = (ctx: InstallCtx) => join(ctx.home, ".grok", "config.toml");
 
+  it("re-install REPLACES the block so a moved package is repointed, not left stale", () => {
+    const ctx = makeCtx();
+    run(["install", "grok-build"], ctx);
+    // Simulate the package moving (the exact case that broke: the install used to skip whenever a
+    // block already existed, leaving dead paths behind and no way to repair them but by hand).
+    const moved = { ...ctx, dist: join("/opt", MARKER, "moved-dist") };
+    run(["install", "grok-build"], moved);
+
+    const toml = readFileSync(configPath(ctx), "utf8");
+    expect(toml).toContain(join("/opt", MARKER, "moved-dist"));
+    expect(toml).not.toContain(ctx.dist); // the old path is gone, not merely appended past
+    // Exactly one block — a replace, not an accumulation.
+    expect(toml.match(/HINDSIGHT_CODING_AGENTS_GROK_START/g)).toHaveLength(1);
+  });
+
   it("installs native Grok lifecycle hooks and MCP without Claude configuration", () => {
     const ctx = makeCtx();
     expect(run(["install", "grok-build"], ctx)).toBe(0);
@@ -496,6 +511,28 @@ describe("run() CLI behavior", () => {
     run(["install", "antigravity-cli"], ctx);
     run(["install", "antigravity-cli"], ctx); // second write must NOT overwrite the backup
     expect(readFileSync(`${path}.hindsight-backup`, "utf8")).toBe(original);
+  });
+
+  it("MARKER identifies our entries under BOTH the npm and repo-checkout layouts", () => {
+    // Dedupe-on-reinstall and uninstall both key off this substring appearing in the package path.
+    // It silently stopped matching a checkout when the directory dropped its `hindsight-` prefix.
+    expect("/usr/lib/node_modules/@vectorize-io/hindsight-coding-agents/dist").toContain(MARKER);
+    expect("/repo/hindsight-integrations/coding-agents/dist").toContain(MARKER);
+  });
+
+  it("re-install from a repo-checkout path leaves exactly one hook entry per event", () => {
+    const ctx = makeCtx();
+    const repoStyle = {
+      ...ctx,
+      pkgRoot: "/repo/hindsight-integrations/coding-agents",
+      dist: "/repo/hindsight-integrations/coding-agents/dist",
+    };
+    run(["install", "claude-code"], repoStyle);
+    run(["install", "claude-code"], repoStyle);
+    const hooks = readJson(join(ctx.home, ".claude", "settings.json")).hooks;
+    for (const ev of ["SessionStart", "UserPromptSubmit", "Stop"]) {
+      expect(hooks[ev]).toHaveLength(1);
+    }
   });
 
   it("exposes the supported harnesses", () => {

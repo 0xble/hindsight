@@ -36,7 +36,17 @@ import { dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { HOOK_HARNESSES, type HookHarnessName } from "./harness/hook-lifecycle";
 
-export const MARKER = "hindsight-coding-agents";
+/**
+ * Substring that identifies OUR entries in a host's config, so a re-install replaces them and
+ * `uninstall` removes exactly what we added.
+ *
+ * It must appear in the package path under BOTH layouts: npm
+ * (`node_modules/@vectorize-io/hindsight-coding-agents/...`) and a repo checkout
+ * (`hindsight-integrations/coding-agents/...`). The old value was the full package name, which the
+ * repo path stopped containing when the directory dropped its `hindsight-` prefix — silently
+ * breaking dedupe-on-reinstall and uninstall for anyone running from a checkout.
+ */
+export const MARKER = "coding-agents";
 
 export interface InstallCtx {
   home: string;
@@ -603,6 +613,8 @@ const copilot: HarnessInstaller = {
 
 const GROK_MARKER_START = "# HINDSIGHT_CODING_AGENTS_GROK_START";
 const GROK_MARKER_END = "# HINDSIGHT_CODING_AGENTS_GROK_END";
+/** Our sentinel-delimited block; shared by install (replace) and uninstall (strip). */
+const GROK_BLOCK_RE = new RegExp(`\\n?${GROK_MARKER_START}[\\s\\S]*?${GROK_MARKER_END}\\n?`);
 
 const grok: HarnessInstaller = {
   name: "grok-build",
@@ -610,22 +622,24 @@ const grok: HarnessInstaller = {
   install(c) {
     const path = join(c.home, ".grok", "config.toml");
     const existing = existsSync(path) ? readFileSync(path, "utf8") : "";
-    if (!existing.includes(GROK_MARKER_START)) {
-      // Grok executes this shell command verbatim. Quote the absolute script path so a globally
-      // installed package still works when its installation directory contains spaces.
-      const command = (entry: string) => JSON.stringify(`node "${join(c.dist, entry)}"`);
-      const tomlString = (value: string) => JSON.stringify(value);
-      const block =
-        `\n${GROK_MARKER_START}\n` +
-        `[[hooks.SessionStart]]\n  [[hooks.SessionStart.hooks]]\n  type = \"command\"\n  command = ${command("grok-sessionstart-hook.js")}\n  timeout = 30\n\n` +
-        `[[hooks.UserPromptSubmit]]\n  [[hooks.UserPromptSubmit.hooks]]\n  type = \"command\"\n  command = ${command("grok-hook.js")}\n  timeout = 30\n\n` +
-        `[[hooks.Stop]]\n  [[hooks.Stop.hooks]]\n  type = \"command\"\n  command = ${command("grok-stop-hook.js")}\n  timeout = 60\n\n` +
-        `[mcp_servers.hindsight]\ncommand = \"node\"\nargs = [${tomlString(join(c.dist, "mcp-server.js"))}]\n${GROK_MARKER_END}\n`;
-      if (existsSync(path) && !existsSync(`${path}.hindsight-backup`))
-        copyFileSync(path, `${path}.hindsight-backup`);
-      mkdirSync(dirname(path), { recursive: true });
-      writeFileSync(path, `${existing.replace(/\n*$/, "\n")}${block}`);
-    }
+    // REPLACE any previous block rather than skipping when one exists. Skipping made this
+    // install-once-only: after the package moved, a re-install silently left the old (now dead)
+    // paths in place, which is exactly the case `install` is meant to repair.
+    const withoutOurs = existing.replace(GROK_BLOCK_RE, "\n");
+    // Grok executes this shell command verbatim. Quote the absolute script path so a globally
+    // installed package still works when its installation directory contains spaces.
+    const command = (entry: string) => JSON.stringify(`node "${join(c.dist, entry)}"`);
+    const tomlString = (value: string) => JSON.stringify(value);
+    const block =
+      `\n${GROK_MARKER_START}\n` +
+      `[[hooks.SessionStart]]\n  [[hooks.SessionStart.hooks]]\n  type = \"command\"\n  command = ${command("grok-sessionstart-hook.js")}\n  timeout = 30\n\n` +
+      `[[hooks.UserPromptSubmit]]\n  [[hooks.UserPromptSubmit.hooks]]\n  type = \"command\"\n  command = ${command("grok-hook.js")}\n  timeout = 30\n\n` +
+      `[[hooks.Stop]]\n  [[hooks.Stop.hooks]]\n  type = \"command\"\n  command = ${command("grok-stop-hook.js")}\n  timeout = 60\n\n` +
+      `[mcp_servers.hindsight]\ncommand = \"node\"\nargs = [${tomlString(join(c.dist, "mcp-server.js"))}]\n${GROK_MARKER_END}\n`;
+    if (existsSync(path) && !existsSync(`${path}.hindsight-backup`))
+      copyFileSync(path, `${path}.hindsight-backup`);
+    mkdirSync(dirname(path), { recursive: true });
+    writeFileSync(path, `${withoutOurs.replace(/\n*$/, "\n")}${block}`);
     installSkill(c, join(c.home, ".grok", "skills"));
     c.log?.(`grok-build: native hooks + MCP installed in ${path}`);
   },
@@ -633,10 +647,7 @@ const grok: HarnessInstaller = {
     const path = join(c.home, ".grok", "config.toml");
     if (existsSync(path)) {
       const existing = readFileSync(path, "utf8");
-      const cleaned = existing.replace(
-        new RegExp(`\\n?${GROK_MARKER_START}[\\s\\S]*?${GROK_MARKER_END}\\n?`),
-        "\n"
-      );
+      const cleaned = existing.replace(GROK_BLOCK_RE, "\n");
       if (cleaned !== existing) writeFileSync(path, cleaned);
     }
     uninstallSkill(c, join(c.home, ".grok", "skills"));
