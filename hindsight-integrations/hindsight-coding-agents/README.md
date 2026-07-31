@@ -2,7 +2,7 @@
 
 Long-term project memory for **coding agents**, backed by [Hindsight](https://vectorize.io/hindsight).
 One package, several agents: a shared reflect-and-inject core with a thin entry point per agent
-(**opencode**, **Claude Code**, **Codex CLI**, **Antigravity CLI**, **Cursor CLI**, **GitHub Copilot CLI**, **Grok Build**). Ingestion is fully
+(**opencode**, **Kilo CLI**, **Cline CLI**, **Claude Code**, **Codex CLI**, **Antigravity CLI**, **Cursor CLI**, **GitHub Copilot CLI**, **Grok Build**). Ingestion is fully
 automatic — there is no setup command: a repo's git history and conversations flow into its memory
 bank in the background as you work.
 
@@ -44,8 +44,11 @@ in front of the agent at the moment it starts working, and keeps a curated set o
 1. **Write back.** The live session is upserted into the bank as a JSON transcript — user/assistant
    turns plus a compact `action` turn per tool call (tool name + primary target, e.g.
    `Edit boltons/strutils.py`; no arguments or outputs) — so sessions compound into memory without
-   burying decisions in mechanical noise. On Stop for the hook harnesses, every few turns for the
-   opencode plugin.
+   burying decisions in mechanical noise. On Stop for the hook harnesses; for the plugin harnesses
+   (opencode, Kilo) on the turn cadence **and** again when the session goes idle. The idle pass is
+   what captures the agent's reply: the per-turn hook fires while the host is building a request, so
+   the transcript it sees always stops short of the answer that request produces — without the idle
+   pass, write-back lagged a turn and a session's final exchange was never stored at all.
 1. **Never break the agent — never fail silently.** A failed reflect or page fetch degrades to
    no-memory, but every outcome (`reflect_ok` / `reflect_empty` / `reflect_failed`, `pages_ok` /
    `pages_failed`, with duration and error) is appended to a diagnostics file, so a memory-less
@@ -62,18 +65,20 @@ tools → write-back); they differ only in how that surface is delivered.
 | harness           | kind              | lifecycle wiring                                                                                                               | install                                                              |
 | ----------------- | ----------------- | ------------------------------------------------------------------------------------------------------------------------------ | -------------------------------------------------------------------- |
 | `opencode`        | persistent plugin | one process: load-time seed, session reflect + page sections, native tools, write-back                                         | add the package dir to `opencode.json` → `"plugin": [...]`           |
+| `kilo`            | persistent plugin | identical to `opencode` — Kilo CLI is an opencode fork, so it loads the same runtime (no hooks system)                         | `hindsight-coding-agents install kilo` → `kilo.json[c]` `"plugin"`   |
 | `claude-code`     | per-prompt hooks  | `SessionStart` (seed) + `UserPromptSubmit` (reflect + pages) + `Stop` (write-back) + MCP                                       | the [`../claude-code-v2`](../claude-code-v2) wrapper's dev-installer |
 | `codex`           | per-prompt hooks  | same three hooks in `~/.codex/hooks.json` (+ `codex_hooks = true`, CLI ≥ 0.116)                                                | the [`../codex-v2`](../codex-v2) wrapper's dev-installer             |
 | `antigravity-cli` | lifecycle hooks   | `PreInvocation` (seed + reflect) + `Stop` (write-back) + MCP, plus a native colored `Hindsight · <bank>` status-line indicator | `hindsight-coding-agents install antigravity-cli`                    |
 | `cursor-cli`      | lifecycle hooks   | `sessionStart` (seed + pages) + `beforeSubmitPrompt` (reflect) + `stop` (write-back)                                           | hooks in Cursor `hooks.json`                                         |
 | `copilot-cli`     | lifecycle hooks   | `sessionStart` (seed + pages) + `userPromptTransformed` (reflect) + `agentStop` (write-back) + MCP                             | `~/.copilot/hooks/hindsight-coding-agents.json` + `mcp-config.json`  |
 | `grok-build`      | lifecycle hooks   | `SessionStart` (seed) + `Stop` (write-back) + MCP                                                                              | native `~/.grok/config.toml` — no Claude Code dependency             |
+| `cline-cli`       | persistent plugin | native `beforeModel` (seed/reflect/pages) + `afterRun` (write-back) + MCP                                                      | `cline plugin install` (run by the installer)                        |
 
 The hook-based harnesses share one runtime (`src/core/hook.ts`) plus their SessionStart/Stop
-entrypoints; opencode is the cleanest platform — a real per-turn event, a working system-prompt
-injection channel, transcript access, and native tool registration — so the whole surface rides four
-plugin hooks (`src/harness/opencode.ts`) with **no MCP server needed**. It also supports opt-in
-**incremental git-sync** (retain commits new since the seed on load).
+entrypoints. Persistent-plugin hosts (opencode/Kilo/Cline) delegate to the same `RuntimeCore`,
+which in turn calls those shared session-start, prompt, and retain operations; only their host API
+adapters differ. Opencode and Kilo can register the knowledge tools natively; Cline uses the shared
+MCP server. All support opt-in **incremental git-sync** (retain commits new since the seed on load).
 
 Antigravity renders the Hindsight indicator with its documented custom status-line command. It is
 local and never calls the Hindsight API while the TUI redraws. If you already configured an
@@ -86,6 +91,18 @@ inject a reflect result, memory block, or banner into Grok's model-visible conve
 gets native bank setup and transcript retention plus Hindsight MCP tools and the companion skill;
 ask it to call `hindsight_reflect` or `hindsight_search_knowledge_pages` when needed. Automatic
 injection requires a future Grok prompt-transform API.
+
+### Cline CLI scope
+
+Cline's external file hooks cannot alter a model request, so Hindsight uses Cline's native plugin
+API instead. Its `beforeModel` hook injects the shared reflect/page context and
+its `afterRun` hook upserts Cline's runtime transcript. `hindsight-coding-agents install cline-cli`
+runs `cline plugin install --force <package-path>` and configures MCP plus the companion skill.
+Cline CLI sandboxes plugin hooks with a three-second limit, so a slow first reflect finishes in the
+background and is injected on a subsequent model call or turn rather than aborting the session.
+Its write-back retains only user-visible user/assistant text; tool arguments, tool results and
+command output, tool-role messages, reasoning parts, and Hindsight's injected context are excluded.
+Cline IDE extensions are not currently supported by this CLI integration.
 
 ### Install — one command, every agent
 
@@ -153,29 +170,29 @@ hook by Codex...), so one shared config serves several agents side by side:
 
 ### Reference
 
-| field                   | default                              | meaning                                                                                                                                                                                                                         |
-| ----------------------- | ------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `apiUrl`                | `https://api.hindsight.vectorize.io` | Hindsight API base URL (set to `http://localhost:8888` for a local server)                                                                                                                                                      |
-| `apiToken`              | —                                    | bearer token (Hindsight Cloud)                                                                                                                                                                                                  |
-| `bankId`                | —                                    | **explicit static bank**; unset ⇒ per-repo dynamic resolution (below)                                                                                                                                                           |
-| `dynamicBankId`         | dynamic iff no `bankId`              | force dynamic (`true`) or static (`false`) resolution                                                                                                                                                                           |
-| `bankIdTemplate`        | `"coding-agent::{gitProject}"`       | dynamic bank id format; the default makes every agent share one bank per repo                                                                                                                                                   |
-| `mapPathToBank`         | —                                    | absolute path → bank; **longest prefix wins**; overrides everything                                                                                                                                                             |
-| `resolveWorktrees`      | `true`                               | `{gitProject}`: linked worktrees share the main repo's bank                                                                                                                                                                     |
-| `disabled`              | `false`                              | hard off-switch (inert plugin/hook — a no-memory baseline)                                                                                                                                                                      |
-| `reflectTimeoutMs`      | `120000`                             | session-reflect timeout (hook harnesses additionally cap it at 25s to fit the host's hook window); on timeout the session runs without reflect (recorded)                                                                       |
-| `pageRefreshEveryTurns` | `10`                                 | refetch the knowledge pages and re-inject the page roster + tool guide every N user turns                                                                                                                                       |
-| `autoSeed`              | `true`                               | SessionStart: auto-seed a cold repo's bank from git history                                                                                                                                                                     |
-| `seedLimit`             | `300`                                | auto-seed: most-recent-N-commits cap                                                                                                                                                                                            |
-| `codebaseSurvey`        | `true`                               | SessionStart: headless survey of a cold repo's structure, run under the current harness's own CLI (claude/codex/antigravity/opencode), falling back to any available agent                                                      |
-| `surveyModel`           | `haiku`                              | model for the survey — Claude recipe only (`claude -p --model`); other agents use their configured default                                                                                                                      |
-| `surveyBudgetUsd`       | `2`                                  | survey spend cap — Claude recipe only (`claude -p --max-budget-usd`); other agents rely on their read-only sandbox                                                                                                              |
-| `retainSessions`        | `true`                               | opencode write-back: async upsert of the session transcript every turn (set `false` to opt out; hook harnesses always write on Stop)                                                                                            |
-| `retainEveryTurns`      | `1`                                  | opencode write-back cadence (user turns)                                                                                                                                                                                        |
-| `logLevel`              | `"info"`                             | plugin-log verbosity (`"debug"` \| `"info"` \| `"warn"` \| `"error"`); `HINDSIGHT_LOG_LEVEL` env overrides                                                                                                                      |
-| `gitIngest`             | `"message"`                          | git depth for seeding AND staying current (same engine): `"message"` = commit messages only (one doc, re-upserted when HEAD moves); `"full"` = messages + per-commit full diffs (progressive, newest first); `"none"` = git off |
-| `harnesses.<name>`      | —                                    | per-harness override of any field above                                                                                                                                                                                         |
-| `harness`               | `opencode`                           | **deepen engine only**: which session format `--conversations` is read as                                                                                                                                                       |
+| field                   | default                              | meaning                                                                                                                                                                                                                             |
+| ----------------------- | ------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `apiUrl`                | `https://api.hindsight.vectorize.io` | Hindsight API base URL (set to `http://localhost:8888` for a local server)                                                                                                                                                          |
+| `apiToken`              | —                                    | bearer token (Hindsight Cloud)                                                                                                                                                                                                      |
+| `bankId`                | —                                    | **explicit static bank**; unset ⇒ per-repo dynamic resolution (below)                                                                                                                                                               |
+| `dynamicBankId`         | dynamic iff no `bankId`              | force dynamic (`true`) or static (`false`) resolution                                                                                                                                                                               |
+| `bankIdTemplate`        | `"coding-agent::{gitProject}"`       | dynamic bank id format; the default makes every agent share one bank per repo                                                                                                                                                       |
+| `mapPathToBank`         | —                                    | absolute path → bank; **longest prefix wins**; overrides everything                                                                                                                                                                 |
+| `resolveWorktrees`      | `true`                               | `{gitProject}`: linked worktrees share the main repo's bank                                                                                                                                                                         |
+| `disabled`              | `false`                              | hard off-switch (inert plugin/hook — a no-memory baseline)                                                                                                                                                                          |
+| `reflectTimeoutMs`      | `120000`                             | session-reflect timeout (hook harnesses additionally cap it at 25s to fit the host's hook window); on timeout the session runs without reflect (recorded)                                                                           |
+| `pageRefreshEveryTurns` | `10`                                 | refetch the knowledge pages and re-inject the page roster + tool guide every N user turns                                                                                                                                           |
+| `autoSeed`              | `true`                               | SessionStart: auto-seed a cold repo's bank from git history                                                                                                                                                                         |
+| `seedLimit`             | `300`                                | auto-seed: most-recent-N-commits cap                                                                                                                                                                                                |
+| `codebaseSurvey`        | `true`                               | SessionStart: headless survey of a cold repo's structure, run under the current harness's own CLI (claude/codex/antigravity/opencode), falling back to any available agent                                                          |
+| `surveyModel`           | `haiku`                              | model for the survey — Claude recipe only (`claude -p --model`); other agents use their configured default                                                                                                                          |
+| `surveyBudgetUsd`       | `2`                                  | survey spend cap — Claude recipe only (`claude -p --max-budget-usd`); other agents rely on their read-only sandbox                                                                                                                  |
+| `retainSessions`        | `true`                               | plugin-harness write-back (opencode, Kilo): async upsert of the session transcript every turn, plus an idle flush that captures the reply the per-turn pass can't see (set `false` to opt out; hook harnesses always write on Stop) |
+| `retainEveryTurns`      | `1`                                  | opencode write-back cadence (user turns)                                                                                                                                                                                            |
+| `logLevel`              | `"info"`                             | plugin-log verbosity (`"debug"` \| `"info"` \| `"warn"` \| `"error"`); `HINDSIGHT_LOG_LEVEL` env overrides                                                                                                                          |
+| `gitIngest`             | `"message"`                          | git depth for seeding AND staying current (same engine): `"message"` = commit messages only (one doc, re-upserted when HEAD moves); `"full"` = messages + per-commit full diffs (progressive, newest first); `"none"` = git off     |
+| `harnesses.<name>`      | —                                    | per-harness override of any field above                                                                                                                                                                                             |
+| `harness`               | `opencode`                           | **deepen engine only**: which session format `--conversations` is read as                                                                                                                                                           |
 
 ### Per-repo opt-in/out — `banks.<bankId>`
 

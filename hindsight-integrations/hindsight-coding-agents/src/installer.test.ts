@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
+import { pathToFileURL } from "node:url";
 import { INSTALLERS, MARKER, run, type InstallCtx } from "./installer";
 
 // Every test gets a FRESH temp dir as ctx.home (never the real $HOME) and a stubbed
@@ -10,11 +11,20 @@ import { INSTALLERS, MARKER, run, type InstallCtx } from "./installer";
 
 const homes: string[] = [];
 
-function makeCtx(): InstallCtx & { claudeMcp: ReturnType<typeof vi.fn> } {
+function makeCtx(): InstallCtx & {
+  claudeMcp: ReturnType<typeof vi.fn>;
+  clinePlugin: ReturnType<typeof vi.fn>;
+} {
   const home = mkdtempSync(join(tmpdir(), "hindsight-installer-test-"));
   homes.push(home);
   const pkgRoot = join("/opt", MARKER); // contains the marker, like the real package path
-  return { home, pkgRoot, dist: join(pkgRoot, "dist"), claudeMcp: vi.fn(() => true) };
+  return {
+    home,
+    pkgRoot,
+    dist: join(pkgRoot, "dist"),
+    claudeMcp: vi.fn(() => true),
+    clinePlugin: vi.fn(() => true),
+  };
 }
 
 function readJson(path: string): Record<string, any> {
@@ -182,6 +192,43 @@ describe("codex installer", () => {
   });
 });
 
+describe("cline-cli installer", () => {
+  const hooksDir = (ctx: InstallCtx) => join(ctx.home, "Documents", "Cline", "Hooks");
+  const mcpPath = (ctx: InstallCtx) =>
+    join(ctx.home, ".cline", "data", "settings", "cline_mcp_settings.json");
+
+  it("installs the native plugin, MCP, and the companion skill", () => {
+    const ctx = makeCtx();
+    expect(run(["install", "cline-cli"], ctx)).toBe(0);
+    expect(ctx.clinePlugin).toHaveBeenCalledWith(["plugin", "install", "--force", ctx.pkgRoot]);
+    expect(readJson(mcpPath(ctx)).mcpServers.hindsight).toEqual({
+      command: "node",
+      args: [join(ctx.dist, "mcp-server.js")],
+      env: { HINDSIGHT_MCP_HARNESS: "cline-cli" },
+    });
+  });
+
+  it("removes legacy wrappers but preserves foreign hooks and uninstalls the native plugin", () => {
+    const ctx = makeCtx();
+    const foreign = join(hooksDir(ctx), "TaskStart");
+    mkdirSync(dirname(foreign), { recursive: true });
+    writeFileSync(foreign, "#!/usr/bin/env sh\necho foreign\n");
+    const legacy = join(hooksDir(ctx), "UserPromptSubmit");
+    writeFileSync(legacy, "#!/usr/bin/env sh\n# HINDSIGHT_CODING_AGENTS_CLINE\n");
+    run(["install", "cline-cli"], ctx);
+    expect(readFileSync(foreign, "utf8")).toContain("foreign");
+    expect(existsSync(legacy)).toBe(false);
+    run(["uninstall", "cline-cli"], ctx);
+    expect(existsSync(foreign)).toBe(true);
+    expect(ctx.clinePlugin).toHaveBeenLastCalledWith([
+      "plugin",
+      "uninstall",
+      "@vectorize-io/hindsight-coding-agents",
+    ]);
+    expect(readJson(mcpPath(ctx)).mcpServers.hindsight).toBeUndefined();
+  });
+});
+
 describe("antigravity-cli installer", () => {
   const hooksPath = (ctx: InstallCtx) => join(ctx.home, ".gemini", "config", "hooks.json");
   const mcpPath = (ctx: InstallCtx) => join(ctx.home, ".gemini", "config", "mcp_config.json");
@@ -234,6 +281,73 @@ describe("antigravity-cli installer", () => {
     expect(mcp.mcpServers.other).toEqual({ command: "other-tool" });
     expect(JSON.stringify(mcp)).not.toContain(MARKER);
     expect(readJson(settingsPath(ctx)).statusLine).toBeUndefined();
+  });
+});
+
+/** Kilo is an opencode fork: same `plugin` array, but a JSONC-capable config that may already
+ *  exist under any of several names, and it must load dist/kilo.js (not the package root, which
+ *  resolves to the opencode entry and would report the wrong harness). */
+describe("kilo installer", () => {
+  const kiloDir = (ctx: InstallCtx) => join(ctx.home, ".config", "kilo");
+  const entryOf = (ctx: InstallCtx) => pathToFileURL(join(ctx.dist, "kilo.js")).href;
+
+  it("registers dist/kilo.js — NOT the package root, which is the opencode entry", () => {
+    const ctx = makeCtx();
+    expect(run(["install", "kilo"], ctx)).toBe(0);
+    const cfg = readJson(join(kiloDir(ctx), "kilo.json"));
+    expect(cfg.plugin).toEqual([entryOf(ctx)]);
+    expect(cfg.plugin).not.toContain(ctx.pkgRoot);
+  });
+
+  it("registers a file:// URL — a bare path is silently ignored by Kilo", () => {
+    const ctx = makeCtx();
+    run(["install", "kilo"], ctx);
+    const [entry] = readJson(join(kiloDir(ctx), "kilo.json")).plugin;
+    // Verified against Kilo 7.4.17: a bare absolute path is treated as an npm module specifier,
+    // fails to resolve, and the plugin is skipped with NO error — the session just has no memory.
+    expect(entry).toMatch(/^file:\/\//);
+    expect(entry).not.toBe(join(ctx.dist, "kilo.js"));
+  });
+
+  it("is idempotent across reinstalls and preserves other plugin entries", () => {
+    const ctx = makeCtx();
+    writeJsonAt(join(kiloDir(ctx), "kilo.json"), { plugin: ["some-other-plugin"] });
+    run(["install", "kilo"], ctx);
+    run(["install", "kilo"], ctx);
+    expect(readJson(join(kiloDir(ctx), "kilo.json")).plugin).toEqual([
+      "some-other-plugin",
+      entryOf(ctx),
+    ]);
+  });
+
+  it("edits an existing kilo.jsonc instead of creating a competing kilo.json", () => {
+    const ctx = makeCtx();
+    const jsonc = join(kiloDir(ctx), "kilo.jsonc");
+    mkdirSync(kiloDir(ctx), { recursive: true });
+    writeFileSync(jsonc, '{\n  // my config\n  "$schema": "https://app.kilo.ai/config.json"\n}\n');
+    run(["install", "kilo"], ctx);
+    expect(existsSync(join(kiloDir(ctx), "kilo.json"))).toBe(false);
+    const cfg = readJson(jsonc);
+    expect(cfg.plugin).toEqual([entryOf(ctx)]);
+    expect(cfg.$schema).toBe("https://app.kilo.ai/config.json"); // comments dropped, DATA kept
+  });
+
+  it("refuses to clobber a config it cannot parse", () => {
+    const ctx = makeCtx();
+    const jsonc = join(kiloDir(ctx), "kilo.jsonc");
+    mkdirSync(kiloDir(ctx), { recursive: true });
+    const broken = '{ "provider": { unquoted } }';
+    writeFileSync(jsonc, broken);
+    run(["install", "kilo"], ctx);
+    // A naive JSON.parse->{} fallback would have replaced the whole file with just our plugin key.
+    expect(readFileSync(jsonc, "utf8")).toBe(broken);
+  });
+
+  it("uninstall removes our entry and deletes the plugin key when empty", () => {
+    const ctx = makeCtx();
+    run(["install", "kilo"], ctx);
+    run(["uninstall", "kilo"], ctx);
+    expect(readJson(join(kiloDir(ctx), "kilo.json")).plugin).toBeUndefined();
   });
 });
 
@@ -379,6 +493,7 @@ describe("run() CLI behavior", () => {
   it("exposes the supported harnesses", () => {
     expect(INSTALLERS.map((i) => i.name)).toEqual([
       "opencode",
+      "kilo",
       "claude-code",
       "codex",
       "antigravity-cli",
@@ -386,6 +501,7 @@ describe("run() CLI behavior", () => {
       "cursor-cli",
       "copilot-cli",
       "grok-build",
+      "cline-cli",
     ]);
   });
 });

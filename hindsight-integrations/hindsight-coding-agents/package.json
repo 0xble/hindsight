@@ -26,6 +26,18 @@
     "skill",
     "dist"
   ],
+  "cline": {
+    "plugins": [
+      {
+        "paths": [
+          "./dist/cline.js"
+        ],
+        "capabilities": [
+          "hooks"
+        ]
+      }
+    ]
+  },
   "scripts": {
     "build": "tsup",
     "clean": "rm -rf dist",

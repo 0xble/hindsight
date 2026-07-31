@@ -5,7 +5,7 @@
  * for backfill. opencode is the cleanest platform of the lot: a real per-turn event, a working
  * system-prompt injection channel, transcript access, and NATIVE tool registration — so the whole
  * v2 surface (per-turn recall + attribution/user-feedback injection, the hindsight_* knowledge
- * tools, cold-check auto-seed, rich write-back) rides these four hooks with no MCP server needed.
+ * tools, cold-check auto-seed, rich write-back) rides these five hooks with no MCP server needed.
  * This is the only opencode-specific file; everything it uses is in ../core.
  */
 import { tool } from "@opencode-ai/plugin";
@@ -79,13 +79,17 @@ function createRuntime(core: RuntimeCore) {
     ) => {
       const inj = core.getInjection(input.sessionID);
       if (inj) output.system.push(inj);
-      diag("opencode", inj ? "inject_ok" : "inject_empty", {
+      diag(core.harness, inj ? "inject_ok" : "inject_empty", {
         chars: inj?.length ?? 0,
         hasSession: !!input.sessionID,
       });
     },
     // Write-back (on by default): normalize the live transcript to rich turns (text + tool calls +
     // their inline output) and hand it to core, which upserts every N user turns.
+    //
+    // NOTE this fires while the host BUILDS a request, so `messages` never includes the reply that
+    // request is about to produce — on its own it always lags a turn. `session.idle` below closes
+    // that gap; this stays as the mid-session cadence path.
     "experimental.chat.messages.transform": async (
       _input: unknown,
       output: { messages: OcMessage[] }
@@ -95,6 +99,15 @@ function createRuntime(core: RuntimeCore) {
       const sid = opencodeSessionId(msgs);
       if (!sid) return;
       await core.onTranscript(sid, readOpencodeMessages(msgs));
+    },
+    // The Stop-equivalent these hosts otherwise lack: `session.idle` fires once the assistant has
+    // finished, which is the only moment the completed exchange is readable. Without it a session's
+    // last turn — usually its conclusion — was never retained at all.
+    event: async (input: { event?: { type?: string; properties?: { sessionID?: string } } }) => {
+      if (input?.event?.type !== "session.idle") return;
+      const sid = input.event.properties?.sessionID;
+      if (!sid) return;
+      await core.onSessionIdle(sid);
     },
   };
 }

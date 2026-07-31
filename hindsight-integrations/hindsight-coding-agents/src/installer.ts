@@ -13,6 +13,7 @@
  *   devin-cli     SessionStart + UserPromptSubmit + Stop hooks in ~/.config/devin/config.json + MCP
  *   cursor-cli   sessionStart + beforeSubmitPrompt + stop hooks in ~/.cursor/hooks.json + ~/.cursor/mcp.json
  *   copilot-cli  sessionStart + userPromptTransformed + agentStop hooks in ~/.copilot/hooks/ + MCP
+ *   cline-cli    native in-process plugin + MCP
  *
  * IDEMPOTENT: our entries are recognized by the package path in their command ("hindsight-coding-
  * agents"), replaced on re-install (so moving the package just needs `install` again) and removed
@@ -31,7 +32,7 @@ import {
 } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { HOOK_HARNESSES, type HookHarnessName } from "./harness/hook-lifecycle";
 
 export const MARKER = "hindsight-coding-agents";
@@ -42,6 +43,8 @@ export interface InstallCtx {
   dist: string; // built entry points
   /** Runs `claude mcp ...`; injectable for tests. Returns false when the CLI isn't usable. */
   claudeMcp?: (args: string[]) => boolean;
+  /** Runs `cline plugin ...`; injectable for tests. Returns false when the CLI isn't usable. */
+  clinePlugin?: (args: string[]) => boolean;
   log?: (m: string) => void;
 }
 
@@ -50,6 +53,27 @@ function readJson(path: string): Record<string, any> {
     return JSON.parse(readFileSync(path, "utf8"));
   } catch {
     return {};
+  }
+}
+
+/**
+ * Parse a JSONC file (JSON with comments), as Kilo's `kilo.jsonc` may be.
+ *
+ * Returns null — NOT {} — when the file exists but can't be parsed. readJson's {} fallback is safe
+ * for a strict-JSON host (an unparseable file is a broken file), but here a config we merely failed
+ * to understand must never be overwritten with just our own key: the caller aborts instead.
+ */
+export function parseJsonc(text: string): Record<string, any> | null {
+  const stripped = text
+    // Blank out comments, preserving anything inside string literals.
+    .replace(/"(?:\\.|[^"\\])*"|\/\*[\s\S]*?\*\/|\/\/[^\n]*/g, (m) => (m[0] === '"' ? m : ""))
+    // Trailing commas are legal in JSONC, not in JSON.
+    .replace(/,(\s*[}\]])/g, "$1");
+  try {
+    const v = JSON.parse(stripped);
+    return v && typeof v === "object" ? (v as Record<string, any>) : null;
+  } catch {
+    return null;
   }
 }
 
@@ -147,6 +171,15 @@ function onPath(bin: string): boolean {
   }
 }
 
+function runClinePlugin(args: string[]): boolean {
+  try {
+    execFileSync("cline", args, { stdio: "pipe" });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 const opencode: HarnessInstaller = {
   name: "opencode",
   detect: (c) => onPath("opencode") || existsSync(join(c.home, ".config", "opencode")),
@@ -168,6 +201,64 @@ const opencode: HarnessInstaller = {
       writeJson(path, cfg);
     }
     c.log?.("opencode: plugin entry removed");
+  },
+};
+
+/**
+ * Kilo Code CLI — an opencode fork, so registration is opencode's: append our entry to the config's
+ * `plugin` array. Two Kilo-specific wrinkles:
+ *
+ *  - The config may be `kilo.jsonc` OR `kilo.json` (Kilo also honours legacy `opencode.json`). We
+ *    edit whichever already exists and only create `kilo.json` when none does — writing a second
+ *    file would leave the user with two configs and no obvious winner.
+ *  - JSONC allows comments, which JSON.parse rejects. Falling back to `{}` there would overwrite a
+ *    real config with just our plugin key, so an unparseable file aborts the install instead.
+ *
+ * We register `dist/kilo.js` explicitly rather than the package root: the root resolves via
+ * package.json main to dist/index.js, which reports the harness as "opencode".
+ *
+ * The entry MUST be a `file://` URL. Unlike opencode — which accepts a bare filesystem path — Kilo
+ * treats a bare absolute path as an npm module specifier, fails to resolve it, and SILENTLY skips
+ * the plugin: the session starts normally with no memory and no error anywhere. Verified against
+ * Kilo 7.4.17: the same entry loads as `file://…` and is ignored as `/…`.
+ */
+export const KILO_CONFIG_CANDIDATES = ["kilo.jsonc", "kilo.json", "opencode.json"];
+
+function kiloConfigPath(c: InstallCtx): string {
+  const dir = join(c.home, ".config", "kilo");
+  const existing = KILO_CONFIG_CANDIDATES.map((f) => join(dir, f)).find((p) => existsSync(p));
+  return existing ?? join(dir, "kilo.json");
+}
+
+const kilo: HarnessInstaller = {
+  name: "kilo",
+  detect: (c) => onPath("kilo") || existsSync(join(c.home, ".config", "kilo")),
+  install(c) {
+    const path = kiloConfigPath(c);
+    let cfg: Record<string, any> = {};
+    if (existsSync(path)) {
+      const parsed = parseJsonc(readFileSync(path, "utf8"));
+      if (!parsed) {
+        c.log?.(`kilo: SKIPPED — could not parse ${path}; add the plugin entry manually`);
+        return;
+      }
+      cfg = parsed;
+    }
+    const entry = pathToFileURL(join(c.dist, "kilo.js")).href;
+    const plugins: unknown[] = Array.isArray(cfg.plugin) ? cfg.plugin : [];
+    cfg.plugin = [...plugins.filter((p) => !String(p).includes(MARKER)), entry];
+    writeJson(path, cfg);
+    c.log?.(`kilo: plugin registered in ${path}`);
+  },
+  uninstall(c) {
+    const path = kiloConfigPath(c);
+    if (!existsSync(path)) return;
+    const cfg = parseJsonc(readFileSync(path, "utf8"));
+    if (!cfg || !Array.isArray(cfg.plugin)) return;
+    cfg.plugin = cfg.plugin.filter((p: unknown) => !String(p).includes(MARKER));
+    if (!cfg.plugin.length) delete cfg.plugin;
+    writeJson(path, cfg);
+    c.log?.("kilo: plugin entry removed");
   },
 };
 
@@ -549,8 +640,72 @@ const grok: HarnessInstaller = {
   },
 };
 
+const CLINE_HOOK_MARKER = "HINDSIGHT_CODING_AGENTS_CLINE";
+const CLINE_OLD_HOOK_EVENTS = ["TaskStart", "UserPromptSubmit", "TaskComplete"];
+const CLINE_PLUGIN_NAME = "@vectorize-io/hindsight-coding-agents";
+
+/** Remove only wrappers from the short-lived file-hook implementation. Cline file hooks cannot
+ * mutate a prompt; keeping them would falsely imply that old installs still inject memory. */
+function removeLegacyClineHooks(c: InstallCtx): void {
+  const hooksDir = join(c.home, "Documents", "Cline", "Hooks");
+  for (const event of CLINE_OLD_HOOK_EVENTS) {
+    const path = join(hooksDir, event);
+    if (existsSync(path) && readFileSync(path, "utf8").includes(CLINE_HOOK_MARKER)) {
+      rmSync(path, { force: true });
+    }
+  }
+}
+
+const cline: HarnessInstaller = {
+  name: "cline-cli",
+  detect: (c) => onPath("cline") || existsSync(join(c.home, ".cline")),
+  install(c) {
+    removeLegacyClineHooks(c);
+    const installed = (c.clinePlugin ?? runClinePlugin)([
+      "plugin",
+      "install",
+      "--force",
+      c.pkgRoot,
+    ]);
+    const mcpPath = join(c.home, ".cline", "data", "settings", "cline_mcp_settings.json");
+    const mcp = readJson(mcpPath);
+    mcp.mcpServers = {
+      ...(mcp.mcpServers ?? {}),
+      hindsight: {
+        command: "node",
+        args: [join(c.dist, "mcp-server.js")],
+        env: { HINDSIGHT_MCP_HARNESS: "cline-cli" },
+      },
+    };
+    writeJson(mcpPath, mcp);
+    installSkill(c, join(c.home, ".cline", "data", "settings", "skills"));
+    c.log?.(
+      installed
+        ? "cline-cli: native plugin + MCP + skill installed"
+        : `cline-cli: MCP + skill installed; run: cline plugin install --force "${c.pkgRoot}"`
+    );
+  },
+  uninstall(c) {
+    removeLegacyClineHooks(c);
+    // Cline's uninstall command receives an installed plugin name, not the original local source
+    // path. The package name is stable across global npm updates, unlike the package directory.
+    (c.clinePlugin ?? runClinePlugin)(["plugin", "uninstall", CLINE_PLUGIN_NAME]);
+    const mcpPath = join(c.home, ".cline", "data", "settings", "cline_mcp_settings.json");
+    if (existsSync(mcpPath)) {
+      const mcp = readJson(mcpPath);
+      if (mcp.mcpServers?.hindsight) {
+        delete mcp.mcpServers.hindsight;
+        writeJson(mcpPath, mcp);
+      }
+    }
+    uninstallSkill(c, join(c.home, ".cline", "data", "settings", "skills"));
+    c.log?.("cline-cli: native plugin + MCP + skill removed");
+  },
+};
+
 export const INSTALLERS: HarnessInstaller[] = [
   opencode,
+  kilo,
   claudeCode,
   codex,
   antigravity,
@@ -558,6 +713,7 @@ export const INSTALLERS: HarnessInstaller[] = [
   cursor,
   copilot,
   grok,
+  cline,
 ];
 
 // ── CLI ─────────────────────────────────────────────────────────────────────────

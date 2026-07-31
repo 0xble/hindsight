@@ -19,7 +19,7 @@ describe("selectTools", () => {
     expect(tools.map((t) => t.name).sort()).toEqual(
       [
         "hindsight_sync_status",
-        "hindsight_get_current_bank",
+        "hindsight_diagnose",
         "hindsight_search_knowledge_pages",
         "hindsight_list_knowledge_pages",
         "hindsight_read_knowledge_page",

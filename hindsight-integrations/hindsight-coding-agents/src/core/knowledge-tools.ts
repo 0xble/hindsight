@@ -13,9 +13,13 @@
  * (core/survey.ts).
  */
 import { z } from "zod";
+import { existsSync } from "node:fs";
+import { homedir } from "node:os";
+import { join } from "node:path";
 import type { ZodRawShape } from "zod";
 import type { HindsightClient } from "./hindsight";
 import { syncStatus } from "./status";
+import { loadConfig } from "./config";
 
 export interface ToolResult {
   // Index signature so this structurally satisfies the MCP SDK's CallToolResult (which carries
@@ -78,12 +82,39 @@ export function buildKnowledgeTools(
       },
     },
     {
-      name: "hindsight_get_current_bank",
+      name: "hindsight_diagnose",
       description:
-        "Get the memory bank id this MCP server resolved for the current repo/worktree. All " +
-        "knowledge-page and memory operations here share this one bank.",
+        "Report safe Hindsight runtime diagnostics for this coding-agent session: resolved bank, " +
+        "workspace, harness, config location, API endpoint, and non-secret environment overrides. " +
+        "Use this when memory, hooks, MCP tools, or configuration appear not to work. Tokens and " +
+        "other secret values are never returned.",
       inputSchema: {},
-      handler: async (_args: Record<string, never>) => ok({ bank_id: bankId }),
+      handler: async (_args: Record<string, never>) => {
+        const configPath =
+          process.env.HINDSIGHT_CONFIG || join(homedir(), ".hindsight", "coding-agent.json");
+        const harness = opts.harness ?? "unknown";
+        const cfg = loadConfig({ harness: opts.harness });
+        return ok({
+          bank_id: bankId,
+          harness,
+          workspace: opts.repoDir ?? process.cwd(),
+          config: {
+            path: configPath,
+            exists: existsSync(configPath),
+            api_url: cfg.apiUrl,
+            api_token_configured: Boolean(cfg.apiToken),
+            disabled: cfg.disabled,
+          },
+          environment: {
+            config_override: Boolean(process.env.HINDSIGHT_CONFIG),
+            hooks_disabled: Boolean(process.env.HINDSIGHT_DISABLE_HOOKS),
+            log_level: process.env.HINDSIGHT_LOG_LEVEL ?? null,
+            diagnostics_file: process.env.HINDSIGHT_DIAG_FILE ?? "/tmp/hindsight-plugin.log",
+            channel_id_configured: Boolean(process.env.HINDSIGHT_CHANNEL_ID),
+            user_id_configured: Boolean(process.env.HINDSIGHT_USER_ID),
+          },
+        });
+      },
     },
     {
       name: "hindsight_search_knowledge_pages",

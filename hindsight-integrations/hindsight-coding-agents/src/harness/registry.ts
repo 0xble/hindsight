@@ -40,6 +40,11 @@ const noRuntimeAdapter = (name: string, hint: string): HarnessAdapter => ({
 
 export const HARNESS_NAMES = [
   "opencode",
+  // Kilo CLI is an opencode fork loaded as a persistent plugin (src/kilo.ts), so like opencode it
+  // has NO hook binary — deliberately absent from HOOK_BINS below.
+  "kilo",
+  // Cline CLI loads dist/cline.js through its native plugin manager; file hooks cannot inject.
+  "cline-cli",
   "claude-code",
   "cursor-cli",
   "codex",
@@ -57,10 +62,15 @@ const HOOK_BINS: Record<string, string> = {
 };
 
 export async function getHarness(name: string): Promise<HarnessAdapter> {
-  if (name === "opencode") {
+  // The persistent-plugin harnesses: their runtime is built by their own plugin entrypoint (which
+  // owns the @opencode-ai/plugin dependency this file must stay free of), never via this registry.
+  // Backfill still resolves them here for the chatReader.
+  if (name === "opencode" || name === "kilo" || name === "cline-cli") {
+    const entry =
+      name === "opencode" ? "src/index.ts" : name === "kilo" ? "src/kilo.ts" : "src/cline.ts";
     return noRuntimeAdapter(
       name,
-      "opencode's runtime is built by src/index.ts (the opencode plugin entrypoint), not via the harness registry"
+      `${name}'s runtime is built by ${entry} (the ${name} plugin entrypoint), not via the harness registry`
     );
   }
   const bin = HOOK_BINS[name];

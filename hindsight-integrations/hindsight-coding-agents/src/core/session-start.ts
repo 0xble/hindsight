@@ -30,7 +30,7 @@ import { deriveBankId } from "./bank";
 import { brandWord } from "./brand";
 import { diag } from "./diag";
 import { setLogLevel } from "./log";
-import { parsePageList, buildKnowledgePreamble } from "./knowledge-injection";
+import { parsePageList, buildKnowledgePreamble, type PageRef } from "./knowledge-injection";
 import type { ClientOpts } from "./hindsight";
 import { HindsightClient } from "./hindsight";
 import { sessionCacheFile, writeSessionCache } from "./session-cache";
@@ -271,7 +271,7 @@ export async function buildSessionStartContext(args: {
 
   // An actual empty roster, like a cold git-doc result, means this bank has no useful material to
   // synthesize yet. A failed roster request is NOT evidence of that, so keep the two cases apart.
-  let pages = [];
+  let pages: PageRef[] = [];
   let pageListKnown = false;
   try {
     pages = parsePageList(await client.listPages());

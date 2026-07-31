@@ -26,7 +26,7 @@ function roster(pages: PageRef[]): string {
  * When-to-call guide for the FULL Hindsight tool suite. Shared by the SessionStart preamble and the
  * periodic refresh so the agent is told — repeatedly — not just that the tools exist but the moment
  * to reach for each one. Registering the tools isn't enough; the trigger for each has to be in
- * context. (Omits hindsight_get_current_bank — pure introspection, no workflow trigger.)
+ * context. (Omits hindsight_diagnose — pure troubleshooting, no workflow trigger.)
  */
 const TOOL_GUIDE =
   "- hindsight_search_knowledge_pages(query) — FIRST STOP for any question the project's accumulated " +

@@ -1,5 +1,5 @@
 /**
- * Host adapter runtime for PERSISTENT-PLUGIN harnesses (opencode). It delegates SessionStart and
+ * Host adapter runtime for PERSISTENT-PLUGIN harnesses (opencode, Kilo, Cline). It delegates SessionStart and
  * prompt behavior to the same core lifecycle as fresh-process hook harnesses; this class keeps only
  * the host-specific injection, toast, and incremental-transcript responsibilities.
  *
@@ -9,6 +9,8 @@
  *   - getInjection(sessionId)       : the system-prompt text to inject this turn (or undefined)
  *   - toolSpecs()                   : the hindsight_* knowledge/recall tools to register natively
  *   - onTranscript(sessionId, turns): full transcript -> write back every N turns (on by default)
+ *   - onSessionIdle(sessionId)      : assistant finished -> refetch + write back the completed
+ *                                     exchange (the Stop-equivalent these hosts lack)
  * No opencode/claude specifics live here — only the memory logic.
  */
 import type { Config } from "./config";
@@ -26,17 +28,28 @@ const HARNESS = "opencode";
 export class RuntimeCore {
   private readonly injection = new Map<string, string>(); // sessionId -> this turn's injection block
   private readonly turnCount = new Map<string, number>(); // sessionId -> user-turn counter (cadence)
-  private readonly sessionState = new Map<string, { startTs: string; retainedUsers: number }>();
+  private readonly sessionState = new Map<
+    string,
+    { startTs: string; retainedUsers: number; retainedTurns: number }
+  >();
+  /** Pulls a session's CURRENT transcript from the host (set by the adapter); see onSessionIdle. */
+  private fetchTranscript?: (sessionId: string) => Promise<TransportTurn[]>;
   private lastInjection = ""; // most recent turn's injection block, keyed by nothing (see getInjection)
   private deferInitialReflect = false;
-  /** Host-notice channel (opencode: client.tui.showToast via the adapter). Optional, fail-open. */
+  /** Host-notice channel (opencode/Kilo: client.tui.showToast via the adapter). Optional, fail-open. */
   private notify?: (title: string, message: string) => void;
   private preamble = ""; // SessionStart-equivalent knowledge preamble, computed once at seedIfCold
 
   constructor(
     private readonly client: HindsightClient,
     private readonly bankId: string,
-    private readonly cfg: Config
+    private readonly cfg: Config,
+    /**
+     * Which persistent-plugin host loaded us. Scopes diagnostics, the session cache file and the
+     * retained transcript's harness field, so Kilo sessions don't masquerade as opencode ones.
+     * Defaults to opencode, the original (and only other) plugin harness.
+     */
+    readonly harness: string = HARNESS
   ) {
     setLogLevel(cfg.logLevel);
   }
@@ -45,9 +58,18 @@ export class RuntimeCore {
     this.notify = notify;
   }
 
+  /**
+   * Supply a way to READ the session's transcript back from the host. Without it `onSessionIdle`
+   * no-ops, so hosts that can't refetch keep the old (lagging) turn-driven write-back rather than
+   * retaining a stale transcript.
+   */
+  setTranscriptSource(fetch: (sessionId: string) => Promise<TransportTurn[]>): void {
+    this.fetchTranscript = fetch;
+  }
+
   /** The hindsight_* knowledge + recall tools, bound to this bank, for the harness to register natively. */
   toolSpecs(): ToolSpec[] {
-    return buildKnowledgeTools(this.client, this.bankId, { harness: HARNESS });
+    return buildKnowledgeTools(this.client, this.bankId, { harness: this.harness });
   }
 
   get writeBackEnabled(): boolean {
@@ -71,14 +93,14 @@ export class RuntimeCore {
         bankId: this.bankId,
         cfg: this.cfg,
         client: this.client,
-        harness: HARNESS,
+        harness: this.harness,
       });
       // The seed note is user-facing; opencode has no visible-system channel at load, so surface it
       // on stderr (shows in the plugin log / console) rather than dropping it.
       // Banner: via the host's toast API when available (stderr corrupts the TUI); always logged.
       if (out.systemMessage) {
         const plain = out.systemMessage.replace(/\x1b\[[0-9;]*m/g, "");
-        log.info(HARNESS, plain);
+        log.info(this.harness, plain);
         this.notify?.("Hindsight", plain.replace(/^Hindsight is /, "Is "));
       }
       this.preamble = out.additionalContext ?? "";
@@ -99,7 +121,7 @@ export class RuntimeCore {
     const turns = (this.turnCount.get(sessionId) ?? 0) + 1;
     this.turnCount.set(sessionId, turns);
 
-    const cacheFile = sessionCacheFile(HARNESS, sessionId);
+    const cacheFile = sessionCacheFile(this.harness, sessionId);
     if (this.deferInitialReflect) {
       // `seedIfCold` has no session id. Transfer its SessionStart decision to the first concrete
       // session here; `buildHookOutput` consumes it exactly once, like hook harnesses do.
@@ -107,7 +129,7 @@ export class RuntimeCore {
       writeSessionCache(cacheFile, { deferInitialReflect: true });
     }
     const output = await buildHookOutput({
-      harness: HARNESS,
+      harness: this.harness,
       prompt,
       cfg: this.cfg,
       client: this.client,
@@ -124,7 +146,7 @@ export class RuntimeCore {
     // renders inside the TUI input line. The shared output owns when a notice exists.
     if (output.notice) {
       const preview = output.notice.replace(/\s+/g, " ").trim().slice(0, 140);
-      log.info(HARNESS, "reflect goal", { preview });
+      log.info(this.harness, "reflect goal", { preview });
       this.notify?.("Hindsight · recalled past decisions", preview);
     }
     const block = blocks.filter(Boolean).join("\n\n");
@@ -146,36 +168,92 @@ export class RuntimeCore {
 
   /**
    * Full normalized transcript (rich: user/assistant text + tool calls/outputs): upsert every N user
-   * turns when enabled. On by default for opencode (parity with the hook harnesses' Stop write-back),
+   * turns when enabled. On by default for persistent-plugin hosts (parity with hook-harness Stop write-back),
    * so opencode sessions compound into memory; a user can opt out with `retainSessions: false`.
    */
   async onTranscript(sessionId: string, turns: TransportTurn[]): Promise<void> {
     if (process.env.HINDSIGHT_DISABLE_HOOKS) return; // anti-recursion (see seedIfCold)
     if (!this.writeBackEnabled || !sessionId || !turns.length) return;
     const users = turns.filter((t) => t.role === "user").length;
-    let st = this.sessionState.get(sessionId);
-    if (!st) {
-      st = { startTs: new Date().toISOString(), retainedUsers: 0 };
-      this.sessionState.set(sessionId, st);
-    }
+    const st = this.stateFor(sessionId);
     if (users - st.retainedUsers >= this.cfg.retainEveryTurns) {
       st.retainedUsers = users;
-      const t0 = Date.now();
-      void retainLiveSession(this.client, sessionId, turns, st.startTs, HARNESS)
-        .then(() =>
-          diag(HARNESS, "retain_ok", {
-            ms: Date.now() - t0,
-            turns: turns.length,
-            session: sessionId,
-          })
-        )
-        .catch((e) =>
-          diag(HARNESS, "retain_failed", {
-            ms: Date.now() - t0,
-            error: String((e as Error)?.message || e).slice(0, 200),
-            session: sessionId,
-          })
-        );
+      this.retain(sessionId, turns, st.startTs);
     }
+  }
+
+  /**
+   * Session went idle — the assistant has finished replying.
+   *
+   * This is the Stop-equivalent these hosts lack. `onTranscript` alone is driven by
+   * `messages.transform`, which the host runs while BUILDING a request, so the transcript it hands
+   * us never contains the reply that request produced: write-back always lagged one user turn, and
+   * a session's final exchange was never retained at all. Refetching here (rather than replaying a
+   * cached list) is the whole point — the cached one predates the reply.
+   *
+   * Cadence is deliberately bypassed: idle means "there may be nothing after this", so a pending
+   * turn must not wait for a threshold it will never reach.
+   */
+  async onSessionIdle(sessionId: string): Promise<void> {
+    if (process.env.HINDSIGHT_DISABLE_HOOKS) return; // anti-recursion (see seedIfCold)
+    if (!this.writeBackEnabled || !sessionId || !this.fetchTranscript) return;
+    let turns: TransportTurn[];
+    try {
+      turns = await this.fetchTranscript(sessionId);
+    } catch (e) {
+      diag(this.harness, "idle_fetch_failed", {
+        error: String((e as Error)?.message || e).slice(0, 200),
+        session: sessionId,
+      });
+      return;
+    }
+    if (!turns.length) return;
+    const st = this.stateFor(sessionId);
+    // idle can fire more than once for one exchange (and again on a session with no new activity);
+    // only retain when this transcript actually grew past what we last wrote.
+    if (turns.length <= st.retainedTurns) return;
+    st.retainedTurns = turns.length;
+    st.retainedUsers = turns.filter((t) => t.role === "user").length;
+    this.retain(sessionId, turns, st.startTs, "idle");
+  }
+
+  private stateFor(sessionId: string): {
+    startTs: string;
+    retainedUsers: number;
+    retainedTurns: number;
+  } {
+    let st = this.sessionState.get(sessionId);
+    if (!st) {
+      st = { startTs: new Date().toISOString(), retainedUsers: 0, retainedTurns: 0 };
+      this.sessionState.set(sessionId, st);
+    }
+    return st;
+  }
+
+  /** Fire-and-forget upsert of the session transcript; never throws into the host. */
+  private retain(
+    sessionId: string,
+    turns: TransportTurn[],
+    startTs: string,
+    trigger = "turn"
+  ): void {
+    const t0 = Date.now();
+    void retainLiveSession(this.client, sessionId, turns, startTs, this.harness)
+      .then(() =>
+        diag(this.harness, "retain_ok", {
+          ms: Date.now() - t0,
+          turns: turns.length,
+          session: sessionId,
+          trigger,
+        })
+      )
+      .catch((e) =>
+        diag(this.harness, "retain_failed", {
+          ms: Date.now() - t0,
+          error: String((e as Error)?.message || e).slice(0, 200),
+          session: sessionId,
+          trigger,
+        })
+      );
   }
 }

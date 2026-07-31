@@ -3,6 +3,8 @@ import { defineConfig } from "tsup";
 export default defineConfig({
   entry: {
     index: "src/index.ts",
+    // Kilo CLI (an opencode fork) loads this as its persistent plugin — see src/kilo.ts.
+    kilo: "src/kilo.ts",
     deepen: "src/deepen.ts",
     installer: "src/installer.ts",
     status: "src/status.ts",
@@ -15,6 +17,9 @@ export default defineConfig({
     "copilot-hook": "src/copilot-hook.ts",
     "copilot-sessionstart-hook": "src/copilot-sessionstart-hook.ts",
     "copilot-stop-hook": "src/copilot-stop-hook.ts",
+    // Cline CLI loads this module through `cline plugin install`; file hooks cannot mutate
+    // model requests, so the native beforeModel hook is the reliable injection path.
+    cline: "src/cline.ts",
     "grok-hook": "src/grok-hook.ts",
     "grok-sessionstart-hook": "src/grok-sessionstart-hook.ts",
     "grok-stop-hook": "src/grok-stop-hook.ts",

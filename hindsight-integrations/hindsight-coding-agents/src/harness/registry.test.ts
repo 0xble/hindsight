@@ -6,6 +6,8 @@ describe("HARNESS_NAMES", () => {
     expect(HARNESS_NAMES).toEqual(
       expect.arrayContaining([
         "opencode",
+        "kilo",
+        "cline-cli",
         "claude-code",
         "cursor-cli",
         "codex",
@@ -13,7 +15,7 @@ describe("HARNESS_NAMES", () => {
         "devin-cli",
       ])
     );
-    expect(HARNESS_NAMES).toHaveLength(6);
+    expect(HARNESS_NAMES).toHaveLength(8);
   });
 });
 
@@ -36,6 +38,12 @@ describe("getHarness", () => {
     // directly, bypassing this registry. Lock it so a future change can't silently make this look
     // functional.
     expect(() => adapter.createRuntime({} as never)).toThrow();
+  });
+
+  it("resolves Cline as a native-plugin harness rather than a hook binary", async () => {
+    const adapter = await getHarness("cline-cli");
+    expect(adapter.name).toBe("cline-cli");
+    expect(() => adapter.createRuntime({} as never)).toThrow(/src\/cline\.ts/);
   });
 
   it("rejects unknown harness names", async () => {

@@ -25,7 +25,7 @@ function findTool(tools: ReturnType<typeof buildKnowledgeTools>, name: string) {
 
 const EXPECTED_TOOLS = [
   "hindsight_sync_status",
-  "hindsight_get_current_bank",
+  "hindsight_diagnose",
   "hindsight_search_knowledge_pages",
   "hindsight_list_knowledge_pages",
   "hindsight_read_knowledge_page",
@@ -113,13 +113,17 @@ describe("buildKnowledgeTools", () => {
     }
   });
 
-  it("hindsight_get_current_bank returns {bank_id} without touching the client", async () => {
+  it("hindsight_diagnose returns safe runtime configuration without touching the client", async () => {
     const client = stubClient();
     const tools = buildKnowledgeTools(client, "repo-a");
-    const tool = findTool(tools, "hindsight_get_current_bank");
+    const tool = findTool(tools, "hindsight_diagnose");
     const result = await tool.handler({});
     expect(result.isError).toBeFalsy();
-    expect(JSON.parse(result.content[0].text)).toEqual({ bank_id: "repo-a" });
+    expect(JSON.parse(result.content[0].text)).toMatchObject({
+      bank_id: "repo-a",
+      harness: "unknown",
+      config: { api_token_configured: false },
+    });
     expect(client.listPages).not.toHaveBeenCalled();
     expect(client.getPage).not.toHaveBeenCalled();
   });

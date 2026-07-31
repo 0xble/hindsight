@@ -2,7 +2,7 @@
 # Coding Agents
 
 Long-term **project memory** for coding agents, from one package: a shared reflect-and-inject core
-with a thin entry point per agent — **opencode**, **Claude Code**, **Codex CLI**, **Antigravity CLI**, **Cursor CLI**, **GitHub Copilot CLI**, **Grok Build** —
+with a thin entry point per agent — **opencode**, **Kilo CLI**, **Cline CLI**, **Claude Code**, **Codex CLI**, **Antigravity CLI**, **Cursor CLI**, **GitHub Copilot CLI**, **Grok Build** —
 Ingestion into a [Hindsight](https://vectorize.io/hindsight) memory bank is fully automatic — no
 setup command: git history and conversations flow in as you work.
 
@@ -32,8 +32,10 @@ in front of the agent at the moment it starts working.
    and a pointer to the full page; below a relevance floor nothing is injected.
 4. **Write back.** Each session is upserted into the bank as a JSON transcript — user/assistant
    turns plus a compact `action` turn per tool call (tool name + primary target, no arguments or
-   outputs) — so sessions compound into memory. On Stop for the hook harnesses, every few turns for
-   the opencode plugin. Cold repos are auto-seeded (aggregated git log + a short headless codebase
+   outputs) — so sessions compound into memory. On Stop for the hook harnesses; for the plugin
+   harnesses (opencode, Kilo) on the turn cadence and again once the session goes idle, so the
+   agent's own answer — including the last exchange before you close the session — is stored, not
+   just your side of it. Cold repos are auto-seeded (aggregated git log + a short headless codebase
    survey) the first time an agent opens them.
 5. **Never break the agent — never fail silently.** A failed reflect or page fetch degrades to
    no-memory, but every outcome (`reflect_ok` / `reflect_empty` / `reflect_failed`, `pages_ok` /
@@ -49,12 +51,14 @@ no longer in effect.
 | harness       | kind              | entry point             | install |
 | ------------- | ----------------- | ----------------------- | ------- |
 | `opencode`    | persistent plugin | package default export  | add the package dir to `opencode.json` → `"plugin": [...]` |
+| `kilo`        | persistent plugin | `dist/kilo.js` default export | `hindsight-coding-agents install kilo` adds a `file://` entry to `"plugin"` in `~/.config/kilo/kilo.json[c]`. Kilo CLI is an opencode fork and runs the identical plugin runtime |
 | `claude-code` | per-prompt hook   | `hindsight-claude-hook` | `UserPromptSubmit` hook in Claude Code `settings.json` |
 | `codex`       | per-prompt hook   | `hindsight-codex-hook`  | `UserPromptSubmit` hook in `~/.codex/hooks.json` (+ `codex_hooks = true`, Codex CLI ≥ 0.116) |
 | `antigravity-cli` | lifecycle hooks | Antigravity hooks | `PreInvocation` + `Stop` in `~/.gemini/config/hooks.json`; MCP in `~/.gemini/config/mcp_config.json`; native colored `Hindsight · <bank>` status line |
 | `cursor-cli`  | lifecycle hooks   | `hindsight-cursor-hook` | `sessionStart` seeds/pages; `beforeSubmitPrompt` recalls; `stop` retains in Cursor `hooks.json` |
 | `copilot-cli` | lifecycle hooks   | `hindsight-copilot-hook` | `sessionStart` seeds/pages; `userPromptTransformed` appends recall to the model-facing prompt; `agentStop` retains in `~/.copilot/hooks/` |
 | `grok-build` | lifecycle hooks   | `hindsight-grok-hook` | native `SessionStart` seeds the bank and `Stop` retains in `~/.grok/config.toml`; MCP is registered there too — no Claude Code dependency |
+| `cline-cli` | persistent plugin | `dist/cline.js` default export | native `beforeModel` injects reflect/pages and `afterRun` retains the runtime transcript; `cline plugin install` is run by the installer |
 
 One-command install (detects the coding agents on the machine, wires each natively — hooks + MCP;
 idempotent, with `uninstall` removing exactly what it added):
@@ -80,6 +84,19 @@ or automatic first-prompt synthesis into the model-visible conversation. The Gro
 therefore provides native bank setup and session retention, plus the Hindsight MCP tools and
 companion skill. Ask Grok to call `hindsight_reflect` or `hindsight_search_knowledge_pages` when
 memory is useful. Automatic prompt injection requires a future Grok prompt-transform API.
+
+### Cline CLI scope
+
+Cline uses its native plugin API rather than file hooks: `beforeModel` injects the
+shared Hindsight reflect/pages context and `afterRun` upserts Cline's runtime transcript. The
+installer runs `cline plugin install --force <package-path>` and also configures MCP and the
+companion skill. Cline CLI currently sandboxes plugin hooks with a three-second limit, so a slow
+first reflect is allowed to finish in the background and is injected on a subsequent model call or
+turn rather than aborting the session.
+
+For privacy and signal quality, Cline write-back retains only user-visible user and assistant text.
+It excludes tool-call arguments, tool results and command output, tool-role messages, reasoning
+parts, and Hindsight's own injected context. This covers Cline CLI only, not its VS Code or JetBrains extensions.
 
 Manual wiring per harness:
 
@@ -167,7 +184,7 @@ side:
 | `reflectTimeoutMs` | `120000` | session-reflect timeout (hook harnesses cap it at 25s to fit the host's hook window); on timeout the session runs without reflect (recorded in diagnostics) |
 | `autoReflect` | `true` | inject a one-time reflect synthesis on the session's first prompt; `false` = tool-only mode — nothing is injected, and the tool guide instead instructs the agent to call `hindsight_reflect` itself whenever a new task/goal is set |
 | `pageRefreshEveryTurns` | `10` | refetch the knowledge pages and re-inject the page roster + tool guide every N user turns |
-| `retainSessions` | `true` | opencode write-back: async upsert every turn (set `false` to opt out; hook harnesses always write on Stop) |
+| `retainSessions` | `true` | plugin-harness write-back (opencode, Kilo): async upsert every turn plus a flush when the session goes idle (set `false` to opt out; hook harnesses always write on Stop) |
 | `retainEveryTurns` | `1` | write-back cadence (user turns) |
 | `gitIngest` | `"message"` | git depth for seeding and staying current: `"message"` (messages only), `"full"` (messages + per-commit diffs), `"none"` |
 | `logLevel` | `"info"` | plugin-log verbosity (`"debug"` \| `"info"` \| `"warn"` \| `"error"`); `HINDSIGHT_LOG_LEVEL` env overrides |
