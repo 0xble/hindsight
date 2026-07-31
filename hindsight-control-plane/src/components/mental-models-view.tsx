@@ -102,6 +102,7 @@ interface MentalModel {
     include_chunks?: boolean;
     recall_max_tokens?: number;
     recall_chunks_max_tokens?: number;
+    response_schema?: Record<string, unknown>;
   };
   last_refreshed_at: string;
   created_at: string;
@@ -711,6 +712,7 @@ function CreateMentalModelDialog({
     includeChunks: "" as "" | "true" | "false",
     recallMaxTokens: "",
     recallChunksMaxTokens: "",
+    responseSchema: "",
   });
 
   const handleCreate = async () => {
@@ -750,6 +752,16 @@ function CreateMentalModelDialog({
       const includeChunks =
         form.includeChunks === "true" ? true : form.includeChunks === "false" ? false : undefined;
 
+      let responseSchema: Record<string, unknown> | undefined;
+      if (form.responseSchema.trim()) {
+        try {
+          responseSchema = JSON.parse(form.responseSchema.trim());
+        } catch {
+          toast.error(t("invalidResponseSchemaJson"));
+          return;
+        }
+      }
+
       await client.createMentalModel(currentBank, {
         id: form.id.trim() || undefined,
         name: form.name.trim(),
@@ -769,6 +781,7 @@ function CreateMentalModelDialog({
           include_chunks: includeChunks,
           recall_max_tokens: recallMaxTokens,
           recall_chunks_max_tokens: recallChunksMaxTokens,
+          response_schema: responseSchema,
         },
       });
 
@@ -789,6 +802,7 @@ function CreateMentalModelDialog({
         includeChunks: "",
         recallMaxTokens: "",
         recallChunksMaxTokens: "",
+        responseSchema: "",
       });
       onCreated();
     } catch (error) {
@@ -820,6 +834,7 @@ function CreateMentalModelDialog({
             includeChunks: "",
             recallMaxTokens: "",
             recallChunksMaxTokens: "",
+            responseSchema: "",
           });
           onClose();
         }
@@ -1120,6 +1135,21 @@ function CreateMentalModelDialog({
                     {t("optionsRecallChunksMaxTokensDescription")}
                   </p>
                 </div>
+                <div className="space-y-2">
+                  <label className="text-sm font-medium text-foreground">
+                    {t("optionsResponseSchemaLabel")}
+                  </label>
+                  <Textarea
+                    value={form.responseSchema}
+                    onChange={(e) => setForm({ ...form, responseSchema: e.target.value })}
+                    placeholder={t("optionsResponseSchemaPlaceholder")}
+                    rows={3}
+                    className="font-mono text-xs"
+                  />
+                  <p className="text-xs text-muted-foreground">
+                    {t("optionsResponseSchemaDescription")}
+                  </p>
+                </div>
               </section>
             </TabsContent>
           </div>
@@ -1197,6 +1227,9 @@ function UpdateMentalModelDialog({
       mentalModel.trigger?.recall_chunks_max_tokens != null
         ? String(mentalModel.trigger.recall_chunks_max_tokens)
         : "",
+    responseSchema: mentalModel.trigger?.response_schema
+      ? JSON.stringify(mentalModel.trigger.response_schema, null, 2)
+      : "",
   });
   const [form, setForm] = useState(buildFormState);
 
@@ -1243,6 +1276,16 @@ function UpdateMentalModelDialog({
       const includeChunks =
         form.includeChunks === "true" ? true : form.includeChunks === "false" ? false : undefined;
 
+      let responseSchema: Record<string, unknown> | undefined;
+      if (form.responseSchema.trim()) {
+        try {
+          responseSchema = JSON.parse(form.responseSchema.trim());
+        } catch {
+          toast.error(t("invalidResponseSchemaJson"));
+          return;
+        }
+      }
+
       const updated = await client.updateMentalModel(currentBank, mentalModel.id, {
         name: form.name.trim(),
         source_query: form.sourceQuery.trim(),
@@ -1261,6 +1304,7 @@ function UpdateMentalModelDialog({
           include_chunks: includeChunks,
           recall_max_tokens: recallMaxTokens,
           recall_chunks_max_tokens: recallChunksMaxTokens,
+          response_schema: responseSchema,
         },
       });
 
@@ -1564,6 +1608,21 @@ function UpdateMentalModelDialog({
                   />
                   <p className="text-xs text-muted-foreground">
                     {t("optionsRecallChunksMaxTokensDescription")}
+                  </p>
+                </div>
+                <div className="space-y-2">
+                  <label className="text-sm font-medium text-foreground">
+                    {t("optionsResponseSchemaLabel")}
+                  </label>
+                  <Textarea
+                    value={form.responseSchema}
+                    onChange={(e) => setForm({ ...form, responseSchema: e.target.value })}
+                    placeholder={t("optionsResponseSchemaPlaceholder")}
+                    rows={3}
+                    className="font-mono text-xs"
+                  />
+                  <p className="text-xs text-muted-foreground">
+                    {t("optionsResponseSchemaDescription")}
                   </p>
                 </div>
               </section>

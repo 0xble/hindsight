@@ -850,7 +850,11 @@
     "clearDialogConfirm": "Effacer",
     "actionClearContent": "Effacer le contenu",
     "emptyContent": "Aucun contenu pour le moment. Actualisez ce modèle mental pour générer du contenu.",
-    "selectModelPrompt": "Sélectionnez un modèle mental pour afficher son contenu."
+    "selectModelPrompt": "Sélectionnez un modèle mental pour afficher son contenu.",
+    "optionsResponseSchemaLabel": "Schéma de sortie structurée (JSON)",
+    "optionsResponseSchemaPlaceholder": "{\"type\":\"object\",\"properties\":{\"summary\":{\"type\":\"string\"}},\"required\":[\"summary\"]}",
+    "optionsResponseSchemaDescription": "Schéma JSON facultatif. Chaque actualisation enregistre aussi un structured_output analysé selon cette forme à côté du contenu.",
+    "invalidResponseSchemaJson": "JSON invalide dans le schéma de sortie structurée"
   },
   "cronPreview": {
     "invalid": "Expression cron non valide",
@@ -936,7 +940,12 @@
     "observationTextField": "Texte",
     "observationTagsField": "Tags",
     "observationSourceMemoriesField": "Souvenirs sources ({count})",
-    "observationIdField": "ID"
+    "observationIdField": "ID",
+    "structuredSchemaLabel": "Schéma de sortie structurée (JSON)",
+    "structuredSchemaPlaceholder": "{\"type\":\"object\",\"properties\":{\"summary\":{\"type\":\"string\"}},\"required\":[\"summary\"]}",
+    "structuredSchemaHint": "Schéma JSON facultatif. S'il est défini, reflect renvoie aussi un structured_output analysé selon cette forme.",
+    "structuredSchemaInvalid": "Schéma JSON invalide",
+    "structuredOutputTitle": "Sortie structurée"
   },
   "searchDebug": {
     "noBankSelected": "Aucune banque sélectionnée",
@@ -1458,7 +1467,8 @@
     "factTypeWorld": "monde",
     "factTypeExperience": "expérience",
     "factTypeObservation": "observation",
-    "actionClearContent": "Effacer le contenu"
+    "actionClearContent": "Effacer le contenu",
+    "structuredOutput": "Sortie structurée"
   },
   "constellation": {
     "instructions": "Défiler pour zoomer · Glisser pour déplacer · Survoler pour explorer · Cliquer pour sélectionner",

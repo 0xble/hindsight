@@ -57,6 +57,8 @@ export function ThinkView() {
   const [factTypes, setFactTypes] = useState<FactType[]>([]);
   const [excludeMentalModels, setExcludeMentalModels] = useState(false);
   const [excludeMentalModelIds, setExcludeMentalModelIds] = useState("");
+  const [responseSchema, setResponseSchema] = useState("");
+  const [schemaError, setSchemaError] = useState(false);
   const [feedback, setFeedback] = useState("");
   const [feedbackSubmitting, setFeedbackSubmitting] = useState(false);
   const [feedbackSubmitted, setFeedbackSubmitted] = useState(false);
@@ -140,6 +142,18 @@ export function ThinkView() {
         .map((s) => s.trim())
         .filter((s) => s.length > 0);
 
+      let parsedSchema: Record<string, unknown> | undefined;
+      const schemaText = responseSchema.trim();
+      if (schemaText) {
+        try {
+          parsedSchema = JSON.parse(schemaText);
+        } catch {
+          setSchemaError(true);
+          return;
+        }
+      }
+      setSchemaError(false);
+
       const data: any = await client.reflect({
         bank_id: currentBank,
         query,
@@ -151,6 +165,7 @@ export function ThinkView() {
         ...(factTypes.length > 0 && { fact_types: factTypes }),
         ...(excludeMentalModels && { exclude_mental_models: true }),
         ...(excludeIds.length > 0 && { exclude_mental_model_ids: excludeIds }),
+        ...(parsedSchema && { response_schema: parsedSchema }),
       });
       setResult(data);
     } catch (error) {
@@ -291,6 +306,26 @@ export function ThinkView() {
               />
             </div>
           </div>
+
+          {/* Structured Output Schema */}
+          <div className="mt-4 pt-4 border-t space-y-2">
+            <span className="text-sm font-medium text-muted-foreground">
+              {t("structuredSchemaLabel")}
+            </span>
+            <Textarea
+              value={responseSchema}
+              onChange={(e) => {
+                setResponseSchema(e.target.value);
+                if (schemaError) setSchemaError(false);
+              }}
+              placeholder={t("structuredSchemaPlaceholder")}
+              rows={3}
+              className={`font-mono text-xs ${schemaError ? "border-destructive" : ""}`}
+            />
+            <p className={`text-xs ${schemaError ? "text-destructive" : "text-muted-foreground"}`}>
+              {schemaError ? t("structuredSchemaInvalid") : t("structuredSchemaHint")}
+            </p>
+          </div>
         </CardContent>
       </Card>
 
@@ -389,6 +424,20 @@ export function ThinkView() {
                   </div>
                 </CardContent>
               </Card>
+
+              {/* Structured Output */}
+              {result.structured_output && (
+                <Card>
+                  <CardHeader>
+                    <CardTitle className="text-base">{t("structuredOutputTitle")}</CardTitle>
+                  </CardHeader>
+                  <CardContent>
+                    <div className="bg-muted p-4 rounded-lg overflow-auto max-h-[400px]">
+                      <JsonView src={result.structured_output} collapsed={2} theme="default" />
+                    </div>
+                  </CardContent>
+                </Card>
+              )}
 
               {/* Directive */}
               <Card className="border-blue-200 dark:border-blue-800">

@@ -850,7 +850,11 @@
     "clearDialogConfirm": "Löschen",
     "actionClearContent": "Inhalt löschen",
     "emptyContent": "Noch kein Inhalt. Aktualisieren Sie dieses mentale Modell, um Inhalt zu erzeugen.",
-    "selectModelPrompt": "Wählen Sie ein mentales Modell aus, um dessen Inhalt anzuzeigen."
+    "selectModelPrompt": "Wählen Sie ein mentales Modell aus, um dessen Inhalt anzuzeigen.",
+    "optionsResponseSchemaLabel": "Schema für strukturierte Ausgabe (JSON)",
+    "optionsResponseSchemaPlaceholder": "{\"type\":\"object\",\"properties\":{\"summary\":{\"type\":\"string\"}},\"required\":[\"summary\"]}",
+    "optionsResponseSchemaDescription": "Optionales JSON-Schema. Jede Aktualisierung speichert zusätzlich ein structured_output in dieser Form neben dem Inhalt.",
+    "invalidResponseSchemaJson": "Ungültiges JSON im Schema für strukturierte Ausgabe"
   },
   "cronPreview": {
     "invalid": "Ungültiger Cron-Ausdruck",
@@ -936,7 +940,12 @@
     "observationTextField": "Text",
     "observationTagsField": "Tags",
     "observationSourceMemoriesField": "Quellerinnerungen ({count})",
-    "observationIdField": "ID"
+    "observationIdField": "ID",
+    "structuredSchemaLabel": "Schema für strukturierte Ausgabe (JSON)",
+    "structuredSchemaPlaceholder": "{\"type\":\"object\",\"properties\":{\"summary\":{\"type\":\"string\"}},\"required\":[\"summary\"]}",
+    "structuredSchemaHint": "Optionales JSON-Schema. Wenn gesetzt, gibt reflect zusätzlich ein structured_output in dieser Form zurück.",
+    "structuredSchemaInvalid": "Ungültiges JSON-Schema",
+    "structuredOutputTitle": "Strukturierte Ausgabe"
   },
   "searchDebug": {
     "noBankSelected": "Keine Bank ausgewählt",
@@ -1458,7 +1467,8 @@
     "factTypeWorld": "Welt",
     "factTypeExperience": "Erfahrung",
     "factTypeObservation": "Beobachtung",
-    "actionClearContent": "Inhalt löschen"
+    "actionClearContent": "Inhalt löschen",
+    "structuredOutput": "Strukturierte Ausgabe"
   },
   "constellation": {
     "instructions": "Scrollen zum Zoomen · Ziehen zum Verschieben · Hover zum Erkunden · Klicken zum Auswählen",

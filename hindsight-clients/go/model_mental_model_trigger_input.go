@@ -33,6 +33,7 @@ type MentalModelTriggerInput struct {
 	IncludeChunks NullableBool `json:"include_chunks,omitempty"`
 	RecallMaxTokens NullableInt32 `json:"recall_max_tokens,omitempty"`
 	RecallChunksMaxTokens NullableInt32 `json:"recall_chunks_max_tokens,omitempty"`
+	ResponseSchema map[string]interface{} `json:"response_schema,omitempty"`
 }
 
 // NewMentalModelTriggerInput instantiates a new MentalModelTriggerInput object
@@ -469,6 +470,39 @@ func (o *MentalModelTriggerInput) UnsetRecallChunksMaxTokens() {
 	o.RecallChunksMaxTokens.Unset()
 }
 
+// GetResponseSchema returns the ResponseSchema field value if set, zero value otherwise (both if not set or set to explicit null).
+func (o *MentalModelTriggerInput) GetResponseSchema() map[string]interface{} {
+	if o == nil {
+		var ret map[string]interface{}
+		return ret
+	}
+	return o.ResponseSchema
+}
+
+// GetResponseSchemaOk returns a tuple with the ResponseSchema field value if set, nil otherwise
+// and a boolean to check if the value has been set.
+// NOTE: If the value is an explicit nil, `nil, true` will be returned
+func (o *MentalModelTriggerInput) GetResponseSchemaOk() (map[string]interface{}, bool) {
+	if o == nil || IsNil(o.ResponseSchema) {
+		return map[string]interface{}{}, false
+	}
+	return o.ResponseSchema, true
+}
+
+// HasResponseSchema returns a boolean if a field has been set.
+func (o *MentalModelTriggerInput) HasResponseSchema() bool {
+	if o != nil && !IsNil(o.ResponseSchema) {
+		return true
+	}
+
+	return false
+}
+
+// SetResponseSchema gets a reference to the given map[string]interface{} and assigns it to the ResponseSchema field.
+func (o *MentalModelTriggerInput) SetResponseSchema(v map[string]interface{}) {
+	o.ResponseSchema = v
+}
+
 func (o MentalModelTriggerInput) MarshalJSON() ([]byte, error) {
 	toSerialize,err := o.ToMap()
 	if err != nil {
@@ -511,6 +545,9 @@ func (o MentalModelTriggerInput) ToMap() (map[string]interface{}, error) {
 	}
 	if o.RecallChunksMaxTokens.IsSet() {
 		toSerialize["recall_chunks_max_tokens"] = o.RecallChunksMaxTokens.Get()
+	}
+	if o.ResponseSchema != nil {
+		toSerialize["response_schema"] = o.ResponseSchema
 	}
 	return toSerialize, nil
 }

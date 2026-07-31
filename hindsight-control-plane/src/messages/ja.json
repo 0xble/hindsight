@@ -850,7 +850,11 @@
     "clearDialogConfirm": "クリア",
     "actionClearContent": "内容をクリア",
     "emptyContent": "まだコンテンツがありません。このメンタルモデルを更新してコンテンツを生成します。",
-    "selectModelPrompt": "メンタルモデルを選択して内容を表示します。"
+    "selectModelPrompt": "メンタルモデルを選択して内容を表示します。",
+    "optionsResponseSchemaLabel": "構造化出力スキーマ (JSON)",
+    "optionsResponseSchemaPlaceholder": "{\"type\":\"object\",\"properties\":{\"summary\":{\"type\":\"string\"}},\"required\":[\"summary\"]}",
+    "optionsResponseSchemaDescription": "任意の JSON スキーマ。更新のたびに、この形式に解析した structured_output もコンテンツとともに保存されます。",
+    "invalidResponseSchemaJson": "構造化出力スキーマの JSON が無効です"
   },
   "cronPreview": {
     "invalid": "無効な cron 式",
@@ -936,7 +940,12 @@
     "observationTextField": "テキスト",
     "observationTagsField": "タグ",
     "observationSourceMemoriesField": "ソースメモリ（{count}件）",
-    "observationIdField": "ID"
+    "observationIdField": "ID",
+    "structuredSchemaLabel": "構造化出力スキーマ (JSON)",
+    "structuredSchemaPlaceholder": "{\"type\":\"object\",\"properties\":{\"summary\":{\"type\":\"string\"}},\"required\":[\"summary\"]}",
+    "structuredSchemaHint": "任意の JSON スキーマ。設定すると、reflect はこの形式に解析した structured_output も返します。",
+    "structuredSchemaInvalid": "無効な JSON スキーマ",
+    "structuredOutputTitle": "構造化出力"
   },
   "searchDebug": {
     "noBankSelected": "バンクが選択されていません",
@@ -1458,7 +1467,8 @@
     "factTypeWorld": "世界",
     "factTypeExperience": "経験",
     "factTypeObservation": "オブザベーション",
-    "actionClearContent": "内容をクリア"
+    "actionClearContent": "内容をクリア",
+    "structuredOutput": "構造化出力"
   },
   "constellation": {
     "instructions": "スクロールでズーム · ドラッグで移動 · ホバーで探索 · クリックで選択",

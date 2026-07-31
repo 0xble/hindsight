@@ -850,7 +850,11 @@
     "clearDialogConfirm": "Clear",
     "actionClearContent": "Clear Content",
     "emptyContent": "No content yet. Refresh this mental model to generate content.",
-    "selectModelPrompt": "Select a mental model to view its content."
+    "selectModelPrompt": "Select a mental model to view its content.",
+    "optionsResponseSchemaLabel": "Structured output schema (JSON)",
+    "optionsResponseSchemaPlaceholder": "{\"type\":\"object\",\"properties\":{\"summary\":{\"type\":\"string\"}},\"required\":[\"summary\"]}",
+    "optionsResponseSchemaDescription": "Optional JSON Schema. Each refresh also stores a structured_output parsed to this shape alongside the content.",
+    "invalidResponseSchemaJson": "Invalid JSON in structured output schema"
   },
   "cronPreview": {
     "invalid": "Invalid cron expression",
@@ -936,7 +940,12 @@
     "observationTextField": "Text",
     "observationTagsField": "Tags",
     "observationSourceMemoriesField": "Source Memories ({count})",
-    "observationIdField": "ID"
+    "observationIdField": "ID",
+    "structuredSchemaLabel": "Structured output schema (JSON)",
+    "structuredSchemaPlaceholder": "{\"type\":\"object\",\"properties\":{\"summary\":{\"type\":\"string\"}},\"required\":[\"summary\"]}",
+    "structuredSchemaHint": "Optional JSON Schema. When set, reflect also returns a structured_output parsed to this shape.",
+    "structuredSchemaInvalid": "Invalid JSON schema",
+    "structuredOutputTitle": "Structured Output"
   },
   "searchDebug": {
     "noBankSelected": "No Bank Selected",
@@ -1458,7 +1467,8 @@
     "factTypeWorld": "world",
     "factTypeExperience": "experience",
     "factTypeObservation": "observation",
-    "actionClearContent": "Clear Content"
+    "actionClearContent": "Clear Content",
+    "structuredOutput": "Structured Output"
   },
   "constellation": {
     "instructions": "Scroll to zoom · Drag to pan · Hover to explore · Click to select",

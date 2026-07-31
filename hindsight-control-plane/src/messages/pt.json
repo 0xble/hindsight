@@ -850,7 +850,11 @@
     "clearDialogConfirm": "Limpar",
     "actionClearContent": "Limpar conteúdo",
     "emptyContent": "Ainda não há conteúdo. Atualize este modelo mental para gerar conteúdo.",
-    "selectModelPrompt": "Selecione um modelo mental para ver seu conteúdo."
+    "selectModelPrompt": "Selecione um modelo mental para ver seu conteúdo.",
+    "optionsResponseSchemaLabel": "Esquema de saída estruturada (JSON)",
+    "optionsResponseSchemaPlaceholder": "{\"type\":\"object\",\"properties\":{\"summary\":{\"type\":\"string\"}},\"required\":[\"summary\"]}",
+    "optionsResponseSchemaDescription": "Esquema JSON opcional. Cada atualização também armazena um structured_output analisado nesse formato junto com o conteúdo.",
+    "invalidResponseSchemaJson": "JSON inválido no esquema de saída estruturada"
   },
   "cronPreview": {
     "invalid": "Expressão cron inválida",
@@ -936,7 +940,12 @@
     "observationTextField": "Texto",
     "observationTagsField": "Tags",
     "observationSourceMemoriesField": "Memórias de Origem ({count})",
-    "observationIdField": "ID"
+    "observationIdField": "ID",
+    "structuredSchemaLabel": "Esquema de saída estruturada (JSON)",
+    "structuredSchemaPlaceholder": "{\"type\":\"object\",\"properties\":{\"summary\":{\"type\":\"string\"}},\"required\":[\"summary\"]}",
+    "structuredSchemaHint": "Esquema JSON opcional. Quando definido, o reflect também retorna um structured_output analisado nesse formato.",
+    "structuredSchemaInvalid": "Esquema JSON inválido",
+    "structuredOutputTitle": "Saída estruturada"
   },
   "searchDebug": {
     "noBankSelected": "Nenhum Banco Selecionado",
@@ -1458,7 +1467,8 @@
     "factTypeWorld": "mundo",
     "factTypeExperience": "experiência",
     "factTypeObservation": "observação",
-    "actionClearContent": "Limpar conteúdo"
+    "actionClearContent": "Limpar conteúdo",
+    "structuredOutput": "Saída estruturada"
   },
   "constellation": {
     "instructions": "Scroll para zoom · Arraste para mover · Passe o mouse para explorar · Clique para selecionar",

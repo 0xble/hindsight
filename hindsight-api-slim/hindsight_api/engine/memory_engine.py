@@ -10011,7 +10011,8 @@ class MemoryEngine(MemoryEngineInterface):
             budget: Budget level (currently unused, reserved for future)
             context: Additional context string to include in agent prompt
             max_tokens: Max tokens (currently unused, reserved for future)
-            response_schema: Optional JSON Schema for structured output (not yet supported)
+            response_schema: Optional JSON Schema for structured output. When provided, a
+                follow-up extraction call parses the final answer into ``structured_output``.
             tags: Optional tags to filter memories
             tags_match: How to match tags - "any" (OR), "all" (AND)
             apply_all_directives: When True, apply every active directive regardless of
@@ -10026,7 +10027,8 @@ class MemoryEngine(MemoryEngineInterface):
             ReflectResult containing:
                 - text: Plain text answer
                 - based_on: Empty dict (agent retrieves facts dynamically)
-                - structured_output: None (not yet supported for agentic reflect)
+                - structured_output: Parsed structured output when response_schema was
+                  provided, else None
         """
         # Sanitize at ingress so lone UTF-16 surrogates in the question/context cannot
         # crash logging, recall's embedder, or the reflect LLM call (see issue #1875).
@@ -11602,6 +11604,7 @@ class MemoryEngine(MemoryEngineInterface):
             recall_include_chunks_override = trigger_data.get("include_chunks")
             recall_max_tokens_override = trigger_data.get("recall_max_tokens")
             recall_chunks_max_tokens_override = trigger_data.get("recall_chunks_max_tokens")
+            response_schema = trigger_data.get("response_schema")
             refresh_mode = trigger_data.get("mode") or "full"
 
             current_content = (mental_model.get("content") or "").strip()
@@ -11696,6 +11699,7 @@ class MemoryEngine(MemoryEngineInterface):
                 recall_include_chunks=recall_include_chunks_override,
                 recall_max_tokens_override=recall_max_tokens_override,
                 recall_chunks_max_tokens_override=recall_chunks_max_tokens_override,
+                response_schema=response_schema,
                 _skip_span=True,
                 # Attribute these LLM calls to the mental-model refresh, not a
                 # plain reflect, so traces group under the right operation.
@@ -11774,6 +11778,11 @@ class MemoryEngine(MemoryEngineInterface):
                 "based_on": based_on_serialized_payload,
                 "mental_models": [],  # Mental models are included in based_on["mental-models"]
             }
+            # When the trigger carries a response_schema, reflect returns a parsed
+            # structured_output derived from its answer. Persist it alongside the
+            # markdown so consumers get both the prose and the structured view.
+            if reflect_result.structured_output is not None:
+                reflect_response_payload["structured_output"] = reflect_result.structured_output
 
             # Delta-mode path: emit structured operations against the existing
             # structured doc, apply them, then re-render to markdown. Sections

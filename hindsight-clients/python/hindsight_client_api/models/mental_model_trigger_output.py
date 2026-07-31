@@ -38,7 +38,8 @@ class MentalModelTriggerOutput(BaseModel):
     include_chunks: Optional[StrictBool] = None
     recall_max_tokens: Optional[StrictInt] = None
     recall_chunks_max_tokens: Optional[StrictInt] = None
-    __properties: ClassVar[List[str]] = ["mode", "refresh_after_consolidation", "refresh_cron", "fact_types", "exclude_mental_models", "exclude_mental_model_ids", "tags_match", "tag_groups", "include_chunks", "recall_max_tokens", "recall_chunks_max_tokens"]
+    response_schema: Optional[Dict[str, Any]] = None
+    __properties: ClassVar[List[str]] = ["mode", "refresh_after_consolidation", "refresh_cron", "fact_types", "exclude_mental_models", "exclude_mental_model_ids", "tags_match", "tag_groups", "include_chunks", "recall_max_tokens", "recall_chunks_max_tokens", "response_schema"]
 
     @field_validator('mode')
     def mode_validate_enum(cls, value):
@@ -157,6 +158,11 @@ class MentalModelTriggerOutput(BaseModel):
         if self.recall_chunks_max_tokens is None and "recall_chunks_max_tokens" in self.model_fields_set:
             _dict['recall_chunks_max_tokens'] = None
 
+        # set to None if response_schema (nullable) is None
+        # and model_fields_set contains the field
+        if self.response_schema is None and "response_schema" in self.model_fields_set:
+            _dict['response_schema'] = None
+
         return _dict
 
     @classmethod
@@ -179,7 +185,8 @@ class MentalModelTriggerOutput(BaseModel):
             "tag_groups": [MentalModelTriggerOutputTagGroupsInner.from_dict(_item) for _item in obj["tag_groups"]] if obj.get("tag_groups") is not None else None,
             "include_chunks": obj.get("include_chunks"),
             "recall_max_tokens": obj.get("recall_max_tokens"),
-            "recall_chunks_max_tokens": obj.get("recall_chunks_max_tokens")
+            "recall_chunks_max_tokens": obj.get("recall_chunks_max_tokens"),
+            "response_schema": obj.get("response_schema")
         })
         return _obj
 

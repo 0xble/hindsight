@@ -850,7 +850,11 @@
     "clearDialogConfirm": "清除",
     "actionClearContent": "清除内容",
     "emptyContent": "暂无内容。刷新此心智模型以生成内容。",
-    "selectModelPrompt": "选择一个心智模型以查看其内容。"
+    "selectModelPrompt": "选择一个心智模型以查看其内容。",
+    "optionsResponseSchemaLabel": "结构化输出模式 (JSON)",
+    "optionsResponseSchemaPlaceholder": "{\"type\":\"object\",\"properties\":{\"summary\":{\"type\":\"string\"}},\"required\":[\"summary\"]}",
+    "optionsResponseSchemaDescription": "可选的 JSON 模式。每次刷新还会将按此结构解析的 structured_output 与内容一起存储。",
+    "invalidResponseSchemaJson": "结构化输出模式中的 JSON 无效"
   },
   "cronPreview": {
     "invalid": "无效的 cron 表达式",
@@ -936,7 +940,12 @@
     "observationTextField": "文本",
     "observationTagsField": "标签",
     "observationSourceMemoriesField": "来源记忆（{count}）",
-    "observationIdField": "ID"
+    "observationIdField": "ID",
+    "structuredSchemaLabel": "结构化输出模式 (JSON)",
+    "structuredSchemaPlaceholder": "{\"type\":\"object\",\"properties\":{\"summary\":{\"type\":\"string\"}},\"required\":[\"summary\"]}",
+    "structuredSchemaHint": "可选的 JSON 模式。设置后，reflect 还会返回按此结构解析的 structured_output。",
+    "structuredSchemaInvalid": "JSON 模式无效",
+    "structuredOutputTitle": "结构化输出"
   },
   "searchDebug": {
     "noBankSelected": "未选择记忆库",
@@ -1458,7 +1467,8 @@
     "factTypeWorld": "世界",
     "factTypeExperience": "经验",
     "factTypeObservation": "观察",
-    "actionClearContent": "清除内容"
+    "actionClearContent": "清除内容",
+    "structuredOutput": "结构化输出"
   },
   "constellation": {
     "instructions": "滚动缩放 · 拖拽平移 · 悬停探索 · 点击选择",

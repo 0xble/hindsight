@@ -906,6 +906,14 @@ export function MentalModelDetailModal({
                     </div>
                     <CompactMarkdown className="p-4">{mentalModel.content}</CompactMarkdown>
                   </div>
+                  {mentalModel.reflect_response?.structured_output && (
+                    <div>
+                      <SectionLabel>{t("structuredOutput")}</SectionLabel>
+                      <pre className="rounded-lg border border-border bg-muted/30 p-4 text-xs font-mono overflow-auto max-h-[400px] whitespace-pre-wrap break-words">
+                        {JSON.stringify(mentalModel.reflect_response.structured_output, null, 2)}
+                      </pre>
+                    </div>
+                  )}
                   <div>
                     <SectionLabel>
                       {basedOnCount > 0

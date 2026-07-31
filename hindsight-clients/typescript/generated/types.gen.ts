@@ -2884,6 +2884,14 @@ export type MentalModelTriggerInput = {
    * Override the token budget for raw chunks returned by the internal recall during refresh. None means use the bank/global config default (recall_chunks_max_tokens).
    */
   recall_chunks_max_tokens?: number | null;
+  /**
+   * Response Schema
+   *
+   * Optional JSON Schema for structured output. When set, each refresh runs the same structured-output extraction as reflect's response_schema and stores the parsed result under reflect_response.structured_output alongside the markdown content.
+   */
+  response_schema?: {
+    [key: string]: unknown;
+  } | null;
 };
 
 /**
@@ -2960,6 +2968,14 @@ export type MentalModelTriggerOutput = {
    * Override the token budget for raw chunks returned by the internal recall during refresh. None means use the bank/global config default (recall_chunks_max_tokens).
    */
   recall_chunks_max_tokens?: number | null;
+  /**
+   * Response Schema
+   *
+   * Optional JSON Schema for structured output. When set, each refresh runs the same structured-output extraction as reflect's response_schema and stores the parsed result under reflect_response.structured_output alongside the markdown content.
+   */
+  response_schema?: {
+    [key: string]: unknown;
+  } | null;
 };
 
 /**

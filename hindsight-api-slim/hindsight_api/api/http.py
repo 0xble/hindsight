@@ -2111,6 +2111,14 @@ class MentalModelTrigger(BaseModel):
             "None means use the bank/global config default (recall_chunks_max_tokens)."
         ),
     )
+    response_schema: dict | None = Field(
+        default=None,
+        description=(
+            "Optional JSON Schema for structured output. When set, each refresh runs the same "
+            "structured-output extraction as reflect's response_schema and stores the parsed result "
+            "under reflect_response.structured_output alongside the markdown content."
+        ),
+    )
 
     @field_validator("fact_types")
     @classmethod

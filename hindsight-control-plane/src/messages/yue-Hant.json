@@ -850,7 +850,11 @@
     "clearDialogConfirm": "清除",
     "actionClearContent": "清除內容",
     "emptyContent": "目前沒有內容。請重新整理此心智模型以產生內容。",
-    "selectModelPrompt": "選擇一個心智模型以檢視其內容。"
+    "selectModelPrompt": "選擇一個心智模型以檢視其內容。",
+    "optionsResponseSchemaLabel": "結構化輸出結構 (JSON)",
+    "optionsResponseSchemaPlaceholder": "{\"type\":\"object\",\"properties\":{\"summary\":{\"type\":\"string\"}},\"required\":[\"summary\"]}",
+    "optionsResponseSchemaDescription": "可選嘅 JSON 結構。每次重新整理亦會將按此結構解析嘅 structured_output 同內容一齊儲存。",
+    "invalidResponseSchemaJson": "結構化輸出結構嘅 JSON 無效"
   },
   "cronPreview": {
     "invalid": "無效嘅 cron 運算式",
@@ -936,7 +940,12 @@
     "observationTextField": "文字",
     "observationTagsField": "標籤",
     "observationSourceMemoriesField": "來源記憶（{count}）",
-    "observationIdField": "ID"
+    "observationIdField": "ID",
+    "structuredSchemaLabel": "結構化輸出結構 (JSON)",
+    "structuredSchemaPlaceholder": "{\"type\":\"object\",\"properties\":{\"summary\":{\"type\":\"string\"}},\"required\":[\"summary\"]}",
+    "structuredSchemaHint": "可選嘅 JSON 結構。設定後，reflect 亦會傳回按此結構解析嘅 structured_output。",
+    "structuredSchemaInvalid": "JSON 結構無效",
+    "structuredOutputTitle": "結構化輸出"
   },
   "searchDebug": {
     "noBankSelected": "未選擇記憶庫",
@@ -1458,7 +1467,8 @@
     "factTypeWorld": "世界",
     "factTypeExperience": "經驗",
     "factTypeObservation": "觀察",
-    "actionClearContent": "清除內容"
+    "actionClearContent": "清除內容",
+    "structuredOutput": "結構化輸出"
   },
   "constellation": {
     "instructions": "滾動縮放 · 拖曳平移 · 懸停探索 · 選取項目",
