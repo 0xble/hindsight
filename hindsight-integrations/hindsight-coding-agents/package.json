@@ -42,8 +42,8 @@
     "build": "tsup",
     "clean": "rm -rf dist",
     "prepublishOnly": "npm run clean && npm run build",
-    "test": "vitest run --exclude '**/*.live.test.ts'",
-    "test:live": "HINDSIGHT_LIVE_E2E=1 vitest run src/system.live.test.ts"
+    "test": "vitest run --exclude '**/*.e2e.test.ts'",
+    "test:harness-e2e": "npm run build && HINDSIGHT_HARNESS_E2E=1 vitest run src/harness.e2e.test.ts"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.29.0",

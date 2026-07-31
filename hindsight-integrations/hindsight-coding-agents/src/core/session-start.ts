@@ -39,6 +39,7 @@ import { sessionCacheFile, writeSessionCache } from "./session-cache";
 interface SeedContextClient {
   listDocumentIds(tag: string): Promise<Set<string>>;
   listPages(): Promise<unknown>;
+  knowledgePagesSupported?: boolean;
   // Optional: used to write the survey-baseline marker (Option A). HindsightClient has it; the
   // minimal test clients omit it, and the baseline write guards on its presence.
   retain?(
@@ -277,6 +278,9 @@ export async function buildSessionStartContext(args: {
     pages = parsePageList(await client.listPages());
     pageListKnown = true;
   } catch {
+    if (client.knowledgePagesSupported === false) {
+      diag(harness, "knowledge_pages_unavailable", { bank: bankId });
+    }
     /* fail-open preamble; preserve first-prompt reflect eligibility on a transient outage */
   }
   const additionalContext = buildKnowledgePreamble(pages, { reflectOnNewGoals: !cfg.autoReflect });

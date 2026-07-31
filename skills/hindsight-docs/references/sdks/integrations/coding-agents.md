@@ -42,6 +42,10 @@ in front of the agent at the moment it starts working.
    `pages_failed`, with duration and error) is appended to a diagnostics file, so a memory-less
    session can't masquerade as a memory session.
 
+If the configured Hindsight server predates knowledge pages, the client detects that capability at
+session start, skips page seeding and page lookups, and records `knowledge_pages_unavailable`.
+Legacy bank configuration, git/session ingestion, reflection, and retention continue normally.
+
 When memories **conflict** on the same rule, reflect prefers the latest/superseding decision — a
 rule amended in a later conversation wins over the original, and the superseded rule is reported as
 no longer in effect.

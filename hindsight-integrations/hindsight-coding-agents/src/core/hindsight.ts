@@ -31,6 +31,15 @@ export interface RetainOpts {
   async?: boolean; // enqueue server-side (default) vs block on extraction
 }
 
+/** Raised when the target server predates the knowledge-pages API surface. */
+export class KnowledgePagesUnavailableError extends Error {
+  readonly code = "knowledge_pages_unavailable";
+  constructor() {
+    super("Hindsight server does not support knowledge pages");
+    this.name = "KnowledgePagesUnavailableError";
+  }
+}
+
 const TERMINAL = new Set(["completed", "failed", "cancelled", "error"]);
 
 export class HindsightClient {
@@ -38,6 +47,8 @@ export class HindsightClient {
   readonly apiToken?: string;
   readonly bank: string;
   readonly opIds: string[] = []; // async operation ids collected by retain(), for drain()
+  /** Tri-state capability probe: unknown until the first page request, then cached. */
+  knowledgePagesSupported: boolean | undefined;
   private readonly log: (msg: string) => void;
 
   constructor(o: ClientOpts) {
@@ -134,8 +145,9 @@ export class HindsightClient {
   }
 
   /** Configure the bank: POST the coding bank template manifest to /import (missions, retain
-   *  strategies, entity labels), then seed the knowledge pages. Both halves are idempotent, so the
-   *  deepen engine can re-run this every pass. Creates the bank if missing. */
+   *  strategies, entity labels), then seed knowledge pages when the server supports them. Both
+   *  halves are idempotent, so the deepen engine can re-run this every pass. Creates the bank if
+   *  missing; legacy servers continue with the template-only path. */
   async configureBank(opts: { reset?: boolean } = {}): Promise<void> {
     if (opts.reset) {
       await this.req("DELETE", this.bankUrl());
@@ -231,7 +243,13 @@ export class HindsightClient {
    * queries and staleness but NOT synthesized content, so it is cheap enough to poll.
    */
   async tree(): Promise<KnowledgeNode[]> {
+    if (this.knowledgePagesSupported === false) throw new KnowledgePagesUnavailableError();
     const r = await this.req("GET", this.bankUrl("/knowledge-base/tree"));
+    if ([404, 405, 501].includes(r.status)) {
+      this.knowledgePagesSupported = false;
+      throw new KnowledgePagesUnavailableError();
+    }
+    this.knowledgePagesSupported = true;
     try {
       return ((await r.json()) as { roots?: KnowledgeNode[] }).roots ?? [];
     } catch {
@@ -275,6 +293,7 @@ export class HindsightClient {
    * token cap.
    */
   async getPage(pageId: string): Promise<unknown> {
+    if (this.knowledgePagesSupported === false) throw new KnowledgePagesUnavailableError();
     const r = await this.req(
       "GET",
       this.bankUrl(`/knowledge-base/pages/${encodeURIComponent(pageId)}`)
@@ -290,6 +309,7 @@ export class HindsightClient {
     query: string,
     limit = 3
   ): Promise<{ id: string; name: string; snippet: string; score: number }[]> {
+    if (this.knowledgePagesSupported === false) throw new KnowledgePagesUnavailableError();
     const q = `?q=${encodeURIComponent(query)}&limit=${limit}`;
     const r = await this.req("GET", this.bankUrl(`/knowledge-base/search${q}`));
     const j = (await r.json()) as {
@@ -315,7 +335,17 @@ export class HindsightClient {
    */
   async seedPages(): Promise<void> {
     const existing = new Map<string, KnowledgeNode>();
-    for (const n of await this.tree()) {
+    let roots: KnowledgeNode[];
+    try {
+      roots = await this.tree();
+    } catch (e) {
+      if (e instanceof KnowledgePagesUnavailableError) {
+        this.log(`[bank] knowledge pages unavailable on ${this.apiUrl}; continuing without pages`);
+        return;
+      }
+      throw e;
+    }
+    for (const n of roots) {
       if (n.kind === "page" && n.name) existing.set(n.name.toLowerCase(), n);
     }
     let created = 0;
@@ -333,14 +363,28 @@ export class HindsightClient {
         // 409 = another deepen run seeded this name between our tree read and this POST. That is
         // the outcome we wanted anyway, so tolerate it rather than failing the whole run.
         const r = await this.req("POST", this.bankUrl("/knowledge-base/pages"), body, [409]);
+        if ([404, 405, 501].includes(r.status)) {
+          this.knowledgePagesSupported = false;
+          this.log(
+            `[bank] knowledge pages unavailable on ${this.apiUrl}; continuing without pages`
+          );
+          return;
+        }
         if (r.status !== 409) created++;
       } else if (hit.description !== page.source_query) {
         // Only the source query can drift — the name IS the match key, so it can't.
-        await this.req(
+        const r = await this.req(
           "PATCH",
           this.bankUrl(`/knowledge-base/nodes/${encodeURIComponent(hit.id)}`),
           { source_query: page.source_query, tags: page.tags }
         );
+        if ([404, 405, 501].includes(r.status)) {
+          this.knowledgePagesSupported = false;
+          this.log(
+            `[bank] knowledge pages unavailable on ${this.apiUrl}; continuing without pages`
+          );
+          return;
+        }
         updated++;
       }
     }

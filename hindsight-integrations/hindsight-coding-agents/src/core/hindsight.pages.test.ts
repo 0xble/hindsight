@@ -22,6 +22,23 @@ function stubFetch(calls: any[], jsonImpl: () => Promise<unknown> = async () => 
  *  or ids stop resolving (search returns kp-… node ids) and seeded pages fall out of the search
  *  corpus (it joins through knowledge_pages). */
 describe("HindsightClient knowledge-page reads", () => {
+  it("recognizes an older server and exposes the missing capability", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => ({
+        ok: false,
+        status: 404,
+        json: async () => ({ detail: "not found" }),
+      })) as any
+    );
+    const c = new HindsightClient({ apiUrl: "http://x", bank: "repo-a" });
+    await expect(c.listPages()).rejects.toMatchObject({ code: "knowledge_pages_unavailable" });
+    expect(c.knowledgePagesSupported).toBe(false);
+    await expect(c.searchKnowledgePages("architecture")).rejects.toMatchObject({
+      code: "knowledge_pages_unavailable",
+    });
+  });
+
   it("listPages reads the knowledge-base tree — never /mental-models", async () => {
     const calls: any[] = [];
     stubFetch(calls, async () => ({ roots: [] }));
@@ -121,6 +138,24 @@ describe("HindsightClient knowledge-page reads", () => {
 });
 
 describe("HindsightClient.seedPages", () => {
+  it("skips page writes when the server has no knowledge-pages API", async () => {
+    const calls: any[] = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: string, init: any) => {
+        calls.push({ url, method: init?.method });
+        if (url.endsWith("/knowledge-base/tree"))
+          return { ok: false, status: 404, json: async () => ({}) } as any;
+        return { ok: true, status: 200, json: async () => ({}) } as any;
+      }) as any
+    );
+    const c = new HindsightClient({ apiUrl: "http://x", bank: "repo-a" });
+    await expect(c.configureBank()).resolves.toBeUndefined();
+    expect(c.knowledgePagesSupported).toBe(false);
+    expect(calls.some((x) => x.url.endsWith("/import"))).toBe(true);
+    expect(calls.some((x) => x.url.endsWith("/knowledge-base/pages"))).toBe(false);
+  });
+
   it("creates every seeded page through /knowledge-base/pages on an empty bank", async () => {
     const calls: any[] = [];
     stubFetchRouted(calls, [

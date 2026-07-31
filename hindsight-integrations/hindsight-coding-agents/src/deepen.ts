@@ -135,6 +135,12 @@ async function main() {
     log(`deepen -> ${client.apiUrl} bank=${FINAL_BANK} harness=${harness.name}`);
 
     await client.configureBank();
+    if (client.knowledgePagesSupported === false) {
+      diag(harness.name, "knowledge_pages_unavailable", {
+        bank: FINAL_BANK,
+        apiUrl: client.apiUrl,
+      });
+    }
 
     const gitIds = await client.listDocumentIds("source:git");
 

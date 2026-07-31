@@ -223,7 +223,8 @@ function buildSurveyPlan(
     }
     case "antigravity-cli": {
       // Antigravity's documented `-p` mode supports one-shot surveys. `--mode=plan` is the
-      // read-only boundary, and the installed MCP server comes from ~/.gemini/config/mcp_config.json.
+      // read-only boundary, and the installed MCP server comes from agy's current
+      // ~/.gemini/config/mcp_config.json compatibility location.
       return {
         bin,
         args: ["-p", SURVEY_PROMPT, "--mode=plan"],

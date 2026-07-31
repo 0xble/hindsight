@@ -23,6 +23,7 @@ import { SURVEY_DOC_IDS } from "./survey";
 export interface StatusClient {
   listDocumentIds(tag: string): Promise<Set<string>>;
   listPages(): Promise<unknown>;
+  knowledgePagesSupported?: boolean;
   activeOperations(): Promise<number>;
 }
 
@@ -108,6 +109,11 @@ export async function syncStatus(
     surveyDocs,
     surveyCommitsBehind,
     activeOps,
-    synced: gitlogPresent && pages.length > 0 && (activeOps ?? 0) === 0,
+    // Older Hindsight servers have no page surface. They are still fully usable for the
+    // legacy bank/retain pipeline, so page absence must not make syncStatus permanently false.
+    synced:
+      gitlogPresent &&
+      (client.knowledgePagesSupported === false || pages.length > 0) &&
+      (activeOps ?? 0) === 0,
   };
 }

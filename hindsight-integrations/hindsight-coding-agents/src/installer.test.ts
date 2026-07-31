@@ -254,6 +254,14 @@ describe("antigravity-cli installer", () => {
     });
   });
 
+  it("accepts agy as the supported CLI name", () => {
+    const ctx = makeCtx();
+    expect(run(["install", "agy"], ctx)).toBe(0);
+    expect(readJson(mcpPath(ctx)).mcpServers.hindsight.env.HINDSIGHT_MCP_HARNESS).toBe(
+      "antigravity-cli"
+    );
+  });
+
   it("preserves existing unrelated settings keys", () => {
     const ctx = makeCtx();
     writeJsonAt(hooksPath(ctx), { foreign: { enabled: false } });

@@ -60,6 +60,7 @@ export interface HookSpec {
 interface HookClient {
   reflect(query: string, opts: { budget?: string; timeoutMs?: number }): Promise<string>;
   listPages(): Promise<unknown>;
+  knowledgePagesSupported?: boolean;
 }
 
 /**
@@ -145,10 +146,14 @@ export async function buildHookOutput(args: {
       pages = parsePageList(await client.listPages());
       diag(harness, "pages_ok", { ms: Date.now() - t0, count: pages.length });
     } catch (e) {
-      diag(harness, "pages_failed", {
-        ms: Date.now() - t0,
-        error: String((e as Error)?.message || e).slice(0, 200),
-      });
+      diag(
+        harness,
+        client.knowledgePagesSupported === false ? "knowledge_pages_unavailable" : "pages_failed",
+        {
+          ms: Date.now() - t0,
+          error: String((e as Error)?.message || e).slice(0, 200),
+        }
+      );
     }
   }
 
@@ -242,7 +247,11 @@ export async function runHook(
   // Mid-session heal: a bank with ZERO pages means the engine never built it (e.g. the session
   // predates the install, so no SessionStart and the first-prompt net already passed). Fire the
   // idempotent engine — the per-bank lock makes repeats free while it builds.
-  if (cfg.autoSeed !== false && output.pagesKnown === 0) {
+  if (
+    cfg.autoSeed !== false &&
+    client.knowledgePagesSupported !== false &&
+    output.pagesKnown === 0
+  ) {
     startBackgroundSeed(cwd, { limit: cfg.seedLimit, harness: spec.harness });
   }
   if (output.context || output.notice) out(output.context, output.notice);

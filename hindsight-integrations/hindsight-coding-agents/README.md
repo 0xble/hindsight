@@ -54,6 +54,10 @@ in front of the agent at the moment it starts working, and keeps a curated set o
    `pages_failed`, with duration and error) is appended to a diagnostics file, so a memory-less
    session can't masquerade as a memory session.
 
+If the configured Hindsight server predates knowledge pages, the client detects that capability at
+session start, skips page seeding and page lookups, and records `knowledge_pages_unavailable`.
+Legacy bank configuration, git/session ingestion, reflection, and retention continue normally.
+
 When memories **conflict** on the same rule, reflect prefers the latest/superseding decision — a rule
 amended in a later conversation wins over the original.
 
@@ -62,17 +66,17 @@ amended in a later conversation wins over the original.
 Every harness runs the same surface (seed → session reflect → per-turn page sections → knowledge
 tools → write-back); they differ only in how that surface is delivered.
 
-| harness           | kind              | lifecycle wiring                                                                                                               | install                                                              |
-| ----------------- | ----------------- | ------------------------------------------------------------------------------------------------------------------------------ | -------------------------------------------------------------------- |
-| `opencode`        | persistent plugin | one process: load-time seed, session reflect + page sections, native tools, write-back                                         | add the package dir to `opencode.json` → `"plugin": [...]`           |
-| `kilo`            | persistent plugin | identical to `opencode` — Kilo CLI is an opencode fork, so it loads the same runtime (no hooks system)                         | `hindsight-coding-agents install kilo` → `kilo.json[c]` `"plugin"`   |
-| `claude-code`     | per-prompt hooks  | `SessionStart` (seed) + `UserPromptSubmit` (reflect + pages) + `Stop` (write-back) + MCP                                       | the [`../claude-code-v2`](../claude-code-v2) wrapper's dev-installer |
-| `codex`           | per-prompt hooks  | same three hooks in `~/.codex/hooks.json` (+ `codex_hooks = true`, CLI ≥ 0.116)                                                | the [`../codex-v2`](../codex-v2) wrapper's dev-installer             |
-| `antigravity-cli` | lifecycle hooks   | `PreInvocation` (seed + reflect) + `Stop` (write-back) + MCP, plus a native colored `Hindsight · <bank>` status-line indicator | `hindsight-coding-agents install antigravity-cli`                    |
-| `cursor-cli`      | lifecycle hooks   | `sessionStart` (seed + pages) + `beforeSubmitPrompt` (reflect) + `stop` (write-back)                                           | hooks in Cursor `hooks.json`                                         |
-| `copilot-cli`     | lifecycle hooks   | `sessionStart` (seed + pages) + `userPromptTransformed` (reflect) + `agentStop` (write-back) + MCP                             | `~/.copilot/hooks/hindsight-coding-agents.json` + `mcp-config.json`  |
-| `grok-build`      | lifecycle hooks   | `SessionStart` (seed) + `Stop` (write-back) + MCP                                                                              | native `~/.grok/config.toml` — no Claude Code dependency             |
-| `cline-cli`       | persistent plugin | native `beforeModel` (seed/reflect/pages) + `afterRun` (write-back) + MCP                                                      | `cline plugin install` (run by the installer)                        |
+| harness                   | kind              | lifecycle wiring                                                                                                                   | install                                                              |
+| ------------------------- | ----------------- | ---------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------- |
+| `opencode`                | persistent plugin | one process: load-time seed, session reflect + page sections, native tools, write-back                                             | add the package dir to `opencode.json` → `"plugin": [...]`           |
+| `kilo`                    | persistent plugin | identical to `opencode` — Kilo CLI is an opencode fork, so it loads the same runtime (no hooks system)                             | `hindsight-coding-agents install kilo` → `kilo.json[c]` `"plugin"`   |
+| `claude-code`             | per-prompt hooks  | `SessionStart` (seed) + `UserPromptSubmit` (reflect + pages) + `Stop` (write-back) + MCP                                           | the [`../claude-code-v2`](../claude-code-v2) wrapper's dev-installer |
+| `codex`                   | per-prompt hooks  | same three hooks in `~/.codex/hooks.json` (+ `codex_hooks = true`, CLI ≥ 0.116)                                                    | the [`../codex-v2`](../codex-v2) wrapper's dev-installer             |
+| `antigravity-cli` (`agy`) | lifecycle hooks   | Antigravity CLI lifecycle hooks (`PreInvocation` + `Stop`) + MCP, plus a native colored `Hindsight · <bank>` status-line indicator | `hindsight-coding-agents install agy`                                |
+| `cursor-cli`              | lifecycle hooks   | `sessionStart` (seed + pages) + `beforeSubmitPrompt` (reflect) + `stop` (write-back)                                               | hooks in Cursor `hooks.json`                                         |
+| `copilot-cli`             | lifecycle hooks   | `sessionStart` (seed + pages) + `userPromptTransformed` (reflect) + `agentStop` (write-back) + MCP                                 | `~/.copilot/hooks/hindsight-coding-agents.json` + `mcp-config.json`  |
+| `grok-build`              | lifecycle hooks   | `SessionStart` (seed) + `Stop` (write-back) + MCP                                                                                  | native `~/.grok/config.toml` — no Claude Code dependency             |
+| `cline-cli`               | persistent plugin | native `beforeModel` (seed/reflect/pages) + `afterRun` (write-back) + MCP                                                          | `cline plugin install` (run by the installer)                        |
 
 The hook-based harnesses share one runtime (`src/core/hook.ts`) plus their SessionStart/Stop
 entrypoints. Persistent-plugin hosts (opencode/Kilo/Cline) delegate to the same `RuntimeCore`,
@@ -310,18 +314,6 @@ as a JSON line to `/tmp/hindsight-plugin.log` (override with `HINDSIGHT_DIAG_FIL
 `reflect_failed` / `pages_failed` record the error; if you're comparing memory-on vs memory-off,
 check this file — a run whose reflects failed is a no-memory run. Seed starts are logged as
 `seed_started`.
-
-## Testing
-
-```bash
-npm test          # unit tests: bank resolution, config layering, transcript readers, hook/reflect logic, page-section index (no network)
-npm run test:live # LIVE system test against a real server + real LLM:
-                  #   HINDSIGHT_API_URL=http://localhost:8888 npm run test:live
-```
-
-The live suite builds a real git repo with a decision planted in a commit and a conversation, runs
-the real backfill (server-side LLM extraction), then drives the built hook binaries as subprocesses
-and asserts the decision's literal values come back in the injected context.
 
 ## Layout
 

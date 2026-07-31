@@ -11,6 +11,7 @@ function stubClient(opts: {
   chatIds?: string[];
   listDocumentIds?: StatusClient["listDocumentIds"];
   listPages?: StatusClient["listPages"];
+  knowledgePagesSupported?: boolean;
   activeOperations?: StatusClient["activeOperations"];
 }): StatusClient {
   return {
@@ -19,6 +20,7 @@ function stubClient(opts: {
       (async (tag: string) =>
         new Set(tag === "source:git" ? (opts.gitIds ?? []) : (opts.chatIds ?? []))),
     listPages: opts.listPages ?? (async () => ({ items: [{ id: "p1", name: "Component map" }] })),
+    knowledgePagesSupported: opts.knowledgePagesSupported,
     activeOperations: opts.activeOperations ?? (async () => 0),
   };
 }
@@ -57,6 +59,19 @@ describe("syncStatus", () => {
     const s = await syncStatus(client, "bank-1");
     expect(s.pagesCount).toBe(0);
     expect(s.synced).toBe(false);
+  });
+
+  it("stays synced when an older server explicitly lacks knowledge pages", async () => {
+    const client = stubClient({
+      gitIds: ["gitlog:repo"],
+      listPages: async () => {
+        throw new Error("knowledge pages unavailable");
+      },
+      knowledgePagesSupported: false,
+    });
+    const s = await syncStatus(client, "bank-1");
+    expect(s.pagesCount).toBe(0);
+    expect(s.synced).toBe(true);
   });
 
   it("not synced while extraction operations are still active", async () => {

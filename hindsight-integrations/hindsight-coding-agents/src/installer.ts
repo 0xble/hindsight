@@ -27,6 +27,7 @@ import {
   existsSync,
   mkdirSync,
   readFileSync,
+  realpathSync,
   rmSync,
   writeFileSync,
 } from "node:fs";
@@ -390,7 +391,10 @@ const codex: HarnessInstaller = {
 
 const antigravity: HarnessInstaller = {
   name: "antigravity-cli",
-  detect: (c) => onPath("agy") || existsSync(join(c.home, ".gemini", "antigravity-cli")),
+  // `agy` is the supported Antigravity CLI executable.  Do not infer support from the
+  // legacy Gemini CLI's ~/.gemini state: both clients may leave files there, but only agy
+  // can consume this integration.
+  detect: (c) => onPath("agy"),
   install(c) {
     const hooksPath = join(c.home, ".gemini", "config", "hooks.json");
     const hooks = readJson(hooksPath);
@@ -716,6 +720,11 @@ export const INSTALLERS: HarnessInstaller[] = [
   cline,
 ];
 
+// The public executable was renamed from Gemini CLI to Antigravity's `agy`. Keep the
+// integration's stable internal name for bank identity and hook compatibility, while accepting
+// the executable name users naturally type at the installer prompt.
+const HARNESS_ALIASES: Record<string, string> = { agy: "antigravity-cli" };
+
 // ── CLI ─────────────────────────────────────────────────────────────────────────
 
 export function run(argv: string[], ctx: InstallCtx): number {
@@ -733,7 +742,7 @@ export function run(argv: string[], ctx: InstallCtx): number {
   if (command !== "install" && command !== "uninstall") {
     ctx.log?.(
       `usage: hindsight-coding-agents <install|uninstall> [harness...]\n` +
-        `harnesses: ${INSTALLERS.map((i) => i.name).join(", ")} (default: every one detected on this machine)`
+        `harnesses: ${INSTALLERS.map((i) => i.name).join(", ")} (agy is an alias for antigravity-cli; default: every one detected on this machine)`
     );
     return command ? 1 : 0;
   }
@@ -741,10 +750,10 @@ export function run(argv: string[], ctx: InstallCtx): number {
   if (names.length) {
     targets = [];
     for (const n of names) {
-      const hit = INSTALLERS.find((i) => i.name === n);
+      const hit = INSTALLERS.find((i) => i.name === (HARNESS_ALIASES[n] ?? n));
       if (!hit) {
         ctx.log?.(
-          `unknown harness "${n}" — expected one of: ${INSTALLERS.map((i) => i.name).join(", ")}`
+          `unknown harness "${n}" — expected one of: ${INSTALLERS.map((i) => i.name).join(", ")} (agy aliases antigravity-cli)`
         );
         return 1;
       }
@@ -768,8 +777,20 @@ export function run(argv: string[], ctx: InstallCtx): number {
 }
 
 /* c8 ignore start */
-const isMain = process.argv[1] && import.meta.url === new URL(`file://${process.argv[1]}`).href;
-if (isMain || process.argv[1]?.endsWith("installer.js")) {
+// npm exposes `bin` entries through a symlink. Node leaves argv[1] at that symlink path, so a
+// direct URL comparison incorrectly makes the installed CLI a silent no-op. Resolve it first;
+// source/dev invocations still work through the installer.js suffix fallback.
+const mainPath = process.argv[1]
+  ? (() => {
+      try {
+        return realpathSync(process.argv[1]);
+      } catch {
+        return process.argv[1];
+      }
+    })()
+  : undefined;
+const isMain = mainPath && import.meta.url === pathToFileURL(mainPath).href;
+if (isMain || mainPath?.endsWith("installer.js")) {
   const dist = dirname(fileURLToPath(import.meta.url));
   process.exit(
     run(process.argv.slice(2), {
