@@ -152,12 +152,29 @@ describe("syncStatus", () => {
   });
 
   it("gitDiffTarget is min(DEEPEN_DIFF_TARGET, commit count) for a real git repo", async () => {
-    dir = mkdtempSync(join(tmpdir(), "hs-status-git-"));
-    execFileSync("git", ["-C", dir, "init", "-q"]);
-    execFileSync("git", ["-C", dir, "commit", "--allow-empty", "-m", "one"]);
-    execFileSync("git", ["-C", dir, "commit", "--allow-empty", "-m", "two"]);
-    const client = stubClient({ gitIds: [`gitlog:${basename(dir)}`] });
-    const s = await syncStatus(client, "bank-1", dir);
+    const repo = mkdtempSync(join(tmpdir(), "hs-status-git-"));
+    dir = repo; // module-scoped for afterEach cleanup; `repo` is the narrowed string
+    execFileSync("git", ["-C", repo, "init", "-q"]);
+    // The identity is passed per-command: a CI runner has no global user.name/user.email, so
+    // committing without it fails with "empty ident name not allowed". A developer machine hides
+    // this behind its own global git config, which is why it only ever broke in CI.
+    const commit = (message: string) =>
+      execFileSync("git", [
+        "-C",
+        repo,
+        "-c",
+        "user.email=status-test@example.test",
+        "-c",
+        "user.name=Status Test",
+        "commit",
+        "--allow-empty",
+        "-m",
+        message,
+      ]);
+    commit("one");
+    commit("two");
+    const client = stubClient({ gitIds: [`gitlog:${basename(repo)}`] });
+    const s = await syncStatus(client, "bank-1", repo);
     expect(s.gitDiffTarget).toBe(Math.min(DEEPEN_DIFF_TARGET, 2));
     expect(s.gitDiffTarget).toBe(2);
     expect(s.gitlogPresent).toBe(true);

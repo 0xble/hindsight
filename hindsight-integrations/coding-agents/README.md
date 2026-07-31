@@ -66,17 +66,17 @@ amended in a later conversation wins over the original.
 Every harness runs the same surface (seed → session reflect → per-turn page sections → knowledge
 tools → write-back); they differ only in how that surface is delivered.
 
-| harness                   | kind              | lifecycle wiring                                                                                                                   | install                                                              |
-| ------------------------- | ----------------- | ---------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------- |
-| `opencode`                | persistent plugin | one process: load-time seed, session reflect + page sections, native tools, write-back                                             | add the package dir to `opencode.json` → `"plugin": [...]`           |
-| `kilo`                    | persistent plugin | identical to `opencode` — Kilo CLI is an opencode fork, so it loads the same runtime (no hooks system)                             | `hindsight-coding-agents install kilo` → `kilo.json[c]` `"plugin"`   |
-| `claude-code`             | per-prompt hooks  | `SessionStart` (seed) + `UserPromptSubmit` (reflect + pages) + `Stop` (write-back) + MCP                                           | the [`../claude-code-v2`](../claude-code-v2) wrapper's dev-installer |
-| `codex`                   | per-prompt hooks  | same three hooks in `~/.codex/hooks.json` (+ `codex_hooks = true`, CLI ≥ 0.116)                                                    | the [`../codex-v2`](../codex-v2) wrapper's dev-installer             |
-| `antigravity-cli` (`agy`) | lifecycle hooks   | Antigravity CLI lifecycle hooks (`PreInvocation` + `Stop`) + MCP, plus a native colored `Hindsight · <bank>` status-line indicator | `hindsight-coding-agents install agy`                                |
-| `cursor-cli`              | lifecycle hooks   | `sessionStart` (seed + pages) + `beforeSubmitPrompt` (reflect) + `stop` (write-back)                                               | hooks in Cursor `hooks.json`                                         |
-| `copilot-cli`             | lifecycle hooks   | `sessionStart` (seed + pages) + `userPromptTransformed` (reflect) + `agentStop` (write-back) + MCP                                 | `~/.copilot/hooks/hindsight-coding-agents.json` + `mcp-config.json`  |
-| `grok-build`              | lifecycle hooks   | `SessionStart` (seed) + `Stop` (write-back) + MCP                                                                                  | native `~/.grok/config.toml` — no Claude Code dependency             |
-| `cline-cli`               | persistent plugin | native `beforeModel` (seed/reflect/pages) + `afterRun` (write-back) + MCP                                                          | `cline plugin install` (run by the installer)                        |
+| harness                   | kind              | lifecycle wiring                                                                                                                   | install                                                             |
+| ------------------------- | ----------------- | ---------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------- |
+| `opencode`                | persistent plugin | one process: load-time seed, session reflect + page sections, native tools, write-back                                             | add the package dir to `opencode.json` → `"plugin": [...]`          |
+| `kilo`                    | persistent plugin | identical to `opencode` — Kilo CLI is an opencode fork, so it loads the same runtime (no hooks system)                             | `hindsight-coding-agents install kilo` → `kilo.json[c]` `"plugin"`  |
+| `claude-code`             | per-prompt hooks  | `SessionStart` (seed) + `UserPromptSubmit` (reflect + pages) + `Stop` (write-back) + MCP                                           | `hindsight-coding-agents install claude-code`                       |
+| `codex`                   | per-prompt hooks  | same three hooks in `~/.codex/hooks.json` (+ `codex_hooks = true`, CLI ≥ 0.116)                                                    | `hindsight-coding-agents install codex`                             |
+| `antigravity-cli` (`agy`) | lifecycle hooks   | Antigravity CLI lifecycle hooks (`PreInvocation` + `Stop`) + MCP, plus a native colored `Hindsight · <bank>` status-line indicator | `hindsight-coding-agents install agy`                               |
+| `cursor-cli`              | lifecycle hooks   | `sessionStart` (seed + pages) + `beforeSubmitPrompt` (reflect) + `stop` (write-back)                                               | hooks in Cursor `hooks.json`                                        |
+| `copilot-cli`             | lifecycle hooks   | `sessionStart` (seed + pages) + `userPromptTransformed` (reflect) + `agentStop` (write-back) + MCP                                 | `~/.copilot/hooks/hindsight-coding-agents.json` + `mcp-config.json` |
+| `grok-build`              | lifecycle hooks   | `SessionStart` (seed) + `Stop` (write-back) + MCP                                                                                  | native `~/.grok/config.toml` — no Claude Code dependency            |
+| `cline-cli`               | persistent plugin | native `beforeModel` (seed/reflect/pages) + `afterRun` (write-back) + MCP                                                          | `cline plugin install` (run by the installer)                       |
 
 The hook-based harnesses share one runtime (`src/core/hook.ts`) plus their SessionStart/Stop
 entrypoints. Persistent-plugin hosts (opencode/Kilo/Cline) delegate to the same `RuntimeCore`,
@@ -136,10 +136,9 @@ can ask the agent itself. Manual wiring per harness, if you prefer:
 { "plugin": ["/path/to/hindsight-coding-agents"] }
 ```
 
-**Claude Code** and **Codex** get the full three-hook + MCP wiring from their sibling wrapper
-packages ([`../claude-code-v2`](../claude-code-v2), [`../codex-v2`](../codex-v2)) — thin bundles of
-this core whose `scripts/dev-install.sh` writes the settings/hooks pointing at each bundled
-`dist/*.js`. This package's `bin` entries (`hindsight-claude-hook`, `hindsight-codex-hook`,
+**Claude Code** and **Codex** get their full three-hook + MCP wiring from this package's own
+installer — `hindsight-coding-agents install claude-code` / `install codex`. This package's `bin`
+entries (`hindsight-claude-hook`, `hindsight-codex-hook`,
 `hindsight-cursor-hook`) are the individual injection-only `UserPromptSubmit` entrypoints for a
 minimal, hand-wired setup.
 

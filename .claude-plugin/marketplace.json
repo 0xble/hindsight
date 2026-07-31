@@ -13,11 +13,6 @@
       "source": "./hindsight-integrations/claude-code"
     },
     {
-      "name": "hindsight-memory-v2",
-      "description": "Repo-aware long-term memory for Claude Code — per-turn recall, live write-back, automatic seeding, and knowledge pages (shared coding-agents core).",
-      "source": "./hindsight-integrations/claude-code-v2"
-    },
-    {
       "name": "hindsight-zcode",
       "description": "No-MCP long-term memory for ZCode via Hindsight hooks",
       "source": "./hindsight-integrations/zcode"

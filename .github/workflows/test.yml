@@ -145,7 +145,7 @@ jobs:
           integrations-claude-code:
             - 'hindsight-integrations/claude-code/**'
           integrations-coding-agents:
-            - 'hindsight-integrations/hindsight-coding-agents/**'
+            - 'hindsight-integrations/coding-agents/**'
           integrations-cline:
             - 'hindsight-integrations/cline/**'
           integrations-codex:
@@ -492,22 +492,22 @@ jobs:
       with:
         node-version: '22'
         cache: npm
-        cache-dependency-path: hindsight-integrations/hindsight-coding-agents/package-lock.json
+        cache-dependency-path: hindsight-integrations/coding-agents/package-lock.json
 
     - name: Install dependencies
-      working-directory: ./hindsight-integrations/hindsight-coding-agents
+      working-directory: ./hindsight-integrations/coding-agents
       run: npm ci
 
     - name: Typecheck
-      working-directory: ./hindsight-integrations/hindsight-coding-agents
+      working-directory: ./hindsight-integrations/coding-agents
       run: npx tsc --noEmit
 
     - name: Unit tests
-      working-directory: ./hindsight-integrations/hindsight-coding-agents
+      working-directory: ./hindsight-integrations/coding-agents
       run: npm test
 
     - name: Build
-      working-directory: ./hindsight-integrations/hindsight-coding-agents
+      working-directory: ./hindsight-integrations/coding-agents
       run: npm run build
 
   test-claude-code-integration:

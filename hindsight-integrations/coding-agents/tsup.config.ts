@@ -41,9 +41,9 @@ export default defineConfig({
   dts: { entry: "src/index.ts" },
   shims: false,
   // Each bin entry (claude-hook.js, cursor-hook.js, codex-hook.js, deepen.js, status.js, mcp-server.js,
-  // hindsight-seed.js) must be a single self-contained file: plugin wrappers (e.g.
-  // claude-code-v2/scripts/build.mjs) copy just that one file out of dist/, so shared code can't
-  // live in a separate chunk-*.js.
+  // hindsight-seed.js) must be a single self-contained file: hosts wire a hook by absolute path to
+  // ONE dist file and never load the rest of the package, so shared code can't live in a separate
+  // chunk-*.js.
   splitting: false,
   // mcp-server.js additionally needs its npm deps (the MCP SDK + zod) inlined, since the wrapper
   // only copies the single bundle file, not node_modules. The regexes catch subpath imports too
