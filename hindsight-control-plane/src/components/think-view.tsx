@@ -318,7 +318,7 @@ export function ThinkView() {
                 setResponseSchema(e.target.value);
                 if (schemaError) setSchemaError(false);
               }}
-              placeholder={t("structuredSchemaPlaceholder")}
+              placeholder='{"type": "object", "properties": {"summary": {"type": "string"}}, "required": ["summary"]}'
               rows={3}
               className={`font-mono text-xs ${schemaError ? "border-destructive" : ""}`}
             />

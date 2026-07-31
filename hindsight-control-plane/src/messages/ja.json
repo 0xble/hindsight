@@ -852,7 +852,6 @@
     "emptyContent": "まだコンテンツがありません。このメンタルモデルを更新してコンテンツを生成します。",
     "selectModelPrompt": "メンタルモデルを選択して内容を表示します。",
     "optionsResponseSchemaLabel": "構造化出力スキーマ (JSON)",
-    "optionsResponseSchemaPlaceholder": "{\"type\":\"object\",\"properties\":{\"summary\":{\"type\":\"string\"}},\"required\":[\"summary\"]}",
     "optionsResponseSchemaDescription": "任意の JSON スキーマ。更新のたびに、この形式に解析した structured_output もコンテンツとともに保存されます。",
     "invalidResponseSchemaJson": "構造化出力スキーマの JSON が無効です"
   },
@@ -942,7 +941,6 @@
     "observationSourceMemoriesField": "ソースメモリ（{count}件）",
     "observationIdField": "ID",
     "structuredSchemaLabel": "構造化出力スキーマ (JSON)",
-    "structuredSchemaPlaceholder": "{\"type\":\"object\",\"properties\":{\"summary\":{\"type\":\"string\"}},\"required\":[\"summary\"]}",
     "structuredSchemaHint": "任意の JSON スキーマ。設定すると、reflect はこの形式に解析した structured_output も返します。",
     "structuredSchemaInvalid": "無効な JSON スキーマ",
     "structuredOutputTitle": "構造化出力"

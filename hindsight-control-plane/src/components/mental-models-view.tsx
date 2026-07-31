@@ -1142,7 +1142,7 @@ function CreateMentalModelDialog({
                   <Textarea
                     value={form.responseSchema}
                     onChange={(e) => setForm({ ...form, responseSchema: e.target.value })}
-                    placeholder={t("optionsResponseSchemaPlaceholder")}
+                    placeholder='{"type": "object", "properties": {"summary": {"type": "string"}}, "required": ["summary"]}'
                     rows={3}
                     className="font-mono text-xs"
                   />
@@ -1617,7 +1617,7 @@ function UpdateMentalModelDialog({
                   <Textarea
                     value={form.responseSchema}
                     onChange={(e) => setForm({ ...form, responseSchema: e.target.value })}
-                    placeholder={t("optionsResponseSchemaPlaceholder")}
+                    placeholder='{"type": "object", "properties": {"summary": {"type": "string"}}, "required": ["summary"]}'
                     rows={3}
                     className="font-mono text-xs"
                   />

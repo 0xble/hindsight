@@ -852,7 +852,6 @@
     "emptyContent": "No content yet. Refresh this mental model to generate content.",
     "selectModelPrompt": "Select a mental model to view its content.",
     "optionsResponseSchemaLabel": "Structured output schema (JSON)",
-    "optionsResponseSchemaPlaceholder": "{\"type\":\"object\",\"properties\":{\"summary\":{\"type\":\"string\"}},\"required\":[\"summary\"]}",
     "optionsResponseSchemaDescription": "Optional JSON Schema. Each refresh also stores a structured_output parsed to this shape alongside the content.",
     "invalidResponseSchemaJson": "Invalid JSON in structured output schema"
   },
@@ -942,7 +941,6 @@
     "observationSourceMemoriesField": "Source Memories ({count})",
     "observationIdField": "ID",
     "structuredSchemaLabel": "Structured output schema (JSON)",
-    "structuredSchemaPlaceholder": "{\"type\":\"object\",\"properties\":{\"summary\":{\"type\":\"string\"}},\"required\":[\"summary\"]}",
     "structuredSchemaHint": "Optional JSON Schema. When set, reflect also returns a structured_output parsed to this shape.",
     "structuredSchemaInvalid": "Invalid JSON schema",
     "structuredOutputTitle": "Structured Output"

@@ -852,7 +852,6 @@
     "emptyContent": "Noch kein Inhalt. Aktualisieren Sie dieses mentale Modell, um Inhalt zu erzeugen.",
     "selectModelPrompt": "Wählen Sie ein mentales Modell aus, um dessen Inhalt anzuzeigen.",
     "optionsResponseSchemaLabel": "Schema für strukturierte Ausgabe (JSON)",
-    "optionsResponseSchemaPlaceholder": "{\"type\":\"object\",\"properties\":{\"summary\":{\"type\":\"string\"}},\"required\":[\"summary\"]}",
     "optionsResponseSchemaDescription": "Optionales JSON-Schema. Jede Aktualisierung speichert zusätzlich ein structured_output in dieser Form neben dem Inhalt.",
     "invalidResponseSchemaJson": "Ungültiges JSON im Schema für strukturierte Ausgabe"
   },
@@ -942,7 +941,6 @@
     "observationSourceMemoriesField": "Quellerinnerungen ({count})",
     "observationIdField": "ID",
     "structuredSchemaLabel": "Schema für strukturierte Ausgabe (JSON)",
-    "structuredSchemaPlaceholder": "{\"type\":\"object\",\"properties\":{\"summary\":{\"type\":\"string\"}},\"required\":[\"summary\"]}",
     "structuredSchemaHint": "Optionales JSON-Schema. Wenn gesetzt, gibt reflect zusätzlich ein structured_output in dieser Form zurück.",
     "structuredSchemaInvalid": "Ungültiges JSON-Schema",
     "structuredOutputTitle": "Strukturierte Ausgabe"

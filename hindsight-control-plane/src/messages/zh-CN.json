@@ -852,7 +852,6 @@
     "emptyContent": "暂无内容。刷新此心智模型以生成内容。",
     "selectModelPrompt": "选择一个心智模型以查看其内容。",
     "optionsResponseSchemaLabel": "结构化输出模式 (JSON)",
-    "optionsResponseSchemaPlaceholder": "{\"type\":\"object\",\"properties\":{\"summary\":{\"type\":\"string\"}},\"required\":[\"summary\"]}",
     "optionsResponseSchemaDescription": "可选的 JSON 模式。每次刷新还会将按此结构解析的 structured_output 与内容一起存储。",
     "invalidResponseSchemaJson": "结构化输出模式中的 JSON 无效"
   },
@@ -942,7 +941,6 @@
     "observationSourceMemoriesField": "来源记忆（{count}）",
     "observationIdField": "ID",
     "structuredSchemaLabel": "结构化输出模式 (JSON)",
-    "structuredSchemaPlaceholder": "{\"type\":\"object\",\"properties\":{\"summary\":{\"type\":\"string\"}},\"required\":[\"summary\"]}",
     "structuredSchemaHint": "可选的 JSON 模式。设置后，reflect 还会返回按此结构解析的 structured_output。",
     "structuredSchemaInvalid": "JSON 模式无效",
     "structuredOutputTitle": "结构化输出"

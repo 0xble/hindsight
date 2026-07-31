@@ -852,7 +852,6 @@
     "emptyContent": "Aún no hay contenido. Actualiza este modelo mental para generar contenido.",
     "selectModelPrompt": "Selecciona un modelo mental para ver su contenido.",
     "optionsResponseSchemaLabel": "Esquema de salida estructurada (JSON)",
-    "optionsResponseSchemaPlaceholder": "{\"type\":\"object\",\"properties\":{\"summary\":{\"type\":\"string\"}},\"required\":[\"summary\"]}",
     "optionsResponseSchemaDescription": "Esquema JSON opcional. Cada actualización también guarda un structured_output analizado con esta forma junto al contenido.",
     "invalidResponseSchemaJson": "JSON no válido en el esquema de salida estructurada"
   },
@@ -942,7 +941,6 @@
     "observationSourceMemoriesField": "Memorias fuente ({count})",
     "observationIdField": "ID",
     "structuredSchemaLabel": "Esquema de salida estructurada (JSON)",
-    "structuredSchemaPlaceholder": "{\"type\":\"object\",\"properties\":{\"summary\":{\"type\":\"string\"}},\"required\":[\"summary\"]}",
     "structuredSchemaHint": "Esquema JSON opcional. Si se define, reflect también devuelve un structured_output analizado con esta forma.",
     "structuredSchemaInvalid": "Esquema JSON no válido",
     "structuredOutputTitle": "Salida estructurada"
