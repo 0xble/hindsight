@@ -329,7 +329,7 @@ export function SchemaBuilderDialog({
         </Tabs>
 
         {(switchError || currentError) && (
-          <p className="text-xs text-destructive">{switchError || currentError}</p>
+          <p className="text-xs text-red-600 dark:text-red-400">{switchError || currentError}</p>
         )}
 
         <DialogFooter>

@@ -84,7 +84,7 @@ export function ResponseSchemaField({
       )}
 
       {info.state === "invalid" && (
-        <p className="mt-2 text-xs text-destructive">{t("invalidSchema")}</p>
+        <p className="mt-2 text-xs text-red-600 dark:text-red-400">{t("invalidSchema")}</p>
       )}
 
       {info.state === "empty" && (
