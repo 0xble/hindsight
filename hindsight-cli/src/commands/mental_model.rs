@@ -148,6 +148,7 @@ pub fn create(
             include_chunks: None,
             recall_max_tokens: None,
             recall_chunks_max_tokens: None,
+            response_schema: None,
         })
     } else {
         None
@@ -227,6 +228,7 @@ pub fn update(
         include_chunks: None,
         recall_max_tokens: None,
         recall_chunks_max_tokens: None,
+        response_schema: None,
     });
 
     let request = types::UpdateMentalModelRequest {
