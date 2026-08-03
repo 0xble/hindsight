@@ -11699,7 +11699,12 @@ class MemoryEngine(MemoryEngineInterface):
                 recall_include_chunks=recall_include_chunks_override,
                 recall_max_tokens_override=recall_max_tokens_override,
                 recall_chunks_max_tokens_override=recall_chunks_max_tokens_override,
-                response_schema=response_schema,
+                # NOTE: response_schema is intentionally NOT passed to reflect here.
+                # In delta mode reflect only sees facts created since the last refresh,
+                # so its answer (and any structured_output it derived) reflects just the
+                # delta — not the merged document we actually store. We extract
+                # structured_output from the FINAL content below instead, which is
+                # correct for both full and delta refreshes.
                 _skip_span=True,
                 # Attribute these LLM calls to the mental-model refresh, not a
                 # plain reflect, so traces group under the right operation.
@@ -11711,6 +11716,26 @@ class MemoryEngine(MemoryEngineInterface):
             stored_max_tokens = mental_model.get("max_tokens")
             if stored_max_tokens is not None:
                 reflect_kwargs["max_tokens"] = stored_max_tokens
+
+            # structured_output, when a response_schema is configured, is parsed from
+            # the FINAL stored content (below) so it stays consistent with the markdown
+            # in both full and delta modes. When a refresh preserves content unchanged
+            # (delta with no new facts), we carry the previous value forward untouched.
+            prev_structured_output = (mental_model.get("reflect_response") or {}).get("structured_output")
+
+            async def _structured_output_for(content_text: str) -> dict[str, Any] | None:
+                if not response_schema or not content_text.strip():
+                    return None
+                from .reflect.agent import _generate_structured_output
+
+                result = await _generate_structured_output(
+                    content_text,
+                    response_schema,
+                    self._reflect_llm_config,
+                    f"mm-{mental_model_id[:8]}",
+                    stored_max_tokens,
+                )
+                return result.structured_output
 
             # Delta mode: scope recall to memories created since the last refresh
             # so the agentic loop only retrieves genuinely new information.
@@ -11778,11 +11803,6 @@ class MemoryEngine(MemoryEngineInterface):
                 "based_on": based_on_serialized_payload,
                 "mental_models": [],  # Mental models are included in based_on["mental-models"]
             }
-            # When the trigger carries a response_schema, reflect returns a parsed
-            # structured_output derived from its answer. Persist it alongside the
-            # markdown so consumers get both the prose and the structured view.
-            if reflect_result.structured_output is not None:
-                reflect_response_payload["structured_output"] = reflect_result.structured_output
 
             # Delta-mode path: emit structured operations against the existing
             # structured doc, apply them, then re-render to markdown. Sections
@@ -11837,6 +11857,9 @@ class MemoryEngine(MemoryEngineInterface):
                         )
                         reflect_response_payload["delta_applied"] = False
                         reflect_response_payload["delta_skipped_reason"] = "no_new_facts"
+                        # Content is preserved unchanged, so the structured view must be too.
+                        if prev_structured_output is not None:
+                            reflect_response_payload["structured_output"] = prev_structured_output
                         return await self.update_mental_model(
                             bank_id,
                             mental_model_id,
@@ -11940,6 +11963,13 @@ class MemoryEngine(MemoryEngineInterface):
                         f"[MENTAL_MODELS] Could not parse final markdown into structured form "
                         f"for {mental_model_id} ({exc}); leaving structured_content unchanged"
                     )
+
+            # Parse the final stored content into structured_output (when a schema is
+            # configured). Extracting from final_content — not reflect's answer — keeps
+            # the structured view consistent with the markdown after a delta merge.
+            structured_output = await _structured_output_for(final_content)
+            if structured_output is not None:
+                reflect_response_payload["structured_output"] = structured_output
 
             # Update the mental model with new content and reflect_response.
             # Passing last_refreshed_source_query records the query used for this
