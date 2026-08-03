@@ -11967,8 +11967,23 @@ class MemoryEngine(MemoryEngineInterface):
             # Parse the final stored content into structured_output (when a schema is
             # configured). Extracting from final_content — not reflect's answer — keeps
             # the structured view consistent with the markdown after a delta merge.
-            structured_output = await _structured_output_for(final_content)
-            if structured_output is not None:
+            if response_schema:
+                structured_output = await _structured_output_for(final_content)
+                if structured_output is None:
+                    # A response_schema is configured but extraction failed. Fail the
+                    # refresh loudly instead of silently persisting content with no
+                    # structured view (which would also clobber the previously-stored
+                    # structured_output). Raising here skips update_mental_model, so the
+                    # prior content AND structured_output are preserved for retry.
+                    logger.warning(
+                        f"[MENTAL_MODELS] Structured output extraction failed for {mental_model_id}; "
+                        "failing the refresh (prior content and structured_output preserved)."
+                    )
+                    raise MentalModelRefreshError(
+                        f"Structured output extraction failed for mental_model_id={mental_model_id} "
+                        "(a response_schema is configured). Prior content and structured_output preserved; "
+                        "the refresh can be retried."
+                    )
                 reflect_response_payload["structured_output"] = structured_output
 
             # Update the mental model with new content and reflect_response.

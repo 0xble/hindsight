@@ -12,7 +12,10 @@ the structured-output extractor are all mocked (no real LLM).
 import types
 import uuid
 
+import pytest
+
 from hindsight_api import MemoryEngine, RequestContext
+from hindsight_api.engine.memory_engine import MentalModelRefreshError
 from hindsight_api.engine.reflect import agent as reflect_agent
 from hindsight_api.engine.reflect.delta_ops import DeltaOperationList
 from hindsight_api.engine.response_models import ReflectResult
@@ -165,3 +168,36 @@ class TestMentalModelStructuredOutput:
         assert "PARTIAL DELTA ANSWER" not in parsed
         assert "Original body." in parsed
         assert refreshed["reflect_response"]["structured_output"] == {"summary": "whole document"}
+
+    async def test_extraction_failure_fails_the_refresh(
+        self, memory: MemoryEngine, request_context: RequestContext, monkeypatch
+    ):
+        """When a schema is configured but extraction yields nothing, the refresh
+        raises instead of silently persisting content with no structured output —
+        and the prior content is preserved for retry."""
+        bank_id = f"test-mm-failloud-{uuid.uuid4().hex[:8]}"
+        await memory.get_bank_profile(bank_id, request_context=request_context)
+        mm = await memory.create_mental_model(
+            bank_id=bank_id,
+            name="Doc",
+            source_query="doc?",
+            content="# Doc\n\nOriginal.",
+            trigger={"mode": "full", "response_schema": _SCHEMA},
+            request_context=request_context,
+        )
+
+        async def fake_reflect_async(**kwargs):
+            return _canned_reflect_result("# Doc\n\nBrand new content.")
+
+        monkeypatch.setattr(memory, "reflect_async", fake_reflect_async)
+        # Extraction "fails": returns no structured output.
+        _patch_structured_output(monkeypatch, None)
+
+        with pytest.raises(MentalModelRefreshError):
+            await memory.refresh_mental_model(
+                bank_id=bank_id, mental_model_id=mm["id"], request_context=request_context
+            )
+
+        # The refresh was aborted, so the prior content is untouched.
+        reloaded = await memory.get_mental_model(bank_id, mm["id"], request_context=request_context)
+        assert reloaded["content"] == "# Doc\n\nOriginal."
