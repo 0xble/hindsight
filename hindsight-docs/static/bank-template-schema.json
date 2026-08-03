@@ -734,6 +734,20 @@
           "default": null,
           "description": "Override the token budget for raw chunks returned by the internal recall during refresh. None means use the bank/global config default (recall_chunks_max_tokens).",
           "title": "Recall Chunks Max Tokens"
+        },
+        "response_schema": {
+          "anyOf": [
+            {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Optional JSON Schema for structured output. When set, each refresh runs the same structured-output extraction as reflect's response_schema and stores the parsed result under reflect_response.structured_output alongside the markdown content.",
+          "title": "Response Schema"
         }
       },
       "title": "MentalModelTrigger",
