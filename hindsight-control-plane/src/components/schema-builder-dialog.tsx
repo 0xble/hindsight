@@ -78,8 +78,8 @@ export function SchemaBuilderDialog({
         typeof parsed === "object" && parsed !== null && !Array.isArray(parsed)
           ? schemaToFields(parsed as Record<string, unknown>)
           : null;
-      if (asFields && asFields.length > 0) {
-        setFields(asFields);
+      if (asFields !== null) {
+        setFields(asFields.length > 0 ? asFields : [emptyField()]);
         setMode("visual");
       } else {
         setMode("code");
@@ -140,11 +140,12 @@ export function SchemaBuilderDialog({
       typeof parsed === "object" && parsed !== null && !Array.isArray(parsed)
         ? schemaToFields(parsed as Record<string, unknown>)
         : null;
-    if (!asFields || asFields.length === 0) {
+    if (asFields === null) {
       setSwitchError(t("visualUnavailable"));
       return;
     }
-    setFields(asFields);
+    // An empty schema is representable — start the visual editor with a blank field.
+    setFields(asFields.length > 0 ? asFields : [emptyField()]);
     setMode("visual");
   };
 

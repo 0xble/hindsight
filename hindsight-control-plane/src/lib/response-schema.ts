@@ -110,6 +110,10 @@ export function fieldsToSchema(fields: SchemaField[]): Record<string, unknown> {
  */
 export function schemaToFields(schema: Record<string, unknown>): SchemaField[] | null {
   const properties = schema.properties;
+  // A missing/empty `properties` is representable — it just means "no fields yet"
+  // (an empty visual editor), which is distinct from a schema the flat editor
+  // genuinely can't render (returns null below).
+  if (properties === undefined) return [];
   if (typeof properties !== "object" || properties === null || Array.isArray(properties)) {
     return null;
   }
