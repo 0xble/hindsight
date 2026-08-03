@@ -1811,6 +1811,7 @@
     "clear": "スキーマを削除",
     "fieldsSummary": "{count} 個のフィールド",
     "invalidSchema": "無効なスキーマです。ビルダーを開いて修正してください。",
-    "fieldDescription": "設定すると、回答はこのスキーマに一致する structured_output としても返されます。"
+    "fieldDescription": "設定すると、回答はこのスキーマに一致する structured_output としても返されます。",
+    "itemsLabel": "各要素"
   }
 }

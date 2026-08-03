@@ -1811,6 +1811,7 @@
     "clear": "Supprimer le schéma",
     "fieldsSummary": "{count, plural, one {# champ} other {# champs}}",
     "invalidSchema": "Schéma invalide — ouvrez le générateur pour le corriger.",
-    "fieldDescription": "S'il est défini, la réponse est aussi renvoyée en tant que structured_output conforme à ce schéma."
+    "fieldDescription": "S'il est défini, la réponse est aussi renvoyée en tant que structured_output conforme à ce schéma.",
+    "itemsLabel": "chaque élément"
   }
 }

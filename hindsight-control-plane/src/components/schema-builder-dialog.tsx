@@ -26,22 +26,153 @@ import { Plus, Trash2 } from "lucide-react";
 import {
   SchemaField,
   SchemaFieldType,
-  SchemaItemType,
+  SchemaNode,
   SCHEMA_FIELD_TYPES,
-  SCHEMA_ITEM_TYPES,
   validateResponseSchema,
   fieldsToSchema,
   schemaToFields,
   emptyField,
+  nodeForType,
 } from "@/lib/response-schema";
 
 type Mode = "visual" | "code";
 
+/** Type dropdown shared by fields and array items. */
+function TypeSelect({
+  value,
+  onChange,
+}: {
+  value: SchemaFieldType;
+  onChange: (t: SchemaFieldType) => void;
+}) {
+  return (
+    <Select value={value} onValueChange={(v) => onChange(v as SchemaFieldType)}>
+      <SelectTrigger className="w-28 h-8">
+        <SelectValue />
+      </SelectTrigger>
+      <SelectContent>
+        {SCHEMA_FIELD_TYPES.map((ty) => (
+          <SelectItem key={ty} value={ty}>
+            {ty}
+          </SelectItem>
+        ))}
+      </SelectContent>
+    </Select>
+  );
+}
+
+/** Renders the nested part of a node: object → child fields, array → item node. */
+function NodeChildren({
+  node,
+  onChange,
+}: {
+  node: SchemaNode;
+  onChange: (node: SchemaNode) => void;
+}) {
+  const t = useTranslations("schemaBuilder");
+  if (node.type === "object") {
+    return (
+      <div className="ml-2 pl-3 border-l-2 border-border/70">
+        <FieldRows
+          fields={node.fields ?? []}
+          onChange={(fields) => onChange({ ...node, fields })}
+        />
+      </div>
+    );
+  }
+  if (node.type === "array") {
+    const items = node.items ?? { type: "string" };
+    return (
+      <div className="ml-2 pl-3 border-l-2 border-border/70 space-y-2">
+        <div className="flex items-center gap-2">
+          <span className="text-xs text-muted-foreground">{t("itemsLabel")}</span>
+          <TypeSelect
+            value={items.type}
+            onChange={(ty) => onChange({ ...node, items: nodeForType(ty) })}
+          />
+        </div>
+        <NodeChildren
+          node={items}
+          onChange={(itemNode) => onChange({ ...node, items: itemNode })}
+        />
+      </div>
+    );
+  }
+  return null;
+}
+
+/** A recursive editable list of fields (top level, or the properties of an object). */
+function FieldRows({
+  fields,
+  onChange,
+}: {
+  fields: SchemaField[];
+  onChange: (fields: SchemaField[]) => void;
+}) {
+  const t = useTranslations("schemaBuilder");
+  const update = (i: number, patch: Partial<SchemaField>) =>
+    onChange(fields.map((f, idx) => (idx === i ? { ...f, ...patch } : f)));
+  const remove = (i: number) => onChange(fields.filter((_, idx) => idx !== i));
+  const add = () => onChange([...fields, emptyField()]);
+
+  return (
+    <div className="space-y-2">
+      {fields.length === 0 && (
+        <p className="text-xs text-muted-foreground py-1">{t("emptyState")}</p>
+      )}
+      {fields.map((field, i) => (
+        <div key={i} className="rounded-lg border border-border p-2.5 space-y-2">
+          <div className="flex items-center gap-2">
+            <Input
+              value={field.name}
+              onChange={(e) => update(i, { name: e.target.value })}
+              placeholder={t("namePlaceholder")}
+              className="flex-1 h-8"
+            />
+            <TypeSelect
+              value={field.node.type}
+              onChange={(ty) => update(i, { node: nodeForType(ty) })}
+            />
+            <label className="flex items-center gap-1.5 text-xs cursor-pointer whitespace-nowrap">
+              <Checkbox
+                checked={field.required}
+                onCheckedChange={(c) => update(i, { required: c === true })}
+              />
+              {t("required")}
+            </label>
+            <Button
+              variant="ghost"
+              size="icon"
+              className="h-8 w-8 shrink-0"
+              onClick={() => remove(i)}
+              aria-label={t("removeField")}
+            >
+              <Trash2 className="w-4 h-4" />
+            </Button>
+          </div>
+          <Input
+            value={field.description}
+            onChange={(e) => update(i, { description: e.target.value })}
+            placeholder={t("descriptionPlaceholder")}
+            className="h-8 text-xs"
+          />
+          <NodeChildren node={field.node} onChange={(node) => update(i, { node })} />
+        </div>
+      ))}
+      <Button variant="outline" size="sm" onClick={add}>
+        <Plus className="w-4 h-4 mr-1" />
+        {t("addField")}
+      </Button>
+    </div>
+  );
+}
+
 /**
  * No-code editor for a structured-output `response_schema`. Visual mode edits a
- * flat list of top-level fields; Code mode edits the raw JSON. The two stay in
- * sync on tab switch, and Apply is blocked until the current representation is a
- * usable schema (same contract as the backend's validate_response_schema()).
+ * recursive field tree (objects nest fields, arrays nest an item type); Code mode
+ * edits the raw JSON. The two stay in sync on tab switch, and Apply is blocked
+ * until the current representation is a usable schema (same contract as the
+ * backend's validate_response_schema()).
  */
 export function SchemaBuilderDialog({
   open,
@@ -92,11 +223,6 @@ export function SchemaBuilderDialog({
     }
   }, [open, value]);
 
-  const updateField = (index: number, patch: Partial<SchemaField>) =>
-    setFields((fs) => fs.map((f, i) => (i === index ? { ...f, ...patch } : f)));
-  const removeField = (index: number) => setFields((fs) => fs.filter((_, i) => i !== index));
-  const addField = () => setFields((fs) => [...fs, emptyField()]);
-
   // Validate the current representation; returns a message or null.
   const visualError = (() => {
     const named = fields.filter((f) => f.name.trim());
@@ -128,7 +254,7 @@ export function SchemaBuilderDialog({
       setMode("code");
       return;
     }
-    // Code → Visual: only allowed when the JSON maps cleanly to flat fields.
+    // Code → Visual: only allowed when the JSON maps cleanly to the field tree.
     let parsed: unknown;
     try {
       parsed = JSON.parse(code);
@@ -183,83 +309,8 @@ export function SchemaBuilderDialog({
           </TabsList>
 
           <div className="flex-1 overflow-y-auto mt-3 px-0.5">
-            <TabsContent value="visual" className="space-y-3">
-              {fields.length === 0 ? (
-                <p className="text-sm text-muted-foreground py-2">{t("emptyState")}</p>
-              ) : (
-                fields.map((field, i) => (
-                  <div key={i} className="rounded-lg border border-border p-3 space-y-2">
-                    <div className="flex items-center gap-2">
-                      <Input
-                        value={field.name}
-                        onChange={(e) => updateField(i, { name: e.target.value })}
-                        placeholder={t("namePlaceholder")}
-                        className="flex-1 h-8"
-                      />
-                      <Select
-                        value={field.type}
-                        onValueChange={(v) => updateField(i, { type: v as SchemaFieldType })}
-                      >
-                        <SelectTrigger className="w-28 h-8">
-                          <SelectValue />
-                        </SelectTrigger>
-                        <SelectContent>
-                          {SCHEMA_FIELD_TYPES.map((ty) => (
-                            <SelectItem key={ty} value={ty}>
-                              {ty}
-                            </SelectItem>
-                          ))}
-                        </SelectContent>
-                      </Select>
-                      {field.type === "array" && (
-                        <Select
-                          value={field.itemType}
-                          onValueChange={(v) => updateField(i, { itemType: v as SchemaItemType })}
-                        >
-                          <SelectTrigger className="w-24 h-8">
-                            <SelectValue />
-                          </SelectTrigger>
-                          <SelectContent>
-                            {SCHEMA_ITEM_TYPES.map((ty) => (
-                              <SelectItem key={ty} value={ty}>
-                                {ty}
-                              </SelectItem>
-                            ))}
-                          </SelectContent>
-                        </Select>
-                      )}
-                      <Button
-                        variant="ghost"
-                        size="icon"
-                        className="h-8 w-8 shrink-0"
-                        onClick={() => removeField(i)}
-                        aria-label={t("removeField")}
-                      >
-                        <Trash2 className="w-4 h-4" />
-                      </Button>
-                    </div>
-                    <div className="flex items-center gap-3">
-                      <Input
-                        value={field.description}
-                        onChange={(e) => updateField(i, { description: e.target.value })}
-                        placeholder={t("descriptionPlaceholder")}
-                        className="flex-1 h-8 text-xs"
-                      />
-                      <label className="flex items-center gap-1.5 text-xs cursor-pointer whitespace-nowrap">
-                        <Checkbox
-                          checked={field.required}
-                          onCheckedChange={(c) => updateField(i, { required: c === true })}
-                        />
-                        {t("required")}
-                      </label>
-                    </div>
-                  </div>
-                ))
-              )}
-              <Button variant="outline" size="sm" onClick={addField}>
-                <Plus className="w-4 h-4 mr-1" />
-                {t("addField")}
-              </Button>
+            <TabsContent value="visual">
+              <FieldRows fields={fields} onChange={setFields} />
             </TabsContent>
 
             <TabsContent value="code">
@@ -269,7 +320,7 @@ export function SchemaBuilderDialog({
                   setCode(e.target.value);
                   setSwitchError(null);
                 }}
-                rows={14}
+                rows={16}
                 className="font-mono text-xs"
                 placeholder='{"type": "object", "properties": {"summary": {"type": "string"}}, "required": ["summary"]}'
               />

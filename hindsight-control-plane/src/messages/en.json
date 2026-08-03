@@ -1811,6 +1811,7 @@
     "clear": "Remove schema",
     "fieldsSummary": "{count, plural, one {# field} other {# fields}}",
     "invalidSchema": "Invalid schema — open the builder to fix it.",
-    "fieldDescription": "When set, the answer is also returned as structured_output matching this schema."
+    "fieldDescription": "When set, the answer is also returned as structured_output matching this schema.",
+    "itemsLabel": "each item"
   }
 }

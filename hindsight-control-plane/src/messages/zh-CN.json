@@ -1811,6 +1811,7 @@
     "clear": "移除模式",
     "fieldsSummary": "{count} 个字段",
     "invalidSchema": "模式无效——打开生成器进行修复。",
-    "fieldDescription": "设置后，回答还会以符合此模式的 structured_output 形式返回。"
+    "fieldDescription": "设置后，回答还会以符合此模式的 structured_output 形式返回。",
+    "itemsLabel": "每个元素"
   }
 }

@@ -1811,6 +1811,7 @@
     "clear": "Quitar esquema",
     "fieldsSummary": "{count, plural, one {# campo} other {# campos}}",
     "invalidSchema": "Esquema no válido: abre el generador para corregirlo.",
-    "fieldDescription": "Si se define, la respuesta también se devuelve como structured_output según este esquema."
+    "fieldDescription": "Si se define, la respuesta también se devuelve como structured_output según este esquema.",
+    "itemsLabel": "cada elemento"
   }
 }

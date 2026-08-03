@@ -1811,6 +1811,7 @@
     "clear": "스키마 제거",
     "fieldsSummary": "{count}개 필드",
     "invalidSchema": "잘못된 스키마입니다. 빌더를 열어 수정하세요.",
-    "fieldDescription": "설정하면 응답이 이 스키마에 맞는 structured_output으로도 반환됩니다."
+    "fieldDescription": "설정하면 응답이 이 스키마에 맞는 structured_output으로도 반환됩니다.",
+    "itemsLabel": "각 항목"
   }
 }

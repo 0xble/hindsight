@@ -1811,6 +1811,7 @@
     "clear": "移除結構",
     "fieldsSummary": "{count} 個欄位",
     "invalidSchema": "結構無效——開啟建立器修正。",
-    "fieldDescription": "設定後，回答亦會以符合呢個結構嘅 structured_output 形式傳回。"
+    "fieldDescription": "設定後，回答亦會以符合呢個結構嘅 structured_output 形式傳回。",
+    "itemsLabel": "每個元素"
   }
 }

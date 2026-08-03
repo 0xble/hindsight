@@ -1811,6 +1811,7 @@
     "clear": "Schema entfernen",
     "fieldsSummary": "{count, plural, one {# Feld} other {# Felder}}",
     "invalidSchema": "Ungültiges Schema – zum Beheben den Generator öffnen.",
-    "fieldDescription": "Wenn gesetzt, wird die Antwort zusätzlich als structured_output gemäß diesem Schema zurückgegeben."
+    "fieldDescription": "Wenn gesetzt, wird die Antwort zusätzlich als structured_output gemäß diesem Schema zurückgegeben.",
+    "itemsLabel": "jedes Element"
   }
 }
