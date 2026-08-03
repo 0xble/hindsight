@@ -1795,5 +1795,23 @@
     "pagesEmptyCta": "Create your first page",
     "recentDocsTitle": "Recent documents",
     "recentDocsEmpty": "No documents yet"
+  },
+  "schemaBuilder": {
+    "title": "Esquema de salida estructurada",
+    "subtitle": "Agrega campos de forma visual o edita el JSON directamente. El modelo devuelve un objeto con esta forma.",
+    "visualTab": "Visual",
+    "codeTab": "Código",
+    "addField": "Agregar campo",
+    "namePlaceholder": "nombre del campo",
+    "descriptionPlaceholder": "descripción (opcional)",
+    "required": "Obligatorio",
+    "removeField": "Eliminar campo",
+    "emptyState": "Agrega al menos un campo para definir la salida.",
+    "duplicateNames": "Los nombres de los campos deben ser únicos.",
+    "visualUnavailable": "Este esquema es demasiado avanzado para el editor visual; edítalo como código.",
+    "invalidJson": "Sintaxis JSON no válida.",
+    "cancel": "Cancelar",
+    "apply": "Aplicar",
+    "openBuilder": "Crear esquema"
   }
 }

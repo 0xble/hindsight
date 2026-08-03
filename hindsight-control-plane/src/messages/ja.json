@@ -1795,5 +1795,23 @@
     "pagesEmptyCta": "Create your first page",
     "recentDocsTitle": "Recent documents",
     "recentDocsEmpty": "No documents yet"
+  },
+  "schemaBuilder": {
+    "title": "構造化出力スキーマ",
+    "subtitle": "フィールドを視覚的に追加するか、生の JSON を編集します。モデルはこの形式のオブジェクトを返します。",
+    "visualTab": "ビジュアル",
+    "codeTab": "コード",
+    "addField": "フィールドを追加",
+    "namePlaceholder": "フィールド名",
+    "descriptionPlaceholder": "説明（任意）",
+    "required": "必須",
+    "removeField": "フィールドを削除",
+    "emptyState": "出力を定義するには、フィールドを少なくとも 1 つ追加してください。",
+    "duplicateNames": "フィールド名は一意である必要があります。",
+    "visualUnavailable": "このスキーマはビジュアルエディタには複雑すぎます。コードとして編集してください。",
+    "invalidJson": "JSON 構文が無効です。",
+    "cancel": "キャンセル",
+    "apply": "適用",
+    "openBuilder": "スキーマを作成"
   }
 }

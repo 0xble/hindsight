@@ -27,6 +27,7 @@ import {
   X,
   Check,
   Play,
+  Wand2,
 } from "lucide-react";
 import { Spinner } from "@/components/ui/spinner";
 import { Textarea } from "@/components/ui/textarea";
@@ -34,6 +35,8 @@ import JsonView from "react18-json-view";
 import "react18-json-view/src/style.css";
 import { MemoryDetailModal } from "./memory-detail-modal";
 import { MentalModelDetailModal } from "./mental-model-detail-modal";
+import { SchemaBuilderDialog } from "./schema-builder-dialog";
+import { validateResponseSchema } from "@/lib/response-schema";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 
@@ -43,6 +46,7 @@ type BasedOnTab = "directives" | "mental_models" | "observations" | "world" | "e
 
 export function ThinkView() {
   const t = useTranslations("thinkView");
+  const tSchema = useTranslations("schemaBuilder");
   const { currentBank } = useBank();
   const [query, setQuery] = useState("");
   const [budget, setBudget] = useState<"low" | "mid" | "high">("mid");
@@ -58,7 +62,8 @@ export function ThinkView() {
   const [excludeMentalModels, setExcludeMentalModels] = useState(false);
   const [excludeMentalModelIds, setExcludeMentalModelIds] = useState("");
   const [responseSchema, setResponseSchema] = useState("");
-  const [schemaError, setSchemaError] = useState(false);
+  const [schemaErrorMsg, setSchemaErrorMsg] = useState<string | null>(null);
+  const [schemaBuilderOpen, setSchemaBuilderOpen] = useState(false);
   const [feedback, setFeedback] = useState("");
   const [feedbackSubmitting, setFeedbackSubmitting] = useState(false);
   const [feedbackSubmitted, setFeedbackSubmitted] = useState(false);
@@ -148,11 +153,18 @@ export function ThinkView() {
         try {
           parsedSchema = JSON.parse(schemaText);
         } catch {
-          setSchemaError(true);
+          setSchemaErrorMsg(t("structuredSchemaInvalid"));
+          return;
+        }
+        // Validate the schema shape (not just JSON syntax) so a schema the
+        // engine can't build a model from is rejected here, not downstream.
+        const schemaErr = validateResponseSchema(parsedSchema);
+        if (schemaErr) {
+          setSchemaErrorMsg(schemaErr);
           return;
         }
       }
-      setSchemaError(false);
+      setSchemaErrorMsg(null);
 
       const data: any = await client.reflect({
         bank_id: currentBank,
@@ -309,21 +321,34 @@ export function ThinkView() {
 
           {/* Structured Output Schema */}
           <div className="mt-4 pt-4 border-t space-y-2">
-            <span className="text-sm font-medium text-muted-foreground">
-              {t("structuredSchemaLabel")}
-            </span>
+            <div className="flex items-center justify-between gap-2">
+              <span className="text-sm font-medium text-muted-foreground">
+                {t("structuredSchemaLabel")}
+              </span>
+              <Button
+                variant="outline"
+                size="sm"
+                className="h-7"
+                onClick={() => setSchemaBuilderOpen(true)}
+              >
+                <Wand2 className="w-3.5 h-3.5 mr-1" />
+                {tSchema("openBuilder")}
+              </Button>
+            </div>
             <Textarea
               value={responseSchema}
               onChange={(e) => {
                 setResponseSchema(e.target.value);
-                if (schemaError) setSchemaError(false);
+                if (schemaErrorMsg) setSchemaErrorMsg(null);
               }}
               placeholder='{"type": "object", "properties": {"summary": {"type": "string"}}, "required": ["summary"]}'
               rows={3}
-              className={`font-mono text-xs ${schemaError ? "border-destructive" : ""}`}
+              className={`font-mono text-xs ${schemaErrorMsg ? "border-destructive" : ""}`}
             />
-            <p className={`text-xs ${schemaError ? "text-destructive" : "text-muted-foreground"}`}>
-              {schemaError ? t("structuredSchemaInvalid") : t("structuredSchemaHint")}
+            <p
+              className={`text-xs ${schemaErrorMsg ? "text-destructive" : "text-muted-foreground"}`}
+            >
+              {schemaErrorMsg ?? t("structuredSchemaHint")}
             </p>
           </div>
         </CardContent>
@@ -1039,6 +1064,17 @@ export function ThinkView() {
       <MentalModelDetailModal
         mentalModelId={selectedMentalModelId}
         onClose={() => setSelectedMentalModelId(null)}
+      />
+
+      {/* Structured output schema builder */}
+      <SchemaBuilderDialog
+        open={schemaBuilderOpen}
+        value={responseSchema}
+        onClose={() => setSchemaBuilderOpen(false)}
+        onSave={(json) => {
+          setResponseSchema(json);
+          setSchemaErrorMsg(null);
+        }}
       />
     </div>
   );

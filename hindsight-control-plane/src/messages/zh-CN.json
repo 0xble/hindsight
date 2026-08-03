@@ -1795,5 +1795,23 @@
     "pagesEmptyCta": "Create your first page",
     "recentDocsTitle": "Recent documents",
     "recentDocsEmpty": "No documents yet"
+  },
+  "schemaBuilder": {
+    "title": "结构化输出模式",
+    "subtitle": "以可视化方式添加字段，或直接编辑 JSON。模型将返回此结构的对象。",
+    "visualTab": "可视化",
+    "codeTab": "代码",
+    "addField": "添加字段",
+    "namePlaceholder": "字段名称",
+    "descriptionPlaceholder": "描述（可选）",
+    "required": "必填",
+    "removeField": "删除字段",
+    "emptyState": "至少添加一个字段以定义输出。",
+    "duplicateNames": "字段名称必须唯一。",
+    "visualUnavailable": "此模式对可视化编辑器来说过于复杂，请以代码方式编辑。",
+    "invalidJson": "JSON 语法无效。",
+    "cancel": "取消",
+    "apply": "应用",
+    "openBuilder": "构建模式"
   }
 }

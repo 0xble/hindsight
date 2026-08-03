@@ -1795,5 +1795,23 @@
     "pagesEmptyCta": "Create your first page",
     "recentDocsTitle": "Recent documents",
     "recentDocsEmpty": "No documents yet"
+  },
+  "schemaBuilder": {
+    "title": "Schema für strukturierte Ausgabe",
+    "subtitle": "Felder visuell hinzufügen oder das rohe JSON bearbeiten. Das Modell gibt ein Objekt in dieser Form zurück.",
+    "visualTab": "Visuell",
+    "codeTab": "Code",
+    "addField": "Feld hinzufügen",
+    "namePlaceholder": "Feldname",
+    "descriptionPlaceholder": "Beschreibung (optional)",
+    "required": "Erforderlich",
+    "removeField": "Feld entfernen",
+    "emptyState": "Fügen Sie mindestens ein Feld hinzu, um die Ausgabe zu definieren.",
+    "duplicateNames": "Feldnamen müssen eindeutig sein.",
+    "visualUnavailable": "Dieses Schema ist zu komplex für den visuellen Editor – bearbeiten Sie es als Code.",
+    "invalidJson": "Ungültige JSON-Syntax.",
+    "cancel": "Abbrechen",
+    "apply": "Übernehmen",
+    "openBuilder": "Schema erstellen"
   }
 }

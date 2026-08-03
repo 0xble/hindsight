@@ -55,6 +55,7 @@ import {
   FolderOpen,
   FileText,
   Clock,
+  Wand2,
 } from "lucide-react";
 import { Spinner } from "@/components/ui/spinner";
 import {
@@ -65,6 +66,8 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { MentalModelDetailModal } from "./mental-model-detail-modal";
+import { SchemaBuilderDialog } from "./schema-builder-dialog";
+import { validateResponseSchema } from "@/lib/response-schema";
 import { TagFilterInput } from "./tag-filter-input";
 import { CronSchedulePreview } from "./cron-schedule-preview";
 import { NextRefresh } from "./next-refresh";
@@ -694,6 +697,8 @@ function CreateMentalModelDialog({
   const t = useTranslations("mentalModels");
   const { currentBank } = useBank();
   const [creating, setCreating] = useState(false);
+  const tSchema = useTranslations("schemaBuilder");
+  const [schemaBuilderOpen, setSchemaBuilderOpen] = useState(false);
   const [form, setForm] = useState({
     id: "",
     name: "",
@@ -758,6 +763,13 @@ function CreateMentalModelDialog({
           responseSchema = JSON.parse(form.responseSchema.trim());
         } catch {
           toast.error(t("invalidResponseSchemaJson"));
+          return;
+        }
+        // Validate the schema shape, not just JSON syntax, so the refresh's
+        // structured-output extraction can actually build a model from it.
+        const schemaErr = validateResponseSchema(responseSchema);
+        if (schemaErr) {
+          toast.error(schemaErr);
           return;
         }
       }
@@ -1136,9 +1148,21 @@ function CreateMentalModelDialog({
                   </p>
                 </div>
                 <div className="space-y-2">
-                  <label className="text-sm font-medium text-foreground">
-                    {t("optionsResponseSchemaLabel")}
-                  </label>
+                  <div className="flex items-center justify-between gap-2">
+                    <label className="text-sm font-medium text-foreground">
+                      {t("optionsResponseSchemaLabel")}
+                    </label>
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      className="h-7"
+                      onClick={() => setSchemaBuilderOpen(true)}
+                    >
+                      <Wand2 className="w-3.5 h-3.5 mr-1" />
+                      {tSchema("openBuilder")}
+                    </Button>
+                  </div>
                   <Textarea
                     value={form.responseSchema}
                     onChange={(e) => setForm({ ...form, responseSchema: e.target.value })}
@@ -1149,6 +1173,12 @@ function CreateMentalModelDialog({
                   <p className="text-xs text-muted-foreground">
                     {t("optionsResponseSchemaDescription")}
                   </p>
+                  <SchemaBuilderDialog
+                    open={schemaBuilderOpen}
+                    value={form.responseSchema}
+                    onClose={() => setSchemaBuilderOpen(false)}
+                    onSave={(json) => setForm({ ...form, responseSchema: json })}
+                  />
                 </div>
               </section>
             </TabsContent>
@@ -1192,6 +1222,8 @@ function UpdateMentalModelDialog({
   const t = useTranslations("mentalModels");
   const { currentBank } = useBank();
   const [updating, setUpdating] = useState(false);
+  const tSchema = useTranslations("schemaBuilder");
+  const [schemaBuilderOpen, setSchemaBuilderOpen] = useState(false);
   const buildFormState = () => ({
     name: mentalModel.name,
     sourceQuery: mentalModel.source_query,
@@ -1282,6 +1314,13 @@ function UpdateMentalModelDialog({
           responseSchema = JSON.parse(form.responseSchema.trim());
         } catch {
           toast.error(t("invalidResponseSchemaJson"));
+          return;
+        }
+        // Validate the schema shape, not just JSON syntax, so the refresh's
+        // structured-output extraction can actually build a model from it.
+        const schemaErr = validateResponseSchema(responseSchema);
+        if (schemaErr) {
+          toast.error(schemaErr);
           return;
         }
       }
@@ -1611,9 +1650,21 @@ function UpdateMentalModelDialog({
                   </p>
                 </div>
                 <div className="space-y-2">
-                  <label className="text-sm font-medium text-foreground">
-                    {t("optionsResponseSchemaLabel")}
-                  </label>
+                  <div className="flex items-center justify-between gap-2">
+                    <label className="text-sm font-medium text-foreground">
+                      {t("optionsResponseSchemaLabel")}
+                    </label>
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      className="h-7"
+                      onClick={() => setSchemaBuilderOpen(true)}
+                    >
+                      <Wand2 className="w-3.5 h-3.5 mr-1" />
+                      {tSchema("openBuilder")}
+                    </Button>
+                  </div>
                   <Textarea
                     value={form.responseSchema}
                     onChange={(e) => setForm({ ...form, responseSchema: e.target.value })}
@@ -1624,6 +1675,12 @@ function UpdateMentalModelDialog({
                   <p className="text-xs text-muted-foreground">
                     {t("optionsResponseSchemaDescription")}
                   </p>
+                  <SchemaBuilderDialog
+                    open={schemaBuilderOpen}
+                    value={form.responseSchema}
+                    onClose={() => setSchemaBuilderOpen(false)}
+                    onSave={(json) => setForm({ ...form, responseSchema: json })}
+                  />
                 </div>
               </section>
             </TabsContent>

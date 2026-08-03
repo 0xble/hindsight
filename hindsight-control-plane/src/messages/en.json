@@ -1795,5 +1795,23 @@
     "pagesEmptyCta": "Create your first page",
     "recentDocsTitle": "Recent documents",
     "recentDocsEmpty": "No documents yet"
+  },
+  "schemaBuilder": {
+    "title": "Structured output schema",
+    "subtitle": "Add fields visually, or edit the raw JSON. The model returns an object in this shape.",
+    "visualTab": "Visual",
+    "codeTab": "Code",
+    "addField": "Add field",
+    "namePlaceholder": "field name",
+    "descriptionPlaceholder": "description (optional)",
+    "required": "Required",
+    "removeField": "Remove field",
+    "emptyState": "Add at least one field to define the output.",
+    "duplicateNames": "Field names must be unique.",
+    "visualUnavailable": "This schema is too advanced for the visual editor — edit it as code.",
+    "invalidJson": "Invalid JSON syntax.",
+    "cancel": "Cancel",
+    "apply": "Apply",
+    "openBuilder": "Build schema"
   }
 }

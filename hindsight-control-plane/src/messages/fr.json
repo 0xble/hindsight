@@ -1795,5 +1795,23 @@
     "pagesEmptyCta": "Create your first page",
     "recentDocsTitle": "Recent documents",
     "recentDocsEmpty": "No documents yet"
+  },
+  "schemaBuilder": {
+    "title": "Schéma de sortie structurée",
+    "subtitle": "Ajoutez des champs visuellement ou modifiez le JSON brut. Le modèle renvoie un objet de cette forme.",
+    "visualTab": "Visuel",
+    "codeTab": "Code",
+    "addField": "Ajouter un champ",
+    "namePlaceholder": "nom du champ",
+    "descriptionPlaceholder": "description (facultatif)",
+    "required": "Requis",
+    "removeField": "Supprimer le champ",
+    "emptyState": "Ajoutez au moins un champ pour définir la sortie.",
+    "duplicateNames": "Les noms des champs doivent être uniques.",
+    "visualUnavailable": "Ce schéma est trop complexe pour l'éditeur visuel — modifiez-le en code.",
+    "invalidJson": "Syntaxe JSON invalide.",
+    "cancel": "Annuler",
+    "apply": "Appliquer",
+    "openBuilder": "Créer le schéma"
   }
 }

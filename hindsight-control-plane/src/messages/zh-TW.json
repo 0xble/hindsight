@@ -1795,5 +1795,23 @@
     "pagesEmptyCta": "Create your first page",
     "recentDocsTitle": "Recent documents",
     "recentDocsEmpty": "No documents yet"
+  },
+  "schemaBuilder": {
+    "title": "結構化輸出結構描述",
+    "subtitle": "以視覺化方式新增欄位，或直接編輯 JSON。模型會傳回此結構的物件。",
+    "visualTab": "視覺化",
+    "codeTab": "程式碼",
+    "addField": "新增欄位",
+    "namePlaceholder": "欄位名稱",
+    "descriptionPlaceholder": "描述（選填）",
+    "required": "必填",
+    "removeField": "移除欄位",
+    "emptyState": "至少新增一個欄位以定義輸出。",
+    "duplicateNames": "欄位名稱必須唯一。",
+    "visualUnavailable": "此結構對視覺化編輯器來說過於複雜，請以程式碼方式編輯。",
+    "invalidJson": "JSON 語法無效。",
+    "cancel": "取消",
+    "apply": "套用",
+    "openBuilder": "建立結構"
   }
 }
