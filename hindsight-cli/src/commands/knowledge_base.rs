@@ -158,6 +158,7 @@ pub fn create_page(
             recall_max_tokens: None,
             recall_chunks_max_tokens: None,
             response_schema: None,
+            keep_trace: false,
         })
     } else {
         None

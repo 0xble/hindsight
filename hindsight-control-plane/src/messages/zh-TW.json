@@ -850,7 +850,10 @@
     "clearDialogConfirm": "清除",
     "actionClearContent": "清除內容",
     "emptyContent": "尚無內容。重新整理此心智模型以產生內容。",
-    "selectModelPrompt": "選擇一個心智模型以檢視其內容。"
+    "selectModelPrompt": "選擇一個心智模型以檢視其內容。",
+    "optionsSectionTroubleshooting": "問題排查",
+    "optionsKeepTraceLabel": "保留重新整理追蹤",
+    "optionsKeepTraceDescription": "記錄每次重新整理如何得出結果：模式、範圍、時間範圍、擷取到的事實與實際使用的事實，以及增量操作。這是事後診斷排程重新整理的唯一方式。"
   },
   "cronPreview": {
     "invalid": "無效的 cron 運算式",
@@ -1461,7 +1464,11 @@
     "factTypeObservation": "觀察",
     "actionClearContent": "清除內容",
     "structuredOutput": "結構化輸出",
-    "responseSchemaTitle": "結構化輸出結構描述"
+    "responseSchemaTitle": "結構化輸出結構描述",
+    "refreshTrace": "重新整理追蹤",
+    "traceNotCaptured": "本次重新整理沒有記錄追蹤。請在模型設定中開啟「保留重新整理追蹤」。",
+    "actionDryRun": "執行試執行",
+    "actionDryRunRunning": "試執行中…"
   },
   "constellation": {
     "instructions": "滾動縮放 · 拖曳平移 · 懸停探索 · 按一下選取",
@@ -1659,7 +1666,8 @@
         "refresh": "重新整理心智模型失敗",
         "history": "取得心智模型歷史失敗",
         "notFound": "找不到心智模型",
-        "clear": "清除心智模型失敗"
+        "clear": "清除心智模型失敗",
+        "dryRunRefresh": "心智模型重新整理試執行失敗"
       },
       "observations": {
         "list": "列出觀察失敗",
@@ -1813,5 +1821,27 @@
     "invalidSchema": "結構描述無效——開啟建立器進行修正。",
     "fieldDescription": "設定後，回答也會以符合此結構的 structured_output 形式傳回。",
     "itemsLabel": "每個元素"
+  },
+  "mentalModelDiagnostics": {
+    "fallbackNoBaseline": "沒有可編輯的既有內容",
+    "fallbackQueryChanged": "來源查詢已變更",
+    "fallbackDocUnreadable": "無法讀取已儲存的文件",
+    "fallbackOpsFailed": "增量操作呼叫失敗",
+    "outcomeWritten": "寫入新內容",
+    "outcomePreserved": "沒有新事實，保留內容",
+    "outcomeFailed": "結果為空，重新整理失敗",
+    "warningsTitle": "警告",
+    "traceResults": "{count} 筆結果",
+    "executionTraceTitle": "執行追蹤",
+    "noOperations": "沒有操作",
+    "responseGenerated": "已產生回應",
+    "agentDecided": "代理已決策",
+    "toolInputLabel": "輸入：",
+    "executionTraceDescription": "{iterations} 次 LLM 呼叫 • 共 {totalMs} 毫秒",
+    "executingTools": "呼叫的工具：{count}",
+    "resultTitle": "試執行 — {name}",
+    "toolOutputLabel": "輸出：",
+    "toolWindowBound": "範圍：僅 {time} 之後更新的記憶",
+    "toolWindowUnbounded": "範圍：無 — 此工具不受時間限制"
   }
 }

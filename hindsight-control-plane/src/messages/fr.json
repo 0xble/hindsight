@@ -850,7 +850,10 @@
     "clearDialogConfirm": "Effacer",
     "actionClearContent": "Effacer le contenu",
     "emptyContent": "Aucun contenu pour le moment. Actualisez ce modèle mental pour générer du contenu.",
-    "selectModelPrompt": "Sélectionnez un modèle mental pour afficher son contenu."
+    "selectModelPrompt": "Sélectionnez un modèle mental pour afficher son contenu.",
+    "optionsSectionTroubleshooting": "Diagnostic",
+    "optionsKeepTraceLabel": "Conserver les traces d'actualisation",
+    "optionsKeepTraceDescription": "Enregistre comment chaque actualisation a abouti à son résultat : mode, portée, fenêtre temporelle, faits récupérés par rapport aux faits utilisés, et opérations delta. Le seul moyen de diagnostiquer les actualisations planifiées après coup."
   },
   "cronPreview": {
     "invalid": "Expression cron non valide",
@@ -1461,7 +1464,11 @@
     "factTypeObservation": "observation",
     "actionClearContent": "Effacer le contenu",
     "structuredOutput": "Sortie structurée",
-    "responseSchemaTitle": "Schéma de sortie structurée"
+    "responseSchemaTitle": "Schéma de sortie structurée",
+    "refreshTrace": "Trace de l'actualisation",
+    "traceNotCaptured": "Aucune trace enregistrée pour cette actualisation. Activez « Conserver les traces d'actualisation » dans les réglages du modèle.",
+    "actionDryRun": "Lancer la simulation",
+    "actionDryRunRunning": "Simulation en cours…"
   },
   "constellation": {
     "instructions": "Défiler pour zoomer · Glisser pour déplacer · Survoler pour explorer · Cliquer pour sélectionner",
@@ -1659,7 +1666,8 @@
         "refresh": "Impossible d'actualiser le modèle mental",
         "history": "Impossible de récupérer l'historique du modèle mental",
         "notFound": "Modèle mental introuvable",
-        "clear": "Impossible d'effacer le modèle mental"
+        "clear": "Impossible d'effacer le modèle mental",
+        "dryRunRefresh": "Échec de la simulation d'actualisation du modèle mental"
       },
       "observations": {
         "list": "Impossible de lister les observations",
@@ -1813,5 +1821,27 @@
     "invalidSchema": "Schéma invalide — ouvrez le générateur pour le corriger.",
     "fieldDescription": "S'il est défini, la réponse est aussi renvoyée en tant que structured_output conforme à ce schéma.",
     "itemsLabel": "chaque élément"
+  },
+  "mentalModelDiagnostics": {
+    "fallbackNoBaseline": "Aucun contenu existant à modifier",
+    "fallbackQueryChanged": "La requête source a changé",
+    "fallbackDocUnreadable": "Le document enregistré était illisible",
+    "fallbackOpsFailed": "L'appel des opérations delta a échoué",
+    "outcomeWritten": "Nouveau contenu écrit",
+    "outcomePreserved": "Aucun fait nouveau, contenu conservé",
+    "outcomeFailed": "Résultat vide, l'actualisation échoue",
+    "warningsTitle": "Avertissements",
+    "traceResults": "{count} résultats",
+    "executionTraceTitle": "Trace d'exécution",
+    "noOperations": "Aucune opération",
+    "responseGenerated": "Réponse générée",
+    "agentDecided": "L'agent a décidé",
+    "toolInputLabel": "Entrée :",
+    "executionTraceDescription": "{iterations} appels LLM • {totalMs}ms au total",
+    "executingTools": "Outils appelés : {count}",
+    "resultTitle": "Simulation — {name}",
+    "toolOutputLabel": "Sortie :",
+    "toolWindowBound": "fenêtre : uniquement les mémoires mises à jour après {time}",
+    "toolWindowUnbounded": "fenêtre : aucune — cet outil n'est pas borné dans le temps"
   }
 }

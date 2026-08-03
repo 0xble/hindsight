@@ -39,7 +39,8 @@ class MentalModelTriggerInput(BaseModel):
     recall_max_tokens: Optional[StrictInt] = None
     recall_chunks_max_tokens: Optional[StrictInt] = None
     response_schema: Optional[Dict[str, Any]] = None
-    __properties: ClassVar[List[str]] = ["mode", "refresh_after_consolidation", "refresh_cron", "fact_types", "exclude_mental_models", "exclude_mental_model_ids", "tags_match", "tag_groups", "include_chunks", "recall_max_tokens", "recall_chunks_max_tokens", "response_schema"]
+    keep_trace: Optional[StrictBool] = Field(default=False, description="If true, every refresh of this mental model records how it reached its result under reflect_response.trace: the mode it ran in and why, the resolved scope and time window, how many facts retrieval returned versus how many the agent used, the tool and LLM calls, and any delta operations. Only the latest refresh's trace is kept. This is the only way to diagnose a cron- or consolidation-driven refresh after the fact, since no human sees those run. Tool outputs are reduced to result counts to keep the stored trace bounded; use LLM request tracing for raw prompts and responses.")
+    __properties: ClassVar[List[str]] = ["mode", "refresh_after_consolidation", "refresh_cron", "fact_types", "exclude_mental_models", "exclude_mental_model_ids", "tags_match", "tag_groups", "include_chunks", "recall_max_tokens", "recall_chunks_max_tokens", "response_schema", "keep_trace"]
 
     @field_validator('mode')
     def mode_validate_enum(cls, value):
@@ -186,7 +187,8 @@ class MentalModelTriggerInput(BaseModel):
             "include_chunks": obj.get("include_chunks"),
             "recall_max_tokens": obj.get("recall_max_tokens"),
             "recall_chunks_max_tokens": obj.get("recall_chunks_max_tokens"),
-            "response_schema": obj.get("response_schema")
+            "response_schema": obj.get("response_schema"),
+            "keep_trace": obj.get("keep_trace") if obj.get("keep_trace") is not None else False
         })
         return _obj
 

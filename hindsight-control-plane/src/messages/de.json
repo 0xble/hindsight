@@ -850,7 +850,10 @@
     "clearDialogConfirm": "Löschen",
     "actionClearContent": "Inhalt löschen",
     "emptyContent": "Noch kein Inhalt. Aktualisieren Sie dieses mentale Modell, um Inhalt zu erzeugen.",
-    "selectModelPrompt": "Wählen Sie ein mentales Modell aus, um dessen Inhalt anzuzeigen."
+    "selectModelPrompt": "Wählen Sie ein mentales Modell aus, um dessen Inhalt anzuzeigen.",
+    "optionsSectionTroubleshooting": "Fehlersuche",
+    "optionsKeepTraceLabel": "Aktualisierungs-Traces behalten",
+    "optionsKeepTraceDescription": "Zeichnet auf, wie jede Aktualisierung zu ihrem Ergebnis kam – Modus, Geltungsbereich, Zeitfenster, abgerufene gegenüber verwendeten Fakten und Delta-Operationen. Die einzige Möglichkeit, geplante Aktualisierungen im Nachhinein zu diagnostizieren."
   },
   "cronPreview": {
     "invalid": "Ungültiger Cron-Ausdruck",
@@ -1461,7 +1464,11 @@
     "factTypeObservation": "Beobachtung",
     "actionClearContent": "Inhalt löschen",
     "structuredOutput": "Strukturierte Ausgabe",
-    "responseSchemaTitle": "Schema für strukturierte Ausgabe"
+    "responseSchemaTitle": "Schema für strukturierte Ausgabe",
+    "refreshTrace": "Aktualisierungs-Trace",
+    "traceNotCaptured": "Für diese Aktualisierung wurde kein Trace aufgezeichnet. Aktivieren Sie „Aktualisierungs-Traces behalten“ in den Modelleinstellungen.",
+    "actionDryRun": "Probelauf starten",
+    "actionDryRunRunning": "Probelauf läuft…"
   },
   "constellation": {
     "instructions": "Scrollen zum Zoomen · Ziehen zum Verschieben · Hover zum Erkunden · Klicken zum Auswählen",
@@ -1659,7 +1666,8 @@
         "refresh": "Mentales Modell konnte nicht aktualisiert werden",
         "history": "Verlauf des mentalen Modells konnte nicht abgerufen werden",
         "notFound": "Mentales Modell nicht gefunden",
-        "clear": "Mentales Modell konnte nicht geleert werden"
+        "clear": "Mentales Modell konnte nicht geleert werden",
+        "dryRunRefresh": "Probelauf der Aktualisierung des mentalen Modells fehlgeschlagen"
       },
       "observations": {
         "list": "Beobachtungen konnten nicht aufgelistet werden",
@@ -1813,5 +1821,27 @@
     "invalidSchema": "Ungültiges Schema – zum Beheben den Generator öffnen.",
     "fieldDescription": "Wenn gesetzt, wird die Antwort zusätzlich als structured_output gemäß diesem Schema zurückgegeben.",
     "itemsLabel": "jedes Element"
+  },
+  "mentalModelDiagnostics": {
+    "fallbackNoBaseline": "Kein vorhandener Inhalt zum Bearbeiten",
+    "fallbackQueryChanged": "Die Quellabfrage hat sich geändert",
+    "fallbackDocUnreadable": "Das gespeicherte Dokument war nicht lesbar",
+    "fallbackOpsFailed": "Der Delta-Operationsaufruf ist fehlgeschlagen",
+    "outcomeWritten": "Neuer Inhalt geschrieben",
+    "outcomePreserved": "Keine neuen Fakten, Inhalt behalten",
+    "outcomeFailed": "Leeres Ergebnis, Aktualisierung schlägt fehl",
+    "warningsTitle": "Warnungen",
+    "traceResults": "{count} Ergebnisse",
+    "executionTraceTitle": "Ausführungsablauf",
+    "noOperations": "Keine Operationen",
+    "responseGenerated": "Antwort generiert",
+    "agentDecided": "Agent hat entschieden",
+    "toolInputLabel": "Eingabe:",
+    "executionTraceDescription": "{iterations} LLM-Aufrufe • {totalMs}ms gesamt",
+    "executingTools": "Aufgerufene Tools: {count}",
+    "resultTitle": "Probelauf – {name}",
+    "toolOutputLabel": "Ausgabe:",
+    "toolWindowBound": "Fenster: nur Erinnerungen, die nach {time} aktualisiert wurden",
+    "toolWindowUnbounded": "Fenster: keines – dieses Tool ist nicht zeitlich begrenzt"
   }
 }

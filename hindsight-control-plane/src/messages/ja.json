@@ -850,7 +850,10 @@
     "clearDialogConfirm": "クリア",
     "actionClearContent": "内容をクリア",
     "emptyContent": "まだコンテンツがありません。このメンタルモデルを更新してコンテンツを生成します。",
-    "selectModelPrompt": "メンタルモデルを選択して内容を表示します。"
+    "selectModelPrompt": "メンタルモデルを選択して内容を表示します。",
+    "optionsSectionTroubleshooting": "トラブルシューティング",
+    "optionsKeepTraceLabel": "更新トレースを保持",
+    "optionsKeepTraceDescription": "各更新がどのように結果に至ったかを記録します（モード、スコープ、時間範囲、取得した事実と使用した事実、デルタ操作）。スケジュール実行された更新を後から診断する唯一の方法です。"
   },
   "cronPreview": {
     "invalid": "無効な cron 式",
@@ -1461,7 +1464,11 @@
     "factTypeObservation": "オブザベーション",
     "actionClearContent": "内容をクリア",
     "structuredOutput": "構造化出力",
-    "responseSchemaTitle": "構造化出力スキーマ"
+    "responseSchemaTitle": "構造化出力スキーマ",
+    "refreshTrace": "更新トレース",
+    "traceNotCaptured": "この更新のトレースは記録されていません。モデル設定で「更新トレースを保持」を有効にしてください。",
+    "actionDryRun": "ドライランを実行",
+    "actionDryRunRunning": "ドライラン実行中…"
   },
   "constellation": {
     "instructions": "スクロールでズーム · ドラッグで移動 · ホバーで探索 · クリックで選択",
@@ -1659,7 +1666,8 @@
         "refresh": "メンタルモデルの更新に失敗しました",
         "history": "メンタルモデル履歴の取得に失敗しました",
         "notFound": "メンタルモデルが見つかりません",
-        "clear": "メンタルモデルのクリアに失敗しました"
+        "clear": "メンタルモデルのクリアに失敗しました",
+        "dryRunRefresh": "メンタルモデル更新のドライランに失敗しました"
       },
       "observations": {
         "list": "観察の一覧取得に失敗しました",
@@ -1813,5 +1821,27 @@
     "invalidSchema": "無効なスキーマです。ビルダーを開いて修正してください。",
     "fieldDescription": "設定すると、回答はこのスキーマに一致する structured_output としても返されます。",
     "itemsLabel": "各要素"
+  },
+  "mentalModelDiagnostics": {
+    "fallbackNoBaseline": "編集対象の既存コンテンツがありません",
+    "fallbackQueryChanged": "ソースクエリが変更されました",
+    "fallbackDocUnreadable": "保存された文書を読み取れませんでした",
+    "fallbackOpsFailed": "デルタ操作の呼び出しが失敗しました",
+    "outcomeWritten": "新しいコンテンツを書き込み",
+    "outcomePreserved": "新しい事実なし、コンテンツを維持",
+    "outcomeFailed": "結果が空のため更新は失敗します",
+    "warningsTitle": "警告",
+    "traceResults": "{count} 件の結果",
+    "executionTraceTitle": "実行トレース",
+    "noOperations": "オペレーションなし",
+    "responseGenerated": "レスポンスが生成されました",
+    "agentDecided": "エージェントが決定しました",
+    "toolInputLabel": "入力：",
+    "executionTraceDescription": "LLM 呼び出し {iterations} 回 • 合計 {totalMs}ms",
+    "executingTools": "呼び出したツール: {count}",
+    "resultTitle": "ドライラン — {name}",
+    "toolOutputLabel": "出力：",
+    "toolWindowBound": "範囲: {time} 以降に更新された記憶のみ",
+    "toolWindowUnbounded": "範囲: なし — このツールは時間で絞り込まれません"
   }
 }

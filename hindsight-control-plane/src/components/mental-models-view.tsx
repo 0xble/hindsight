@@ -104,6 +104,7 @@ interface MentalModel {
     recall_max_tokens?: number;
     recall_chunks_max_tokens?: number;
     response_schema?: Record<string, unknown>;
+    keep_trace?: boolean;
   };
   last_refreshed_at: string;
   created_at: string;
@@ -714,6 +715,7 @@ function CreateMentalModelDialog({
     recallMaxTokens: "",
     recallChunksMaxTokens: "",
     responseSchema: "",
+    keepTrace: false,
   });
 
   const handleCreate = async () => {
@@ -779,6 +781,7 @@ function CreateMentalModelDialog({
           recall_max_tokens: recallMaxTokens,
           recall_chunks_max_tokens: recallChunksMaxTokens,
           response_schema: responseSchema,
+          keep_trace: form.keepTrace,
         },
       });
 
@@ -800,6 +803,7 @@ function CreateMentalModelDialog({
         recallMaxTokens: "",
         recallChunksMaxTokens: "",
         responseSchema: "",
+        keepTrace: false,
       });
       onCreated();
     } catch (error) {
@@ -832,6 +836,7 @@ function CreateMentalModelDialog({
             recallMaxTokens: "",
             recallChunksMaxTokens: "",
             responseSchema: "",
+            keepTrace: false,
           });
           onClose();
         }
@@ -1137,6 +1142,26 @@ function CreateMentalModelDialog({
                   onChange={(json) => setForm({ ...form, responseSchema: json })}
                 />
               </section>
+
+              <section className="space-y-4">
+                <h3 className="text-sm font-semibold text-foreground border-b pb-1">
+                  {t("optionsSectionTroubleshooting")}
+                </h3>
+                <div className="flex items-center space-x-2">
+                  <Checkbox
+                    id="create-keep-trace"
+                    checked={form.keepTrace}
+                    onCheckedChange={(checked) => setForm({ ...form, keepTrace: checked === true })}
+                  />
+                  <label
+                    htmlFor="create-keep-trace"
+                    className="text-sm font-medium text-foreground cursor-pointer"
+                  >
+                    {t("optionsKeepTraceLabel")}
+                  </label>
+                </div>
+                <p className="text-xs text-muted-foreground">{t("optionsKeepTraceDescription")}</p>
+              </section>
             </TabsContent>
           </div>
         </Tabs>
@@ -1216,6 +1241,7 @@ function UpdateMentalModelDialog({
     responseSchema: mentalModel.trigger?.response_schema
       ? JSON.stringify(mentalModel.trigger.response_schema, null, 2)
       : "",
+    keepTrace: mentalModel.trigger?.keep_trace || false,
   });
   const [form, setForm] = useState(buildFormState);
 
@@ -1287,6 +1313,7 @@ function UpdateMentalModelDialog({
           recall_max_tokens: recallMaxTokens,
           recall_chunks_max_tokens: recallChunksMaxTokens,
           response_schema: responseSchema,
+          keep_trace: form.keepTrace,
         },
       });
 
@@ -1596,6 +1623,26 @@ function UpdateMentalModelDialog({
                   value={form.responseSchema}
                   onChange={(json) => setForm({ ...form, responseSchema: json })}
                 />
+              </section>
+
+              <section className="space-y-4">
+                <h3 className="text-sm font-semibold text-foreground border-b pb-1">
+                  {t("optionsSectionTroubleshooting")}
+                </h3>
+                <div className="flex items-center space-x-2">
+                  <Checkbox
+                    id="edit-keep-trace"
+                    checked={form.keepTrace}
+                    onCheckedChange={(checked) => setForm({ ...form, keepTrace: checked === true })}
+                  />
+                  <label
+                    htmlFor="edit-keep-trace"
+                    className="text-sm font-medium text-foreground cursor-pointer"
+                  >
+                    {t("optionsKeepTraceLabel")}
+                  </label>
+                </div>
+                <p className="text-xs text-muted-foreground">{t("optionsKeepTraceDescription")}</p>
               </section>
             </TabsContent>
           </div>
