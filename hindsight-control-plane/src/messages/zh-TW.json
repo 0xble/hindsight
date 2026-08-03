@@ -850,10 +850,7 @@
     "clearDialogConfirm": "清除",
     "actionClearContent": "清除內容",
     "emptyContent": "尚無內容。重新整理此心智模型以產生內容。",
-    "selectModelPrompt": "選擇一個心智模型以檢視其內容。",
-    "optionsResponseSchemaLabel": "結構化輸出結構描述 (JSON)",
-    "optionsResponseSchemaDescription": "選用的 JSON 結構描述。每次重新整理也會將依此結構解析的 structured_output 與內容一起儲存。",
-    "invalidResponseSchemaJson": "結構化輸出結構描述中的 JSON 無效"
+    "selectModelPrompt": "選擇一個心智模型以檢視其內容。"
   },
   "cronPreview": {
     "invalid": "無效的 cron 運算式",
@@ -940,9 +937,6 @@
     "observationTagsField": "標籤",
     "observationSourceMemoriesField": "來源記憶（{count}）",
     "observationIdField": "ID",
-    "structuredSchemaLabel": "結構化輸出結構描述 (JSON)",
-    "structuredSchemaHint": "選用的 JSON 結構描述。設定後，reflect 也會傳回依此結構解析的 structured_output。",
-    "structuredSchemaInvalid": "JSON 結構描述無效",
     "structuredOutputTitle": "結構化輸出"
   },
   "searchDebug": {
@@ -1812,6 +1806,11 @@
     "invalidJson": "JSON 語法無效。",
     "cancel": "取消",
     "apply": "套用",
-    "openBuilder": "建立結構"
+    "openBuilder": "建立結構",
+    "edit": "編輯",
+    "clear": "移除結構描述",
+    "fieldsSummary": "{count} 個欄位",
+    "invalidSchema": "結構描述無效——開啟建立器進行修正。",
+    "fieldDescription": "設定後，回答也會以符合此結構的 structured_output 形式傳回。"
   }
 }

@@ -850,10 +850,7 @@
     "clearDialogConfirm": "Limpar",
     "actionClearContent": "Limpar conteúdo",
     "emptyContent": "Ainda não há conteúdo. Atualize este modelo mental para gerar conteúdo.",
-    "selectModelPrompt": "Selecione um modelo mental para ver seu conteúdo.",
-    "optionsResponseSchemaLabel": "Esquema de saída estruturada (JSON)",
-    "optionsResponseSchemaDescription": "Esquema JSON opcional. Cada atualização também armazena um structured_output analisado nesse formato junto com o conteúdo.",
-    "invalidResponseSchemaJson": "JSON inválido no esquema de saída estruturada"
+    "selectModelPrompt": "Selecione um modelo mental para ver seu conteúdo."
   },
   "cronPreview": {
     "invalid": "Expressão cron inválida",
@@ -940,9 +937,6 @@
     "observationTagsField": "Tags",
     "observationSourceMemoriesField": "Memórias de Origem ({count})",
     "observationIdField": "ID",
-    "structuredSchemaLabel": "Esquema de saída estruturada (JSON)",
-    "structuredSchemaHint": "Esquema JSON opcional. Quando definido, o reflect também retorna um structured_output analisado nesse formato.",
-    "structuredSchemaInvalid": "Esquema JSON inválido",
     "structuredOutputTitle": "Saída estruturada"
   },
   "searchDebug": {
@@ -1812,6 +1806,11 @@
     "invalidJson": "Sintaxe JSON inválida.",
     "cancel": "Cancelar",
     "apply": "Aplicar",
-    "openBuilder": "Criar esquema"
+    "openBuilder": "Criar esquema",
+    "edit": "Editar",
+    "clear": "Remover esquema",
+    "fieldsSummary": "{count, plural, one {# campo} other {# campos}}",
+    "invalidSchema": "Esquema inválido — abra o construtor para corrigi-lo.",
+    "fieldDescription": "Quando definido, a resposta também é retornada como structured_output conforme este esquema."
   }
 }

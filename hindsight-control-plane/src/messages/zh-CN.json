@@ -850,10 +850,7 @@
     "clearDialogConfirm": "清除",
     "actionClearContent": "清除内容",
     "emptyContent": "暂无内容。刷新此心智模型以生成内容。",
-    "selectModelPrompt": "选择一个心智模型以查看其内容。",
-    "optionsResponseSchemaLabel": "结构化输出模式 (JSON)",
-    "optionsResponseSchemaDescription": "可选的 JSON 模式。每次刷新还会将按此结构解析的 structured_output 与内容一起存储。",
-    "invalidResponseSchemaJson": "结构化输出模式中的 JSON 无效"
+    "selectModelPrompt": "选择一个心智模型以查看其内容。"
   },
   "cronPreview": {
     "invalid": "无效的 cron 表达式",
@@ -940,9 +937,6 @@
     "observationTagsField": "标签",
     "observationSourceMemoriesField": "来源记忆（{count}）",
     "observationIdField": "ID",
-    "structuredSchemaLabel": "结构化输出模式 (JSON)",
-    "structuredSchemaHint": "可选的 JSON 模式。设置后，reflect 还会返回按此结构解析的 structured_output。",
-    "structuredSchemaInvalid": "JSON 模式无效",
     "structuredOutputTitle": "结构化输出"
   },
   "searchDebug": {
@@ -1812,6 +1806,11 @@
     "invalidJson": "JSON 语法无效。",
     "cancel": "取消",
     "apply": "应用",
-    "openBuilder": "构建模式"
+    "openBuilder": "构建模式",
+    "edit": "编辑",
+    "clear": "移除模式",
+    "fieldsSummary": "{count} 个字段",
+    "invalidSchema": "模式无效——打开生成器进行修复。",
+    "fieldDescription": "设置后，回答还会以符合此模式的 structured_output 形式返回。"
   }
 }

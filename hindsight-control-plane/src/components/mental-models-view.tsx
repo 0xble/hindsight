@@ -55,7 +55,6 @@ import {
   FolderOpen,
   FileText,
   Clock,
-  Wand2,
 } from "lucide-react";
 import { Spinner } from "@/components/ui/spinner";
 import {
@@ -66,8 +65,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { MentalModelDetailModal } from "./mental-model-detail-modal";
-import { SchemaBuilderDialog } from "./schema-builder-dialog";
-import { validateResponseSchema } from "@/lib/response-schema";
+import { ResponseSchemaField } from "./response-schema-field";
 import { TagFilterInput } from "./tag-filter-input";
 import { CronSchedulePreview } from "./cron-schedule-preview";
 import { NextRefresh } from "./next-refresh";
@@ -697,8 +695,6 @@ function CreateMentalModelDialog({
   const t = useTranslations("mentalModels");
   const { currentBank } = useBank();
   const [creating, setCreating] = useState(false);
-  const tSchema = useTranslations("schemaBuilder");
-  const [schemaBuilderOpen, setSchemaBuilderOpen] = useState(false);
   const [form, setForm] = useState({
     id: "",
     name: "",
@@ -757,22 +753,11 @@ function CreateMentalModelDialog({
       const includeChunks =
         form.includeChunks === "true" ? true : form.includeChunks === "false" ? false : undefined;
 
-      let responseSchema: Record<string, unknown> | undefined;
-      if (form.responseSchema.trim()) {
-        try {
-          responseSchema = JSON.parse(form.responseSchema.trim());
-        } catch {
-          toast.error(t("invalidResponseSchemaJson"));
-          return;
-        }
-        // Validate the schema shape, not just JSON syntax, so the refresh's
-        // structured-output extraction can actually build a model from it.
-        const schemaErr = validateResponseSchema(responseSchema);
-        if (schemaErr) {
-          toast.error(schemaErr);
-          return;
-        }
-      }
+      // response_schema is only ever set through the schema builder, which
+      // guarantees valid, usable JSON.
+      const responseSchema = form.responseSchema.trim()
+        ? JSON.parse(form.responseSchema.trim())
+        : undefined;
 
       await client.createMentalModel(currentBank, {
         id: form.id.trim() || undefined,
@@ -1147,39 +1132,10 @@ function CreateMentalModelDialog({
                     {t("optionsRecallChunksMaxTokensDescription")}
                   </p>
                 </div>
-                <div className="space-y-2">
-                  <div className="flex items-center justify-between gap-2">
-                    <label className="text-sm font-medium text-foreground">
-                      {t("optionsResponseSchemaLabel")}
-                    </label>
-                    <Button
-                      type="button"
-                      variant="outline"
-                      size="sm"
-                      className="h-7"
-                      onClick={() => setSchemaBuilderOpen(true)}
-                    >
-                      <Wand2 className="w-3.5 h-3.5 mr-1" />
-                      {tSchema("openBuilder")}
-                    </Button>
-                  </div>
-                  <Textarea
-                    value={form.responseSchema}
-                    onChange={(e) => setForm({ ...form, responseSchema: e.target.value })}
-                    placeholder='{"type": "object", "properties": {"summary": {"type": "string"}}, "required": ["summary"]}'
-                    rows={3}
-                    className="font-mono text-xs"
-                  />
-                  <p className="text-xs text-muted-foreground">
-                    {t("optionsResponseSchemaDescription")}
-                  </p>
-                  <SchemaBuilderDialog
-                    open={schemaBuilderOpen}
-                    value={form.responseSchema}
-                    onClose={() => setSchemaBuilderOpen(false)}
-                    onSave={(json) => setForm({ ...form, responseSchema: json })}
-                  />
-                </div>
+                <ResponseSchemaField
+                  value={form.responseSchema}
+                  onChange={(json) => setForm({ ...form, responseSchema: json })}
+                />
               </section>
             </TabsContent>
           </div>
@@ -1222,8 +1178,6 @@ function UpdateMentalModelDialog({
   const t = useTranslations("mentalModels");
   const { currentBank } = useBank();
   const [updating, setUpdating] = useState(false);
-  const tSchema = useTranslations("schemaBuilder");
-  const [schemaBuilderOpen, setSchemaBuilderOpen] = useState(false);
   const buildFormState = () => ({
     name: mentalModel.name,
     sourceQuery: mentalModel.source_query,
@@ -1308,22 +1262,11 @@ function UpdateMentalModelDialog({
       const includeChunks =
         form.includeChunks === "true" ? true : form.includeChunks === "false" ? false : undefined;
 
-      let responseSchema: Record<string, unknown> | undefined;
-      if (form.responseSchema.trim()) {
-        try {
-          responseSchema = JSON.parse(form.responseSchema.trim());
-        } catch {
-          toast.error(t("invalidResponseSchemaJson"));
-          return;
-        }
-        // Validate the schema shape, not just JSON syntax, so the refresh's
-        // structured-output extraction can actually build a model from it.
-        const schemaErr = validateResponseSchema(responseSchema);
-        if (schemaErr) {
-          toast.error(schemaErr);
-          return;
-        }
-      }
+      // response_schema is only ever set through the schema builder, which
+      // guarantees valid, usable JSON.
+      const responseSchema = form.responseSchema.trim()
+        ? JSON.parse(form.responseSchema.trim())
+        : undefined;
 
       const updated = await client.updateMentalModel(currentBank, mentalModel.id, {
         name: form.name.trim(),
@@ -1649,39 +1592,10 @@ function UpdateMentalModelDialog({
                     {t("optionsRecallChunksMaxTokensDescription")}
                   </p>
                 </div>
-                <div className="space-y-2">
-                  <div className="flex items-center justify-between gap-2">
-                    <label className="text-sm font-medium text-foreground">
-                      {t("optionsResponseSchemaLabel")}
-                    </label>
-                    <Button
-                      type="button"
-                      variant="outline"
-                      size="sm"
-                      className="h-7"
-                      onClick={() => setSchemaBuilderOpen(true)}
-                    >
-                      <Wand2 className="w-3.5 h-3.5 mr-1" />
-                      {tSchema("openBuilder")}
-                    </Button>
-                  </div>
-                  <Textarea
-                    value={form.responseSchema}
-                    onChange={(e) => setForm({ ...form, responseSchema: e.target.value })}
-                    placeholder='{"type": "object", "properties": {"summary": {"type": "string"}}, "required": ["summary"]}'
-                    rows={3}
-                    className="font-mono text-xs"
-                  />
-                  <p className="text-xs text-muted-foreground">
-                    {t("optionsResponseSchemaDescription")}
-                  </p>
-                  <SchemaBuilderDialog
-                    open={schemaBuilderOpen}
-                    value={form.responseSchema}
-                    onClose={() => setSchemaBuilderOpen(false)}
-                    onSave={(json) => setForm({ ...form, responseSchema: json })}
-                  />
-                </div>
+                <ResponseSchemaField
+                  value={form.responseSchema}
+                  onChange={(json) => setForm({ ...form, responseSchema: json })}
+                />
               </section>
             </TabsContent>
           </div>

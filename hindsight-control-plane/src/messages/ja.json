@@ -850,10 +850,7 @@
     "clearDialogConfirm": "クリア",
     "actionClearContent": "内容をクリア",
     "emptyContent": "まだコンテンツがありません。このメンタルモデルを更新してコンテンツを生成します。",
-    "selectModelPrompt": "メンタルモデルを選択して内容を表示します。",
-    "optionsResponseSchemaLabel": "構造化出力スキーマ (JSON)",
-    "optionsResponseSchemaDescription": "任意の JSON スキーマ。更新のたびに、この形式に解析した structured_output もコンテンツとともに保存されます。",
-    "invalidResponseSchemaJson": "構造化出力スキーマの JSON が無効です"
+    "selectModelPrompt": "メンタルモデルを選択して内容を表示します。"
   },
   "cronPreview": {
     "invalid": "無効な cron 式",
@@ -940,9 +937,6 @@
     "observationTagsField": "タグ",
     "observationSourceMemoriesField": "ソースメモリ（{count}件）",
     "observationIdField": "ID",
-    "structuredSchemaLabel": "構造化出力スキーマ (JSON)",
-    "structuredSchemaHint": "任意の JSON スキーマ。設定すると、reflect はこの形式に解析した structured_output も返します。",
-    "structuredSchemaInvalid": "無効な JSON スキーマ",
     "structuredOutputTitle": "構造化出力"
   },
   "searchDebug": {
@@ -1812,6 +1806,11 @@
     "invalidJson": "JSON 構文が無効です。",
     "cancel": "キャンセル",
     "apply": "適用",
-    "openBuilder": "スキーマを作成"
+    "openBuilder": "スキーマを作成",
+    "edit": "編集",
+    "clear": "スキーマを削除",
+    "fieldsSummary": "{count} 個のフィールド",
+    "invalidSchema": "無効なスキーマです。ビルダーを開いて修正してください。",
+    "fieldDescription": "設定すると、回答はこのスキーマに一致する structured_output としても返されます。"
   }
 }

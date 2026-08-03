@@ -850,10 +850,7 @@
     "clearDialogConfirm": "지우기",
     "actionClearContent": "콘텐츠 지우기",
     "emptyContent": "아직 콘텐츠가 없습니다. 이 멘탈 모델을 새로 고쳐 콘텐츠를 생성하세요.",
-    "selectModelPrompt": "콘텐츠를 보려면 멘탈 모델을 선택하세요.",
-    "optionsResponseSchemaLabel": "구조화된 출력 스키마 (JSON)",
-    "optionsResponseSchemaDescription": "선택적 JSON 스키마. 새로 고칠 때마다 이 형태로 파싱된 structured_output도 콘텐츠와 함께 저장됩니다.",
-    "invalidResponseSchemaJson": "구조화된 출력 스키마의 JSON이 잘못되었습니다"
+    "selectModelPrompt": "콘텐츠를 보려면 멘탈 모델을 선택하세요."
   },
   "cronPreview": {
     "invalid": "잘못된 cron 표현식",
@@ -940,9 +937,6 @@
     "observationTagsField": "태그",
     "observationSourceMemoriesField": "소스 메모리 ({count})",
     "observationIdField": "ID",
-    "structuredSchemaLabel": "구조화된 출력 스키마 (JSON)",
-    "structuredSchemaHint": "선택적 JSON 스키마. 설정하면 reflect가 이 형태로 파싱된 structured_output도 반환합니다.",
-    "structuredSchemaInvalid": "잘못된 JSON 스키마",
     "structuredOutputTitle": "구조화된 출력"
   },
   "searchDebug": {
@@ -1812,6 +1806,11 @@
     "invalidJson": "잘못된 JSON 구문입니다.",
     "cancel": "취소",
     "apply": "적용",
-    "openBuilder": "스키마 만들기"
+    "openBuilder": "스키마 만들기",
+    "edit": "편집",
+    "clear": "스키마 제거",
+    "fieldsSummary": "{count}개 필드",
+    "invalidSchema": "잘못된 스키마입니다. 빌더를 열어 수정하세요.",
+    "fieldDescription": "설정하면 응답이 이 스키마에 맞는 structured_output으로도 반환됩니다."
   }
 }
