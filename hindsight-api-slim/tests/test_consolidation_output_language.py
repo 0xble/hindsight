@@ -108,12 +108,17 @@ async def test_updates_stay_in_source_language(llm_config):
         config=_batch_config(None),
     )
 
-    assert result.updates, "A new fact about the same walking routine should update the existing observation"
-    for update in result.updates:
-        assert _has_cjk(update.text), f"Updated observation was left in English: {update.text!r}"
+    # Whether the model merges into the existing observation or records a sibling is
+    # its call — the PROCESSING RULES lean toward UPDATE but both routings are valid,
+    # and asserting one would make this a flaky test of merge behaviour instead of
+    # language. Every text it emits, either way, must be in the new fact's language.
+    emitted = [action.text for action in [*result.updates, *result.creates]]
+    assert emitted, "The new fact should produce either an update or a create"
+    for text in emitted:
+        assert _has_cjk(text), f"Observation was left in English: {text!r}"
 
     await assert_meets_criteria(
-        response="\n".join(update.text for update in result.updates),
+        response="\n".join(emitted),
         criteria=(
             "Every line is written in Chinese throughout — not English, and not a mix of a "
             "Chinese clause with an English clause."
@@ -121,11 +126,11 @@ async def test_updates_stay_in_source_language(llm_config):
         context=(
             "An existing observation was stored in English ('The user often takes their pet to "
             "the park for walks on weekends.') and a new Chinese fact about walking the cat "
-            "Doudou at Shenzhen Bay Park updated it. No output language is configured, so the "
-            "rewritten observation must follow the new fact's language. Place and pet names may "
-            "stay in their original script."
+            "Doudou at Shenzhen Bay Park arrived. No output language is configured, so whatever "
+            "observation text this produces must follow the new fact's language. Place and pet "
+            "names may stay in their original script."
         ),
-        msg="Updating an English observation with Chinese facts must rewrite it in Chinese",
+        msg="Chinese facts must not produce English observation text, even against an English observation",
     )
 
 

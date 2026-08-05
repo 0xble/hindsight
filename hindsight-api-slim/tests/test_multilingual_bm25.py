@@ -130,7 +130,7 @@ def test_consolidation_unset_requires_source_language():
     assert "language of its own source facts" in prompt
     # The three cases the rule has to settle, not just the happy path.
     assert "Per observation, not per batch" in prompt
-    assert "rewrite ALL of it in the new facts' language" in prompt
+    assert "compose the merged observation from scratch in the new facts' language" in prompt
     assert "Proper nouns, identifiers, and units stay verbatim" in prompt
 
 

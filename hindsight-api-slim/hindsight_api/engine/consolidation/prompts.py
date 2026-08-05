@@ -27,7 +27,9 @@ _MISSION_PRIORITY_NOTE = (
 # they contradict each other.
 _DEFAULT_LANGUAGE_RULE = """## LANGUAGE
 
-Write every observation in the language of its own source facts — never translate them. Per observation, not per batch: when one merges facts of several languages, the majority wins. When updating an observation written in another language, rewrite ALL of it in the new facts' language. Proper nouns, identifiers, and units stay verbatim."""
+Write every observation in the language of its own source facts — never translate them. Per observation, not per batch: when one merges facts of several languages, the majority wins. Proper nouns, identifiers, and units stay verbatim.
+
+When an existing observation is written in a different language from the new facts updating it, do NOT edit its wording in place — that is what produces an English sentence with a Chinese detail bolted on. Discard the old phrasing and compose the merged observation from scratch in the new facts' language."""
 
 _PROCESSING_RULES = """## PROCESSING RULES
 
