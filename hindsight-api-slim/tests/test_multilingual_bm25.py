@@ -127,11 +127,11 @@ def test_consolidation_unset_requires_source_language():
 
     prompt = build_consolidation_system_prompt(llm_output_language=None)
     assert "## LANGUAGE" in prompt
-    assert "same language as the new facts" in prompt
+    assert "language of its own source facts" in prompt
     # The three cases the rule has to settle, not just the happy path.
-    assert "PER OBSERVATION, NOT PER BATCH" in prompt
-    assert "UPDATES FOLLOW THE NEW FACTS" in prompt
-    assert "NAMES AND TECHNICAL TERMS ARE NEVER TRANSLATED" in prompt
+    assert "Per observation, not per batch" in prompt
+    assert "rewrite ALL of it in the new facts' language" in prompt
+    assert "Proper nouns, identifiers, and units stay verbatim" in prompt
 
 
 def test_consolidation_injects_directive():
@@ -149,7 +149,7 @@ def test_consolidation_directive_replaces_source_language_rule():
 
     prompt = build_consolidation_system_prompt(llm_output_language="Chinese")
     assert "## LANGUAGE" not in prompt
-    assert "same language as the new facts" not in prompt
+    assert "language of its own source facts" not in prompt
 
 
 def test_consolidation_directive_does_not_break_format_placeholders():

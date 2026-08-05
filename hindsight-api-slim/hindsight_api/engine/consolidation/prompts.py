@@ -27,12 +27,7 @@ _MISSION_PRIORITY_NOTE = (
 # they contradict each other.
 _DEFAULT_LANGUAGE_RULE = """## LANGUAGE
 
-MANDATORY — write every observation `text` in the same language as the new facts it comes from. Detect that language from the source facts themselves. You are STRICTLY FORBIDDEN from translating them into another language.
-
-- PER OBSERVATION, NOT PER BATCH: each observation follows the language of the facts listed in its own `source_fact_ids`. In a mixed-language batch different observations may end up in different languages — that is correct. When one observation merges facts written in several languages, use the language of the majority of those facts.
-- UPDATES FOLLOW THE NEW FACTS: when an existing observation is written in a different language from the new facts updating it, rewrite the ENTIRE `text` in the new facts' language. Never emit a half-translated mix of the two.
-- NAMES AND TECHNICAL TERMS ARE NEVER TRANSLATED: proper nouns, product and place names, identifiers, code, and units stay exactly as written in the source facts.
-- This governs observation `text` only — `reason` is internal metadata and may be written in any language."""
+Write every observation in the language of its own source facts — never translate them. Per observation, not per batch: when one merges facts of several languages, the majority wins. When updating an observation written in another language, rewrite ALL of it in the new facts' language. Proper nouns, identifiers, and units stay verbatim."""
 
 _PROCESSING_RULES = """## PROCESSING RULES
 
