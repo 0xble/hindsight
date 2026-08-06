@@ -7420,6 +7420,42 @@
             "title": "Observations Mission",
             "description": "Controls what gets synthesised"
           },
+          "enable_temporal_extraction": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Enable Temporal Extraction",
+            "description": "Toggle date-aware query analysis (and the temporal arm) during recall"
+          },
+          "enable_graph_retrieval": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Enable Graph Retrieval",
+            "description": "Toggle the entity/link graph arm during recall"
+          },
+          "enable_reranking": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Enable Reranking",
+            "description": "Toggle cross-encoder reranking during recall"
+          },
           "disposition_skepticism": {
             "anyOf": [
               {
@@ -8481,6 +8517,42 @@
             ],
             "title": "Observations Mission",
             "description": "Controls what gets synthesised into observations. Replaces built-in consolidation rules entirely."
+          },
+          "enable_temporal_extraction": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Enable Temporal Extraction",
+            "description": "Toggle date-aware query analysis during recall. Disabling also skips the temporal retrieval arm. Useful for banks whose content carries no meaningful dates."
+          },
+          "enable_graph_retrieval": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Enable Graph Retrieval",
+            "description": "Toggle the entity/link graph traversal arm during recall. Disabling trades relational recall for latency on banks whose content has little entity structure."
+          },
+          "enable_reranking": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Enable Reranking",
+            "description": "Toggle cross-encoder reranking during recall. Disabling returns the RRF-fused ordering directly, which is faster but less precise."
           }
         },
         "type": "object",

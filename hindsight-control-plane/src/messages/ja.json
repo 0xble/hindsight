@@ -457,7 +457,17 @@
     "memoryDefenseEnterpriseFeaturePromptInjection": "プロンプトインジェクション検出:エージェントの動作を上書きする試みをブロック",
     "memoryDefenseEnterpriseFeatureSizeAnomaly": "サイズ異常:疑わしく大きいペイロードを拒否",
     "memoryDefenseEnterpriseFeatureProtectedKeys": "保護されたタグ名前空間:不変のアイデンティティタグを強制",
-    "memoryDefenseEnterpriseCta": "デモをリクエスト"
+    "memoryDefenseEnterpriseCta": "デモをリクエスト",
+    "recallTitle": "リコールパイプライン",
+    "recallDescription": "このバンクのリコール時に実行される検索ステージ",
+    "recallServerDefault": "サーバーのデフォルト",
+    "recallFailedToSave": "リコールパイプラインの設定を保存できませんでした",
+    "recallTemporalExtractionLabel": "時間情報の抽出",
+    "recallTemporalExtractionDescription": "日付を考慮したクエリ解析を実行します。無効にすると時間的検索も省略されます。このバンクの内容に意味のある日付が含まれない場合に有用です。",
+    "recallGraphRetrievalLabel": "グラフ検索",
+    "recallGraphRetrievalDescription": "リコール時にエンティティとリンクの関係をたどります。無効にすると関係性による検索と引き換えに低レイテンシになります。",
+    "recallRerankingLabel": "リランキング",
+    "recallRerankingDescription": "統合された候補をクロスエンコーダで再ランク付けします。無効にするとRRFの順序をそのまま返します。高速ですが精度は下がります。"
   },
   "bankOperations": {
     "title": "バックグラウンド操作",

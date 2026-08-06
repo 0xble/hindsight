@@ -34,6 +34,9 @@ type CreateBankRequest struct {
 	RetainStructuredChunkSize NullableInt32 `json:"retain_structured_chunk_size,omitempty"`
 	EnableObservations NullableBool `json:"enable_observations,omitempty"`
 	ObservationsMission NullableString `json:"observations_mission,omitempty"`
+	EnableTemporalExtraction NullableBool `json:"enable_temporal_extraction,omitempty"`
+	EnableGraphRetrieval NullableBool `json:"enable_graph_retrieval,omitempty"`
+	EnableReranking NullableBool `json:"enable_reranking,omitempty"`
 }
 
 // NewCreateBankRequest instantiates a new CreateBankRequest object
@@ -683,6 +686,132 @@ func (o *CreateBankRequest) UnsetObservationsMission() {
 	o.ObservationsMission.Unset()
 }
 
+// GetEnableTemporalExtraction returns the EnableTemporalExtraction field value if set, zero value otherwise (both if not set or set to explicit null).
+func (o *CreateBankRequest) GetEnableTemporalExtraction() bool {
+	if o == nil || IsNil(o.EnableTemporalExtraction.Get()) {
+		var ret bool
+		return ret
+	}
+	return *o.EnableTemporalExtraction.Get()
+}
+
+// GetEnableTemporalExtractionOk returns a tuple with the EnableTemporalExtraction field value if set, nil otherwise
+// and a boolean to check if the value has been set.
+// NOTE: If the value is an explicit nil, `nil, true` will be returned
+func (o *CreateBankRequest) GetEnableTemporalExtractionOk() (*bool, bool) {
+	if o == nil {
+		return nil, false
+	}
+	return o.EnableTemporalExtraction.Get(), o.EnableTemporalExtraction.IsSet()
+}
+
+// HasEnableTemporalExtraction returns a boolean if a field has been set.
+func (o *CreateBankRequest) HasEnableTemporalExtraction() bool {
+	if o != nil && o.EnableTemporalExtraction.IsSet() {
+		return true
+	}
+
+	return false
+}
+
+// SetEnableTemporalExtraction gets a reference to the given NullableBool and assigns it to the EnableTemporalExtraction field.
+func (o *CreateBankRequest) SetEnableTemporalExtraction(v bool) {
+	o.EnableTemporalExtraction.Set(&v)
+}
+// SetEnableTemporalExtractionNil sets the value for EnableTemporalExtraction to be an explicit nil
+func (o *CreateBankRequest) SetEnableTemporalExtractionNil() {
+	o.EnableTemporalExtraction.Set(nil)
+}
+
+// UnsetEnableTemporalExtraction ensures that no value is present for EnableTemporalExtraction, not even an explicit nil
+func (o *CreateBankRequest) UnsetEnableTemporalExtraction() {
+	o.EnableTemporalExtraction.Unset()
+}
+
+// GetEnableGraphRetrieval returns the EnableGraphRetrieval field value if set, zero value otherwise (both if not set or set to explicit null).
+func (o *CreateBankRequest) GetEnableGraphRetrieval() bool {
+	if o == nil || IsNil(o.EnableGraphRetrieval.Get()) {
+		var ret bool
+		return ret
+	}
+	return *o.EnableGraphRetrieval.Get()
+}
+
+// GetEnableGraphRetrievalOk returns a tuple with the EnableGraphRetrieval field value if set, nil otherwise
+// and a boolean to check if the value has been set.
+// NOTE: If the value is an explicit nil, `nil, true` will be returned
+func (o *CreateBankRequest) GetEnableGraphRetrievalOk() (*bool, bool) {
+	if o == nil {
+		return nil, false
+	}
+	return o.EnableGraphRetrieval.Get(), o.EnableGraphRetrieval.IsSet()
+}
+
+// HasEnableGraphRetrieval returns a boolean if a field has been set.
+func (o *CreateBankRequest) HasEnableGraphRetrieval() bool {
+	if o != nil && o.EnableGraphRetrieval.IsSet() {
+		return true
+	}
+
+	return false
+}
+
+// SetEnableGraphRetrieval gets a reference to the given NullableBool and assigns it to the EnableGraphRetrieval field.
+func (o *CreateBankRequest) SetEnableGraphRetrieval(v bool) {
+	o.EnableGraphRetrieval.Set(&v)
+}
+// SetEnableGraphRetrievalNil sets the value for EnableGraphRetrieval to be an explicit nil
+func (o *CreateBankRequest) SetEnableGraphRetrievalNil() {
+	o.EnableGraphRetrieval.Set(nil)
+}
+
+// UnsetEnableGraphRetrieval ensures that no value is present for EnableGraphRetrieval, not even an explicit nil
+func (o *CreateBankRequest) UnsetEnableGraphRetrieval() {
+	o.EnableGraphRetrieval.Unset()
+}
+
+// GetEnableReranking returns the EnableReranking field value if set, zero value otherwise (both if not set or set to explicit null).
+func (o *CreateBankRequest) GetEnableReranking() bool {
+	if o == nil || IsNil(o.EnableReranking.Get()) {
+		var ret bool
+		return ret
+	}
+	return *o.EnableReranking.Get()
+}
+
+// GetEnableRerankingOk returns a tuple with the EnableReranking field value if set, nil otherwise
+// and a boolean to check if the value has been set.
+// NOTE: If the value is an explicit nil, `nil, true` will be returned
+func (o *CreateBankRequest) GetEnableRerankingOk() (*bool, bool) {
+	if o == nil {
+		return nil, false
+	}
+	return o.EnableReranking.Get(), o.EnableReranking.IsSet()
+}
+
+// HasEnableReranking returns a boolean if a field has been set.
+func (o *CreateBankRequest) HasEnableReranking() bool {
+	if o != nil && o.EnableReranking.IsSet() {
+		return true
+	}
+
+	return false
+}
+
+// SetEnableReranking gets a reference to the given NullableBool and assigns it to the EnableReranking field.
+func (o *CreateBankRequest) SetEnableReranking(v bool) {
+	o.EnableReranking.Set(&v)
+}
+// SetEnableRerankingNil sets the value for EnableReranking to be an explicit nil
+func (o *CreateBankRequest) SetEnableRerankingNil() {
+	o.EnableReranking.Set(nil)
+}
+
+// UnsetEnableReranking ensures that no value is present for EnableReranking, not even an explicit nil
+func (o *CreateBankRequest) UnsetEnableReranking() {
+	o.EnableReranking.Unset()
+}
+
 func (o CreateBankRequest) MarshalJSON() ([]byte, error) {
 	toSerialize,err := o.ToMap()
 	if err != nil {
@@ -737,6 +866,15 @@ func (o CreateBankRequest) ToMap() (map[string]interface{}, error) {
 	}
 	if o.ObservationsMission.IsSet() {
 		toSerialize["observations_mission"] = o.ObservationsMission.Get()
+	}
+	if o.EnableTemporalExtraction.IsSet() {
+		toSerialize["enable_temporal_extraction"] = o.EnableTemporalExtraction.Get()
+	}
+	if o.EnableGraphRetrieval.IsSet() {
+		toSerialize["enable_graph_retrieval"] = o.EnableGraphRetrieval.Get()
+	}
+	if o.EnableReranking.IsSet() {
+		toSerialize["enable_reranking"] = o.EnableReranking.Get()
 	}
 	return toSerialize, nil
 }

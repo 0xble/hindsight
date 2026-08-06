@@ -457,7 +457,17 @@
     "memoryDefenseEnterpriseFeaturePromptInjection": "Détection d'injection de prompt : bloque les tentatives de modifier le comportement de l'agent",
     "memoryDefenseEnterpriseFeatureSizeAnomaly": "Anomalie de taille : rejette les charges utiles anormalement volumineuses",
     "memoryDefenseEnterpriseFeatureProtectedKeys": "Espaces de noms de tags protégés : applique des tags d'identité immuables",
-    "memoryDefenseEnterpriseCta": "Demander une démo"
+    "memoryDefenseEnterpriseCta": "Demander une démo",
+    "recallTitle": "Pipeline de rappel",
+    "recallDescription": "Les étapes de récupération exécutées lors du rappel pour cette banque",
+    "recallServerDefault": "Valeur par défaut du serveur",
+    "recallFailedToSave": "Échec de l'enregistrement des paramètres du pipeline de rappel",
+    "recallTemporalExtractionLabel": "Extraction temporelle",
+    "recallTemporalExtractionDescription": "Exécuter l'analyse des requêtes tenant compte des dates. La désactivation ignore aussi la branche de récupération temporelle. Utile lorsque le contenu de cette banque ne comporte pas de dates significatives.",
+    "recallGraphRetrievalLabel": "Récupération par graphe",
+    "recallGraphRetrievalDescription": "Parcourir les relations d'entités et de liens lors du rappel. La désactivation échange la récupération relationnelle contre une latence réduite.",
+    "recallRerankingLabel": "Reclassement",
+    "recallRerankingDescription": "Reclasser les candidats fusionnés avec le cross-encoder. La désactivation renvoie directement l'ordre RRF : plus rapide, mais moins précis."
   },
   "bankOperations": {
     "title": "Opérations en arrière-plan",

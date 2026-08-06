@@ -501,6 +501,24 @@ export type BankTemplateConfig = {
    */
   observations_mission?: string | null;
   /**
+   * Enable Temporal Extraction
+   *
+   * Toggle date-aware query analysis (and the temporal arm) during recall
+   */
+  enable_temporal_extraction?: boolean | null;
+  /**
+   * Enable Graph Retrieval
+   *
+   * Toggle the entity/link graph arm during recall
+   */
+  enable_graph_retrieval?: boolean | null;
+  /**
+   * Enable Reranking
+   *
+   * Toggle cross-encoder reranking during recall
+   */
+  enable_reranking?: boolean | null;
+  /**
    * Disposition Skepticism
    *
    * Skepticism trait (1-5)
@@ -1137,6 +1155,24 @@ export type CreateBankRequest = {
    * Controls what gets synthesised into observations. Replaces built-in consolidation rules entirely.
    */
   observations_mission?: string | null;
+  /**
+   * Enable Temporal Extraction
+   *
+   * Toggle date-aware query analysis during recall. Disabling also skips the temporal retrieval arm. Useful for banks whose content carries no meaningful dates.
+   */
+  enable_temporal_extraction?: boolean | null;
+  /**
+   * Enable Graph Retrieval
+   *
+   * Toggle the entity/link graph traversal arm during recall. Disabling trades relational recall for latency on banks whose content has little entity structure.
+   */
+  enable_graph_retrieval?: boolean | null;
+  /**
+   * Enable Reranking
+   *
+   * Toggle cross-encoder reranking during recall. Disabling returns the RRF-fused ordering directly, which is faster but less precise.
+   */
+  enable_reranking?: boolean | null;
 };
 
 /**

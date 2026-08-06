@@ -112,6 +112,15 @@ type DocStorageEdits = {
   store_document_text: boolean | null;
 };
 
+// Recall pipeline stages. null = inherit the server default (all three ship
+// enabled); explicit false switches that stage off for this bank, trading
+// recall breadth for latency. Semantic + BM25 always run.
+type RecallEdits = {
+  enable_temporal_extraction: boolean | null;
+  enable_graph_retrieval: boolean | null;
+  enable_reranking: boolean | null;
+};
+
 // ─── Gemini safety settings catalogue ────────────────────────────────────────
 
 const GEMINI_HARM_CATEGORY_VALUES = [
@@ -300,6 +309,14 @@ function docStorageSlice(overrides: Record<string, any>): DocStorageEdits {
   };
 }
 
+function recallSlice(overrides: Record<string, any>): RecallEdits {
+  return {
+    enable_temporal_extraction: overrides.enable_temporal_extraction ?? null,
+    enable_graph_retrieval: overrides.enable_graph_retrieval ?? null,
+    enable_reranking: overrides.enable_reranking ?? null,
+  };
+}
+
 const DEFAULT_PROFILE: ProfileData = {
   reflect_mission: "",
   disposition_skepticism: 3,
@@ -334,6 +351,7 @@ export function BankConfigView() {
   const [geminiEdits, setGeminiEdits] = useState<GeminiEdits>(geminiSlice({}));
   const [auditEdits, setAuditEdits] = useState<AuditEdits>(auditSlice({}));
   const [docStorageEdits, setDocStorageEdits] = useState<DocStorageEdits>(docStorageSlice({}));
+  const [recallEdits, setRecallEdits] = useState<RecallEdits>(recallSlice({}));
 
   // Per-section saving/error state
   const [retainSaving, setRetainSaving] = useState(false);
@@ -342,12 +360,14 @@ export function BankConfigView() {
   const [mcpSaving, setMcpSaving] = useState(false);
   const [geminiSaving, setGeminiSaving] = useState(false);
   const [securityPrivacySaving, setSecurityPrivacySaving] = useState(false);
+  const [recallSaving, setRecallSaving] = useState(false);
   const [retainError, setRetainError] = useState<string | null>(null);
   const [observationsError, setObservationsError] = useState<string | null>(null);
   const [reflectError, setReflectError] = useState<string | null>(null);
   const [mcpError, setMcpError] = useState<string | null>(null);
   const [geminiError, setGeminiError] = useState<string | null>(null);
   const [securityPrivacyError, setSecurityPrivacyError] = useState<string | null>(null);
+  const [recallError, setRecallError] = useState<string | null>(null);
 
   // Dirty tracking
   const retainDirty = useMemo(
@@ -382,6 +402,10 @@ export function BankConfigView() {
     () => JSON.stringify(docStorageEdits) !== JSON.stringify(docStorageSlice(baseOverrides)),
     [docStorageEdits, baseOverrides]
   );
+  const recallDirty = useMemo(
+    () => JSON.stringify(recallEdits) !== JSON.stringify(recallSlice(baseOverrides)),
+    [recallEdits, baseOverrides]
+  );
   useEffect(() => {
     if (bankId) loadAll();
   }, [bankId]);
@@ -415,6 +439,7 @@ export function BankConfigView() {
       setGeminiEdits(geminiSlice(cfg));
       setAuditEdits(auditSlice(overrides));
       setDocStorageEdits(docStorageSlice(overrides));
+      setRecallEdits(recallSlice(overrides));
     } catch (err) {
       console.error("Failed to load bank data:", err);
     } finally {
@@ -526,6 +551,33 @@ export function BankConfigView() {
       setSecurityPrivacyError(err.message || t("securityPrivacyFailedToSave"));
     } finally {
       setSecurityPrivacySaving(false);
+    }
+  };
+
+  const saveRecall = async () => {
+    if (!bankId) return;
+    setRecallSaving(true);
+    setRecallError(null);
+    try {
+      // Same tombstone convention as the sections above: a null clears the bank
+      // override server-side, so the stage falls back to the server default.
+      await client.updateBankConfig(bankId, { ...recallEdits });
+      setBaseOverrides((prev) => {
+        const next = { ...prev };
+        for (const key of [
+          "enable_temporal_extraction",
+          "enable_graph_retrieval",
+          "enable_reranking",
+        ] as const) {
+          if (recallEdits[key] === null) delete next[key];
+          else next[key] = recallEdits[key];
+        }
+        return next;
+      });
+    } catch (err: any) {
+      setRecallError(err.message || t("recallFailedToSave"));
+    } finally {
+      setRecallSaving(false);
     }
   };
 
@@ -883,6 +935,46 @@ export function BankConfigView() {
               </SelectContent>
             </Select>
           </FieldRow>
+        </ConfigSection>
+
+        {/* Recall Section — per-bank retrieval pipeline stages */}
+        <ConfigSection
+          title={t("recallTitle")}
+          description={t("recallDescription")}
+          error={recallError}
+          dirty={recallDirty}
+          saving={recallSaving}
+          onSave={saveRecall}
+        >
+          {(
+            [
+              ["enable_temporal_extraction", "recallTemporalExtraction"],
+              ["enable_graph_retrieval", "recallGraphRetrieval"],
+              ["enable_reranking", "recallReranking"],
+            ] as const
+          ).map(([field, key]) => (
+            <FieldRow key={field} label={t(`${key}Label`)} description={t(`${key}Description`)}>
+              {/* Tri-state: inherit the server default, or override per bank. */}
+              <Select
+                value={recallEdits[field] === null ? INHERIT_SENTINEL : String(recallEdits[field])}
+                onValueChange={(v) =>
+                  setRecallEdits({
+                    ...recallEdits,
+                    [field]: v === INHERIT_SENTINEL ? null : v === "true",
+                  })
+                }
+              >
+                <SelectTrigger>
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value={INHERIT_SENTINEL}>{t("recallServerDefault")}</SelectItem>
+                  <SelectItem value="true">{t("enabled")}</SelectItem>
+                  <SelectItem value="false">{t("disabled")}</SelectItem>
+                </SelectContent>
+              </Select>
+            </FieldRow>
+          ))}
         </ConfigSection>
 
         {/* Models Section */}

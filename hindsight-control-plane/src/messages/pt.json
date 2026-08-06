@@ -457,7 +457,17 @@
     "memoryDefenseEnterpriseFeaturePromptInjection": "Detecção de injeção de prompt: bloqueia tentativas de sobrescrever o comportamento do agente",
     "memoryDefenseEnterpriseFeatureSizeAnomaly": "Anomalia de tamanho: rejeita cargas suspeitamente grandes",
     "memoryDefenseEnterpriseFeatureProtectedKeys": "Namespaces de tags protegidos: aplica tags de identidade imutáveis",
-    "memoryDefenseEnterpriseCta": "Solicitar uma demonstração"
+    "memoryDefenseEnterpriseCta": "Solicitar uma demonstração",
+    "recallTitle": "Pipeline de recall",
+    "recallDescription": "Quais etapas de recuperação são executadas durante o recall neste banco",
+    "recallServerDefault": "Padrão do servidor",
+    "recallFailedToSave": "Falha ao salvar as configurações do pipeline de recall",
+    "recallTemporalExtractionLabel": "Extração temporal",
+    "recallTemporalExtractionDescription": "Executar a análise de consultas com reconhecimento de datas. Desativar também ignora o ramo de recuperação temporal. Útil quando o conteúdo deste banco não contém datas relevantes.",
+    "recallGraphRetrievalLabel": "Recuperação por grafo",
+    "recallGraphRetrievalDescription": "Percorrer relações de entidades e vínculos durante o recall. Desativar troca a recuperação relacional por menor latência.",
+    "recallRerankingLabel": "Reclassificação",
+    "recallRerankingDescription": "Reclassificar os candidatos combinados com o cross-encoder. Desativar retorna diretamente a ordem RRF — mais rápido, porém menos preciso."
   },
   "bankOperations": {
     "title": "Operações em Segundo Plano",
