@@ -19,20 +19,18 @@ DOCS_URL = "https://hindsight.vectorize.io/sdks/integrations/coding-agents"
 MIGRATION_URL = f"{DOCS_URL}#migrating-from-the-per-agent-plugins"
 
 NOTICE = (
-    "⚠️  Hindsight: this Claude Code plugin is DEPRECATED, replaced by the Coding Agents plugin.\n"
+    "The current Hindsight Claude Code plugin is DEPRECATED, replaced by the Coding Agents "
+    "plugin.\n"
     "\n"
     "One install now covers Claude Code, Codex, Cursor, Copilot, opencode, Kilo, Grok, "
-    "Antigravity, Devin and Cline, and they all share a single memory per repo instead of one bank "
-    "per agent — so context from any agent is there for the next one. It also adds knowledge pages "
-    "kept current from your git history, automatic seeding of a new repo, and a local daemon mode "
-    "that needs no account.\n"
+    "Antigravity,\n"
+    "Devin and Cline, and they all share a single memory per repository, leveraging the Hindsight "
+    "Knowledge Page (v0.9.x and onwards).\n"
     "\n"
-    "    npm install -g @vectorize-io/hindsight-coding-agents\n"
-    "    hindsight-coding-agents install claude-code --import-conversations\n"
-    "\n"
-    f"Migration guide: {MIGRATION_URL}\n"
+    f"See the migration guide: {MIGRATION_URL}\n"
     "Your Hindsight server and token carry over automatically; past conversations are re-imported "
-    'from local transcripts. Silence this with "upgradeNotice": false in '
+    "from\n"
+    'local transcripts. Silence this with "upgradeNotice": false in '
     "~/.hindsight/claude-code.json"
 )
 

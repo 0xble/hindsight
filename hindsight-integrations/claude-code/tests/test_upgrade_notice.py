@@ -9,10 +9,9 @@ def test_shown_on_every_session():
         assert upgrade_notice({}) is not None
 
 
-def test_names_this_plugin_and_its_install_command():
-    notice = upgrade_notice({})
-    assert "install claude-code" in notice
-    assert "@vectorize-io/hindsight-coding-agents" in notice
+def test_names_this_plugin():
+    """Whoever reads it must know WHICH plugin is deprecated — both are installed side by side."""
+    assert "Claude Code" in upgrade_notice({})
 
 
 def test_links_the_migration_guide():
