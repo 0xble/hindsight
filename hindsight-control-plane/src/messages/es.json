@@ -336,7 +336,7 @@
     "retainMissionDescription": "En qué debe prestar atención este banco durante la extracción. Orienta el LLM sin reemplazar las reglas de extracción — funciona junto con cualquier modo de extracción.",
     "retainMissionPlaceholder": "Ej.: Incluir siempre decisiones técnicas, opciones de diseño de API y compromisos arquitectónicos. Ignorar la logística de reuniones, saludos e intercambios sociales.",
     "extractionModeLabel": "Modo de extracción",
-    "extractionModeDescription": "Qué tan agresivamente extraer hechos: conciso (predeterminado, selectivo), detallado (capturar todo), personalizado (escribe tus propias reglas de extracción)",
+    "extractionModeDescription": "Cómo se extraen los hechos durante el retain: conciso (predeterminado, selectivo), detallado (capturar todo), literal (conservar la redacción original), fragmentos (omitir el LLM por completo y guardar cada fragmento tal cual), personalizado (escribir tus propias reglas de extracción)",
     "customExtractionPromptLabel": "Indicación de extracción personalizada",
     "customExtractionPromptDescription": "Reemplaza completamente las reglas de extracción integradas. Solo activo cuando el modo de extracción está configurado como personalizado.",
     "entitiesTitle": "Entidades",
@@ -467,7 +467,12 @@
     "recallGraphRetrievalLabel": "Recuperación por grafo",
     "recallGraphRetrievalDescription": "Recorrer relaciones de entidades y enlaces durante el recall. Desactivarlo cambia la recuperación relacional por menor latencia.",
     "recallRerankingLabel": "Reordenación",
-    "recallRerankingDescription": "Reordenar los candidatos fusionados con el cross-encoder. Al desactivarlo se devuelve directamente el orden RRF: más rápido, pero menos preciso."
+    "recallRerankingDescription": "Reordenar los candidatos fusionados con el cross-encoder. Al desactivarlo se devuelve directamente el orden RRF: más rápido, pero menos preciso.",
+    "extractionModeConcise": "Conciso",
+    "extractionModeVerbose": "Detallado",
+    "extractionModeVerbatim": "Literal",
+    "extractionModeChunks": "Fragmentos (sin LLM)",
+    "extractionModeCustom": "Personalizado"
   },
   "bankOperations": {
     "title": "Operaciones en segundo plano",

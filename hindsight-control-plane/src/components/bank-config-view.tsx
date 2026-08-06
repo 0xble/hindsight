@@ -1040,7 +1040,17 @@ export function BankConfigView() {
 
 type RetainFormValues = RetainStrategyValues<LabelGroup[]>;
 
-const EXTRACTION_MODES = ["concise", "verbose", "verbatim", "chunks", "custom"];
+// Value/label pairs rather than bare values: the option list is user-facing, so
+// the labels are translated while the values stay the API's mode strings.
+function getExtractionModes(t: (key: string) => string): { value: string; label: string }[] {
+  return [
+    { value: "concise", label: t("extractionModeConcise") },
+    { value: "verbose", label: t("extractionModeVerbose") },
+    { value: "verbatim", label: t("extractionModeVerbatim") },
+    { value: "chunks", label: t("extractionModeChunks") },
+    { value: "custom", label: t("extractionModeCustom") },
+  ];
+}
 const INHERIT_SENTINEL = "__inherit__";
 
 function RetainStrategyForm({
@@ -1074,9 +1084,9 @@ function RetainStrategyForm({
                 <span className="text-muted-foreground italic">{t("inherited")}</span>
               </SelectItem>
             )}
-            {EXTRACTION_MODES.map((opt) => (
-              <SelectItem key={opt} value={opt}>
-                {opt}
+            {getExtractionModes(t).map((opt) => (
+              <SelectItem key={opt.value} value={opt.value}>
+                {opt.label}
               </SelectItem>
             ))}
           </SelectContent>
