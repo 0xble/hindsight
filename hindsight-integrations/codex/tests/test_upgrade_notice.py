@@ -1,6 +1,6 @@
 """The superseded-by-coding-agents notice."""
 
-from lib.upgrade_notice import DOCS_URL, upgrade_notice
+from lib.upgrade_notice import DOCS_URL, MIGRATION_URL, upgrade_notice
 
 
 def test_shown_on_every_session():
@@ -15,9 +15,16 @@ def test_names_this_plugin_and_its_install_command():
     assert "@vectorize-io/hindsight-coding-agents" in notice
 
 
-def test_links_the_docs_page():
-    assert DOCS_URL in upgrade_notice({})
+def test_links_the_migration_guide():
+    """Deep-links the section, not just the page — the reader wants the steps, not the pitch."""
+    assert MIGRATION_URL in upgrade_notice({})
     assert DOCS_URL == "https://hindsight.vectorize.io/sdks/integrations/coding-agents"
+    assert MIGRATION_URL.endswith("#migrating-from-the-per-agent-plugins")
+
+
+def test_says_deprecated_outright():
+    """"Superseded" is jargon; a user needs to read one word and know to act."""
+    assert "DEPRECATED" in upgrade_notice({})
 
 
 def test_opt_out_silences_it():

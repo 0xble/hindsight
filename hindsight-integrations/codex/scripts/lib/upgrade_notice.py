@@ -1,7 +1,7 @@
-"""Notice that this plugin is superseded, shown at every session start.
+"""Deprecation notice for this plugin, shown at every session start.
 
-This plugin still works, but development has moved to
-`@vectorize-io/hindsight-coding-agents`. Someone who installed this a year ago has no way to learn
+This plugin still works and is not going to stop working, but it is deprecated: development has
+moved to `@vectorize-io/hindsight-coding-agents`. Someone who installed this a year ago has no way to learn
 that — a changelog entry reaches nobody — so the session itself says it.
 
 Shown every session rather than a few times: a notice that appears once is missed, and this one has
@@ -16,17 +16,21 @@ packages with no common module path.
 """
 
 DOCS_URL = "https://hindsight.vectorize.io/sdks/integrations/coding-agents"
+MIGRATION_URL = f"{DOCS_URL}#migrating-from-the-per-agent-plugins"
 
 NOTICE = (
-    "💡 Hindsight: this Codex plugin is superseded by the Coding Agents plugin — one "
-    "install covering Claude Code, Codex, Cursor, Copilot, opencode, Kilo, Grok, Antigravity, "
-    "Devin and Cline, with a single memory per repo that every agent shares instead of one bank "
-    "per agent.\n"
+    "⚠️  Hindsight: this Codex plugin is DEPRECATED, replaced by the Coding Agents plugin.\n"
+    "\n"
+    "One install now covers Claude Code, Codex, Cursor, Copilot, opencode, Kilo, Grok, "
+    "Antigravity, Devin and Cline, and they all share a single memory per repo instead of one bank "
+    "per agent — so context from any agent is there for the next one. It also adds knowledge pages "
+    "kept current from your git history, automatic seeding of a new repo, and a local daemon mode "
+    "that needs no account.\n"
     "\n"
     "    npm install -g @vectorize-io/hindsight-coding-agents\n"
     "    hindsight-coding-agents install codex --import-conversations\n"
     "\n"
-    f"Docs: {DOCS_URL}\n"
+    f"Migration guide: {MIGRATION_URL}\n"
     "Your Hindsight server and token carry over automatically; past conversations are re-imported "
     'from local transcripts. Silence this with "upgradeNotice": false in '
     "~/.hindsight/codex.json"
