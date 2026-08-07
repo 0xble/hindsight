@@ -5042,7 +5042,7 @@ components:
         observations_mission:
           nullable: true
           type: string
-        enable_temporal_extraction:
+        enable_temporal_retrieval:
           nullable: true
           type: boolean
         enable_graph_retrieval:
@@ -5578,7 +5578,7 @@ components:
         observations_mission:
           nullable: true
           type: string
-        enable_temporal_extraction:
+        enable_temporal_retrieval:
           nullable: true
           type: boolean
         enable_graph_retrieval:

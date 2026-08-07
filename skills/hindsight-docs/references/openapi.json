@@ -7420,7 +7420,7 @@
             "title": "Observations Mission",
             "description": "Controls what gets synthesised"
           },
-          "enable_temporal_extraction": {
+          "enable_temporal_retrieval": {
             "anyOf": [
               {
                 "type": "boolean"
@@ -7429,8 +7429,8 @@
                 "type": "null"
               }
             ],
-            "title": "Enable Temporal Extraction",
-            "description": "Toggle date-aware query analysis (and the temporal arm) during recall"
+            "title": "Enable Temporal Retrieval",
+            "description": "Toggle the temporal arm (and its date-aware query analysis) during recall"
           },
           "enable_graph_retrieval": {
             "anyOf": [
@@ -8518,7 +8518,7 @@
             "title": "Observations Mission",
             "description": "Controls what gets synthesised into observations. Replaces built-in consolidation rules entirely."
           },
-          "enable_temporal_extraction": {
+          "enable_temporal_retrieval": {
             "anyOf": [
               {
                 "type": "boolean"
@@ -8527,8 +8527,8 @@
                 "type": "null"
               }
             ],
-            "title": "Enable Temporal Extraction",
-            "description": "Toggle date-aware query analysis during recall. Disabling also skips the temporal retrieval arm. Useful for banks whose content carries no meaningful dates."
+            "title": "Enable Temporal Retrieval",
+            "description": "Toggle the temporal retrieval arm during recall, together with the date-aware query analysis that feeds it. Useful for banks whose content carries no meaningful dates."
           },
           "enable_graph_retrieval": {
             "anyOf": [

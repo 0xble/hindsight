@@ -859,7 +859,7 @@ async def retrieve_all_fact_types_parallel(
     created_before: datetime | None = None,
     min_semantic: float | None = None,
     min_keyword: float | None = None,
-    enable_temporal_extraction: bool = True,
+    enable_temporal_retrieval: bool = True,
     enable_graph_retrieval: bool = True,
 ) -> MultiFactTypeRetrievalResult:
     """
@@ -880,8 +880,8 @@ async def retrieve_all_fact_types_parallel(
         question_date: Optional date when question was asked (for temporal filtering)
         query_analyzer: Query analyzer to use (defaults to TransformerQueryAnalyzer)
         graph_retriever: Graph retrieval strategy (defaults to configured retriever)
-        enable_temporal_extraction: Run date-aware query analysis. False skips it and,
-            with it, the temporal retrieval arm (no constraint means nothing to filter on).
+        enable_temporal_retrieval: Run the temporal arm. False also skips the date-aware
+            query analysis that feeds it (no constraint means nothing to filter on).
         enable_graph_retrieval: Run the entity/link graph arm. False skips those queries
             and returns no graph results.
 
@@ -900,7 +900,7 @@ async def retrieve_all_fact_types_parallel(
     # Do this before DB queries so we know if we need temporal retrieval
     temporal_extraction_start = time.time()
     temporal_constraint = None
-    if enable_temporal_extraction:
+    if enable_temporal_retrieval:
         from .temporal_extraction import extract_temporal_constraint
 
         temporal_constraint = extract_temporal_constraint(

@@ -4797,7 +4797,7 @@ class MemoryEngine(MemoryEngineInterface):
 
         # Recall pipeline stages, resolved per bank. A bank can switch off arms its
         # content cannot use, trading recall breadth for latency.
-        enable_temporal_extraction = bool(budget_config_dict.get("enable_temporal_extraction", True))
+        enable_temporal_retrieval = bool(budget_config_dict.get("enable_temporal_retrieval", True))
         enable_graph_retrieval = bool(budget_config_dict.get("enable_graph_retrieval", True))
         reranking = _resolve_reranking(budget_config_dict, reranking)
 
@@ -4858,7 +4858,7 @@ class MemoryEngine(MemoryEngineInterface):
                             max_source_facts_tokens_per_observation=max_source_facts_tokens_per_observation,
                             reranking=reranking,
                             reranker_max_candidates=reranker_max_candidates,
-                            enable_temporal_extraction=enable_temporal_extraction,
+                            enable_temporal_retrieval=enable_temporal_retrieval,
                             enable_graph_retrieval=enable_graph_retrieval,
                         )
                         break  # Success - exit retry loop
@@ -4999,7 +4999,7 @@ class MemoryEngine(MemoryEngineInterface):
         max_source_facts_tokens_per_observation: int = -1,
         reranking: RecallReranking = "cross_encoder",
         reranker_max_candidates: int | None = None,
-        enable_temporal_extraction: bool = True,
+        enable_temporal_retrieval: bool = True,
         enable_graph_retrieval: bool = True,
     ) -> RecallResultModel:
         """
@@ -5133,7 +5133,7 @@ class MemoryEngine(MemoryEngineInterface):
                         created_before=created_before,
                         min_semantic=min_scores.semantic if min_scores else None,
                         min_keyword=min_scores.keyword if min_scores else None,
-                        enable_temporal_extraction=enable_temporal_extraction,
+                        enable_temporal_retrieval=enable_temporal_retrieval,
                         enable_graph_retrieval=enable_graph_retrieval,
                     )
                     parallel_duration = time.time() - parallel_start

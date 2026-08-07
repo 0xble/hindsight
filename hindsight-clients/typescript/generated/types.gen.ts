@@ -501,11 +501,11 @@ export type BankTemplateConfig = {
    */
   observations_mission?: string | null;
   /**
-   * Enable Temporal Extraction
+   * Enable Temporal Retrieval
    *
-   * Toggle date-aware query analysis (and the temporal arm) during recall
+   * Toggle the temporal arm (and its date-aware query analysis) during recall
    */
-  enable_temporal_extraction?: boolean | null;
+  enable_temporal_retrieval?: boolean | null;
   /**
    * Enable Graph Retrieval
    *
@@ -1156,11 +1156,11 @@ export type CreateBankRequest = {
    */
   observations_mission?: string | null;
   /**
-   * Enable Temporal Extraction
+   * Enable Temporal Retrieval
    *
-   * Toggle date-aware query analysis during recall. Disabling also skips the temporal retrieval arm. Useful for banks whose content carries no meaningful dates.
+   * Toggle the temporal retrieval arm during recall, together with the date-aware query analysis that feeds it. Useful for banks whose content carries no meaningful dates.
    */
-  enable_temporal_extraction?: boolean | null;
+  enable_temporal_retrieval?: boolean | null;
   /**
    * Enable Graph Retrieval
    *

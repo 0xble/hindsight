@@ -1236,7 +1236,7 @@ rest of the deployment recalls. Semantic and BM25 always run; they are the basel
 
 | Variable | Description | Default |
 |----------|-------------|---------|
-| `HINDSIGHT_API_ENABLE_TEMPORAL_EXTRACTION` | Run date-aware query analysis. `false` skips it and, with it, the temporal retrieval arm — without a detected constraint there is nothing to filter on. | `true` |
+| `HINDSIGHT_API_ENABLE_TEMPORAL_RETRIEVAL` | Run the temporal retrieval arm. `false` also skips the date-aware query analysis that feeds it — without a detected constraint there is nothing to filter on. | `true` |
 | `HINDSIGHT_API_ENABLE_GRAPH_RETRIEVAL` | Run the entity/link graph traversal arm. `false` skips those queries and returns no graph results. | `true` |
 | `HINDSIGHT_API_ENABLE_RERANKING` | Rerank fused candidates with the cross-encoder. `false` returns the RRF-fused ordering directly — faster, but less precise. | `true` |
 
@@ -1265,7 +1265,7 @@ curl -X PUT "$HINDSIGHT_API_URL/v1/default/banks/my-bank" \
   -d '{
     "retain_extraction_mode": "chunks",
     "enable_observations": false,
-    "enable_temporal_extraction": false,
+    "enable_temporal_retrieval": false,
     "enable_graph_retrieval": false,
     "enable_reranking": false
   }'

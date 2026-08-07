@@ -143,7 +143,7 @@ async def test_hierarchical_fields_categorization():
     assert "consolidation_llm_parallelism" in configurable
     assert "audit_log_enabled" in configurable
     assert "store_document_text" in configurable
-    assert "enable_temporal_extraction" in configurable
+    assert "enable_temporal_retrieval" in configurable
     assert "enable_graph_retrieval" in configurable
     assert "enable_reranking" in configurable
 

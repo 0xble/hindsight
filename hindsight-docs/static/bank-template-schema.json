@@ -107,7 +107,7 @@
           "description": "Controls what gets synthesised",
           "title": "Observations Mission"
         },
-        "enable_temporal_extraction": {
+        "enable_temporal_retrieval": {
           "anyOf": [
             {
               "type": "boolean"
@@ -117,8 +117,8 @@
             }
           ],
           "default": null,
-          "description": "Toggle date-aware query analysis (and the temporal arm) during recall",
-          "title": "Enable Temporal Extraction"
+          "description": "Toggle the temporal arm (and its date-aware query analysis) during recall",
+          "title": "Enable Temporal Retrieval"
         },
         "enable_graph_retrieval": {
           "anyOf": [

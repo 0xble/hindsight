@@ -557,8 +557,8 @@ export class HindsightClient {
       enableObservations?: boolean;
       /** Controls what gets synthesised into observations. Replaces built-in rules. */
       observationsMission?: string;
-      /** Run date-aware query analysis during recall. False also skips the temporal arm. */
-      enableTemporalExtraction?: boolean;
+      /** Run the temporal retrieval arm during recall, and the date-aware query analysis feeding it. */
+      enableTemporalRetrieval?: boolean;
       /** Run the entity/link graph traversal arm during recall. */
       enableGraphRetrieval?: boolean;
       /** Rerank fused candidates with the cross-encoder. False returns the RRF order. */
@@ -585,7 +585,7 @@ export class HindsightClient {
         retain_structured_chunk_size: options.retainStructuredChunkSize,
         enable_observations: options.enableObservations,
         observations_mission: options.observationsMission,
-        enable_temporal_extraction: options.enableTemporalExtraction,
+        enable_temporal_retrieval: options.enableTemporalRetrieval,
         enable_graph_retrieval: options.enableGraphRetrieval,
         enable_reranking: options.enableReranking,
       },
@@ -660,8 +660,8 @@ export class HindsightClient {
       retainStructuredChunkSize?: number;
       enableObservations?: boolean;
       observationsMission?: string;
-      /** Run date-aware query analysis during recall. False also skips the temporal arm. */
-      enableTemporalExtraction?: boolean;
+      /** Run the temporal retrieval arm during recall, and the date-aware query analysis feeding it. */
+      enableTemporalRetrieval?: boolean;
       /** Run the entity/link graph traversal arm during recall. */
       enableGraphRetrieval?: boolean;
       /** Rerank fused candidates with the cross-encoder. False returns the RRF order. */
@@ -689,8 +689,8 @@ export class HindsightClient {
       updates.enable_observations = options.enableObservations;
     if (options.observationsMission !== undefined)
       updates.observations_mission = options.observationsMission;
-    if (options.enableTemporalExtraction !== undefined)
-      updates.enable_temporal_extraction = options.enableTemporalExtraction;
+    if (options.enableTemporalRetrieval !== undefined)
+      updates.enable_temporal_retrieval = options.enableTemporalRetrieval;
     if (options.enableGraphRetrieval !== undefined)
       updates.enable_graph_retrieval = options.enableGraphRetrieval;
     if (options.enableReranking !== undefined) updates.enable_reranking = options.enableReranking;

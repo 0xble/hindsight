@@ -27,7 +27,7 @@ type BankTemplateConfig struct {
 	RetainStructuredChunkSize NullableInt32 `json:"retain_structured_chunk_size,omitempty"`
 	EnableObservations NullableBool `json:"enable_observations,omitempty"`
 	ObservationsMission NullableString `json:"observations_mission,omitempty"`
-	EnableTemporalExtraction NullableBool `json:"enable_temporal_extraction,omitempty"`
+	EnableTemporalRetrieval NullableBool `json:"enable_temporal_retrieval,omitempty"`
 	EnableGraphRetrieval NullableBool `json:"enable_graph_retrieval,omitempty"`
 	EnableReranking NullableBool `json:"enable_reranking,omitempty"`
 	DispositionSkepticism NullableInt32 `json:"disposition_skepticism,omitempty"`
@@ -412,46 +412,46 @@ func (o *BankTemplateConfig) UnsetObservationsMission() {
 	o.ObservationsMission.Unset()
 }
 
-// GetEnableTemporalExtraction returns the EnableTemporalExtraction field value if set, zero value otherwise (both if not set or set to explicit null).
-func (o *BankTemplateConfig) GetEnableTemporalExtraction() bool {
-	if o == nil || IsNil(o.EnableTemporalExtraction.Get()) {
+// GetEnableTemporalRetrieval returns the EnableTemporalRetrieval field value if set, zero value otherwise (both if not set or set to explicit null).
+func (o *BankTemplateConfig) GetEnableTemporalRetrieval() bool {
+	if o == nil || IsNil(o.EnableTemporalRetrieval.Get()) {
 		var ret bool
 		return ret
 	}
-	return *o.EnableTemporalExtraction.Get()
+	return *o.EnableTemporalRetrieval.Get()
 }
 
-// GetEnableTemporalExtractionOk returns a tuple with the EnableTemporalExtraction field value if set, nil otherwise
+// GetEnableTemporalRetrievalOk returns a tuple with the EnableTemporalRetrieval field value if set, nil otherwise
 // and a boolean to check if the value has been set.
 // NOTE: If the value is an explicit nil, `nil, true` will be returned
-func (o *BankTemplateConfig) GetEnableTemporalExtractionOk() (*bool, bool) {
+func (o *BankTemplateConfig) GetEnableTemporalRetrievalOk() (*bool, bool) {
 	if o == nil {
 		return nil, false
 	}
-	return o.EnableTemporalExtraction.Get(), o.EnableTemporalExtraction.IsSet()
+	return o.EnableTemporalRetrieval.Get(), o.EnableTemporalRetrieval.IsSet()
 }
 
-// HasEnableTemporalExtraction returns a boolean if a field has been set.
-func (o *BankTemplateConfig) HasEnableTemporalExtraction() bool {
-	if o != nil && o.EnableTemporalExtraction.IsSet() {
+// HasEnableTemporalRetrieval returns a boolean if a field has been set.
+func (o *BankTemplateConfig) HasEnableTemporalRetrieval() bool {
+	if o != nil && o.EnableTemporalRetrieval.IsSet() {
 		return true
 	}
 
 	return false
 }
 
-// SetEnableTemporalExtraction gets a reference to the given NullableBool and assigns it to the EnableTemporalExtraction field.
-func (o *BankTemplateConfig) SetEnableTemporalExtraction(v bool) {
-	o.EnableTemporalExtraction.Set(&v)
+// SetEnableTemporalRetrieval gets a reference to the given NullableBool and assigns it to the EnableTemporalRetrieval field.
+func (o *BankTemplateConfig) SetEnableTemporalRetrieval(v bool) {
+	o.EnableTemporalRetrieval.Set(&v)
 }
-// SetEnableTemporalExtractionNil sets the value for EnableTemporalExtraction to be an explicit nil
-func (o *BankTemplateConfig) SetEnableTemporalExtractionNil() {
-	o.EnableTemporalExtraction.Set(nil)
+// SetEnableTemporalRetrievalNil sets the value for EnableTemporalRetrieval to be an explicit nil
+func (o *BankTemplateConfig) SetEnableTemporalRetrievalNil() {
+	o.EnableTemporalRetrieval.Set(nil)
 }
 
-// UnsetEnableTemporalExtraction ensures that no value is present for EnableTemporalExtraction, not even an explicit nil
-func (o *BankTemplateConfig) UnsetEnableTemporalExtraction() {
-	o.EnableTemporalExtraction.Unset()
+// UnsetEnableTemporalRetrieval ensures that no value is present for EnableTemporalRetrieval, not even an explicit nil
+func (o *BankTemplateConfig) UnsetEnableTemporalRetrieval() {
+	o.EnableTemporalRetrieval.Unset()
 }
 
 // GetEnableGraphRetrieval returns the EnableGraphRetrieval field value if set, zero value otherwise (both if not set or set to explicit null).
@@ -1661,8 +1661,8 @@ func (o BankTemplateConfig) ToMap() (map[string]interface{}, error) {
 	if o.ObservationsMission.IsSet() {
 		toSerialize["observations_mission"] = o.ObservationsMission.Get()
 	}
-	if o.EnableTemporalExtraction.IsSet() {
-		toSerialize["enable_temporal_extraction"] = o.EnableTemporalExtraction.Get()
+	if o.EnableTemporalRetrieval.IsSet() {
+		toSerialize["enable_temporal_retrieval"] = o.EnableTemporalRetrieval.Get()
 	}
 	if o.EnableGraphRetrieval.IsSet() {
 		toSerialize["enable_graph_retrieval"] = o.EnableGraphRetrieval.Get()

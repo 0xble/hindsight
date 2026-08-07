@@ -116,7 +116,7 @@ type DocStorageEdits = {
 // enabled); explicit false switches that stage off for this bank, trading
 // recall breadth for latency. Semantic + BM25 always run.
 type RecallEdits = {
-  enable_temporal_extraction: boolean | null;
+  enable_temporal_retrieval: boolean | null;
   enable_graph_retrieval: boolean | null;
   enable_reranking: boolean | null;
 };
@@ -311,7 +311,7 @@ function docStorageSlice(overrides: Record<string, any>): DocStorageEdits {
 
 function recallSlice(overrides: Record<string, any>): RecallEdits {
   return {
-    enable_temporal_extraction: overrides.enable_temporal_extraction ?? null,
+    enable_temporal_retrieval: overrides.enable_temporal_retrieval ?? null,
     enable_graph_retrieval: overrides.enable_graph_retrieval ?? null,
     enable_reranking: overrides.enable_reranking ?? null,
   };
@@ -565,7 +565,7 @@ export function BankConfigView() {
       setBaseOverrides((prev) => {
         const next = { ...prev };
         for (const key of [
-          "enable_temporal_extraction",
+          "enable_temporal_retrieval",
           "enable_graph_retrieval",
           "enable_reranking",
         ] as const) {
@@ -948,7 +948,7 @@ export function BankConfigView() {
         >
           {(
             [
-              ["enable_temporal_extraction", "recallTemporalExtraction"],
+              ["enable_temporal_retrieval", "recallTemporalRetrieval"],
               ["enable_graph_retrieval", "recallGraphRetrieval"],
               ["enable_reranking", "recallReranking"],
             ] as const

@@ -778,7 +778,7 @@ ENV_RECALL_CHUNKS_MAX_TOKENS = "HINDSIGHT_API_RECALL_CHUNKS_MAX_TOKENS"
 # (e.g. a chunk-extraction bank used as plain retrieval). These switch the
 # individual stages off; per-bank, so one bank can run lean without changing how
 # the rest of the deployment recalls.
-ENV_ENABLE_TEMPORAL_EXTRACTION = "HINDSIGHT_API_ENABLE_TEMPORAL_EXTRACTION"
+ENV_ENABLE_TEMPORAL_RETRIEVAL = "HINDSIGHT_API_ENABLE_TEMPORAL_RETRIEVAL"
 ENV_ENABLE_GRAPH_RETRIEVAL = "HINDSIGHT_API_ENABLE_GRAPH_RETRIEVAL"
 ENV_ENABLE_RERANKING = "HINDSIGHT_API_ENABLE_RERANKING"
 
@@ -1294,7 +1294,7 @@ DEFAULT_RECALL_CHUNKS_MAX_TOKENS = 1000  # Token budget for raw chunks returned 
 
 # Recall pipeline stages — all on by default, so recall behaviour is unchanged
 # unless a bank opts out.
-DEFAULT_ENABLE_TEMPORAL_EXTRACTION = True  # Date-aware query analysis + the temporal retrieval arm
+DEFAULT_ENABLE_TEMPORAL_RETRIEVAL = True  # Temporal retrieval arm + the date-aware query analysis feeding it
 DEFAULT_ENABLE_GRAPH_RETRIEVAL = True  # Entity/link graph traversal arm
 DEFAULT_ENABLE_RERANKING = True  # Cross-encoder rerank of the fused candidates
 
@@ -2404,7 +2404,7 @@ class HindsightConfig:
     reflect_source_facts_max_tokens: int
 
     # Recall pipeline stages (per-bank; all default True)
-    enable_temporal_extraction: bool
+    enable_temporal_retrieval: bool
     enable_graph_retrieval: bool
     enable_reranking: bool
 
@@ -2642,7 +2642,7 @@ class HindsightConfig:
         "entity_labels",
         "entities_allow_free_form",
         # Recall pipeline stages
-        "enable_temporal_extraction",
+        "enable_temporal_retrieval",
         "enable_graph_retrieval",
         "enable_reranking",
         # Consolidation settings
@@ -3727,8 +3727,8 @@ class HindsightConfig:
             reflect_source_facts_max_tokens=int(
                 os.getenv(ENV_REFLECT_SOURCE_FACTS_MAX_TOKENS, str(DEFAULT_REFLECT_SOURCE_FACTS_MAX_TOKENS))
             ),
-            enable_temporal_extraction=os.getenv(
-                ENV_ENABLE_TEMPORAL_EXTRACTION, str(DEFAULT_ENABLE_TEMPORAL_EXTRACTION)
+            enable_temporal_retrieval=os.getenv(
+                ENV_ENABLE_TEMPORAL_RETRIEVAL, str(DEFAULT_ENABLE_TEMPORAL_RETRIEVAL)
             ).lower()
             in ("true", "1", "yes"),
             enable_graph_retrieval=os.getenv(ENV_ENABLE_GRAPH_RETRIEVAL, str(DEFAULT_ENABLE_GRAPH_RETRIEVAL)).lower()

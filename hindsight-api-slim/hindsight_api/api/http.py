@@ -1365,11 +1365,11 @@ class CreateBankRequest(BaseModel):
         default=None,
         description="Controls what gets synthesised into observations. Replaces built-in consolidation rules entirely.",
     )
-    enable_temporal_extraction: bool | None = Field(
+    enable_temporal_retrieval: bool | None = Field(
         default=None,
         description=(
-            "Toggle date-aware query analysis during recall. Disabling also skips the temporal "
-            "retrieval arm. Useful for banks whose content carries no meaningful dates."
+            "Toggle the temporal retrieval arm during recall, together with the date-aware query "
+            "analysis that feeds it. Useful for banks whose content carries no meaningful dates."
         ),
     )
     enable_graph_retrieval: bool | None = Field(
@@ -1419,7 +1419,7 @@ class CreateBankRequest(BaseModel):
             "retain_structured_chunk_size",
             "enable_observations",
             "observations_mission",
-            "enable_temporal_extraction",
+            "enable_temporal_retrieval",
             "enable_graph_retrieval",
             "enable_reranking",
         ):
@@ -2558,8 +2558,8 @@ class BankTemplateConfig(BaseModel):
     )
     enable_observations: bool | None = Field(default=None, description="Toggle observation consolidation")
     observations_mission: str | None = Field(default=None, description="Controls what gets synthesised")
-    enable_temporal_extraction: bool | None = Field(
-        default=None, description="Toggle date-aware query analysis (and the temporal arm) during recall"
+    enable_temporal_retrieval: bool | None = Field(
+        default=None, description="Toggle the temporal arm (and its date-aware query analysis) during recall"
     )
     enable_graph_retrieval: bool | None = Field(
         default=None, description="Toggle the entity/link graph arm during recall"
