@@ -137,9 +137,15 @@ async def test_hierarchical_fields_categorization():
     assert "retain_chunk_batch_size" in configurable
     assert "enable_auto_consolidation" in configurable
     assert "consolidation_llm_parallelism" in configurable
+    assert "enable_temporal_retrieval" in configurable
+    assert "enable_graph_retrieval" in configurable
+    assert "enable_reranking" in configurable
+    # Added by the per-bank audit gating commit on this branch, which did not
+    # update the count below — hence 44 rather than 41 + 3.
+    assert "audit_enabled" in configurable
 
     # Verify count is correct
-    assert len(configurable) == 40
+    assert len(configurable) == 44
 
     # Verify credential fields (NEVER exposed)
     assert "llm_api_key" in credentials

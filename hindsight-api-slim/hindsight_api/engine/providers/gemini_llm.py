@@ -54,9 +54,7 @@ def _dump_request_on_4xx(scope: str, contents: Any, config: Any, err: Any) -> No
                 t = getattr(p, "text", None)
                 if t:
                     text += t
-            parts_summary.append(
-                {"role": getattr(c, "role", "?"), "chars": len(text), "preview": text[:1500]}
-            )
+            parts_summary.append({"role": getattr(c, "role", "?"), "chars": len(text), "preview": text[:1500]})
         logger.error(
             "[LLM_4XX_DUMP] scope=%s code=%s err=%s config=%s contents=%s",
             scope,
@@ -67,6 +65,7 @@ def _dump_request_on_4xx(scope: str, contents: Any, config: Any, err: Any) -> No
         )
     except Exception as dump_exc:  # never let diagnostics break the request path
         logger.warning("[LLM_4XX_DUMP] failed to serialize rejected request: %s", dump_exc)
+
 
 # Per-request Gemini safety settings override.
 # Set exclusively by ConfiguredLLMProvider.call() / call_with_tools() via token-based

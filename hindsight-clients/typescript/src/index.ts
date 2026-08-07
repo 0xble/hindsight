@@ -512,6 +512,12 @@ export class HindsightClient {
       enableObservations?: boolean;
       /** Controls what gets synthesised into observations. Replaces built-in rules. */
       observationsMission?: string;
+      /** Run the temporal retrieval arm during recall, and the date-aware query analysis feeding it. */
+      enableTemporalRetrieval?: boolean;
+      /** Run the entity/link graph traversal arm during recall. */
+      enableGraphRetrieval?: boolean;
+      /** Rerank fused candidates with the cross-encoder. False returns the RRF order. */
+      enableReranking?: boolean;
       signal?: AbortSignal;
     } = {}
   ): Promise<BankProfileResponse> {
@@ -534,6 +540,9 @@ export class HindsightClient {
         retain_structured_chunk_size: options.retainStructuredChunkSize,
         enable_observations: options.enableObservations,
         observations_mission: options.observationsMission,
+        enable_temporal_retrieval: options.enableTemporalRetrieval,
+        enable_graph_retrieval: options.enableGraphRetrieval,
+        enable_reranking: options.enableReranking,
       },
       signal: options.signal,
     });
@@ -606,6 +615,12 @@ export class HindsightClient {
       retainStructuredChunkSize?: number;
       enableObservations?: boolean;
       observationsMission?: string;
+      /** Run the temporal retrieval arm during recall, and the date-aware query analysis feeding it. */
+      enableTemporalRetrieval?: boolean;
+      /** Run the entity/link graph traversal arm during recall. */
+      enableGraphRetrieval?: boolean;
+      /** Rerank fused candidates with the cross-encoder. False returns the RRF order. */
+      enableReranking?: boolean;
       /** How skeptical vs trusting (1=trusting, 5=skeptical). */
       dispositionSkepticism?: number;
       /** How literally to interpret information (1=flexible, 5=literal). */
@@ -629,6 +644,11 @@ export class HindsightClient {
       updates.enable_observations = options.enableObservations;
     if (options.observationsMission !== undefined)
       updates.observations_mission = options.observationsMission;
+    if (options.enableTemporalRetrieval !== undefined)
+      updates.enable_temporal_retrieval = options.enableTemporalRetrieval;
+    if (options.enableGraphRetrieval !== undefined)
+      updates.enable_graph_retrieval = options.enableGraphRetrieval;
+    if (options.enableReranking !== undefined) updates.enable_reranking = options.enableReranking;
     if (options.dispositionSkepticism !== undefined)
       updates.disposition_skepticism = options.dispositionSkepticism;
     if (options.dispositionLiteralism !== undefined)
