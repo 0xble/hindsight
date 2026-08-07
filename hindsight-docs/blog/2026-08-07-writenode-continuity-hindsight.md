@@ -1,7 +1,7 @@
 ---
 title: "Reasoning Isn't the Hard Part Anymore. Continuity Is."
 description: "How writenode uses Hindsight — a per-user memory bank plus a mode classifier — to carry a person's thinking forward across sessions instead of starting from a blank page."
-authors: [Xp3rtMag1c1an]
+authors: [Xp3rtMag1c1an, benfrank241]
 slug: "2026/08/07/writenode-continuity-hindsight"
 date: 2026-08-07T12:00
 tags: [hindsight, agent-memory, community, per-user-memory, note-taking]
