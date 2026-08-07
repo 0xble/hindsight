@@ -4,12 +4,13 @@ Recall runs four arms (semantic, BM25, graph, temporal) and then a cross-encoder
 rerank. A bank whose content has no relational or temporal structure pays latency
 for arms it cannot use, so each stage can be switched off per bank:
 
-    enable_temporal_extraction / enable_graph_retrieval / enable_reranking
+    enable_temporal_retrieval / enable_graph_retrieval / enable_reranking
 
 All three default to True, so recall behaviour is unchanged unless a bank opts out.
 """
 
 from contextlib import asynccontextmanager
+from datetime import UTC, datetime
 from types import SimpleNamespace
 
 import pytest
@@ -38,8 +39,6 @@ def stub_retrieval(monkeypatch):
 
     def fake_extract_temporal_constraint(*args, **kwargs):
         calls["temporal_extraction"] += 1
-        from datetime import UTC, datetime
-
         return (datetime(2025, 1, 1, tzinfo=UTC), datetime(2025, 2, 1, tzinfo=UTC))
 
     class FakeGraphRetriever:
@@ -88,11 +87,11 @@ async def test_all_stages_run_by_default(stub_retrieval):
 
 
 @pytest.mark.asyncio
-async def test_disabling_temporal_extraction_skips_the_temporal_arm(stub_retrieval):
+async def test_disabling_temporal_retrieval_skips_the_temporal_arm(stub_retrieval):
     """No constraint extraction means nothing to filter on, so the temporal query is skipped too."""
     calls, FakeGraphRetriever = stub_retrieval
 
-    result = await _run(FakeGraphRetriever(), enable_temporal_extraction=False)
+    result = await _run(FakeGraphRetriever(), enable_temporal_retrieval=False)
 
     assert calls["temporal_extraction"] == 0
     assert calls["temporal_combined"] == 0
@@ -155,3 +154,73 @@ def test_reranking_resolution(requested, enable_reranking, expected):
 def test_reranking_defaults_to_enabled_when_unset():
     """A bank with no override keeps the cross-encoder."""
     assert memory_engine_module._resolve_reranking({}, "cross_encoder") == "cross_encoder"
+
+
+# ── config → pipeline wiring ─────────────────────────────────────────────────
+#
+# Everything above drives retrieve_all_fact_types_parallel and _resolve_reranking
+# directly, which leaves the layer that *reads* the bank's config untested:
+# recall_async looks the stages up by plain string key, so a typo would resolve to
+# the default and every test above would still pass. These go through a real bank
+# override to cover that seam.
+
+
+def _bank(prefix: str) -> str:
+    return f"{prefix}_{datetime.now().timestamp()}"
+
+
+@pytest.mark.asyncio
+async def test_bank_override_reaches_the_retrieval_arms(memory, request_context, monkeypatch):
+    """The bank's temporal/graph settings arrive at the retrieval call itself."""
+    bank_id = _bank("recall_toggle_arms")
+    await memory._ensure_bank_exists(bank_id, request_context)
+
+    seen: list[dict[str, bool]] = []
+    real_retrieve = retrieval_module.retrieve_all_fact_types_parallel
+
+    async def spy(*args, **kwargs):
+        seen.append(
+            {
+                "temporal": kwargs["enable_temporal_retrieval"],
+                "graph": kwargs["enable_graph_retrieval"],
+            }
+        )
+        return await real_retrieve(*args, **kwargs)
+
+    monkeypatch.setattr(retrieval_module, "retrieve_all_fact_types_parallel", spy)
+
+    await memory.recall_async(bank_id=bank_id, query="anything", request_context=request_context)
+    assert seen[-1] == {"temporal": True, "graph": True}, "a bank with no overrides runs every arm"
+
+    await memory._config_resolver.update_bank_config(
+        bank_id, {"enable_temporal_retrieval": False, "enable_graph_retrieval": False}
+    )
+    await memory.recall_async(bank_id=bank_id, query="anything", request_context=request_context)
+    assert seen[-1] == {"temporal": False, "graph": False}
+
+
+@pytest.mark.asyncio
+async def test_bank_override_disables_the_cross_encoder(memory, request_context, monkeypatch):
+    """enable_reranking=False stops recall reaching the cross-encoder at all.
+
+    Asserted on the reranker rather than on the resolved strategy string: skipping
+    that call is the whole point of the toggle, and it is what a caller feels.
+    """
+    bank_id = _bank("recall_toggle_rerank")
+    await memory._ensure_bank_exists(bank_id, request_context)
+
+    rerank_calls: list[str] = []
+    real_rerank = memory._cross_encoder_reranker.rerank
+
+    async def spy(query, candidates):
+        rerank_calls.append(query)
+        return await real_rerank(query, candidates)
+
+    monkeypatch.setattr(memory._cross_encoder_reranker, "rerank", spy)
+
+    await memory.recall_async(bank_id=bank_id, query="anything", request_context=request_context)
+    assert len(rerank_calls) == 1, "a bank with no override still reranks"
+
+    await memory._config_resolver.update_bank_config(bank_id, {"enable_reranking": False})
+    await memory.recall_async(bank_id=bank_id, query="anything", request_context=request_context)
+    assert len(rerank_calls) == 1, "the cross-encoder must not be reached once reranking is off"
