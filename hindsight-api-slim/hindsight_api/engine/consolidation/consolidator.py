@@ -284,7 +284,7 @@ async def _dedup_reconcile_create(
     # twin's existing embedding (the merged text is >= threshold similar, so it stays
     # representative and avoids a re-embed + a dialect-specific vector UPDATE).
     store = get_memories()
-    if store.writes_memory_rows_in_sql:
+    if store.writes_memory_rows_in_sql_for(bank_id):
         # Oracle-safe: _native_search_vector_update emits the to_tsvector clause only for a native
         # PG tsvector column, "" otherwise (see #3021 — the raw ::regconfig cast breaks Oracle).
         search_vector_clause = _native_search_vector_update(config, "$1")
@@ -349,7 +349,7 @@ async def _dedup_reconcile_update(
     # guarantees twin and updated share scope, so dropping the updated row's tags loses no
     # visibility. Temporal fields follow the surviving twin (minimal scope; matches create).
     store = get_memories()
-    if store.writes_memory_rows_in_sql:
+    if store.writes_memory_rows_in_sql_for(bank_id):
         # Oracle-safe search_vector clause (#3021): "" unless a native PG tsvector column.
         search_vector_clause = _native_search_vector_update(config, "$1")
         await conn.execute(
@@ -510,7 +510,7 @@ async def _filter_live_source_memories(
     if not source_memory_ids:
         return []
     store = get_memories()
-    if store.writes_memory_rows_in_sql:
+    if store.writes_memory_rows_in_sql_for(bank_id):
         rows = await conn.fetch(
             f"SELECT id FROM {fq_table('memory_units')} WHERE id = ANY($1::uuid[]) AND bank_id = $2 FOR SHARE",
             source_memory_ids,
@@ -632,7 +632,7 @@ async def _count_observations_for_scope(
     Observations with no tags are not counted (the limit does not apply to them).
     """
     store = get_memories()
-    if store.writes_memory_rows_in_sql:
+    if store.writes_memory_rows_in_sql_for(bank_id):
         return await conn.fetchval(
             f"SELECT COUNT(*) FROM {fq_table('memory_units')} "
             f"WHERE bank_id = $1 AND fact_type = 'observation' AND tags @> $2::varchar[]",
@@ -2092,7 +2092,7 @@ async def _execute_update_action(
 
     t0 = time.time()
     store = get_memories()
-    if store.writes_memory_rows_in_sql:
+    if store.writes_memory_rows_in_sql_for(bank_id):
         await conn.execute(
             f"""
             UPDATE {fq_table("memory_units")}
@@ -2227,7 +2227,7 @@ async def _execute_delete_action(
 ) -> None:
     """Delete a superseded or contradicted observation."""
     store = get_memories()
-    if store.writes_memory_rows_in_sql:
+    if store.writes_memory_rows_in_sql_for(bank_id):
         await conn.execute(
             f"DELETE FROM {fq_table('memory_units')} WHERE id = $1 AND bank_id = $2 AND fact_type = 'observation'",
             uuid.UUID(observation_id),
@@ -2597,7 +2597,7 @@ async def _create_observation_directly(
     # search_vector the configured backend needs); a store that owns its rows takes it through
     # upsert_observation as a normal Observation-type memory carrying all of its own state.
     store = get_memories()
-    if store.writes_memory_rows_in_sql:
+    if store.writes_memory_rows_in_sql_for(bank_id):
         # Query varies based on text search backend.
         from ..schema import _is_oracle  # noqa: PLC0415
 

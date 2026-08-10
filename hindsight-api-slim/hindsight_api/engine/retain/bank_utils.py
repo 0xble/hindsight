@@ -464,7 +464,7 @@ async def list_banks(pool) -> list:
             last_doc = row["last_document_at"]
 
             fact_count = row["fact_count"]
-            if not _store.writes_memory_rows_in_sql:
+            if not _store.writes_memory_rows_in_sql_for(bank_id):
                 fact_count = sum(
                     (await _store.count_memories(conn=conn, fq_table=fq_table, bank_id=row["bank_id"])).values()
                 )
