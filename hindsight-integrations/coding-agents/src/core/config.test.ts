@@ -212,3 +212,30 @@ describe("environment fallback", () => {
     expect(cfg.surveyModel).toBe("haiku");
   });
 });
+
+describe("retainTags / retainMetadata", () => {
+  it("default to empty, so a retain is unchanged unless configured", () => {
+    const cfg = resolveConfig({});
+    expect(cfg.retainTags).toEqual([]);
+    expect(cfg.retainMetadata).toEqual({});
+  });
+
+  it("carries templates through verbatim — resolution happens per retain", () => {
+    const cfg = resolveConfig({
+      retainTags: ["project:{gitProject}"],
+      retainMetadata: { repo: "{gitProject}" },
+    });
+    expect(cfg.retainTags).toEqual(["project:{gitProject}"]);
+    expect(cfg.retainMetadata).toEqual({ repo: "{gitProject}" });
+  });
+
+  it("ignores non-string entries rather than failing the whole retain", () => {
+    // A config typo (a number, a nested object) would otherwise reach the API as a tag.
+    const cfg = resolveConfig({
+      retainTags: ["ok", 42, null, "  "] as unknown as string[],
+      retainMetadata: { good: "x", bad: { nested: true } } as unknown as Record<string, string>,
+    });
+    expect(cfg.retainTags).toEqual(["ok"]);
+    expect(cfg.retainMetadata).toEqual({ good: "x" });
+  });
+});

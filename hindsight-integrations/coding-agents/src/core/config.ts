@@ -84,6 +84,14 @@ export interface RawConfig {
    *  "full"    = messages + every recent commit's full diff (progressive batches, newest first);
    *  "none"    = git ingestion off entirely. Default "message" (cheap by default; opt into depth). */
   gitIngest?: "message" | "full" | "none";
+  /** Extra tags stamped on every session write-back, e.g. ["project:{gitProject}", "env:work"].
+   *  Placeholders: {gitProject} {project} {harness} {bankId} {sessionId} {timestamp} {channel}
+   *  {user} (see core/retain-stamp.ts). Mainly for a SHARED bank, where the bank id no longer says
+   *  which repo a memory came from. Built-in tags win on conflict. */
+  retainTags?: string[];
+  /** Extra metadata stamped on every session write-back, e.g. {"repo": "{gitProject}"}. Same
+   *  placeholders as retainTags; built-in metadata (harness attribution) wins on conflict. */
+  retainMetadata?: Record<string, string>;
   /** Per-harness overrides of any of the fields above, keyed by harness name ("opencode",
    *  "claude-code", ...). Lets one config file give each agent its own bank/settings. */
   harnesses?: Record<string, Omit<RawConfig, "harnesses">>;
@@ -129,6 +137,8 @@ export interface Config {
   surveyBudgetUsd: number;
   surveyRefreshCommits: number;
   gitIngest: "message" | "full" | "none";
+  retainTags: string[];
+  retainMetadata: Record<string, string>;
   banks: Record<string, Omit<RawConfig, "banks" | "harnesses"> & { bank?: string }>;
   logLevel: "debug" | "info" | "warn" | "error";
 }
@@ -175,6 +185,17 @@ export function resolveConfig(raw: RawConfig = {}): Config {
     gitIngest: ["message", "full", "none"].includes(raw.gitIngest as string)
       ? (raw.gitIngest as "message" | "full" | "none")
       : "message",
+    // Hostile input is a config typo, not an attack: keep only string entries so a stray number or
+    // nested object cannot reach the API as a tag and fail the whole retain.
+    retainTags: Array.isArray(raw.retainTags)
+      ? raw.retainTags.filter((t): t is string => typeof t === "string" && t.trim() !== "")
+      : [],
+    retainMetadata:
+      raw.retainMetadata && typeof raw.retainMetadata === "object"
+        ? Object.fromEntries(
+            Object.entries(raw.retainMetadata).filter(([, v]) => typeof v === "string")
+          )
+        : {},
     banks: raw.banks && typeof raw.banks === "object" ? raw.banks : {},
     logLevel: ["debug", "info", "warn", "error"].includes(raw.logLevel as string)
       ? (raw.logLevel as "debug" | "info" | "warn" | "error")
