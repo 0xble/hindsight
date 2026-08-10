@@ -295,8 +295,8 @@ hook by Codex...), so one shared config serves several agents side by side:
 | `bankIdTemplate`        | `"coding-agent::{gitProject}"`       | dynamic bank id format; the default makes every agent share one bank per repo                                                                                                                                                       |
 | `mapPathToBank`         | —                                    | absolute path → bank; **longest prefix wins**; overrides everything                                                                                                                                                                 |
 | `resolveWorktrees`      | `true`                               | `{gitProject}`: linked worktrees share the main repo's bank                                                                                                                                                                         |
-| `retainTags`            | —                                    | extra tags on every session write-back, e.g. `["project:{gitProject}"]` — see [Recording where a memory came from](#recording-where-a-memory-came-from)                                                                              |
-| `retainMetadata`        | —                                    | extra metadata on every session write-back, e.g. `{"repo": "{gitProject}"}`                                                                                                                                                          |
+| `retainTags`            | —                                    | extra tags on every session write-back, e.g. `["project:{gitProject}"]` — see **Recording where a memory came from** below                                                                                                          |
+| `retainMetadata`        | —                                    | extra metadata on every session write-back, e.g. `{"repo": "{gitProject}"}`                                                                                                                                                         |
 | `disabled`              | `false`                              | hard off-switch (inert plugin/hook — a no-memory baseline)                                                                                                                                                                          |
 | `reflectTimeoutMs`      | `120000`                             | session-reflect timeout (hook harnesses additionally cap it at 25s to fit the host's hook window); on timeout the session runs without reflect (recorded)                                                                           |
 | `pageRefreshEveryTurns` | `10`                                 | refetch the knowledge pages and re-inject the page roster + tool guide every N user turns                                                                                                                                           |
@@ -390,7 +390,7 @@ write-back:
 {
   "bankId": "shared", // one bank for everything
   "retainTags": ["project:{gitProject}", "env:work"],
-  "retainMetadata": { "repo": "{gitProject}" }
+  "retainMetadata": { "repo": "{gitProject}" },
 }
 ```
 
