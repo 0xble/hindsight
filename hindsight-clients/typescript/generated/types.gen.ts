@@ -2725,6 +2725,32 @@ export type ListTagsResponse = {
 };
 
 /**
+ * LivenessResponse
+ *
+ * Payload for the API's DB-free liveness probe.
+ */
+export type LivenessResponse = {
+  /**
+   * Status
+   *
+   * Always "alive" — reaching this handler is the check
+   */
+  status: string;
+  /**
+   * Version
+   *
+   * Hindsight version this process is running
+   */
+  version: string;
+  /**
+   * Uptime Seconds
+   *
+   * Seconds since the process started
+   */
+  uptime_seconds: number;
+};
+
+/**
  * LlmOperationHealth
  *
  * LLM connectivity status for a single operation. Status only — no provider/model/
@@ -5196,6 +5222,36 @@ export type HealthEndpointHealthGetResponses = {
    */
   200: unknown;
 };
+
+export type ReadinessEndpointHealthReadyGetData = {
+  body?: never;
+  path?: never;
+  query?: never;
+  url: "/health/ready";
+};
+
+export type ReadinessEndpointHealthReadyGetResponses = {
+  /**
+   * Successful Response
+   */
+  200: unknown;
+};
+
+export type GetLivenessData = {
+  body?: never;
+  path?: never;
+  query?: never;
+  url: "/health/live";
+};
+
+export type GetLivenessResponses = {
+  /**
+   * Successful Response
+   */
+  200: LivenessResponse;
+};
+
+export type GetLivenessResponse = GetLivenessResponses[keyof GetLivenessResponses];
 
 export type GetVersionData = {
   body?: never;
