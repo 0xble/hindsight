@@ -5223,14 +5223,14 @@ export type HealthEndpointHealthGetResponses = {
   200: unknown;
 };
 
-export type ReadinessEndpointHealthReadyGetData = {
+export type GetReadinessData = {
   body?: never;
   path?: never;
   query?: never;
   url: "/health/ready";
 };
 
-export type ReadinessEndpointHealthReadyGetResponses = {
+export type GetReadinessResponses = {
   /**
    * Successful Response
    */

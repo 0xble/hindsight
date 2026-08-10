@@ -31,7 +31,7 @@ paths:
     get:
       description: "Returns 200 when the API can serve traffic (database reachable),\
         \ 503 otherwise. Identical to /health, which stays supported as its alias."
-      operationId: readiness_endpoint_health_ready_get
+      operationId: get_readiness
       responses:
         "200":
           content:

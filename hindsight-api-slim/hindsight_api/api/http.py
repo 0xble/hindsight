@@ -4040,6 +4040,7 @@ def _register_routes(app: FastAPI):
         description="Returns 200 when the API can serve traffic (database reachable), "
         "503 otherwise. Identical to /health, which stays supported as its alias.",
         tags=["Monitoring"],
+        operation_id="get_readiness",
     )
     async def readiness_endpoint():
         """

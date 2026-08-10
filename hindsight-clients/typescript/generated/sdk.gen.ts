@@ -141,6 +141,8 @@ import type {
   GetOperationStatusData,
   GetOperationStatusErrors,
   GetOperationStatusResponses,
+  GetReadinessData,
+  GetReadinessResponses,
   GetVersionData,
   GetVersionResponses,
   HealthEndpointHealthGetData,
@@ -198,8 +200,6 @@ import type {
   LlmRequestStatsResponses,
   MetricsEndpointMetricsGetData,
   MetricsEndpointMetricsGetResponses,
-  ReadinessEndpointHealthReadyGetData,
-  ReadinessEndpointHealthReadyGetResponses,
   RecallMemoriesData,
   RecallMemoriesErrors,
   RecallMemoriesResponses,
@@ -300,10 +300,10 @@ export const healthEndpointHealthGet = <ThrowOnError extends boolean = false>(
  *
  * Returns 200 when the API can serve traffic (database reachable), 503 otherwise. Identical to /health, which stays supported as its alias.
  */
-export const readinessEndpointHealthReadyGet = <ThrowOnError extends boolean = false>(
-  options?: Options<ReadinessEndpointHealthReadyGetData, ThrowOnError>
+export const getReadiness = <ThrowOnError extends boolean = false>(
+  options?: Options<GetReadinessData, ThrowOnError>
 ) =>
-  (options?.client ?? client).get<ReadinessEndpointHealthReadyGetResponses, unknown, ThrowOnError>({
+  (options?.client ?? client).get<GetReadinessResponses, unknown, ThrowOnError>({
     url: "/health/ready",
     ...options,
   });
