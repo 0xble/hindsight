@@ -2,7 +2,7 @@ import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { loadConfig, applyBankConfig, resolveConfig } from "./config";
+import { loadConfig, applyBankConfig, readEnvConfig, resolveConfig } from "./config";
 
 let root: string;
 let globalCfg: string;
@@ -237,5 +237,27 @@ describe("retainTags / retainMetadata", () => {
     });
     expect(cfg.retainTags).toEqual(["ok"]);
     expect(cfg.retainMetadata).toEqual({ good: "x" });
+  });
+});
+
+describe("HINDSIGHT_RETAIN_TAGS", () => {
+  it("reads a comma-separated list — the env form of retainTags (#2896)", () => {
+    expect(
+      readEnvConfig({ HINDSIGHT_RETAIN_TAGS: "project:{gitProject},env:work" }).retainTags
+    ).toEqual(["project:{gitProject}", "env:work"]);
+  });
+
+  it("trims entries and drops empties, so a trailing comma is not an empty tag", () => {
+    expect(readEnvConfig({ HINDSIGHT_RETAIN_TAGS: " a , ,b, " }).retainTags).toEqual(["a", "b"]);
+  });
+
+  it("is absent when unset or empty, leaving the file value alone", () => {
+    expect(readEnvConfig({}).retainTags).toBeUndefined();
+    expect(readEnvConfig({ HINDSIGHT_RETAIN_TAGS: "" }).retainTags).toBeUndefined();
+    expect(readEnvConfig({ HINDSIGHT_RETAIN_TAGS: " , " }).retainTags).toBeUndefined();
+  });
+
+  it("has no retainMetadata counterpart — map-valued settings stay file-only", () => {
+    expect(readEnvConfig({ HINDSIGHT_RETAIN_METADATA: "repo=x" }).retainMetadata).toBeUndefined();
   });
 });

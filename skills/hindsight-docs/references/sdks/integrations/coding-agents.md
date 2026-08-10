@@ -265,8 +265,10 @@ Configuration is **one JSON file**: `~/.hindsight/coding-agent.json`. Layering, 
 4. its `harnesses.<name>` section — per-agent override
 
 Environment variables are a **fallback**: the file wins wherever it sets a value, so adding env to
-an existing setup changes nothing. The map-valued settings (`mapPathToBank`, `harnesses`, `banks`)
-are file-only — nested branching doesn't survive flattening into one variable.
+an existing setup changes nothing. `retainTags` takes a comma-separated list
+(`HINDSIGHT_RETAIN_TAGS="project:{gitProject},env:work"`); entries are trimmed and blanks dropped.
+The map-valued settings (`mapPathToBank`, `harnesses`, `banks`, `retainMetadata`) are file-only —
+per-key branching doesn't survive flattening into one variable.
 
 There is deliberately no repo-carried config file — per-repo bank routing is `mapPathToBank`,
 per-agent differences are `harnesses.<name>`.

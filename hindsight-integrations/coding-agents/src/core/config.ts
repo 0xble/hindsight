@@ -1,11 +1,11 @@
 /**
- * ONE config file: ~/.hindsight/coding-agent.json (JSON, no environment variables — the sole
- * exception is HINDSIGHT_DIAG_FILE for the diagnostics path).
+ * ONE config file: ~/.hindsight/coding-agent.json.
  *
  * Layering, later wins per field:
  *   1. built-in defaults
- *   2. the config file's top level
- *   3. its `harnesses.<name>` section for the asking harness
+ *   2. environment variables (ENV_KEYS below) — a FALLBACK for containers, CI and secret managers
+ *   3. the config file's top level
+ *   4. its `harnesses.<name>` section for the asking harness
  *
  * There is deliberately NO project-local config: a second, repo-carried file was both a security
  * surface (untrusted repos influencing memory behavior) and a second place to look. Per-repo bank
@@ -250,9 +250,9 @@ function applyLayer(raw: RawConfig, layer: RawConfig, harness?: string): RawConf
  * containers, CI, and secret managers that inject `HINDSIGHT_API_TOKEN` rather than writing a
  * credential to disk.
  *
- * The map-valued settings (mapPathToBank, harnesses, banks) are deliberately absent: they are
- * nested structures whose whole point is per-repo/per-harness branching, which does not survive
- * flattening into one env var. They stay file-only.
+ * The map-valued settings (mapPathToBank, harnesses, banks, retainMetadata) are deliberately
+ * absent: they are structures whose whole point is per-repo/per-harness/per-key branching, which
+ * does not survive flattening into one env var. They stay file-only.
  */
 const ENV_KEYS = {
   serverMode: "HINDSIGHT_SERVER_MODE",
@@ -284,9 +284,12 @@ const ENV_KEYS = {
   surveyRefreshCommits: "HINDSIGHT_SURVEY_REFRESH_COMMITS",
   logLevel: "HINDSIGHT_LOG_LEVEL",
   gitIngest: "HINDSIGHT_GIT_INGEST",
+  // Comma-separated, e.g. HINDSIGHT_RETAIN_TAGS="project:{gitProject},env:work". A LIST rather than
+  // a map, so it flattens cleanly; its sibling retainMetadata stays file-only for the reason above.
+  retainTags: "HINDSIGHT_RETAIN_TAGS",
 } as const satisfies Partial<Record<keyof RawConfig, string>>;
 
-/** Fields parsed as booleans/numbers; everything else is taken as a string. */
+/** Fields parsed as booleans/numbers/comma-separated lists; everything else is taken as a string. */
 const ENV_BOOLEANS = new Set<keyof RawConfig>([
   "dynamicBankId",
   "resolveWorktrees",
@@ -296,6 +299,7 @@ const ENV_BOOLEANS = new Set<keyof RawConfig>([
   "autoSeed",
   "codebaseSurvey",
 ]);
+const ENV_LISTS = new Set<keyof RawConfig>(["retainTags"]);
 const ENV_NUMBERS = new Set<keyof RawConfig>([
   "apiPort",
   "daemonIdleTimeout",
@@ -319,6 +323,13 @@ export function readEnvConfig(env: NodeJS.ProcessEnv = process.env): RawConfig {
     if (value === undefined || value.trim() === "") continue;
     if (ENV_BOOLEANS.has(key)) {
       out[key] = ["1", "true", "yes", "on"].includes(value.trim().toLowerCase());
+    } else if (ENV_LISTS.has(key)) {
+      // Empty entries dropped, so a trailing comma or "a,,b" is a typo rather than an empty tag.
+      const items = value
+        .split(",")
+        .map((v) => v.trim())
+        .filter(Boolean);
+      if (items.length) out[key] = items;
     } else if (ENV_NUMBERS.has(key)) {
       const n = Number(value);
       if (Number.isFinite(n)) out[key] = n;
