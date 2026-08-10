@@ -7526,6 +7526,8 @@ components:
       properties:
         status:
           description: Always "alive" — reaching this handler is the check
+          enum:
+          - alive
           title: Status
           type: string
         version:

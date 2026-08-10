@@ -21,6 +21,7 @@ call cannot answer even a trivial request within the probe timeout (see
 """
 
 import time
+from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -48,7 +49,7 @@ class LivenessResponse(BaseModel):
         }
     )
 
-    status: str = Field(description='Always "alive" — reaching this handler is the check')
+    status: Literal["alive"] = Field(description='Always "alive" — reaching this handler is the check')
     version: str = Field(description="Hindsight version this process is running")
     uptime_seconds: float = Field(description="Seconds since the process started")
 

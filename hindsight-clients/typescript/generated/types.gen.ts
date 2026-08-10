@@ -2735,7 +2735,7 @@ export type LivenessResponse = {
    *
    * Always "alive" — reaching this handler is the check
    */
-  status: string;
+  status: "alive";
   /**
    * Version
    *

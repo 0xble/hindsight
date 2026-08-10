@@ -11137,6 +11137,7 @@
         "properties": {
           "status": {
             "type": "string",
+            "const": "alive",
             "title": "Status",
             "description": "Always \"alive\" \u2014 reaching this handler is the check"
           },

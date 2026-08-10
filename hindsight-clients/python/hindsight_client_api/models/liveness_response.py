@@ -17,7 +17,7 @@ import pprint
 import re  # noqa: F401
 import json
 
-from pydantic import BaseModel, ConfigDict, Field, StrictFloat, StrictInt, StrictStr
+from pydantic import BaseModel, ConfigDict, Field, StrictFloat, StrictInt, StrictStr, field_validator
 from typing import Any, ClassVar, Dict, List, Union
 from typing import Optional, Set
 from typing_extensions import Self
@@ -30,6 +30,13 @@ class LivenessResponse(BaseModel):
     version: StrictStr = Field(description="Hindsight version this process is running")
     uptime_seconds: Union[StrictFloat, StrictInt] = Field(description="Seconds since the process started")
     __properties: ClassVar[List[str]] = ["status", "version", "uptime_seconds"]
+
+    @field_validator('status')
+    def status_validate_enum(cls, value):
+        """Validates the enum"""
+        if value not in set(['alive']):
+            raise ValueError("must be one of enum values ('alive')")
+        return value
 
     model_config = ConfigDict(
         populate_by_name=True,
