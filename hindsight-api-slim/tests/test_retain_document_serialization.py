@@ -329,10 +329,19 @@ def _poller(backend, worker_id: str):
 
 
 @dataclass
+class _ClaimedRetain:
+    """One claimed retain and the peers folded into it."""
+
+    operation_id: str
+    folded_operation_ids: list[str]
+    task_dict: dict
+
+
+@dataclass
 class _ClaimOutcome:
     """What a rolled-back claim observed for one bank."""
 
-    tasks: list[tuple]
+    tasks: list[_ClaimedRetain]
     statuses: list
 
 
@@ -356,7 +365,13 @@ async def _claim_own(backend, bank_id: str, worker_id: str) -> "_ClaimOutcome":
             payload = row["task_payload"]
             task_dict = json.loads(payload) if isinstance(payload, str) else payload
             folded = await poller._fold_retain_peers(conn, "async_operations", row, task_dict)
-            tasks.append((str(row["operation_id"]), folded, task_dict))
+            tasks.append(
+                _ClaimedRetain(
+                    operation_id=str(row["operation_id"]),
+                    folded_operation_ids=folded,
+                    task_dict=task_dict,
+                )
+            )
         # Read the claim's effect back inside the same transaction, before the
         # rollback: this is the state a committed claim would leave behind.
         observed["statuses"] = await conn.fetch(
@@ -379,11 +394,11 @@ async def test_claim_folds_queued_peers_into_one_execution(backend, bank):
     claimed = await _claim_own(backend, bank, "w-fold")
 
     assert len(claimed.tasks) == 1, "the fold must produce a single execution"
-    operation_id, folded, task_dict = claimed.tasks[0]
-    assert operation_id == first
-    assert folded == [second, third]
-    assert [c["content"] for c in task_dict["contents"]] == ["turn one", "turn two", "turn three"]
-    assert [m["operation_id"] for m in task_dict["_fold_members"]] == [first, second, third]
+    claim = claimed.tasks[0]
+    assert claim.operation_id == first
+    assert claim.folded_operation_ids == [second, third]
+    assert [c["content"] for c in claim.task_dict["contents"]] == ["turn one", "turn two", "turn three"]
+    assert [m["operation_id"] for m in claim.task_dict["_fold_members"]] == [first, second, third]
 
     # Invariant: every folded member is claimed by this worker, none left pending.
     assert {r["status"] for r in claimed.statuses} == {"processing"}
@@ -399,7 +414,7 @@ async def test_fold_stops_at_a_foreign_document(backend, bank):
 
     claimed = await _claim_own(backend, bank, "w-fold2")
 
-    folds = {op_id: folded for op_id, folded, _ in claimed.tasks}
+    folds = {claim.operation_id: claim.folded_operation_ids for claim in claimed.tasks}
     assert folds[first] == [second]
     assert folds[other] == []
 
