@@ -246,6 +246,48 @@ async def run_graph_maintenance_job(
     result.stale_cooccurrences_pruned = prune.stale_cooccurrences_pruned
     result.queues_drained = relink.queue_exhausted and prune.queue_exhausted
 
+    # Close the hand-off gap. Submit-time dedup treats a *running* job as
+    # covering this bank (see _submit_async_operation's
+    # dedupe_by_bank_includes_processing), which is what stops one job being
+    # queued per triggering operation. The cost is a narrow window: anything
+    # enqueued after Pass 1's final claim — including during the sweeps above,
+    # which are not instant — was deduped against this job and would otherwise
+    # sit in graph_maintenance_queue until some unrelated future operation
+    # happened to trigger another submit. For the last write of an ingest batch
+    # that may be never.
+    #
+    # So re-check before finishing and hand off to a fresh job if anything
+    # landed.
+    #
+    # Gated on this run having drained something. A run that processed nothing
+    # and still sees a non-empty queue has not made progress, and a successor
+    # would repeat that exact outcome — an endless self-resubmitting chain for
+    # the bank. Requiring progress means the chain can only continue while it
+    # is actually consuming the queue, so it terminates. (The normal case
+    # always qualifies: submit_async_graph_maintenance short-circuits on an
+    # empty queue, so a job only starts when there is work to drain.)
+    made_progress = result.relink_units_processed > 0
+    try:
+        backend_check = await memory_engine._get_backend()
+        async with acquire_with_retry(backend_check) as conn:
+            leftover = await conn.fetchval(
+                f"SELECT 1 FROM {fq_table('graph_maintenance_queue')} WHERE bank_id = $1 LIMIT 1",
+                bank_id,
+            )
+        if leftover and not made_progress:
+            logger.warning(
+                f"[GRAPH_MAINT] bank={bank_id} queue still non-empty after a run that drained "
+                f"nothing; not chaining a successor (it would repeat this outcome)"
+            )
+        elif leftover:
+            logger.info(f"[GRAPH_MAINT] bank={bank_id} work arrived during the run; submitting a follow-up job")
+            await memory_engine.submit_async_graph_maintenance(bank_id=bank_id, request_context=request_context)
+    except Exception:
+        # Never fail a completed maintenance run over the hand-off. The work is
+        # still queued, and the next triggering operation will pick it up; log
+        # loudly so a persistent failure here is visible rather than silent.
+        logger.exception(f"[GRAPH_MAINT] bank={bank_id} follow-up submit failed")
+
     elapsed = time.time() - job_start
     if not result.queues_drained:
         # Not a failure: every batch committed, so the remaining queue rows are
