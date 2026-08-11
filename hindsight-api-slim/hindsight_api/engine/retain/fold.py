@@ -45,6 +45,43 @@ class FoldMember:
     contents: list[dict[str, Any]]
     tenant_id: str | None = None
     api_key_id: str | None = None
+    document_tags: list[str] | None = None
+    strategy: str | None = None
+    has_file_metadata: bool = False
+    """Whether the submission carries ``_file_metadata`` (a converted upload)."""
+
+    @property
+    def is_append_only(self) -> bool:
+        """Whether every item this operation submitted appends to its document.
+
+        Only appends are foldable, because only appends are cumulative — see
+        :func:`plan_retain_fold`.
+        """
+        return bool(self.contents) and all(item.get("update_mode") == "append" for item in self.contents)
+
+
+def _can_join(primary: FoldMember, peer: FoldMember) -> str | None:
+    """Why ``peer`` cannot join ``primary``'s execution, or None if it can.
+
+    Everything an execution applies once, from the primary's payload, has to
+    match — otherwise folding would silently apply the primary's value to the
+    peer's content.
+    """
+    if not peer.is_append_only:
+        return "not an append"
+    if peer.has_file_metadata:
+        return "carries file metadata"
+    if peer.tenant_id != primary.tenant_id or peer.api_key_id != primary.api_key_id:
+        # Usage is attributed to the members of a fold, so mixing credentials
+        # inside one execution would bill one caller for another's extraction.
+        return "different tenant/api key"
+    if sorted(peer.document_tags or []) != sorted(primary.document_tags or []):
+        # The execution applies the primary's document_tags to the whole
+        # document; folding a differently-tagged peer would drop its tags.
+        return "different document_tags"
+    if peer.strategy != primary.strategy:
+        return "different strategy"
+    return None
 
 
 @dataclass
@@ -130,6 +167,14 @@ def plan_retain_fold(
     the document's text in submission order. Peers left behind stay pending and
     are claimed on a later cycle, still in order.
 
+    **Only appends fold.** Appends are cumulative: running two of them as one
+    execution over the concatenated turns produces the same document as running
+    them in sequence. Replace is not — it means "this body supersedes what is
+    stored", so folding two replaces would store ``body1 + body2`` where the
+    correct answer is ``body2``, and folding an append behind a replace would
+    turn a document-wiping submission into a concatenation. An operation that
+    is not append-only therefore runs alone, as primary and as peer.
+
     A peer cannot join when:
 
     * it would push the execution past ``token_budget``. Beyond that the engine
@@ -137,13 +182,16 @@ def plan_retain_fold(
       different bodies for one document defeat the streaming ownership check
       (#3282) — so the fold stays inside a single orchestrator pass by
       construction. The primary alone is always allowed through, however large.
-    * it belongs to a different tenant or API key. Token usage is attributed to
-      the members of a fold, so mixing credentials inside one execution would
-      bill one caller for another's extraction.
+    * ``_can_join`` rejects it: not an append, carrying file metadata, or
+      differing in anything the execution applies once from the primary's
+      payload (tenant, API key, document_tags, strategy).
     * ``max_peers`` is already reached.
     """
     plan = FoldPlan(members=[primary])
-    if max_peers <= 0:
+    if max_peers <= 0 or not primary.is_append_only or primary.has_file_metadata:
+        # A non-append primary is not a fold base at all: whatever queued behind
+        # it must wait for it to finish and then be re-evaluated against the
+        # document it leaves behind.
         plan.deferred = [p.operation_id for p in peers]
         return plan
 
@@ -153,11 +201,9 @@ def plan_retain_fold(
         if len(plan.members) > max_peers:
             plan.deferred = [p.operation_id for p in peers[index:]]
             break
-        if peer.tenant_id != primary.tenant_id or peer.api_key_id != primary.api_key_id:
-            logger.debug(
-                "Not folding %s: different tenant/api key from the primary operation",
-                peer.operation_id,
-            )
+        rejection = _can_join(primary, peer)
+        if rejection is not None:
+            logger.debug("Not folding %s: %s", peer.operation_id, rejection)
             plan.deferred = [p.operation_id for p in peers[index:]]
             break
         peer_tokens = sum(count_tokens(item.get("content", "")) for item in peer.contents)

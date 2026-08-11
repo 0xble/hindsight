@@ -63,12 +63,28 @@ def _fake_count_tokens(text: str) -> int:
 # ---------------------------------------------------------------------------
 
 
-def _member(op_id: str, content: str, *, tenant: str | None = "t1", api_key: str | None = "k1") -> FoldMember:
+def _member(
+    op_id: str,
+    content: str,
+    *,
+    tenant: str | None = "t1",
+    api_key: str | None = "k1",
+    update_mode: str | None = "append",
+    document_tags: list[str] | None = None,
+    strategy: str | None = None,
+    has_file_metadata: bool = False,
+) -> FoldMember:
+    item: dict = {"content": content, "document_id": "doc"}
+    if update_mode is not None:
+        item["update_mode"] = update_mode
     return FoldMember(
         operation_id=op_id,
-        contents=[{"content": content, "document_id": "doc", "update_mode": "append"}],
+        contents=[item],
         tenant_id=tenant,
         api_key_id=api_key,
+        document_tags=document_tags,
+        strategy=strategy,
+        has_file_metadata=has_file_metadata,
     )
 
 
@@ -128,6 +144,109 @@ def test_fold_respects_max_peers():
     assert plan.deferred == ["op4", "op5", "op6", "op7"]
 
 
+def test_replace_mode_never_folds():
+    """Replace is not cumulative: folding two of them would concatenate bodies
+    where the second should supersede the first."""
+    plan = plan_retain_fold(
+        _member("op1", "first body", update_mode="replace"),
+        [_member("op2", "second body", update_mode="replace")],
+        max_peers=8,
+        token_budget=1000,
+        count_tokens=_fake_count_tokens,
+    )
+
+    assert plan.peer_ids == [], "a replace must run alone"
+    assert plan.deferred == ["op2"]
+
+
+def test_append_primary_does_not_swallow_a_replace_peer():
+    """A replace queued behind an append must keep its wipe-and-store semantics."""
+    plan = plan_retain_fold(
+        _member("op1", "a turn"),
+        [_member("op2", "a fresh body", update_mode="replace"), _member("op3", "another turn")],
+        max_peers=8,
+        token_budget=1000,
+        count_tokens=_fake_count_tokens,
+    )
+
+    assert plan.peer_ids == []
+    assert plan.deferred == ["op2", "op3"]
+
+
+def test_item_without_update_mode_is_not_foldable():
+    """Absent update_mode means replace (the default) — not foldable."""
+    plan = plan_retain_fold(
+        _member("op1", "a turn"),
+        [_member("op2", "plain item", update_mode=None)],
+        max_peers=8,
+        token_budget=1000,
+        count_tokens=_fake_count_tokens,
+    )
+
+    assert plan.peer_ids == []
+
+
+def test_fold_requires_matching_document_tags():
+    """The execution applies the primary's tags to the document, so a
+    differently-tagged peer would silently lose its own."""
+    plan = plan_retain_fold(
+        _member("op1", "one", document_tags=["a"]),
+        [_member("op2", "two", document_tags=["a", "b"])],
+        max_peers=8,
+        token_budget=1000,
+        count_tokens=_fake_count_tokens,
+    )
+
+    assert plan.peer_ids == []
+    assert plan.deferred == ["op2"]
+
+
+def test_fold_ignores_document_tag_ordering():
+    plan = plan_retain_fold(
+        _member("op1", "one", document_tags=["a", "b"]),
+        [_member("op2", "two", document_tags=["b", "a"])],
+        max_peers=8,
+        token_budget=1000,
+        count_tokens=_fake_count_tokens,
+    )
+
+    assert plan.peer_ids == ["op2"]
+
+
+def test_fold_requires_matching_strategy():
+    plan = plan_retain_fold(
+        _member("op1", "one", strategy="fast"),
+        [_member("op2", "two", strategy="thorough")],
+        max_peers=8,
+        token_budget=1000,
+        count_tokens=_fake_count_tokens,
+    )
+
+    assert plan.peer_ids == []
+
+
+def test_file_backed_retain_never_folds():
+    """A converted upload attaches its storage key afterwards, and that step
+    only runs for a single-item retain."""
+    as_primary = plan_retain_fold(
+        _member("op1", "converted", has_file_metadata=True),
+        [_member("op2", "a turn")],
+        max_peers=8,
+        token_budget=1000,
+        count_tokens=_fake_count_tokens,
+    )
+    assert as_primary.peer_ids == []
+
+    as_peer = plan_retain_fold(
+        _member("op1", "a turn"),
+        [_member("op2", "converted", has_file_metadata=True)],
+        max_peers=8,
+        token_budget=1000,
+        count_tokens=_fake_count_tokens,
+    )
+    assert as_peer.peer_ids == []
+
+
 def test_fold_width_narrows_with_retries_until_the_poison_runs_alone():
     assert max_fold_peers_for_retry(0) == DEFAULT_MAX_FOLD_PEERS
     assert max_fold_peers_for_retry(1) == DEFAULT_MAX_FOLD_PEERS // 2
@@ -177,6 +296,15 @@ async def backend(pg0_db_url):
 
 
 async def _insert_retain_op(pool, bank_id: str, document_id: str | None, *, contents: list[dict]) -> str:
+    """Queue a pending append-mode retain, as submit_async_retain would.
+
+    Append mode because that is the shape folding applies to at all — a replace
+    is not cumulative and runs alone (see plan_retain_fold).
+    """
+    contents = [
+        {**item, "document_id": item.get("document_id", document_id), "update_mode": "append"} if document_id else item
+        for item in contents
+    ]
     operation_id = uuid.uuid4()
     payload = {
         "type": "batch_retain",

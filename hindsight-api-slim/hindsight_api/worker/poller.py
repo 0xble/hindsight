@@ -622,6 +622,12 @@ class WorkerPoller:
                     contents=data.get("contents", []),
                     tenant_id=data.get("_tenant_id"),
                     api_key_id=data.get("_api_key_id"),
+                    document_tags=data.get("document_tags"),
+                    strategy=data.get("strategy"),
+                    # A converted upload attaches its storage key to the document
+                    # afterwards, and that step only fires for a single-item
+                    # retain — so such an operation must never be folded.
+                    has_file_metadata=data.get("_file_metadata") is not None,
                 )
 
             primary = _member(row["operation_id"], row["task_payload"])
