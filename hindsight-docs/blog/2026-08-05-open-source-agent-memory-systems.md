@@ -39,11 +39,11 @@ Numbers verified against GitHub and the published benchmarks in August 2026.
 
 | System | GitHub ★ | License | Self-host reality | Storage | Strongest at |
 |---|---|---|---|---|---|
-| **Mem0** | ~62.6K | Apache-2.0 | OSS core; embedded store by default, external vector DB for production; hosted tier | Vector (+ optional graph) | Community + conversational personalization |
-| **Cognee** | ~29.8K | Apache-2.0 | Embedded defaults, no mandatory cloud | Graph pipeline (SQLite/LanceDB/Kuzu) | Graph ECL pipelines |
-| **Graphiti / Zep** | ~29.6K | Apache-2.0 | Graphiti self-hosts; Zep CE deprecated | Temporal knowledge graph (Neo4j/FalkorDB) | Temporal reasoning |
-| **Letta** (ex-MemGPT) | ~24.1K | Apache-2.0 | Self-hostable server | Agent runtime + memory | Full agent runtime |
-| **Hindsight** | ~19.1K | MIT | One Docker command, embedded PostgreSQL, no external DB | Single embedded Postgres, multi-strategy | Accuracy + deployment simplicity |
+| **Mem0** | ~63.0K | Apache-2.0 | OSS core; embedded store by default, external vector DB for production; hosted tier | Vector (+ optional graph) | Community + conversational personalization |
+| **Cognee** | ~30.0K | Apache-2.0 | Embedded defaults, no mandatory cloud | Graph pipeline (SQLite/LanceDB/Kuzu) | Graph ECL pipelines |
+| **Graphiti / Zep** | ~29.8K | Apache-2.0 | Graphiti self-hosts; Zep CE deprecated | Temporal knowledge graph (Neo4j/FalkorDB) | Temporal reasoning |
+| **Letta** (ex-MemGPT) | ~24.2K | Apache-2.0 | Self-hostable server | Agent runtime + memory | Full agent runtime |
+| **Hindsight** | ~19.6K | MIT | One Docker command, embedded PostgreSQL, no external DB | Single embedded Postgres, multi-strategy | Accuracy + deployment simplicity |
 
 Two honest notes before the profiles. Hindsight is **not** the most-starred project here; Mem0, Cognee, and Graphiti all have larger communities, and that's worth something real. And every system in this table is permissively licensed, so "it's open source" is table stakes, not a differentiator. The differences that matter are accuracy and what it takes to run.
 
@@ -51,7 +51,7 @@ Two honest notes before the profiles. Hindsight is **not** the most-starred proj
 
 ### Mem0 — the biggest community
 
-Mem0 is the most popular agent-memory project on GitHub by a wide margin (~62.6K stars), and popularity compounds: more integrations, more examples, more Stack Overflow answers when you're stuck. It's genuinely good at conversational personalization: memories scope by `user_id`, `agent_id`, and `run_id`, so recalling one person's preferences across sessions is the paved path, and you can start with the library, graduate to a self-hosted server, or use the hosted platform. The write side extracts facts from turns rather than storing raw transcript, which keeps the store from ballooning.
+Mem0 is the most popular agent-memory project on GitHub by a wide margin (~63.0K stars), and popularity compounds: more integrations, more examples, more Stack Overflow answers when you're stuck. It's genuinely good at conversational personalization: memories scope by `user_id`, `agent_id`, and `run_id`, so recalling one person's preferences across sessions is the paved path, and you can start with the library, graduate to a self-hosted server, or use the hosted platform. The write side extracts facts from turns rather than storing raw transcript, which keeps the store from ballooning.
 
 The trade-offs are less about a night-and-day accuracy gap and more about which benchmark you trust and the deployment shape. Mem0 publishes strong LongMemEval numbers, competitive with the top of the field, but LongMemEval is close to saturated now: the serious systems all cluster in the 90s, so it barely separates them. The sharper test is BEAM at 10 million tokens, where Hindsight is #1 and Mem0 doesn't publish a comparable result. On deployment, Mem0's open-source core runs with an embedded store by default, though production setups typically move to an external vector database, and the smoothest path nudges toward the hosted platform. If community size and a personalization-first design are your priorities, Mem0 is the obvious pick.
 
