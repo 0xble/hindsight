@@ -24,17 +24,21 @@ import hindsight_api.engine.retain.orchestrator as orch
 class _ConnTracker:
     """Flips ``open`` while a connection is checked out via acquire_with_retry."""
 
-    def __init__(self):
+    def __init__(self, current_hash=None):
         self.open = False
         self.store_writes_saw_open = []  # records `open` at each store-write call
+        self._current_hash = current_hash
 
     def acquire(self):
         tracker = self
 
+        async def _fetchval(*a, **k):
+            return tracker._current_hash
+
         class _CM:
             async def __aenter__(self_inner):
                 tracker.open = True
-                return SimpleNamespace(name="conn", transaction=_txn)
+                return SimpleNamespace(name="conn", transaction=_txn, fetchval=_fetchval)
             async def __aexit__(self_inner, *a):
                 tracker.open = False
                 return False
@@ -217,3 +221,106 @@ async def test_outbox_row_rides_the_connection(monkeypatch):
     assert aborted is False
     assert seen["open"] is True and seen["conn"] is not None  # outbox wrote inside the txn
     assert provider.decisions == [True]
+
+
+# --------------------------------------------------------------------------------------------
+# Delta re-retain path
+# --------------------------------------------------------------------------------------------
+
+def _make_common_delta(monkeypatch, tracker, *, calls):
+    _make_common(monkeypatch, tracker, calls=calls)
+
+    async def _store_document_bodies(*a, **k):
+        calls.append(("store_document_bodies", tracker.open))
+        assert tracker.open is False, "document-body store write must be connection-free"
+
+    async def _upsert_document_metadata(conn, *a, **k):
+        calls.append(("upsert_document_metadata", tracker.open))
+
+    async def _delete_chunks_by_ids(conn, ids, bank_id=None, txn=None, ops=None):
+        calls.append(("delete_chunks", tracker.open))
+        return 0
+
+    async def _update_meta(conn, *a, **k):
+        return 0
+
+    monkeypatch.setattr(orch, "_store_document_bodies", _store_document_bodies)
+    monkeypatch.setattr(orch.fact_storage, "upsert_document_metadata", _upsert_document_metadata)
+    monkeypatch.setattr(orch.chunk_storage, "delete_chunks_by_ids", _delete_chunks_by_ids)
+    monkeypatch.setattr(orch.fact_storage, "update_memory_units_metadata_and_tags", _update_meta)
+
+
+def _delta_kwargs(tracker, provider, er, *, doc_hash_at_load):
+    phase1 = SimpleNamespace(
+        entities=SimpleNamespace(
+            resolved_entities=[SimpleNamespace(entity_id="e1")],
+            entity_to_unit=[(0, 0, None)],
+            unit_to_entity_ids={},
+        )
+    )
+    return dict(
+        provider=provider,
+        ext_txn=SimpleNamespace(txn_id="t1"),
+        pool=SimpleNamespace(ops=SimpleNamespace()),
+        bank_id="bank1",
+        fq_table=lambda t: t,
+        entity_resolver=er,
+        phase1=phase1,
+        effective_doc_id="doc1",
+        config=SimpleNamespace(store_document_text=True),
+        log_buffer=[],
+        processed_facts=[SimpleNamespace(document_id=None, chunk_id=None)],
+        extracted_facts=[SimpleNamespace(chunk_index=None)],
+        delta_contents=[{"content": "c"}],
+        contents_dicts=[{"content": "c"}],
+        document_tags=[],
+        document_body_override=None,
+        doc_hash_at_load=doc_hash_at_load,
+        new_chunk_metadata=[],
+        delta_chunk_map={},
+        new_chunks_with_contents={},
+        existing_by_index={},
+        changed_indices=[],
+        removed_indices=[],
+        outbox_callback=None,
+    )
+
+
+async def test_delta_store_writes_are_connection_free(monkeypatch):
+    tracker = _ConnTracker(current_hash="SAME")
+    calls = []
+    _make_common_delta(monkeypatch, tracker, calls=calls)
+    # _build_retain_params is a plain module function; keep it real but feed simple dicts.
+    provider, er = _Provider(), _EntityResolver(tracker)
+
+    fell_back, ids = await orch._delta_batch_write_ext(
+        **_delta_kwargs(tracker, provider, er, doc_hash_at_load=None)  # None → hash check can't trip
+    )
+
+    assert fell_back is False
+    assert ids == [["u1"]]
+    # Fact write + body store + entity re-posting all happened connection-free.
+    assert tracker.store_writes_saw_open == [False]
+    assert ("store_document_bodies", False) in calls
+    assert er.postings == [[("u1", "e1", None)]]
+    # Witness inside the txn; publish after release.
+    assert len(provider.witnesses) == 1 and provider.witnesses[0][1] is not None
+    assert provider.decisions == [True]
+    assert tracker.open is False
+
+
+async def test_delta_falls_back_when_document_replaced(monkeypatch):
+    tracker = _ConnTracker(current_hash="NEW")  # differs from doc_hash_at_load below
+    calls = []
+    _make_common_delta(monkeypatch, tracker, calls=calls)
+    provider, er = _Provider(), _EntityResolver(tracker)
+
+    fell_back, _ = await orch._delta_batch_write_ext(
+        **_delta_kwargs(tracker, provider, er, doc_hash_at_load="OLD")
+    )
+
+    assert fell_back is True
+    # Staged store writes still ran connection-free before the conflict was detected.
+    assert tracker.store_writes_saw_open == [False]
+    # The group was discarded, not committed.
+    assert provider.decisions == [False]

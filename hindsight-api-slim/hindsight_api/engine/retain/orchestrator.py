@@ -770,6 +770,167 @@ async def _streaming_batch_write_ext(
     return False, batch_result_ids
 
 
+async def _delta_batch_write_ext(
+    *,
+    provider,
+    ext_txn,
+    pool,
+    bank_id: str,
+    fq_table,
+    entity_resolver,
+    phase1,
+    effective_doc_id: str,
+    config,
+    log_buffer: list[str],
+    processed_facts: list,
+    extracted_facts: list,
+    delta_contents: list,
+    contents_dicts: list,
+    document_tags,
+    document_body_override,
+    doc_hash_at_load,
+    new_chunk_metadata: list,
+    delta_chunk_map: dict,
+    new_chunks_with_contents: dict,
+    existing_by_index: dict,
+    changed_indices: list,
+    removed_indices: list,
+    outbox_callback,
+) -> tuple[bool, list[list[str]]]:
+    """Delta re-retain write for a store that OWNS its memory rows in a SEPARATE system.
+
+    Same connection-management contract as :func:`_streaming_batch_write_ext`: the slow object-store
+    writes (the new facts, then their entity re-write) plus the document-body upload are staged with
+    NO connection held; the connection is taken only for the SHORT transaction that records the
+    document/chunk metadata, the chunk tombstones, and the commit witness. Returns
+    ``(fell_back, result_unit_ids)`` — ``fell_back`` True means the document moved underneath us and
+    the caller must redo the work on the streaming path.
+    """
+    # ---- STORE PHASE (no connection held) ----
+    if document_body_override is not None:
+        combined_content = document_body_override
+    else:
+        combined_content = "\n".join([c.get("content", "") for c in contents_dicts])
+    retain_params, merged_tags = _build_retain_params(contents_dicts, document_tags)
+
+    # Re-upload the document bodies (dedup by hash — only what changed moves). A store write, so it
+    # belongs in the connection-free phase.
+    await _store_document_bodies(
+        bank_id=bank_id,
+        document_id=effective_doc_id,
+        combined_content=combined_content,
+        chunk_texts=[new_chunks_with_contents[i] for i in sorted(new_chunks_with_contents)],
+        merged_tags=merged_tags,
+        config=config,
+    )
+
+    # Deterministic chunk ids for the new/changed chunks (mirrors chunk_storage.store_chunks_batch
+    # after the delta remap), so facts can be tagged before the metadata rows are written.
+    remapped_new_indices = {delta_chunk_map.get(cm.chunk_index, cm.chunk_index) for cm in new_chunk_metadata}
+    for ef, pf in zip(extracted_facts, processed_facts):
+        pf.document_id = effective_doc_id
+        if ef.chunk_index is not None:
+            original_idx = delta_chunk_map.get(ef.chunk_index, ef.chunk_index)
+            if original_idx in remapped_new_indices:
+                pf.chunk_id = f"{bank_id}_{effective_doc_id}_{original_idx}"
+
+    # Stage the memory writes to the store (conn unused), tagged with ext_txn.
+    unit_ids = await fact_storage.insert_facts_batch(None, bank_id, processed_facts, ops=pool.ops, txn=ext_txn)
+    result_unit_ids = _map_results_to_contents(delta_contents, processed_facts, unit_ids if unit_ids else [])
+
+    if unit_ids:
+        resolved_entity_ids = [entity.entity_id for entity in phase1.entities.resolved_entities]
+        remapped_entity_to_unit, _r_u2e, _r_sem = _remap_phase1_results(
+            resolved_entity_ids, phase1.entities.entity_to_unit, phase1.entities.unit_to_entity_ids, [], unit_ids
+        )
+        unit_entity_pairs = [
+            (unit_id, resolved_entity_ids[idx], fact_date)
+            for idx, (unit_id, _local_idx, fact_date) in enumerate(remapped_entity_to_unit)
+        ]
+        await entity_resolver.record_unit_entity_postings(unit_entity_pairs, bank_id=bank_id)
+
+    # ---- CONNECTION PHASE (short transaction: local metadata + tombstones + witness) ----
+    try:
+        async with acquire_with_retry(pool) as conn:
+            async with conn.transaction():
+                # Ownership recheck: the delta diff was computed against a snapshot taken outside
+                # this txn; if the document was replaced since, the diff is stale — fall back.
+                current_hash = await conn.fetchval(
+                    f"SELECT content_hash FROM {fq_table('documents')} WHERE id = $1 AND bank_id = $2 FOR UPDATE",
+                    effective_doc_id,
+                    bank_id,
+                )
+                if current_hash is not None and doc_hash_at_load is not None and current_hash != doc_hash_at_load:
+                    log_buffer.append(
+                        f"[delta] Document {effective_doc_id} was modified by concurrent request "
+                        f"since chunks were loaded — aborting delta, falling back to full retain"
+                    )
+                    logger.info("\n" + "\n".join(log_buffer) + "\n")
+                    await provider.decide_txn(ext_txn, commit=False)
+                    return True, result_unit_ids
+
+                await fact_storage.upsert_document_metadata(
+                    conn, bank_id, effective_doc_id, combined_content, retain_params, merged_tags
+                )
+
+                # Tombstone the changed/removed chunks' memories (store delete tagged ext_txn +
+                # Postgres observation invalidation) — same write-group as the new facts above.
+                chunks_to_delete = [
+                    existing_by_index[idx].chunk_id
+                    for idx in changed_indices + removed_indices
+                    if idx in existing_by_index
+                ]
+                await chunk_storage.delete_chunks_by_ids(conn, chunks_to_delete, bank_id, txn=ext_txn, ops=pool.ops)
+
+                # Sync tags/metadata onto unchanged survivors (zero rows for a store-owned backend).
+                await fact_storage.update_memory_units_metadata_and_tags(
+                    conn, bank_id, effective_doc_id, merged_tags, retain_params.get("metadata", {})
+                )
+
+                # New/changed chunk metadata rows.
+                if new_chunk_metadata:
+                    remapped_chunks = [
+                        ChunkMetadata(
+                            chunk_text=cm.chunk_text,
+                            fact_count=cm.fact_count,
+                            content_index=cm.content_index,
+                            chunk_index=delta_chunk_map.get(cm.chunk_index, cm.chunk_index),
+                        )
+                        for cm in new_chunk_metadata
+                    ]
+                    await chunk_storage.store_chunks_batch(
+                        conn,
+                        bank_id,
+                        effective_doc_id,
+                        remapped_chunks,
+                        ops=pool.ops,
+                        store_document_text=getattr(config, "store_document_text", True),
+                    )
+
+                # Entity registry reassert (Postgres `entities`) — see the streaming path (#2662).
+                if unit_ids:
+                    await entity_resolver.reassert_entities_batch(
+                        bank_id, phase1.entities.resolved_entities, conn=conn
+                    )
+
+                # Transactional-outbox row — must ride this Postgres transaction.
+                if outbox_callback is not None:
+                    await outbox_callback(conn)
+
+                # The commit witness.
+                await provider.write_txn_witness(ext_txn, conn=conn, fq_table=fq_table)
+
+            await provider.decide_txn(ext_txn, commit=True)
+    except BaseException:
+        try:
+            await provider.decide_txn(ext_txn, commit=False)
+        except Exception:
+            logger.warning(f"[delta] best-effort abort of ext txn for {effective_doc_id} failed", exc_info=True)
+        raise
+
+    return False, result_unit_ids
+
+
 async def _extract_and_embed(
     contents: list[RetainContent],
     llm_config,
@@ -2840,6 +3001,49 @@ async def _try_delta_retain(
         phase1 = await _pre_resolve_phase1(
             pool, entity_resolver, bank_id, delta_contents, processed_facts, config, log_buffer
         )
+
+        # A store that owns its rows in a separate system uses a distinct connection-management
+        # path (mint_txn returns a handle; Postgres returns None and takes the path below,
+        # unchanged) so the data-plane connection is not held across the object-store write.
+        from ..memories import get_memories
+
+        _ext_provider = get_memories()
+        _ext_txn = await _ext_provider.mint_txn(bank_id=bank_id, mutating=True)
+        if _ext_txn is not None:
+            fell_back, _ids = await _delta_batch_write_ext(
+                provider=_ext_provider,
+                ext_txn=_ext_txn,
+                pool=pool,
+                bank_id=bank_id,
+                fq_table=fq_table,
+                entity_resolver=entity_resolver,
+                phase1=phase1,
+                effective_doc_id=effective_doc_id,
+                config=config,
+                log_buffer=log_buffer,
+                processed_facts=processed_facts,
+                extracted_facts=extracted_facts,
+                delta_contents=delta_contents,
+                contents_dicts=contents_dicts,
+                document_tags=document_tags,
+                document_body_override=document_body_override,
+                doc_hash_at_load=doc_hash_at_load,
+                new_chunk_metadata=new_chunk_metadata,
+                delta_chunk_map=delta_chunk_map,
+                new_chunks_with_contents=new_chunks_with_contents,
+                existing_by_index=existing_by_index,
+                changed_indices=changed_indices,
+                removed_indices=removed_indices,
+                outbox_callback=outbox_callback,
+            )
+            if fell_back:
+                return False
+            result_unit_ids = _ids
+            try:
+                await entity_resolver.flush_pending_stats()
+            except Exception:
+                logger.warning("Entity stats flush failed — retrieval unaffected", exc_info=True)
+            return True
 
         # PHASE 2 — Core Write Transaction (atomic)
         # Lock the document row and verify ownership. Delta loaded existing
