@@ -15883,6 +15883,7 @@ class MemoryEngine(MemoryEngineInterface):
         result_metadata: dict[str, Any] | None = None,
         dedupe_by_bank: bool = False,
         dedupe_by_bank_includes_processing: bool = False,
+        dedupe_excludes_operation_id: str | None = None,
         dedupe_in_flight_payload_key: str | None = None,
     ) -> dict[str, Any]:
         """Generic helper to submit an async operation.
@@ -15998,6 +15999,17 @@ class MemoryEngine(MemoryEngineInterface):
                     # JSON_VALUE returns NULL for the array-valued observation_scopes.
                     # (Scoped submits never reach here: they pass dedupe_by_bank=False.)
                     for row in pending:
+                        # A job that submits its own successor must not match itself.
+                        # The submitting operation is still 'processing' while its body
+                        # runs (the worker only marks it completed afterwards), so with
+                        # dedupe_by_bank_includes_processing the hand-off would dedupe
+                        # against its own row and silently do nothing. Compared in
+                        # Python rather than SQL because the operation_id cast is not
+                        # portable across the Postgres and Oracle backends.
+                        if dedupe_excludes_operation_id is not None and str(row["operation_id"]) == str(
+                            dedupe_excludes_operation_id
+                        ):
+                            continue
                         row_payload = row["task_payload"]
                         row_dict = json.loads(row_payload) if isinstance(row_payload, str) else (row_payload or {})
                         if row_dict.get("observation_scopes") is None:
@@ -16590,6 +16602,7 @@ class MemoryEngine(MemoryEngineInterface):
         bank_id: str,
         *,
         request_context: "RequestContext",
+        dedupe_excludes_operation_id: str | None = None,
         force_sweep: bool = False,
     ) -> dict[str, Any]:
         """Submit a graph-maintenance job to drain the bank's maintenance queues.
@@ -16659,6 +16672,9 @@ class MemoryEngine(MemoryEngineInterface):
             # itself if anything lands in the gap between its final claim and
             # completion.
             dedupe_by_bank_includes_processing=True,
+            # Set by the job's own hand-off so it does not match its own
+            # still-'processing' row and suppress its successor.
+            dedupe_excludes_operation_id=dedupe_excludes_operation_id,
         )
 
     async def submit_async_refresh_mental_model(

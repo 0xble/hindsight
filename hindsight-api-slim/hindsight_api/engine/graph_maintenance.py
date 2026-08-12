@@ -281,7 +281,11 @@ async def run_graph_maintenance_job(
             )
         elif leftover:
             logger.info(f"[GRAPH_MAINT] bank={bank_id} work arrived during the run; submitting a follow-up job")
-            await memory_engine.submit_async_graph_maintenance(bank_id=bank_id, request_context=request_context)
+            await memory_engine.submit_async_graph_maintenance(
+                bank_id=bank_id,
+                request_context=request_context,
+                dedupe_excludes_operation_id=operation_id,
+            )
     except Exception:
         # Never fail a completed maintenance run over the hand-off. The work is
         # still queued, and the next triggering operation will pick it up; log

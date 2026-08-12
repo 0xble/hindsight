@@ -199,7 +199,7 @@ async def test_job_hands_off_when_work_lands_during_the_run(memory, request_cont
 
     submitted: list[str] = []
 
-    async def _record(bank_id: str, *, request_context):
+    async def _record(bank_id: str, *, request_context, dedupe_excludes_operation_id=None):
         # Record only. Delegating to the real submit would let the sync task
         # backend run the successor inline, and the assertion would then be
         # about the whole chain rather than this run's hand-off decision.
@@ -223,7 +223,7 @@ async def test_job_does_not_hand_off_when_queue_is_empty(memory, request_context
 
     submitted: list[str] = []
 
-    async def _record(bank_id: str, *, request_context):
+    async def _record(bank_id: str, *, request_context, dedupe_excludes_operation_id=None):
         submitted.append(bank_id)
         return {"operation_id": None, "no_work": True}
 
@@ -255,7 +255,7 @@ async def test_job_does_not_chain_forever_when_it_drains_nothing(memory, request
 
     submitted: list[str] = []
 
-    async def _record(bank_id: str, *, request_context):
+    async def _record(bank_id: str, *, request_context, dedupe_excludes_operation_id=None):
         submitted.append(bank_id)
         return {"operation_id": None, "no_work": True}
 
@@ -264,3 +264,44 @@ async def test_job_does_not_chain_forever_when_it_drains_nothing(memory, request
     await run_graph_maintenance_job(memory_engine=memory, bank_id=bank_id, request_context=request_context)
 
     assert submitted == [], "a no-progress run must not chain a successor"
+
+
+@pytest.mark.asyncio
+async def test_handoff_is_not_suppressed_by_the_jobs_own_row(memory, request_context, monkeypatch, no_inline_execution):
+    """The hand-off must create a real successor operation, not dedupe against itself.
+
+    Widening dedup to match 'processing' introduced a way for the fix to defeat
+    itself: the submitting job is still 'processing' while its body runs (the
+    worker only marks it completed afterwards), so its own hand-off matched its
+    own row and was silently deduplicated away. The hand-off became dead code
+    and the gap it exists to close stayed open.
+
+    The sibling hand-off tests monkeypatch submit_async_graph_maintenance and
+    assert the *call* happens, so they cannot see this. This one drives the real
+    submit and counts operation rows.
+    """
+    from hindsight_api.engine.graph_maintenance import run_graph_maintenance_job
+    from hindsight_api.engine.memories import get_memories
+
+    bank_id = await _make_bank(memory, request_context)
+    await _queue_one(memory, bank_id)
+
+    first = await memory.submit_async_graph_maintenance(bank_id=bank_id, request_context=request_context)
+    await _set_status(memory, first["operation_id"], "processing")
+
+    monkeypatch.setattr(get_memories(), "relink_pass", lambda **_kwargs: _progress_relink())
+
+    before = await _count_ops(memory, bank_id, "graph_maintenance")
+    # operation_id is threaded exactly as the worker does it in
+    # _handle_graph_maintenance; without it the exclusion cannot apply.
+    await run_graph_maintenance_job(
+        memory_engine=memory,
+        bank_id=bank_id,
+        request_context=request_context,
+        operation_id=first["operation_id"],
+    )
+    after = await _count_ops(memory, bank_id, "graph_maintenance")
+
+    assert after == before + 1, (
+        f"hand-off produced no successor ({before} -> {after}); the submit matched the job's own 'processing' row"
+    )
