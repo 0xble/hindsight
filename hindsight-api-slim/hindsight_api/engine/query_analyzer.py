@@ -91,6 +91,39 @@ _PERIOD_WORDS = {
 }
 
 
+# Every token _date_match_score can award points for, in one alternation.
+# Derived from the same four sets the scorer uses so the two cannot drift apart
+# (``test_prefilter_matches_scorer`` fails if a word is added to one and not the
+# other).
+_SCOREABLE_WORDS = _MONTH_WORDS | _RELATIVE_WORDS | _WEEKDAY_WORDS | _PERIOD_WORDS
+_SCOREABLE_RE = re.compile("[0-9]|" + "|".join(sorted(_SCOREABLE_WORDS)))
+_NON_ALNUM_RE = re.compile(r"[^a-z0-9]+")
+
+
+def _query_can_score(query: str) -> bool:
+    """Whether any span of ``query`` could score above zero.
+
+    ``search_dates`` returns substrings of the *original* text (``translate_search``
+    keeps parallel original/translated token streams and reports the original),
+    and ``_date_match_score`` awards points only for an ASCII digit or one of the
+    four English word sets. So if the query contains none of those anywhere, every
+    match it could possibly return scores zero and ``analyze`` returns None —
+    which means the entire dateparser search can be skipped without changing the
+    answer.
+
+    This is deliberately an over-approximation: substring matching (rather than
+    tokenised matching) means "maybe" counts as containing "may" and we take the
+    slow path unnecessarily. That costs time, never correctness. The compacted
+    second check covers the case where dateparser joins adjacent tokens and drops
+    the separator between them, which could surface a word that is not contiguous
+    in the raw text.
+    """
+    low = query.lower()
+    if _SCOREABLE_RE.search(low):
+        return True
+    return bool(_SCOREABLE_RE.search(_NON_ALNUM_RE.sub("", low)))
+
+
 def _date_match_score(text: str) -> int:
     """Score how strong a temporal signal a matched span carries.
 
@@ -248,6 +281,14 @@ class DateparserQueryAnalyzer(QueryAnalyzer):
         if isinstance(period_result, tuple):
             start_date, end_date = period_result
             return QueryAnalysis(temporal_constraint=TemporalConstraint(start_date=start_date, end_date=end_date))
+
+        # Cheap sound rejection before the expensive search. dateparser's
+        # search_dates spends ~98% of its time detecting which of 205 locales the
+        # text is in, and it is *slowest* when there is no date to find (every
+        # locale runs to completion before concluding nothing matched). When no
+        # span could score above zero, that entire cost buys a guaranteed None.
+        if not _query_can_score(query):
+            return QueryAnalysis(temporal_constraint=None)
 
         # Lazy load dateparser (only imports on first call, then cached)
         self.load()

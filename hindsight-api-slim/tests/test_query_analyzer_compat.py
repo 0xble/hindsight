@@ -91,9 +91,7 @@ def test_golden_corpus_unchanged() -> None:
     missing = sorted(set(golden) - set(actual))
     added = sorted(set(actual) - set(golden))
     assert not missing, f"{len(missing)} golden cases no longer produced, e.g. {missing[:5]}"
-    assert not added, (
-        f"{len(added)} new corpus cases have no golden value (regenerate deliberately), e.g. {added[:5]}"
-    )
+    assert not added, f"{len(added)} new corpus cases have no golden value (regenerate deliberately), e.g. {added[:5]}"
 
     diffs = []
     for key in sorted(golden):
