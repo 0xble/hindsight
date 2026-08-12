@@ -585,6 +585,22 @@ async def _insert_facts_and_links(
     return result_unit_ids
 
 
+@dataclass
+class _ExtStreamingWriteResult:
+    """Outcome of :func:`_streaming_batch_write_ext`."""
+
+    aborted: bool
+    batch_result_ids: list[list[str]]
+
+
+@dataclass
+class _ExtDeltaWriteResult:
+    """Outcome of :func:`_delta_batch_write_ext`."""
+
+    fell_back: bool
+    result_unit_ids: list[list[str]]
+
+
 async def _streaming_batch_write_ext(
     *,
     provider,
@@ -614,7 +630,7 @@ async def _streaming_batch_write_ext(
     outbox_callback,
     assert_append_base_unchanged,
     p2_start: float,
-) -> tuple[bool, list[list[str]]]:
+) -> _ExtStreamingWriteResult:
     """Streaming batch write for a store that OWNS its memory rows in a SEPARATE system.
 
     Unlike the Postgres path (one long transaction that also carries the memory write), this
@@ -634,9 +650,10 @@ async def _streaming_batch_write_ext(
     (no ``memory_units`` for this org), and causal edges already travel on the memory record —
     writing them to PG ``memory_links`` would violate its deferrable FK to ``memory_units``.
 
-    Returns ``(aborted, batch_result_ids)``. ``aborted`` is True when a later batch lost the
-    document to a concurrent takeover (the staged write is discarded); it may also raise
-    :class:`ConcurrentAppendConflict` for a lost append race, exactly like the Postgres path.
+    ``aborted`` in the result is True when a later batch lost the document to a concurrent
+    takeover (the staged write is discarded); the call may also raise
+    :class:`ConcurrentAppendConflict` for a lost append race, exactly like the Postgres path —
+    the staged writes are discarded on that path too.
     """
     # ---- STORE PHASE (no connection held) ----
     # Chunk ids are a deterministic function of identity (mirrors chunk_storage.store_chunks_batch),
@@ -720,15 +737,16 @@ async def _streaming_batch_write_ext(
                             f"concurrent request (hash mismatch) — aborting remaining batches"
                         )
                         logger.info("\n" + "\n".join(log_buffer) + "\n")
-                        # Discard the staged store writes rather than leave them for the sweep.
-                        await provider.decide_txn(ext_txn, commit=False)
                         if append_base_hash is not None:
+                            # The BaseException handler below discards the staged writes.
                             raise ConcurrentAppendConflict(
                                 f"Document {effective_doc_id} was taken over by a concurrent "
                                 f"retain while this append was storing its batches"
                             )
+                        # Discard the staged store writes rather than leave them for the sweep.
+                        await provider.decide_txn(ext_txn, commit=False)
                         pipeline_aborted[0] = True
-                        return True, batch_result_ids
+                        return _ExtStreamingWriteResult(aborted=True, batch_result_ids=batch_result_ids)
 
                 # Chunk metadata rows (bulky bodies were already stored before this call).
                 if batch_chunk_meta:
@@ -756,18 +774,17 @@ async def _streaming_batch_write_ext(
             # Postgres committed the witness: publish the write-group (object-store marker, no conn).
             await provider.decide_txn(ext_txn, commit=True)
             logger.info(f"[streaming] Phase 2 (ext write txn): {time.time() - p2_start:.3f}s")
-    except ConcurrentAppendConflict:
-        raise
     except BaseException:
-        # The witness never committed → make sure the staged store writes don't linger; the
-        # recovery sweep is the backstop if this best-effort abort also fails.
+        # The witness never committed (this also covers a lost-append ConcurrentAppendConflict)
+        # → make sure the staged store writes don't linger; the recovery sweep is the backstop
+        # if this best-effort abort also fails.
         try:
             await provider.decide_txn(ext_txn, commit=False)
         except Exception:
             logger.warning(f"[streaming] best-effort abort of ext txn for {effective_doc_id} failed", exc_info=True)
         raise
 
-    return False, batch_result_ids
+    return _ExtStreamingWriteResult(aborted=False, batch_result_ids=batch_result_ids)
 
 
 async def _delta_batch_write_ext(
@@ -796,15 +813,15 @@ async def _delta_batch_write_ext(
     changed_indices: list,
     removed_indices: list,
     outbox_callback,
-) -> tuple[bool, list[list[str]]]:
+) -> _ExtDeltaWriteResult:
     """Delta re-retain write for a store that OWNS its memory rows in a SEPARATE system.
 
     Same connection-management contract as :func:`_streaming_batch_write_ext`: the slow object-store
     writes (the new facts, then their entity re-write) plus the document-body upload are staged with
     NO connection held; the connection is taken only for the SHORT transaction that records the
-    document/chunk metadata, the chunk tombstones, and the commit witness. Returns
-    ``(fell_back, result_unit_ids)`` — ``fell_back`` True means the document moved underneath us and
-    the caller must redo the work on the streaming path.
+    document/chunk metadata, the chunk tombstones, and the commit witness. ``fell_back`` True in
+    the result means the document moved underneath us and the caller must redo the work on the
+    streaming path.
     """
     # ---- STORE PHASE (no connection held) ----
     if document_body_override is not None:
@@ -867,7 +884,7 @@ async def _delta_batch_write_ext(
                     )
                     logger.info("\n" + "\n".join(log_buffer) + "\n")
                     await provider.decide_txn(ext_txn, commit=False)
-                    return True, result_unit_ids
+                    return _ExtDeltaWriteResult(fell_back=True, result_unit_ids=result_unit_ids)
 
                 await fact_storage.upsert_document_metadata(
                     conn, bank_id, effective_doc_id, combined_content, retain_params, merged_tags
@@ -926,7 +943,7 @@ async def _delta_batch_write_ext(
             logger.warning(f"[delta] best-effort abort of ext txn for {effective_doc_id} failed", exc_info=True)
         raise
 
-    return False, result_unit_ids
+    return _ExtDeltaWriteResult(fell_back=False, result_unit_ids=result_unit_ids)
 
 
 async def _extract_and_embed(
@@ -2200,7 +2217,7 @@ async def _streaming_retain_batch(
             _ext_provider = get_memories()
             _ext_txn = await _ext_provider.mint_txn(bank_id=bank_id, mutating=True)
             if _ext_txn is not None:
-                aborted, batch_result_ids = await _streaming_batch_write_ext(
+                ext_result = await _streaming_batch_write_ext(
                     provider=_ext_provider,
                     ext_txn=_ext_txn,
                     pool=pool,
@@ -2232,7 +2249,11 @@ async def _streaming_retain_batch(
                 # Doc-tracking consumed combined_content on the first batch; release it (mirrors
                 # the Postgres path's first-batch reset).
                 combined_content = ""
-                if not aborted:
+                if not ext_result.aborted:
+                    # The short txn above committed the transactional-outbox row; record it so
+                    # the post-loop fallback doesn't queue a duplicate delivery.
+                    if is_last and outbox_callback is not None:
+                        outbox_fired[0] = True
                     # Deferred-stats flush + unit collection — mirrors the shared tail the Postgres
                     # path reaches after its connection block exits.
                     try:
@@ -2241,9 +2262,8 @@ async def _streaming_retain_batch(
                         logger.warning(
                             f"Entity stats flush (consumer batch {consumer_batch_idx + 1}) failed", exc_info=True
                         )
-                    if batch_result_ids:
-                        for content_ids in batch_result_ids:
-                            all_unit_ids.extend(content_ids)
+                    for content_ids in ext_result.batch_result_ids:
+                        all_unit_ids.extend(content_ids)
                 return
 
             async with acquire_with_retry(pool) as conn:
@@ -3008,7 +3028,7 @@ async def _try_delta_retain(
         _ext_provider = get_memories()
         _ext_txn = await _ext_provider.mint_txn(bank_id=bank_id, mutating=True)
         if _ext_txn is not None:
-            fell_back, _ids = await _delta_batch_write_ext(
+            delta_result = await _delta_batch_write_ext(
                 provider=_ext_provider,
                 ext_txn=_ext_txn,
                 pool=pool,
@@ -3034,9 +3054,11 @@ async def _try_delta_retain(
                 removed_indices=removed_indices,
                 outbox_callback=outbox_callback,
             )
-            if fell_back:
+            if delta_result.fell_back:
                 return False
-            result_unit_ids = _ids
+            result_unit_ids = delta_result.result_unit_ids
+            log_buffer.append(f"DELTA RETAIN COMPLETE (ext store): {len(processed_facts)} new units")
+            logger.info("\n" + "\n".join(log_buffer) + "\n")
             try:
                 await entity_resolver.flush_pending_stats()
             except Exception:

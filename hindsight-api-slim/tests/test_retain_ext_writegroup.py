@@ -16,7 +16,10 @@ object-store write. These tests pin that contract:
 
 from types import SimpleNamespace
 
+import pytest
+
 import hindsight_api.engine.retain.orchestrator as orch
+from hindsight_api.engine.retain.types import ConcurrentAppendConflict
 
 
 class _ConnTracker:
@@ -165,12 +168,12 @@ async def test_store_writes_are_connection_free_and_witness_is_in_txn(monkeypatc
     _make_common(monkeypatch, tracker, calls=calls)
     provider, er = _Provider(), _EntityResolver(tracker)
 
-    aborted, result_ids = await orch._streaming_batch_write_ext(
+    result = await orch._streaming_batch_write_ext(
         **_kwargs(tracker, provider, er, doc_tracking_done=[False], existing_hash="__pending__", new_hash="h")
     )
 
-    assert aborted is False
-    assert result_ids == [["u1"]]
+    assert result.aborted is False
+    assert result.batch_result_ids == [["u1"]]
     # The fact write happened with no connection held.
     assert tracker.store_writes_saw_open == [False]
     # Entity re-posting happened (also connection-free — asserted inside the fake).
@@ -191,15 +194,38 @@ async def test_later_batch_takeover_aborts_and_discards_staged_write(monkeypatch
 
     # Later batch (doc_tracking already done) whose document was taken over: existing hash
     # differs from ours → abort.
-    aborted, _ = await orch._streaming_batch_write_ext(
+    result = await orch._streaming_batch_write_ext(
         **_kwargs(tracker, provider, er, doc_tracking_done=[True], existing_hash="OTHER", new_hash="OURS")
     )
 
-    assert aborted is True
+    assert result.aborted is True
     # Staged store write still happened connection-free before the takeover was detected.
     assert tracker.store_writes_saw_open == [False]
     # The group was explicitly aborted, not committed.
     assert provider.decisions == [False]
+
+
+async def test_lost_append_race_discards_staged_write(monkeypatch):
+    tracker = _ConnTracker()
+    calls = []
+    _make_common(monkeypatch, tracker, calls=calls)
+    provider, er = _Provider(), _EntityResolver(tracker)
+
+    # First batch of an append whose base compare-and-swap fails: the conflict must
+    # propagate AND the already-staged store writes must be discarded, exactly once.
+    kwargs = _kwargs(tracker, provider, er, doc_tracking_done=[False], existing_hash="MOVED", new_hash="h")
+    kwargs["append_base_hash"] = "BASE"
+
+    def _cas_fails(existing_hash):
+        raise ConcurrentAppendConflict("append base changed")
+
+    kwargs["assert_append_base_unchanged"] = _cas_fails
+
+    with pytest.raises(ConcurrentAppendConflict):
+        await orch._streaming_batch_write_ext(**kwargs)
+
+    assert provider.decisions == [False]
+    assert tracker.open is False  # connection released on the way out
 
 
 async def test_outbox_row_rides_the_connection(monkeypatch):
@@ -213,7 +239,7 @@ async def test_outbox_row_rides_the_connection(monkeypatch):
         seen["open"] = tracker.open
         seen["conn"] = conn
 
-    aborted, _ = await orch._streaming_batch_write_ext(
+    result = await orch._streaming_batch_write_ext(
         **_kwargs(
             tracker,
             provider,
@@ -225,7 +251,7 @@ async def test_outbox_row_rides_the_connection(monkeypatch):
             is_last=True,
         )
     )
-    assert aborted is False
+    assert result.aborted is False
     assert seen["open"] is True and seen["conn"] is not None  # outbox wrote inside the txn
     assert provider.decisions == [True]
 
@@ -301,12 +327,12 @@ async def test_delta_store_writes_are_connection_free(monkeypatch):
     # _build_retain_params is a plain module function; keep it real but feed simple dicts.
     provider, er = _Provider(), _EntityResolver(tracker)
 
-    fell_back, ids = await orch._delta_batch_write_ext(
+    result = await orch._delta_batch_write_ext(
         **_delta_kwargs(tracker, provider, er, doc_hash_at_load=None)  # None → hash check can't trip
     )
 
-    assert fell_back is False
-    assert ids == [["u1"]]
+    assert result.fell_back is False
+    assert result.result_unit_ids == [["u1"]]
     # Fact write + body store + entity re-posting all happened connection-free.
     assert tracker.store_writes_saw_open == [False]
     assert ("store_document_bodies", False) in calls
@@ -323,9 +349,9 @@ async def test_delta_falls_back_when_document_replaced(monkeypatch):
     _make_common_delta(monkeypatch, tracker, calls=calls)
     provider, er = _Provider(), _EntityResolver(tracker)
 
-    fell_back, _ = await orch._delta_batch_write_ext(**_delta_kwargs(tracker, provider, er, doc_hash_at_load="OLD"))
+    result = await orch._delta_batch_write_ext(**_delta_kwargs(tracker, provider, er, doc_hash_at_load="OLD"))
 
-    assert fell_back is True
+    assert result.fell_back is True
     # Staged store writes still ran connection-free before the conflict was detected.
     assert tracker.store_writes_saw_open == [False]
     # The group was discarded, not committed.
