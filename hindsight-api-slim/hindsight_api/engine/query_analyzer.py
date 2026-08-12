@@ -10,6 +10,8 @@ import re
 from abc import ABC, abstractmethod
 from datetime import datetime, timedelta
 
+from dateparser.conf import apply_settings
+
 from pydantic import BaseModel, Field
 
 from hindsight_api.engine.temporal_periods import (
@@ -231,30 +233,68 @@ class DateparserQueryAnalyzer(QueryAnalyzer):
                 (e.g. ["en"]). None (default) keeps full auto-detection across
                 all 200+ locales — unchanged behavior.
         """
-        self._search_dates = None
         self._languages = languages
-
-    def _search_kwargs(self) -> dict:
-        """Extra kwargs for search_dates, shared by load() and analyze().
-
-        Both call sites must use the same locale set: warming up under
-        auto-detection while running restricted (or vice versa) leaves part of
-        the lazy-load cost on the first real query.
-        """
-        return {} if self._languages is None else {"languages": self._languages}
+        self._loaded = False
+        self._locales = None
+        self._exact_search = None
 
     def load(self) -> None:
         """Load dateparser and warm up internal data structures.
 
-        Triggers the real initialization cost (regex tables, timezone data) at
-        load time so the first actual recall doesn't pay the cold-start penalty.
+        Triggers the real initialization cost (locale dictionaries, timezone
+        tables, the cached character tables used by detection) at load time so
+        the first actual recall doesn't pay the cold-start penalty.
         """
-        if self._search_dates is None:
-            from dateparser.search import search_dates
+        if self._loaded:
+            return
 
-            self._search_dates = search_dates
-            # Warm up: fire a dummy call to trigger lazy-loaded internal tables.
-            self._search_dates("today", **self._search_kwargs())
+        from dateparser.conf import settings as dateparser_settings
+        from dateparser.search import _search_with_detection
+        from dateparser.search.search import _ExactLanguageSearch
+
+        available = _search_with_detection.available_language_map
+        if self._languages is None:
+            self._locales = list(available.values())
+        else:
+            unknown = set(self._languages) - set(available)
+            if unknown:
+                raise ValueError("Unknown language(s): %s" % ", ".join(map(repr, sorted(unknown))))
+            self._locales = [available[code] for code in self._languages]
+
+        # Our own instance rather than dateparser's module-level singleton:
+        # _ExactLanguageSearch caches the "current" locale on itself, so sharing
+        # it across callers is a data race the moment this runs off the event
+        # loop thread.
+        self._exact_search = _ExactLanguageSearch(_search_with_detection.loader)
+        self._loaded = True
+
+        # Warm the lazily-built locale dictionaries and the character tables.
+        self._find_dates("today", settings=dateparser_settings)
+
+    @apply_settings
+    def _find_dates(self, query: str, settings=None) -> list | None:
+        """``dateparser.search.search_dates`` without its redundant work.
+
+        Same three steps as upstream — preprocess, detect the language, parse the
+        detected language's date expressions — but detection goes through
+        :mod:`hindsight_api.engine.temporal_language_detection`, which is the same
+        algorithm with the per-locale recomputation hoisted and memoised. See that
+        module for why each step is equivalence-preserving, and
+        ``tests/test_temporal_language_detection.py`` for the differential proof.
+        """
+        from dateparser.conf import check_settings
+        from dateparser.search import _search_with_detection
+
+        from .temporal_language_detection import best_language
+
+        check_settings(settings)
+        text = _search_with_detection.preprocess_text(query, self._languages)
+        language = best_language(text, self._locales) or (
+            settings.DEFAULT_LANGUAGES[0] if settings.DEFAULT_LANGUAGES else None
+        )
+        if not language:
+            return None
+        return self._exact_search.search_parse(language, text, settings=settings) or None
 
     def analyze(self, query: str, reference_date: datetime | None = None) -> QueryAnalysis:
         """
@@ -307,7 +347,7 @@ class DateparserQueryAnalyzer(QueryAnalyzer):
         # treat any failure as "no temporal constraint found" so the caller
         # can fall back to non-temporal retrieval.
         try:
-            results = self._search_dates(query, settings=settings, **self._search_kwargs())
+            results = self._find_dates(query, settings=settings)
         except Exception as e:
             logger.warning(
                 "dateparser raised %s on query (treating as no temporal constraint): %s",

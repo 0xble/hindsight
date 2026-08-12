@@ -112,7 +112,7 @@ def measure_by_category(fn: AnalyzeFn, repeats: int = 3) -> list[LatencyStats]:
     return sorted(by_cat.values(), key=lambda s: -s.pct(99))
 
 
-async def _burst_once(fn: AnalyzeFn, queries: list[str], concurrency: int, stats: LatencyStats) -> None:
+async def _burst_once(fn: AnalyzeFn, queries: list[str], concurrency: int, stats: LatencyStats, offset: int) -> None:
     """Issue `concurrency` calls simultaneously; record each one's own latency.
 
     Every coroutine timestamps immediately before its own call, so the recorded
@@ -124,7 +124,10 @@ async def _burst_once(fn: AnalyzeFn, queries: list[str], concurrency: int, stats
 
     async def one(idx: int) -> None:
         await start_barrier.wait()
-        q = queries[idx % len(queries)]
+        # Rotate by round so a burst smaller than the workload still sweeps the
+        # whole mix over successive rounds; otherwise burst@32 would only ever
+        # see workload[:32] and the gate would measure one biased slice.
+        q = queries[(offset + idx) % len(queries)]
         t = time.perf_counter()
         fn(q, REFERENCE_DATE)
         stats.add((time.perf_counter() - t) * 1000.0)
@@ -135,10 +138,13 @@ async def _burst_once(fn: AnalyzeFn, queries: list[str], concurrency: int, stats
     await asyncio.gather(*tasks)
 
 
-async def measure_burst(fn: AnalyzeFn, queries: list[str], concurrency: int, rounds: int = 12) -> LatencyStats:
+async def measure_burst(fn: AnalyzeFn, queries: list[str], concurrency: int, rounds: int | None = None) -> LatencyStats:
+    """Run enough rounds that every workload query is issued at least once."""
+    if rounds is None:
+        rounds = max(12, -(-len(queries) // concurrency))
     stats = LatencyStats(f"burst@{concurrency}")
-    for _ in range(rounds):
-        await _burst_once(fn, queries, concurrency, stats)
+    for r in range(rounds):
+        await _burst_once(fn, queries, concurrency, stats, offset=r * concurrency)
     return stats
 
 
