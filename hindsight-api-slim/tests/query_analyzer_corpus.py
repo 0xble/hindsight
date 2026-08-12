@@ -441,14 +441,22 @@ def build_corpus() -> list[tuple[str, str]]:
 
 # Queries used by the latency gate. Weighted toward the real recall mix:
 # mostly non-temporal, some period expressions, a few explicit dates.
-def build_perf_workload() -> list[str]:
+#
+# Split deliberately by input *shape*, because the two behave very differently.
+# Detection cost is O(text length x 205 locales), so a user-typed query and a
+# 2 KB document excerpt are not the same workload and averaging them hides which
+# one is slow.
+def build_query_workload() -> list[str]:
+    """Query-shaped input: what a user (or an agent) actually types into recall."""
     return (
-        NON_TEMPORAL_EN * 3
-        + TZ_ABBREV_TRAPS * 2
-        + PERIOD_EN
-        + PERIOD_ZH
-        + PERIOD_RU
-        + EXPLICIT_DATES
-        + LONG_TEXTS
-        + MONTH_YEAR[:20]
+        NON_TEMPORAL_EN * 3 + TZ_ABBREV_TRAPS * 2 + PERIOD_EN + PERIOD_ZH + PERIOD_RU + EXPLICIT_DATES + MONTH_YEAR[:20]
     )
+
+
+def build_document_workload() -> list[str]:
+    """Document-shaped input: consolidation recalls pass stored fact text."""
+    return LONG_TEXTS
+
+
+def build_perf_workload() -> list[str]:
+    return build_query_workload() + build_document_workload()

@@ -11,7 +11,6 @@ from abc import ABC, abstractmethod
 from datetime import datetime, timedelta
 
 from dateparser.conf import apply_settings
-
 from pydantic import BaseModel, Field
 
 from hindsight_api.engine.temporal_periods import (
