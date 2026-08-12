@@ -305,3 +305,68 @@ async def test_handoff_is_not_suppressed_by_the_jobs_own_row(memory, request_con
     assert after == before + 1, (
         f"hand-off produced no successor ({before} -> {after}); the submit matched the job's own 'processing' row"
     )
+
+
+@pytest.mark.asyncio
+async def test_handoff_survives_the_real_worker_path(memory, request_context, monkeypatch):
+    """Same guarantee as the test above, but through the worker's own machinery.
+
+    The sibling test calls run_graph_maintenance_job directly and sets
+    'processing' with a hand-written UPDATE. That leaves the integration
+    unproven: whether the real claim actually marks the row 'processing' before
+    the body runs, and whether execute_task threads operation_id down to the
+    hand-off. Both are load-bearing — if either is false the self-exclusion
+    never applies and the hand-off is silently dead again.
+
+    So this drives the real payload the task backend receives, the real
+    mark_operations_processing claim, and the real execute_task router.
+    Observed: status=processing, operations 1 -> 2 with the exclusion and
+    1 -> 1 without it.
+    """
+    from hindsight_api.engine.memories import get_memories
+    from hindsight_api.engine.memory_engine import acquire_with_retry
+
+    bank_id = f"gm-e2e-{uuid.uuid4().hex[:8]}"
+    await memory._ensure_bank_exists(bank_id, request_context)
+
+    backend = await memory._get_backend()
+    async with acquire_with_retry(backend) as c:
+        await backend.ops.enqueue_graph_maintenance(c, "graph_maintenance_queue", bank_id, [uuid.uuid4()])
+
+    # Capture the REAL task payload the backend would receive, instead of inventing one.
+    captured: list[dict] = []
+
+    async def _capture(payload):
+        captured.append(dict(payload))
+
+    memory._task_backend.submit_task = _capture
+
+    first = await memory.submit_async_graph_maintenance(bank_id=bank_id, request_context=request_context)
+    assert captured, "no task payload was submitted"
+    task_dict = dict(captured[0])
+
+    # Claim it exactly as a worker does — the real status transition.
+    async with acquire_with_retry(backend) as c:
+        await backend.ops.mark_operations_processing(
+            c, "async_operations", "probe-worker", [uuid.UUID(first["operation_id"])]
+        )
+        st = await c.fetchval("SELECT status FROM async_operations WHERE operation_id=$1::uuid", first["operation_id"])
+    assert st == "processing"
+
+    async def _progress():
+        return {"relink_units_processed": 3, "relink_links_added": 0}
+
+    monkeypatch.setattr(get_memories(), "relink_pass", lambda **_k: _progress())
+
+    async def _count():
+        async with acquire_with_retry(backend) as c:
+            return await c.fetchval(
+                "SELECT count(*) FROM async_operations WHERE bank_id=$1 AND operation_type='graph_maintenance'",
+                bank_id,
+            )
+
+    before = await _count()
+    await memory.execute_task(task_dict)  # <-- the real router, not the job body
+    after = await _count()
+
+    assert after == before + 1, f"hand-off produced no successor through the real worker path ({before} -> {after})"
