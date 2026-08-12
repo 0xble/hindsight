@@ -16,8 +16,6 @@ object-store write. These tests pin that contract:
 
 from types import SimpleNamespace
 
-import pytest
-
 import hindsight_api.engine.retain.orchestrator as orch
 
 
@@ -39,6 +37,7 @@ class _ConnTracker:
             async def __aenter__(self_inner):
                 tracker.open = True
                 return SimpleNamespace(name="conn", transaction=_txn, fetchval=_fetchval)
+
             async def __aexit__(self_inner, *a):
                 tracker.open = False
                 return False
@@ -50,8 +49,10 @@ def _txn():
     class _T:
         async def __aenter__(self):
             return None
+
         async def __aexit__(self, *a):
             return False
+
     return _T()
 
 
@@ -76,14 +77,14 @@ def _make_common(monkeypatch, tracker, *, calls):
     monkeypatch.setattr(orch.chunk_storage, "store_chunks_batch", _store_chunks_batch)
     monkeypatch.setattr(orch.fact_storage, "handle_document_tracking", _handle_doc_tracking)
     monkeypatch.setattr(orch, "_map_results_to_contents", lambda contents, pf, uids: [list(uids)])
-    monkeypatch.setattr(
-        orch, "_remap_phase1_results", lambda rids, e2u, u2e, sem, uids: ([("u1", 0, None)], {}, [])
-    )
+    monkeypatch.setattr(orch, "_remap_phase1_results", lambda rids, e2u, u2e, sem, uids: ([("u1", 0, None)], {}, []))
     # Any PG link writer being called for an ext org is a bug — make it explode.
     for name in ("create_temporal_links_batch", "create_semantic_links_batch", "create_causal_links_batch"):
         if hasattr(orch.link_creation, name):
+
             def _boom(*a, _n=name, **k):
                 raise AssertionError(f"ext path must not call link_creation.{_n}")
+
             monkeypatch.setattr(orch.link_creation, name, _boom)
 
 
@@ -214,8 +215,14 @@ async def test_outbox_row_rides_the_connection(monkeypatch):
 
     aborted, _ = await orch._streaming_batch_write_ext(
         **_kwargs(
-            tracker, provider, er, doc_tracking_done=[False],
-            existing_hash="__pending__", new_hash="h", outbox=_outbox, is_last=True,
+            tracker,
+            provider,
+            er,
+            doc_tracking_done=[False],
+            existing_hash="__pending__",
+            new_hash="h",
+            outbox=_outbox,
+            is_last=True,
         )
     )
     assert aborted is False
@@ -226,6 +233,7 @@ async def test_outbox_row_rides_the_connection(monkeypatch):
 # --------------------------------------------------------------------------------------------
 # Delta re-retain path
 # --------------------------------------------------------------------------------------------
+
 
 def _make_common_delta(monkeypatch, tracker, *, calls):
     _make_common(monkeypatch, tracker, calls=calls)
@@ -315,9 +323,7 @@ async def test_delta_falls_back_when_document_replaced(monkeypatch):
     _make_common_delta(monkeypatch, tracker, calls=calls)
     provider, er = _Provider(), _EntityResolver(tracker)
 
-    fell_back, _ = await orch._delta_batch_write_ext(
-        **_delta_kwargs(tracker, provider, er, doc_hash_at_load="OLD")
-    )
+    fell_back, _ = await orch._delta_batch_write_ext(**_delta_kwargs(tracker, provider, er, doc_hash_at_load="OLD"))
 
     assert fell_back is True
     # Staged store writes still ran connection-free before the conflict was detected.

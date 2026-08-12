@@ -643,7 +643,9 @@ async def _streaming_batch_write_ext(
     # so facts can be tagged with document_id + chunk_id before the metadata rows are written.
     chunk_id_by_index = {}
     if batch_chunk_meta:
-        chunk_id_by_index = {cm.chunk_index: f"{bank_id}_{effective_doc_id}_{cm.chunk_index}" for cm in batch_chunk_meta}
+        chunk_id_by_index = {
+            cm.chunk_index: f"{bank_id}_{effective_doc_id}_{cm.chunk_index}" for cm in batch_chunk_meta
+        }
     for fact, processed_fact in zip(batch_extracted, batch_processed):
         processed_fact.document_id = effective_doc_id
         if batch_chunk_meta and fact.chunk_index is not None:
@@ -742,9 +744,7 @@ async def _streaming_batch_write_ext(
                 # Entity registry reassert (Postgres `entities`): re-create the resolved parents
                 # this txn so a concurrent prune can't leave the postings dangling (#2662).
                 if unit_ids:
-                    await entity_resolver.reassert_entities_batch(
-                        bank_id, phase1.entities.resolved_entities, conn=conn
-                    )
+                    await entity_resolver.reassert_entities_batch(bank_id, phase1.entities.resolved_entities, conn=conn)
 
                 # Transactional-outbox row — must ride this Postgres transaction.
                 if is_last and outbox_callback is not None:
@@ -909,9 +909,7 @@ async def _delta_batch_write_ext(
 
                 # Entity registry reassert (Postgres `entities`) — see the streaming path (#2662).
                 if unit_ids:
-                    await entity_resolver.reassert_entities_batch(
-                        bank_id, phase1.entities.resolved_entities, conn=conn
-                    )
+                    await entity_resolver.reassert_entities_batch(bank_id, phase1.entities.resolved_entities, conn=conn)
 
                 # Transactional-outbox row — must ride this Postgres transaction.
                 if outbox_callback is not None:
