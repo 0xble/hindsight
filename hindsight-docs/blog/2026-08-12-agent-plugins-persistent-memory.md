@@ -23,7 +23,7 @@ Hindsight now ships as an Agent Plugin. One portable bundle gives any supported 
 - Hindsight ships **one** plugin for the standard instead of N per-IDE configs. It carries the same `recall` / `retain` / `reflect` memory.
 - The bundle is three files: a manifest, an MCP server config, and a memory skill. It is **transport-only** — all memory logic stays server-side in Hindsight.
 - Set two env vars (`HINDSIGHT_API_KEY`, optional `HINDSIGHT_BANK_ID`) and the agent calls memory tools automatically, guided by the bundled skill.
-- Honest limitation: the standard covers Skills and MCP, not session hooks, so this is **explicit, tool-driven** memory. For automatic capture, use the native hook-based integrations — they share the same banks.
+- Honest limitation: the standard covers Skills and MCP, not session hooks, so this is **explicit, tool-driven** memory. For fully automatic capture across coding agents, use the [Coding Agents integration](https://hindsight.vectorize.io/sdks/integrations/coding-agents) — it shares the same banks.
 
 ## What Agent Plugins actually is
 
@@ -85,9 +85,9 @@ One portability note: most clients substitute `${VAR}`, but some — VS Code and
 
 Here is the honest boundary. Agent Plugins `1.0.0` standardizes **Skills and MCP**, not session lifecycle hooks. So this plugin delivers **explicit, tool-driven** memory: the agent calls `recall` and `retain` when the skill tells it to, and that behavior is identical across every supported client.
 
-What it does not do is fire on its own before every prompt or automatically retain a transcript when a session ends. That fully automatic experience needs lifecycle hooks, which are tool-specific by nature. For those, use the native hook-based integrations — such as [Claude Code](https://hindsight.vectorize.io/sdks/integrations/claude-code) — where recall is injected before each prompt and the session is retained on exit.
+What it does not do is fire on its own before every prompt or automatically capture a session as it ends. That fully automatic experience needs deeper, tool-specific wiring. For coding work, that is exactly what the [Coding Agents integration](https://hindsight.vectorize.io/sdks/integrations/coding-agents) provides: one package that installs native memory across opencode, Cline, Kilo, Cursor CLI, Codex CLI, GitHub Copilot CLI, Claude Code, Grok Build, and more. It builds a per-repo memory bank automatically from git history and past sessions, then injects the relevant context as the agent works — no tools for the model to remember to call.
 
-The two approaches are not a fork. They read and write the **same Hindsight banks**, so a fact captured automatically by the Claude Code hook is recalled by the portable plugin inside Cursor, and vice versa. Pick portable-and-explicit or native-and-automatic per tool; the memory underneath is one store.
+The two approaches are not a fork. They read and write the **same Hindsight banks**, so context captured automatically by the Coding Agents integration is recalled by the portable plugin inside any Agent Plugins client, and vice versa. Pick portable-and-explicit or native-and-automatic per tool; the memory underneath is one store.
 
 ## Quick start
 
