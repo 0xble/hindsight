@@ -29,6 +29,12 @@ from hindsight_api.engine.memory_engine import MemoryEngine
 pytestmark = pytest.mark.xdist_group("graph_maintenance_submit_dedup_tests")
 
 
+async def _progress_relink():
+    """Pretend Pass 1 drained rows; the row left in the queue then stands in for
+    work enqueued after the final claim."""
+    return {"relink_units_processed": 3, "relink_links_added": 0}
+
+
 @pytest.fixture
 def no_inline_execution(memory):
     """Stop SyncTaskBackend running submitted ops inline, so a submitted job
@@ -205,12 +211,6 @@ async def test_job_hands_off_when_work_lands_during_the_run(memory, request_cont
     await run_graph_maintenance_job(memory_engine=memory, bank_id=bank_id, request_context=request_context)
 
     assert submitted == [bank_id], "job must hand off the work it could not drain"
-
-
-async def _progress_relink():
-    """Pretend Pass 1 drained rows; the row left in the queue then stands in for
-    work enqueued after the final claim."""
-    return {"relink_units_processed": 3, "relink_links_added": 0}
 
 
 @pytest.mark.asyncio
