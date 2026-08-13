@@ -101,6 +101,16 @@ def test_period_fastpath_never_reaches_dateparser(analyze) -> None:
     assert per_query_ms < 0.1, f"period fast path averaged {per_query_ms:.4f}ms/query"
 
 
+# Wall-clock percentiles cannot be measured while other xdist workers are
+# saturating the CPU: the numbers reflect the runner's load, not this code. Skip
+# rather than assert something meaningless (or, worse, flake).
+requires_serial = pytest.mark.skipif(
+    os.getenv("PYTEST_XDIST_WORKER") is not None,
+    reason="wall-clock latency is not measurable under parallel test execution; run with -p no:xdist",
+)
+
+
+@requires_serial
 @pytest.mark.slow
 @pytest.mark.parametrize("concurrency", [32, 64, 128, 256])
 def test_query_burst_p99_under_concurrency(analyze, concurrency: int) -> None:
@@ -119,6 +129,7 @@ def test_query_burst_p99_under_concurrency(analyze, concurrency: int) -> None:
     )
 
 
+@requires_serial
 @pytest.mark.slow
 def test_document_shaped_input_is_the_known_remaining_tail(analyze) -> None:
     """Document-shaped input still exceeds the budget, and that is known.
