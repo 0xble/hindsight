@@ -721,6 +721,29 @@ def test_per_bank_capability_defaults_to_the_class_attribute():
     assert mem.owns_document_store_for("any-bank") is True
 
 
+def test_derives_semantic_links_internally_gates_the_ann_pass():
+    """A store that owns its vector index sets ``derives_semantic_links_internally`` True so retain
+    skips the Postgres ANN pass (which would scan an empty ``memory_units`` and write ``memory_links``
+    rows the store's read path never reads). The default stores keep it False and run the pass —
+    their semantic neighbours live in ``memory_links``, read by the SQL graph arm."""
+    pg = PostgresMemories({})
+    assert pg.derives_semantic_links_internally is False
+    assert pg.derives_semantic_links_internally_for("any-bank") is False
+
+    # A store may own its index for only some banks — the _for method answers per bank.
+    class PartlyOwnedIndex(InMemoryMemories):
+        name = "own-index"
+        derives_semantic_links_internally = True
+
+        def derives_semantic_links_internally_for(self, bank_id):
+            return bank_id != "legacy-sql-bank"
+
+    store = PartlyOwnedIndex({})
+    assert store.derives_semantic_links_internally is True
+    assert store.derives_semantic_links_internally_for("vector-bank") is True
+    assert store.derives_semantic_links_internally_for("legacy-sql-bank") is False
+
+
 def test_a_store_answers_capabilities_per_bank():
     """The point of the _for methods: a store that keeps some banks in SQL and others in a
     separate store answers PER BANK, so mixed banks in one process each take the right path."""

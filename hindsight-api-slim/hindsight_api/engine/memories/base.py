@@ -452,6 +452,22 @@ class MemoriesExtension(Extension, ABC):
         that keeps some banks in a separate backend overrides it. See :meth:`writes_memory_rows_in_sql_for`."""
         return self.owns_document_store
 
+    #: Whether this store derives the semantic (kNN) link graph itself, so retain must NOT run the
+    #: Postgres ANN pass that populates ``memory_links``. Default False: the SQL stores have no
+    #: standing kNN index, so retain computes each committed unit's semantic neighbours with a
+    #: pgvector ANN pass and writes ``memory_links`` rows, which the recall graph arm then reads.
+    #: A store that keeps its own vector index can serve the same neighbours from it (at read time,
+    #: or from links it derived at fold time) — for such a store the Postgres pass is pure waste: it
+    #: scans a ``memory_units`` table that is empty for its banks and writes ``memory_links`` rows
+    #: nothing on its read path consults. Setting this True makes retain skip that pass entirely.
+    derives_semantic_links_internally: bool = False
+
+    def derives_semantic_links_internally_for(self, bank_id: str) -> bool:
+        """Per-bank form of :attr:`derives_semantic_links_internally`. Defaults to the class
+        attribute; a store that owns its vector index for only some banks overrides it. See
+        :meth:`writes_memory_rows_in_sql_for`."""
+        return self.derives_semantic_links_internally
+
     # ------------------------------------------------------------------ lifecycle
 
     async def initialize(self) -> None:

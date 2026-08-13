@@ -2657,8 +2657,16 @@ async def _streaming_retain_batch(
     # Final ANN pass: create semantic links for ALL committed units at once.
     # This replaces per-batch within-batch + fire-and-forget ANN with a single
     # efficient pass after all facts are in the database.
+    #
+    # Skipped for a store that derives the semantic graph itself: the pass would
+    # run a pgvector ANN over the SQL memory_units table — empty for such a store,
+    # since its facts live in its own index — and write memory_links rows its read
+    # path never consults. That is a full redundant pass on every retain; the store
+    # serves the same neighbours from its own vector index instead.
     # ---------------------------------------------------------------------------
-    if all_unit_ids and not pipeline_aborted[0]:
+    from ..memories import get_memories
+
+    if all_unit_ids and not pipeline_aborted[0] and not get_memories().derives_semantic_links_internally_for(bank_id):
         ann_start = time.time()
         try:
             await _run_final_semantic_ann(
