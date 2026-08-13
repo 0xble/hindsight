@@ -13,7 +13,7 @@ hide_table_of_contents: true
 
 A memory bank accumulates thousands of facts, and you cannot read any of them. Your agent recalls the right one at the right moment, which is the point, but there is no page you can open to see what it actually knows about your project. [Knowledge Pages](https://hindsight.vectorize.io/developer/knowledge-pages), shipped in Hindsight 0.9.0, close that gap: they are living documents a bank writes about itself, and they rewrite themselves as the bank learns.
 
-That matters most when an agent is doing the learning for you. If you run [Hermes](https://hindsight.vectorize.io/sdks/integrations/hermes) with Hindsight as its memory provider, every session quietly deposits what it learned into a bank. Point Knowledge Pages at that same bank and the agent's accumulated memory becomes a wiki you can read, audit, and trust to stay current.
+That matters most when an agent is doing the learning for you. If you run [Hermes](https://hindsight.vectorize.io/sdks/integrations/hermes) with Hindsight as its memory provider, every session quietly deposits what it learned into a bank. Point Knowledge Pages at that same bank and the agent's accumulated memory becomes a wiki you can read, a graph you can explore, and a knowledge base you can trust to stay current.
 
 <!-- truncate -->
 
@@ -24,6 +24,7 @@ That matters most when an agent is doing the learning for you. If you run [Herme
 - You do not write a page's body. You give it a name and a question; Hindsight synthesizes the content and keeps it current after every consolidation.
 - **Hermes** uses Hindsight as a memory provider, auto-recalling before each turn and auto-retaining after. Those retentions become the observations your pages are built from.
 - Put both on the **same bank** and you get a readable, self-healing view of what your agent knows. Honest caveat: today you create and browse pages out-of-band (CLI, dashboard, or `hindsight fs mount`), not through Hermes's own tools.
+- The Control Plane gives you three windows onto that bank: a **browsable page tree**, **rendered pages** that refresh themselves, an **editor** where a question defines a page, and a **memory constellation** that graphs the whole store.
 
 ## What a Knowledge Page actually is
 
@@ -40,15 +41,31 @@ Concretely, a Knowledge Page is a mental model with a set of defaults chosen for
 
 You supply a name and a question. Everything else is a default you can override.
 
+## The Knowledge view: your agent's memory as a browsable wiki
+
+Here is what that looks like in the Control Plane. Every page a bank has written sits in a searchable tree, grouped into folders, with a green dot when a page is freshly built and a **Mental Models** tab alongside the pages.
+
+![The Knowledge view: acme-api's pages organized in a folder tree — Architecture, Conventions, Decisions, Open initiatives — each synthesized from the bank's memory and updated automatically](/img/blog/knowledge-pages-tree.png)
+
+**Why it matters for Hermes users:** everything your Hermes agent picks up across sessions becomes navigable documentation. Instead of trusting an opaque memory store, you open Architecture, Conventions, or Decisions and read what the agent actually believes about your project, in the language your team already uses.
+
 ## Why it beats a hand-written wiki
 
 Every team has tried the wiki. It is accurate for a week. Then a decision changes, nobody updates the page, and by month two the wiki is a beautifully formatted lie. The failure mode is not laziness. It is that the wiki is *storage*, and storage has to be maintained by hand.
 
 A Knowledge Page is not storage. It is a rendering of memory, so it heals itself rather than rotting. When a team decides X and later amends it to Y, the page says Y, and can say why, instead of preserving both a paragraph apart. Delete a page and nothing is lost: it re-projects from memory on the next build. That inversion, from a document you maintain to a document that maintains itself, is the whole idea.
 
+![A rendered Knowledge Page — "System architecture" — synthesized from the bank's observations into clean prose and marked updated moments after the latest consolidation](/img/blog/knowledge-pages-rendered.png)
+
+A finished page reads like something a careful teammate wrote, except nobody did. The "updated" timestamp is the tell: it refreshed itself the moment new memory landed. **For Hermes users**, that means the page describing your system stays honest as the agent keeps learning, with zero upkeep, and there is an Edit button when you want to steer it.
+
 ## Creating a page: a name and a question
 
 You never author the body. You describe what the page should answer, and Hindsight synthesizes it from the bank's observations. Creation is asynchronous: the page is stored with placeholder content and the first build runs in the background.
+
+![The page editor: a Name field and a "Source query" — the question that rebuilds this page from memory — plus optional tags, where a type: tag sets the page's type](/img/blog/knowledge-pages-edit.png)
+
+The whole contract lives in that dialog. The **source query** is the question the system re-asks after every consolidation to rebuild the page; change the question and the content re-synthesizes from your memories. Tags organize pages, and a `type:` tag classifies them. You are curating by asking a better question, not by writing and maintaining prose. **For Hermes users**, that is the difference between owning a wiki and owning a list of questions you want your agent's memory to keep answering.
 
 The fastest path is the CLI:
 
@@ -68,6 +85,14 @@ hindsight fs mount --bank my-project ./knowledge
 ```
 
 That last one projects the whole tree to disk as markdown files, so your agent's knowledge is browsable, greppable, and easy to drop into version control.
+
+## See the whole memory: the bank at a glance
+
+Pages are one view of a bank. The bank's Home gives you the other: a **memory constellation** that plots every memory and the links between them, colored by how they connect — semantic, temporal, entity, and causal — sitting right next to the Knowledge pages panel and the raw documents that fed them.
+
+![The acme-api bank overview: a memory constellation of 30 memories and 604 links colored by connection type, beside the Knowledge pages panel and recent documents](/img/blog/knowledge-pages-overview.png)
+
+This is the same memory your Hermes agent recalls and reflects over, made visible. **Why it matters for Hermes users:** you can see the shape of what your agent knows — how dense a topic is, what connects to what, which documents seeded it — and confirm recall has real material to draw on instead of taking it on faith. When an answer looks thin, the constellation tells you whether the memory is missing or just unretrieved.
 
 ## Using Knowledge Pages with a Hermes agent
 
