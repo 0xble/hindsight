@@ -23,15 +23,18 @@ sidecars required.
 
 ## What it runs
 
-| Service         | Image                                                  | Model (default)                          |
+| Service         | Image                                                  | Model                                    |
 | --------------- | ------------------------------------------------------ | ---------------------------------------- |
 | `tei-embedding` | `ghcr.io/huggingface/text-embeddings-inference:cpu-1.8.3` | `BAAI/bge-small-en-v1.5` (384-dim)       |
-| `tei-reranker`  | `ghcr.io/huggingface/text-embeddings-inference:cpu-1.8.3` | `cross-encoder/ms-marco-MiniLM-L-6-v2`   |
+| `tei-reranker`  | `ghcr.io/huggingface/text-embeddings-inference:cpu-1.8.3` | `BAAI/bge-reranker-base`                 |
 | `hindsight`     | `ghcr.io/vectorize-io/hindsight:latest-slim`           | — (slim; talks to the sidecars)          |
 
-These are Hindsight's default embedding/reranker models, so this is a drop-in
-"move embeddings and reranking onto TEI" demo. The API points at the sidecars
-with:
+This is a prod-like configuration: the embedding model is Hindsight's default
+(`bge-small-en-v1.5`), the reranker is the `bge-reranker-base` cross-encoder
+commonly paired with it on dedicated inference servers, and both services carry
+throughput flags (`--max-concurrent-requests`, `--max-batch-tokens`,
+`--max-client-batch-size`) tuned for sustained multi-client load instead of
+TEI's bare defaults. The API points at the sidecars with:
 
 ```
 HINDSIGHT_API_EMBEDDINGS_PROVIDER=tei

@@ -8,10 +8,10 @@ name: hindsight-tei
 # (`ghcr.io/vectorize-io/hindsight:latest-slim`). Only the LLM (used for
 # retain/recall/reflect) still needs a provider + API key.
 #
-# The two TEI services here serve Hindsight's default models
-# (`BAAI/bge-small-en-v1.5` embeddings, 384-dim, and
-# `cross-encoder/ms-marco-MiniLM-L-6-v2` reranker), so this is a drop-in
-# "move embeddings/reranking onto a dedicated inference server" demo. Swap
+# The two TEI services here run a prod-like configuration:
+# `BAAI/bge-small-en-v1.5` embeddings (384-dim, Hindsight's default) and the
+# `BAAI/bge-reranker-base` cross-encoder, with the batching/concurrency flags
+# tuned for sustained multi-client load rather than TEI's bare defaults. Swap
 # the `--model-id` args to serve any TEI-supported model — the embedding
 # dimension is auto-detected from the server, and the pgvector schema is
 # adjusted to match on first boot.
@@ -27,7 +27,15 @@ services:
   tei-embedding:
     image: ghcr.io/huggingface/text-embeddings-inference:cpu-1.8.3
     container_name: hindsight-tei-embedding
-    command: ["--model-id", "BAAI/bge-small-en-v1.5", "--auto-truncate"]
+    # Prod-like tuning: high request concurrency with bounded batch sizes.
+    command:
+      [
+        "--model-id", "BAAI/bge-small-en-v1.5",
+        "--max-concurrent-requests", "512",
+        "--max-batch-tokens", "16384",
+        "--max-client-batch-size", "32",
+        "--auto-truncate",
+      ]
     environment:
       # TEI listens on port 80 inside the container by default.
       PORT: "80"
@@ -50,7 +58,16 @@ services:
   tei-reranker:
     image: ghcr.io/huggingface/text-embeddings-inference:cpu-1.8.3
     container_name: hindsight-tei-reranker
-    command: ["--model-id", "cross-encoder/ms-marco-MiniLM-L-6-v2", "--auto-truncate"]
+    # Prod-like tuning: reranking batches are larger than embedding batches
+    # (rerank inputs are query+document pairs scored in bulk during recall).
+    command:
+      [
+        "--model-id", "BAAI/bge-reranker-base",
+        "--max-concurrent-requests", "512",
+        "--max-batch-tokens", "32768",
+        "--max-client-batch-size", "128",
+        "--auto-truncate",
+      ]
     environment:
       PORT: "80"
     ports:
