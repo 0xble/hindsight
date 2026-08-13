@@ -5,6 +5,7 @@ This module defines the interface that all LLM providers must implement,
 enabling support for multiple LLM backends (OpenAI, Anthropic, Gemini, Codex, etc.)
 """
 
+import logging
 from abc import ABC, abstractmethod
 from contextlib import AbstractAsyncContextManager
 from dataclasses import dataclass
@@ -13,6 +14,8 @@ from enum import StrEnum
 from typing import Any, Callable, Self
 
 from .response_models import LLMToolCallResult
+
+logger = logging.getLogger(__name__)
 
 
 class LLMToolChoiceMode(StrEnum):
@@ -95,6 +98,21 @@ class LLMInterface(ABC):
         # issue #3449) and presumptuous (an unconfigured one was still transmitted).
         # An empty string is an unset environment variable, not a level.
         self.reasoning_effort: str | None = reasoning_effort or None
+
+    def _warn_reasoning_effort_unsupported(self) -> None:
+        """Report, once at startup, that this provider cannot honour a configured effort.
+
+        Providers with no reasoning knob to turn call this from ``__init__``. Silence is
+        what made issue #3449 expensive: the variable is set, documented and visible in
+        the environment, so every signal the operator has says it is in force. A setting
+        this provider cannot act on has to say so out loud.
+        """
+        if self.reasoning_effort is None:
+            return
+        logger.warning(
+            f"reasoning_effort={self.reasoning_effort!r} is ignored: the {self.provider} provider "
+            f"has no reasoning-effort control. Remove the setting or switch provider to apply it."
+        )
 
     @abstractmethod
     async def verify_connection(self) -> None:
