@@ -532,10 +532,20 @@ async def test_reference_date_and_analyzer_are_forwarded(analyzer) -> None:
 # 5. Latency gates
 # ===========================================================================
 
-# Budgets. Measured on this branch: whole corpus ~0.55s CPU, non-temporal p50
-# ~0.04ms. Set ~3x above measurement so ordinary variation does not flake.
-CORPUS_CPU_BUDGET_S = float(os.getenv("HS_PERF_CORPUS_BUDGET", "2.0"))
-NON_TEMPORAL_CPU_BUDGET_MS = float(os.getenv("HS_PERF_NON_TEMPORAL_BUDGET", "0.5"))
+# Budgets are regression tripwires, not benchmarks. They are sized against the
+# behaviour this work removed, with enough headroom for the slowest CI runner —
+# a shared runner measured ~5x slower than a dev machine here (0.55s vs 2.73s for
+# the corpus sweep), so a budget tuned to local timings flakes in CI.
+#
+# What each one would have caught, before the optimisation:
+#   corpus sweep        ~55s CPU (423 queries x ~130ms)   -> budget 10s
+#   non-temporal query  ~60ms CPU each                    -> budget 3ms
+#   period fast path    unchanged at ~0.01ms, but a regression that let it fall
+#                       through to dateparser costs ~6ms/query on CI runners
+#                                                          -> budget 0.5ms
+CORPUS_CPU_BUDGET_S = float(os.getenv("HS_PERF_CORPUS_BUDGET", "10.0"))
+NON_TEMPORAL_CPU_BUDGET_MS = float(os.getenv("HS_PERF_NON_TEMPORAL_BUDGET", "3.0"))
+PERIOD_FASTPATH_BUDGET_MS = float(os.getenv("HS_PERF_FASTPATH_BUDGET", "0.5"))
 BURST_P99_BUDGET_MS = float(os.getenv("HS_PERF_BURST_P99_BUDGET", "20.0"))
 
 # Wall-clock percentiles cannot be measured while other xdist workers saturate
@@ -609,7 +619,7 @@ def test_period_fastpath_never_reaches_dateparser(timed_analyze) -> None:
     for q in queries:
         timed_analyze(q, REFERENCE_DATE)
     per_query_ms = (time.process_time() - start) * 1000 / len(queries)
-    assert per_query_ms < 0.1, f"period fast path averaged {per_query_ms:.4f}ms/query"
+    assert per_query_ms < PERIOD_FASTPATH_BUDGET_MS, f"period fast path averaged {per_query_ms:.4f}ms/query"
 
 
 @requires_serial
