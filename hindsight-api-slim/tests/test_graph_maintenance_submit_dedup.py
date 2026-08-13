@@ -24,15 +24,17 @@ import uuid
 
 import pytest
 
+from hindsight_api.engine.memories.base import RelinkPassResult
 from hindsight_api.engine.memory_engine import MemoryEngine
 
 pytestmark = pytest.mark.xdist_group("graph_maintenance_submit_dedup_tests")
 
 
 async def _progress_relink():
-    """Pretend Pass 1 drained rows; the row left in the queue then stands in for
-    work enqueued after the final claim."""
-    return {"relink_units_processed": 3, "relink_links_added": 0}
+    """Pretend Pass 1 drained rows (queue reported exhausted) while a row is left
+    in the queue, standing in for work enqueued after the final claim — the gap
+    the hand-off exists to close."""
+    return RelinkPassResult(units_processed=3, links_added=0, queue_exhausted=True)
 
 
 @pytest.fixture
@@ -249,7 +251,7 @@ async def test_job_does_not_chain_forever_when_it_drains_nothing(memory, request
     await _queue_one(memory, bank_id)
 
     async def _no_progress():
-        return {"relink_units_processed": 0, "relink_links_added": 0}
+        return RelinkPassResult(units_processed=0, links_added=0, queue_exhausted=True)
 
     monkeypatch.setattr(get_memories(), "relink_pass", lambda **_kwargs: _no_progress())
 
@@ -354,7 +356,7 @@ async def test_handoff_survives_the_real_worker_path(memory, request_context, mo
     assert st == "processing"
 
     async def _progress():
-        return {"relink_units_processed": 3, "relink_links_added": 0}
+        return RelinkPassResult(units_processed=3, links_added=0, queue_exhausted=True)
 
     monkeypatch.setattr(get_memories(), "relink_pass", lambda **_k: _progress())
 
