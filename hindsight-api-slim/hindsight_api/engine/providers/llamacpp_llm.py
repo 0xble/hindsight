@@ -273,7 +273,7 @@ class LlamaCppLLM(LLMInterface):
         api_key: str,
         base_url: str,
         model: str,
-        reasoning_effort: str = "low",
+        reasoning_effort: str | None = None,
         extra_body: dict[str, Any] | None = None,
         model_path: str | None = None,
         gpu_layers: int = -1,
@@ -338,7 +338,9 @@ class LlamaCppLLM(LLMInterface):
             api_key="llamacpp",
             base_url=self._server.base_url,
             model=self.model,
-            reasoning_effort=self.reasoning_effort,
+            # Forward the raw setting, not the resolved level: the delegate decides
+            # whether to send the parameter based on whether it was configured at all.
+            reasoning_effort=self.configured_reasoning_effort,
             extra_body=self._extra_body,
         )
 

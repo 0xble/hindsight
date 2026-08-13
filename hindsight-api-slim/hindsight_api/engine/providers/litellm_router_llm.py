@@ -66,7 +66,7 @@ class LiteLLMRouterLLM(LiteLLMLLM):
         base_url: str,
         model: str,
         config: dict[str, Any],
-        reasoning_effort: str = "low",
+        reasoning_effort: str | None = None,
         timeout: float | None = None,
         **kwargs: Any,
     ):

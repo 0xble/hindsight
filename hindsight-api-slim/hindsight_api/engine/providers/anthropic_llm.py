@@ -88,7 +88,7 @@ class AnthropicLLM(LLMInterface):
         api_key: str,
         base_url: str,
         model: str,
-        reasoning_effort: str = "low",
+        reasoning_effort: str | None = None,
         timeout: float = 300.0,
         default_headers: dict[str, str] | None = None,
         extra_body: dict[str, Any] | None = None,

@@ -97,7 +97,7 @@ class LiteLLMLLM(LLMInterface):
         api_key: str,
         base_url: str,
         model: str,
-        reasoning_effort: str = "low",
+        reasoning_effort: str | None = None,
         timeout: float | None = None,
         extra_body: dict[str, Any] | None = None,
         bedrock_service_tier: str | None = None,

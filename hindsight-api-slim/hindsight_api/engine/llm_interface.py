@@ -12,6 +12,7 @@ from datetime import datetime
 from enum import StrEnum
 from typing import Any, Callable, Self
 
+from ..config import DEFAULT_LLM_REASONING_EFFORT
 from .response_models import LLMToolCallResult
 
 
@@ -68,7 +69,7 @@ class LLMInterface(ABC):
         api_key: str,
         base_url: str,
         model: str,
-        reasoning_effort: str = "low",
+        reasoning_effort: str | None = None,
         **kwargs: Any,
     ):
         """
@@ -79,14 +80,22 @@ class LLMInterface(ABC):
             api_key: API key or authentication token.
             base_url: Base URL for the API.
             model: Model name.
-            reasoning_effort: Reasoning effort level for supported providers.
+            reasoning_effort: Reasoning effort level for supported providers, or None
+                when the operator configured none. Providers read the effective level
+                from ``reasoning_effort`` and whether it was configured at all from
+                ``configured_reasoning_effort``.
             **kwargs: Additional provider-specific parameters.
         """
         self.provider = provider.lower()
         self.api_key = api_key
         self.base_url = base_url
         self.model = model
-        self.reasoning_effort = reasoning_effort
+        # The raw setting: None means "operator said nothing", which lets a provider fall
+        # back to a capability guess. A configured value is a statement about the
+        # deployment and must not be discarded in favour of such a guess (issue #3449).
+        # An empty string is an unset environment variable, not a level.
+        self.configured_reasoning_effort = reasoning_effort or None
+        self.reasoning_effort = self.configured_reasoning_effort or DEFAULT_LLM_REASONING_EFFORT
 
     @abstractmethod
     async def verify_connection(self) -> None:

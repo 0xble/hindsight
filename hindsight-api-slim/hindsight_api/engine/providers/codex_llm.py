@@ -126,7 +126,7 @@ class CodexLLM(LLMInterface):
         api_key: str,  # Will be ignored, reads from the Codex auth.json (CODEX_HOME or ~/.codex)
         base_url: str,
         model: str,
-        reasoning_effort: str = "low",
+        reasoning_effort: str | None = None,
         extra_body: dict[str, Any] | None = None,
         **kwargs: Any,
     ):

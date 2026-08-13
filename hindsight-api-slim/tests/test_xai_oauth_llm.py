@@ -1134,7 +1134,21 @@ async def test_reasoning_effort_and_the_token_cap_land_in_the_body(tmp_path, mon
     assert "max_completion_tokens" not in body
 
 
-@pytest.mark.parametrize("effort", ["none", "None", "  none  ", ""])
+async def test_an_unset_reasoning_effort_falls_back_to_the_default_level(tmp_path, monkeypatch):
+    """An empty setting is "not configured", so the lane runs at the default level.
+
+    It used to reach the provider as a falsy string and drop out of the body by
+    accident. Now ``LLMInterface`` resolves unset to DEFAULT_LLM_REASONING_EFFORT,
+    which is what leaving the variable out of the environment already did.
+    """
+    llm = _make_llm(tmp_path, monkeypatch, reasoning_effort="")
+
+    await llm.call(messages=[{"role": "user", "content": "hi"}], max_retries=0)
+
+    assert llm._client.calls[0]["json"]["reasoning_effort"] == "low"
+
+
+@pytest.mark.parametrize("effort", ["none", "None", "  none  "])
 async def test_a_none_reasoning_effort_is_omitted_rather_than_sent(tmp_path, monkeypatch, effort):
     """xAI answers ``reasoning_effort: "none"`` with a non-retryable HTTP 400.
 

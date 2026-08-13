@@ -2128,7 +2128,10 @@ class HindsightConfig:
     llm_initial_backoff: float
     llm_max_backoff: float
     llm_timeout: float
-    llm_reasoning_effort: str
+    # None when unset: providers then apply DEFAULT_LLM_REASONING_EFFORT and decide for
+    # themselves whether the model takes the parameter. An explicit value is a statement
+    # about the deployment and is always sent (see LLMInterface.configured_reasoning_effort).
+    llm_reasoning_effort: str | None
     llm_groq_service_tier: str  # Groq: "on_demand", "flex", or "auto"
     llm_openai_service_tier: str | None  # OpenAI: None (default) or "flex" (50% cheaper)
     llm_bedrock_service_tier: str | None  # Bedrock: None (default), "flex", "priority", or "reserved"
@@ -3090,7 +3093,7 @@ class HindsightConfig:
             llm_initial_backoff=float(os.getenv(ENV_LLM_INITIAL_BACKOFF, str(DEFAULT_LLM_INITIAL_BACKOFF))),
             llm_max_backoff=float(os.getenv(ENV_LLM_MAX_BACKOFF, str(DEFAULT_LLM_MAX_BACKOFF))),
             llm_timeout=float(os.getenv(ENV_LLM_TIMEOUT, str(DEFAULT_LLM_TIMEOUT))),
-            llm_reasoning_effort=os.getenv(ENV_LLM_REASONING_EFFORT, DEFAULT_LLM_REASONING_EFFORT),
+            llm_reasoning_effort=os.getenv(ENV_LLM_REASONING_EFFORT) or None,
             llm_groq_service_tier=os.getenv(ENV_LLM_GROQ_SERVICE_TIER, DEFAULT_LLM_GROQ_SERVICE_TIER),
             llm_openai_service_tier=os.getenv(ENV_LLM_OPENAI_SERVICE_TIER, DEFAULT_LLM_OPENAI_SERVICE_TIER),
             llm_bedrock_service_tier=os.getenv(ENV_LLM_BEDROCK_SERVICE_TIER) or None,
