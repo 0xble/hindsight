@@ -1,5 +1,5 @@
 ---
-title: "Knowledge Pages: A Self-Healing Wiki for Your Hermes Agent"
+title: "Turn Your Hermes Agent's Memory Into a Living Knowledge Base"
 authors: [benfrank241]
 slug: "2026/08/13/knowledge-pages-hermes-agent"
 date: 2026-08-13T12:00
