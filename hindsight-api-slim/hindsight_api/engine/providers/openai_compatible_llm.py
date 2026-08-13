@@ -696,13 +696,13 @@ class OpenAICompatibleLLM(LLMInterface):
             f"base_url={self.base_url or 'default'}, "
             f"reasoning_effort={self.reasoning_effort if self._sends_reasoning_effort() else 'not sent'}"
         )
-        if self.configured_reasoning_effort is not None and not self._sends_reasoning_effort():
+        if self.reasoning_effort is not None and not self._sends_reasoning_effort():
             # Never drop a configured value silently: the variable is set, documented and
             # visible in the environment, so every signal the operator has says it is in
             # force. Saying so once at startup is what turns this into a seconds-long
             # diagnosis instead of a source-reading exercise (issue #3449).
             logger.warning(
-                f"reasoning_effort={self.configured_reasoning_effort!r} is not sent to the model: "
+                f"reasoning_effort={self.reasoning_effort!r} is not sent to the model: "
                 f"{self.model!r} is a known non-reasoning model that rejects the parameter"
             )
         logger.debug(
@@ -749,18 +749,14 @@ class OpenAICompatibleLLM(LLMInterface):
     def _sends_reasoning_effort(self) -> bool:
         """Whether ``reasoning_effort`` is attached to requests.
 
-        A configured effort outranks the model-name heuristic. ``provider=openai`` with a
-        custom base_url can serve any model under any name — vLLM, Ollama, llama.cpp, TGI —
-        so the name carries no capability signal there, and dropping the operator's value
-        left every ``HINDSIGHT_API_*_REASONING_EFFORT`` variable a silent no-op on exactly
-        those deployments (issue #3449). With nothing configured the heuristic decides, so
-        endpoints that never asked for the parameter never see it.
+        The operator decides, not a model name. ``provider=openai`` with a custom base_url
+        can serve any model under any name — vLLM, Ollama, llama.cpp, TGI — so the name
+        carries no capability signal, and gating on it made every
+        ``HINDSIGHT_API_*_REASONING_EFFORT`` variable a silent no-op on exactly those
+        deployments (issue #3449). Unset means unset: no level is invented for a model
+        just because its name is recognisable.
         """
-        if self._supports_reasoning_model():
-            return True
-        if self.configured_reasoning_effort is None:
-            return False
-        return not self._rejects_reasoning_effort()
+        return self.reasoning_effort is not None and not self._rejects_reasoning_effort()
 
     def _rejects_reasoning_effort(self) -> bool:
         """Whether the model is a known product that rejects ``reasoning_effort`` outright.
@@ -781,14 +777,13 @@ class OpenAICompatibleLLM(LLMInterface):
         it.** Guessing capability from a name never worked outside OpenAI's own products:
         ``provider=openai`` with a custom base_url serves anything under any name, so the
         list could only ever grow stale while silently discarding what operators asked
-        for (issue #3449). Reasoning is now the operator's call, via
+        for (issue #3449). Reasoning effort is now purely the operator's call, via
         ``HINDSIGHT_API_LLM_REASONING_EFFORT`` and its per-operation variants — a new
         model needs configuration, not a new substring here.
 
-        What survives is the request *shape* a recognised OpenAI reasoning model
-        requires: the max-completion-tokens floor, the parameter name, temperature
-        suppression. Whether ``reasoning_effort`` is sent at all is decided by
-        :meth:`_sends_reasoning_effort`.
+        All that is left is the request *shape* a recognised OpenAI reasoning model
+        requires regardless of effort: the max-completion-tokens floor, the parameter
+        name, temperature suppression.
         """
         model_lower = self.model.lower()
         if "deepseek" in model_lower:

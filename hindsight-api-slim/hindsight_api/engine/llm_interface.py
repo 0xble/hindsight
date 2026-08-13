@@ -12,7 +12,6 @@ from datetime import datetime
 from enum import StrEnum
 from typing import Any, Callable, Self
 
-from ..config import DEFAULT_LLM_REASONING_EFFORT
 from .response_models import LLMToolCallResult
 
 
@@ -80,22 +79,22 @@ class LLMInterface(ABC):
             api_key: API key or authentication token.
             base_url: Base URL for the API.
             model: Model name.
-            reasoning_effort: Reasoning effort level for supported providers, or None
-                when the operator configured none. Providers read the effective level
-                from ``reasoning_effort`` and whether it was configured at all from
-                ``configured_reasoning_effort``.
+            reasoning_effort: Reasoning effort level, or None when the operator
+                configured none — in which case no provider sends the parameter and
+                every model runs at its own default effort.
             **kwargs: Additional provider-specific parameters.
         """
         self.provider = provider.lower()
         self.api_key = api_key
         self.base_url = base_url
         self.model = model
-        # The raw setting: None means "operator said nothing", which lets a provider fall
-        # back to a capability guess. A configured value is a statement about the
-        # deployment and must not be discarded in favour of such a guess (issue #3449).
+        # None means "the operator said nothing", and nothing is what gets sent: no
+        # provider may invent a level. Hindsight used to resolve unset to "low" here and
+        # ship it to whichever lanes their capability check happened to accept, which
+        # made the setting both invisible (a configured value could be silently dropped —
+        # issue #3449) and presumptuous (an unconfigured one was still transmitted).
         # An empty string is an unset environment variable, not a level.
-        self.configured_reasoning_effort = reasoning_effort or None
-        self.reasoning_effort = self.configured_reasoning_effort or DEFAULT_LLM_REASONING_EFFORT
+        self.reasoning_effort: str | None = reasoning_effort or None
 
     @abstractmethod
     async def verify_connection(self) -> None:

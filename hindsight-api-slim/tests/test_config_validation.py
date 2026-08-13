@@ -663,14 +663,13 @@ def test_markitdown_ocr_uses_explicit_config(monkeypatch):
 
 
 def test_llm_reasoning_effort_unset_stays_none(monkeypatch):
-    """Unset must stay None so providers can tell "operator said nothing" from a value.
+    """Unset must stay None all the way down: no provider sends a level nobody set.
 
-    Baking the default in here is what made every HINDSIGHT_API_*_REASONING_EFFORT
-    variable indistinguishable from the default one layer down, so the provider had no
-    way to know a configured value was being discarded (issue #3449). The effective
-    level is still "low" — LLMInterface applies DEFAULT_LLM_REASONING_EFFORT.
+    Baking "low" in here made every HINDSIGHT_API_*_REASONING_EFFORT variable
+    indistinguishable from the default one layer down, so a configured value could be
+    silently discarded (issue #3449) while an unconfigured one was still transmitted.
     """
-    from hindsight_api.config import DEFAULT_LLM_REASONING_EFFORT, HindsightConfig
+    from hindsight_api.config import HindsightConfig
     from hindsight_api.engine.providers.mock_llm import MockLLM
 
     monkeypatch.delenv("HINDSIGHT_API_LLM_REASONING_EFFORT", raising=False)
@@ -680,8 +679,7 @@ def test_llm_reasoning_effort_unset_stays_none(monkeypatch):
     assert config.llm_reasoning_effort is None
 
     llm = MockLLM(provider="mock", api_key="", base_url="", model="mock", reasoning_effort=None)
-    assert llm.configured_reasoning_effort is None
-    assert llm.reasoning_effort == DEFAULT_LLM_REASONING_EFFORT == "low"
+    assert llm.reasoning_effort is None
 
 
 def test_llm_reasoning_effort_loaded_from_env(monkeypatch):

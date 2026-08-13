@@ -338,9 +338,9 @@ class LlamaCppLLM(LLMInterface):
             api_key="llamacpp",
             base_url=self._server.base_url,
             model=self.model,
-            # Forward the raw setting, not the resolved level: the delegate decides
-            # whether to send the parameter based on whether it was configured at all.
-            reasoning_effort=self.configured_reasoning_effort,
+            # None (unconfigured) must stay None so the delegate omits the parameter
+            # rather than inventing a level for the local model.
+            reasoning_effort=self.reasoning_effort,
             extra_body=self._extra_body,
         )
 

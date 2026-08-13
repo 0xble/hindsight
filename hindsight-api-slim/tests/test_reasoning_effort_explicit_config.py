@@ -12,8 +12,9 @@ documented variable could produce it.
 
 `provider=openai` with a custom base_url serves arbitrary models under arbitrary
 names, so the name proves nothing: a configured value is a statement about the
-deployment and wins. The name still decides when nothing is configured, so
-endpoints that never asked for the parameter never start receiving it.
+deployment and is sent as given. Unset is equally a statement — no provider sends
+a reasoning parameter at all, and every model runs at its own default effort
+rather than one Hindsight picked (it used to resolve unset to "low").
 """
 
 import json
@@ -130,12 +131,42 @@ class TestConfiguredEffortReachesTheEndpoint:
         assert "reasoning_effort" not in params
 
     @pytest.mark.asyncio
-    async def test_recognised_reasoning_model_still_defaults_without_config(self):
-        # Intention: unchanged behaviour for OpenAI's own reasoning models — omitting
-        # the parameter there is not neutral, it is an HTTP 400 alongside tools.
-        # Expected: the default level is sent with nothing configured.
+    async def test_recognised_reasoning_model_gets_nothing_without_config(self):
+        # Intention: unset means unset, even for a model whose name is recognisable.
+        # Hindsight used to resolve unset to "low" and send it here, picking an effort
+        # on the operator's behalf; the model now runs at its own default instead.
+        # Expected: absent.
         params = await _capture_call_params(_make_llm("gpt-5.6-terra", None, base_url=""))
-        assert params["reasoning_effort"] == "low"
+        assert "reasoning_effort" not in params
+
+    @pytest.mark.asyncio
+    async def test_the_request_shape_for_a_reasoning_model_survives_an_unset_effort(self):
+        # Intention: `_supports_reasoning_model()` no longer decides whether the
+        # parameter is sent, but it still governs the shape a reasoning model requires.
+        # Expected: the max-completion-tokens floor and temperature suppression still
+        # apply to gpt-5 with nothing configured.
+        llm = _make_llm("gpt-5.6-terra", None, base_url="")
+        response = MagicMock()
+        response.error = None
+        response.model_dump.return_value = {}
+        response.usage.prompt_tokens = 10
+        response.usage.completion_tokens = 5
+        response.usage.total_tokens = 15
+        response.usage.completion_tokens_details = None
+        response.choices[0].finish_reason = "stop"
+        response.choices[0].message.content = "ok"
+        response.choices[0].message.tool_calls = None
+        with patch.object(llm._client.chat.completions, "create", new_callable=AsyncMock) as create:
+            create.return_value = response
+            await llm.call(
+                messages=[{"role": "user", "content": "hi"}],
+                max_completion_tokens=2000,
+                temperature=0.3,
+                max_retries=0,
+            )
+        params = create.await_args.kwargs
+        assert params["max_completion_tokens"] == 16000
+        assert "temperature" not in params
 
     @pytest.mark.asyncio
     async def test_known_non_reasoning_model_drops_the_value_loudly(self, caplog):
