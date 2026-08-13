@@ -19,6 +19,7 @@ import {
   type OcMessage,
 } from "../core/transcript-opencode";
 import { jsonChatReader } from "./registry";
+import { SURVEY_AGENT, SURVEY_AGENT_CONFIG } from "../core/survey";
 
 // opencode message part shape for the per-turn prompt (structurally typed).
 type Part = { type?: string; text?: string };
@@ -65,6 +66,13 @@ function createRuntime(core: RuntimeCore) {
 
   return {
     tool: tools,
+    // Define the survey agent in the host's own config, so the recipe needs nothing in the user's
+    // opencode.json. Never overwrite an existing entry: a user who defined `hindsight-survey`
+    // themselves out-ranks us.
+    config: async (cfg: { agent?: Record<string, unknown> }) => {
+      cfg.agent ??= {};
+      cfg.agent[SURVEY_AGENT] ??= SURVEY_AGENT_CONFIG;
+    },
     // Each user turn: recall on the prompt; the injection it builds is pushed by system.transform.
     "chat.message": async (input: { sessionID?: string }, output: { parts: Part[] }) => {
       await core.onPrompt(input.sessionID, textOf(output.parts));
