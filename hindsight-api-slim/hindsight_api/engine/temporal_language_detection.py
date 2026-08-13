@@ -23,7 +23,7 @@ to the 1.2.2 copy we ship):
    computation whose result is already known to be ``[0, 0]``. **Skipped.**
 
 Every transformation here is equivalence-preserving by construction, and
-``tests/test_temporal_language_detection.py`` asserts that directly: it runs this
+``tests/test_temporal_extraction.py`` asserts that directly: it runs this
 implementation and dateparser's side by side over the corpus plus thousands of
 randomly generated strings and requires identical answers.
 """

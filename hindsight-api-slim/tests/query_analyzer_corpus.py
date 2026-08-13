@@ -1,8 +1,8 @@
 """Query corpus for the temporal-extraction characterization suite.
 
-This module is the single source of truth for the inputs used by both
-``test_query_analyzer_compat.py`` (behaviour must not change) and
-``test_query_analyzer_perf.py`` (latency gate).
+This module is the single source of truth for the inputs used by
+``test_temporal_extraction.py`` (behaviour must not change) and by the
+standalone latency harness in ``query_analyzer_bench.py``.
 
 The corpus deliberately over-samples the shapes that recall actually sees:
 ordinary non-temporal questions (the common case, and the one that used to be

@@ -279,7 +279,7 @@ class DateparserQueryAnalyzer(QueryAnalyzer):
         :mod:`hindsight_api.engine.temporal_language_detection`, which is the same
         algorithm with the per-locale recomputation hoisted and memoised. See that
         module for why each step is equivalence-preserving, and
-        ``tests/test_temporal_language_detection.py`` for the differential proof.
+        ``tests/test_temporal_extraction.py`` for the differential proof.
         """
         from dateparser.conf import check_settings
         from dateparser.conf import settings as dateparser_defaults
