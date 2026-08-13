@@ -777,10 +777,18 @@ class OpenAICompatibleLLM(LLMInterface):
     def _supports_reasoning_model(self) -> bool:
         """Check if the current model is a reasoning model (o1, o3, GPT-5, DeepSeek).
 
-        Name matching only recognises OpenAI's own products, so this stays confined to
-        the request shapes a reasoning model *requires* — the max-completion-tokens floor,
-        the parameter name, temperature suppression. Whether to send ``reasoning_effort``
-        is decided by :meth:`_sends_reasoning_effort`.
+        **Deprecated as a capability check — this list is frozen. Do not add models to
+        it.** Guessing capability from a name never worked outside OpenAI's own products:
+        ``provider=openai`` with a custom base_url serves anything under any name, so the
+        list could only ever grow stale while silently discarding what operators asked
+        for (issue #3449). Reasoning is now the operator's call, via
+        ``HINDSIGHT_API_LLM_REASONING_EFFORT`` and its per-operation variants — a new
+        model needs configuration, not a new substring here.
+
+        What survives is the request *shape* a recognised OpenAI reasoning model
+        requires: the max-completion-tokens floor, the parameter name, temperature
+        suppression. Whether ``reasoning_effort`` is sent at all is decided by
+        :meth:`_sends_reasoning_effort`.
         """
         model_lower = self.model.lower()
         if "deepseek" in model_lower:
