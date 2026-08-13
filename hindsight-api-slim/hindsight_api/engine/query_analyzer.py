@@ -10,7 +10,7 @@ import re
 from abc import ABC, abstractmethod
 from datetime import datetime, timedelta
 
-from dateparser.conf import apply_settings
+from dateparser.conf import Settings, apply_settings
 from pydantic import BaseModel, Field
 
 from hindsight_api.engine.temporal_periods import (
@@ -271,7 +271,7 @@ class DateparserQueryAnalyzer(QueryAnalyzer):
         self._find_dates("today", settings=dateparser_settings)
 
     @apply_settings
-    def _find_dates(self, query: str, settings=None) -> list | None:
+    def _find_dates(self, query: str, settings: "Settings | None" = None) -> list[tuple[str, datetime]] | None:
         """``dateparser.search.search_dates`` without its redundant work.
 
         Same three steps as upstream — preprocess, detect the language, parse the
@@ -282,15 +282,23 @@ class DateparserQueryAnalyzer(QueryAnalyzer):
         ``tests/test_temporal_language_detection.py`` for the differential proof.
         """
         from dateparser.conf import check_settings
+        from dateparser.conf import settings as dateparser_defaults
         from dateparser.search import _search_with_detection
 
         from .temporal_language_detection import best_language
 
+        # @apply_settings always injects a Settings (converting a dict if the
+        # caller passed one); the None default only exists to satisfy its
+        # keyword-argument contract. Fall back rather than assert so a direct
+        # call without the decorator still behaves like dateparser's own entry
+        # points.
+        settings = settings or dateparser_defaults
         check_settings(settings)
         text = _search_with_detection.preprocess_text(query, self._languages)
-        language = best_language(text, self._locales) or (
-            settings.DEFAULT_LANGUAGES[0] if settings.DEFAULT_LANGUAGES else None
-        )
+        # Settings populates its attributes dynamically, so this is a getattr
+        # rather than a plain access: the name is not statically visible.
+        default_languages = getattr(settings, "DEFAULT_LANGUAGES", None)
+        language = best_language(text, self._locales) or (default_languages[0] if default_languages else None)
         if not language:
             return None
         return self._exact_search.search_parse(language, text, settings=settings) or None

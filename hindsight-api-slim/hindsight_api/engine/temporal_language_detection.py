@@ -31,7 +31,9 @@ randomly generated strings and requires identical answers.
 from __future__ import annotations
 
 import threading
+from dataclasses import dataclass
 
+from dateparser.conf import Settings
 from dateparser.conf import settings as default_settings
 from dateparser.languages.locale import Locale
 from dateparser.timezone_parser import pop_tz_offset_from_string
@@ -42,12 +44,26 @@ from dateparser.utils import normalize_unicode
 # first candidate locale.
 _SYMBOL_SET = frozenset("0123456789 /-)(.:\\,'")
 
+
+@dataclass(frozen=True)
+class LocaleCharTables:
+    """Character evidence per locale, in locale order.
+
+    ``language_chars[i]`` is every character locale *i* uses in its date
+    vocabulary; ``unique_chars[i]`` is the subset no other candidate locale uses,
+    which lets a single character decide the language outright.
+    """
+
+    language_chars: list[set[str]]
+    unique_chars: list[set[str]]
+
+
 _char_table_lock = threading.Lock()
 # id(locale tuple) is not stable, so key on the locale shortnames.
-_char_table_cache: dict[tuple[str, ...], tuple[list[set], list[set]]] = {}
+_char_table_cache: dict[tuple[str, ...], LocaleCharTables] = {}
 
 
-def _char_tables(languages: list[Locale], settings) -> tuple[list[set], list[set]]:
+def _char_tables(languages: list[Locale], settings: Settings) -> LocaleCharTables:
     """Per-locale character sets, and the characters unique to each locale.
 
     This is ``FullTextLanguageDetector.get_unique_characters`` with its result
@@ -71,12 +87,13 @@ def _char_tables(languages: list[Locale], settings) -> tuple[list[set], list[set
                 remaining = remaining - other
         unique_chars.append(remaining)
 
+    tables = LocaleCharTables(language_chars=language_chars, unique_chars=unique_chars)
     with _char_table_lock:
-        _char_table_cache[key] = (language_chars, unique_chars)
-    return language_chars, unique_chars
+        _char_table_cache[key] = tables
+    return tables
 
 
-def _character_check(text: str, languages: list[Locale], settings) -> list[Locale]:
+def _character_check(text: str, languages: list[Locale], settings: Settings) -> list[Locale]:
     """Narrow the candidate locales by character evidence.
 
     Faithful to ``FullTextLanguageDetector.character_check``, including its
@@ -88,17 +105,17 @@ def _character_check(text: str, languages: list[Locale], settings) -> list[Local
     if text_chars & _SYMBOL_SET == text_chars:
         return languages[:1]
 
-    language_chars, unique_chars = _char_tables(languages, settings)
+    tables = _char_tables(languages, settings)
 
-    for i, chars in enumerate(unique_chars):
+    for i, chars in enumerate(tables.unique_chars):
         for char in chars:
             if char.lower() in lowered:
                 return [languages[i]]
 
-    return [lang for i, lang in enumerate(languages) if text_chars & language_chars[i]]
+    return [lang for i, lang in enumerate(languages) if text_chars & tables.language_chars[i]]
 
 
-def best_language(text: str, languages: list[Locale], settings=None) -> str | None:
+def best_language(text: str, languages: list[Locale], settings: Settings | None = None) -> str | None:
     """Return the detected locale shortname, or None.
 
     Equivalent to ``FullTextLanguageDetector(languages)._best_language(text)``.

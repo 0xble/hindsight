@@ -140,14 +140,14 @@ def test_char_table_cache_is_shared_and_correct() -> None:
     from dateparser.conf import settings as ds
 
     _char_table_cache.clear()
-    chars_a, unique_a = _char_tables(ALL_LOCALES, ds)
-    chars_b, unique_b = _char_tables(ALL_LOCALES, ds)
-    assert chars_a is chars_b and unique_a is unique_b, "second call should hit the cache"
+    first = _char_tables(ALL_LOCALES, ds)
+    second = _char_tables(ALL_LOCALES, ds)
+    assert first is second, "second call should hit the cache"
 
     detector = FullTextLanguageDetector(ALL_LOCALES)
     detector.get_unique_characters(ds.replace(NORMALIZE=False))
-    assert chars_a == detector.language_chars
-    assert unique_a == detector.language_unique_chars
+    assert first.language_chars == detector.language_chars
+    assert first.unique_chars == detector.language_unique_chars
 
 
 def test_subset_locale_lists_are_cached_separately() -> None:
