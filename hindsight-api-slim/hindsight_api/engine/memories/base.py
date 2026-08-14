@@ -468,6 +468,25 @@ class MemoriesExtension(Extension, ABC):
         BANK. See :meth:`owns_document_store_for`."""
         return self.store_owned_retain
 
+    async def retain(
+        self,
+        bank_id: str,
+        unit_ids: list[str],
+        facts: list,
+        *,
+        document_id: str | None = None,
+        unit_entity_names: dict[str, list[str]] | None = None,
+        replace_document_id: str = "",
+        resolve_threshold: float = 0.0,
+    ):
+        """Commit an entire retain in one server-side call — resolve/mint the ``unit_entity_names``
+        against the store's own registry, write the memories with the resulting entity ids, and
+        (when ``replace_document_id`` is set) tombstone the document's prior version — all atomically.
+        Only a store advertising :attr:`store_owned_retain` implements this; the orchestrator calls it
+        exactly when :meth:`store_owned_retain_for` is true, so the default never runs. It exists on
+        the interface so a routing extension delegates it automatically (see RoutingMemories)."""
+        raise NotImplementedError("this store does not support a store-owned retain")
+
     def writes_memory_rows_in_sql_for(self, bank_id: str) -> bool:
         """Per-bank form of :attr:`writes_memory_rows_in_sql`. Defaults to the class attribute, so a
         single-store extension needs no override. A store that keeps different banks in different
