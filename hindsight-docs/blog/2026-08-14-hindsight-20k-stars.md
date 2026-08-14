@@ -15,6 +15,19 @@ We open-sourced Hindsight in December 2025. Nine months and **67 releases** late
 
 <!-- truncate -->
 
+## The timeline at a glance
+
+| Version | When | Headline |
+|---|---|---|
+| **0.0.x – 0.1.x** | Dec 2025 | Core retain/recall/reflect on embedded Postgres, local MCP, `hindsight-embed` |
+| **0.2.x** | Jan 2026 | Multi-bank memory and cross-bank MCP tools |
+| **0.4.x** | Feb – Mar 2026 | Document ingestion, webhooks, Bearer-auth MCP, the integration wave |
+| **0.5.x** | Apr 2026 | LinkExpansion graph retriever, delta mental-model refresh, graph view |
+| **0.6 – 0.7.x** | May 2026 | AlloyDB ScaNN and ParadeDB BM25 search; Dify, n8n, Google ADK, Flowise |
+| **0.8.x** | Jun 2026 | Background maintenance, resumable consolidation, Memory Defense |
+| **0.9.0** | Aug 2026 | Knowledge Pages and memory for ten coding agents |
+| **0.9.1** | Aug 2026 | ~9x faster extraction, portable banks, xAI OAuth |
+
 ## December 2025 — v0.0.x to v0.1.x: the foundation
 
 The first public releases established the core that has not changed since: **retain, recall, and reflect on embedded PostgreSQL**, no external vector database to run. Then the local ergonomics landed fast: a **local MCP server** so any MCP client could connect without a separate service, the **`hindsight-embed`** package to run memory in-process, and an **extensions system** for plugging in new operations. The first graph retriever and a LiteLLM integration shipped before the year was out.
