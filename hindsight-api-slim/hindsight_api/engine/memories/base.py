@@ -453,6 +453,21 @@ class MemoriesExtension(Extension, ABC):
     #: the inline SQL. Cold, never-searched, key-based — see docs/documents-chunks.md.
     owns_document_store: bool = False
 
+    #: Whether this store commits the ENTIRE retain — entity resolution/minting, the memory upserts,
+    #: and the document replace — in ONE atomic server-side call (its ``retain`` method). Default
+    #: False: the host runs its normal retain (Phase-1 entity resolution in SQL, then the write). A
+    #: store that sets this True resolves entity NAMES itself and needs no Postgres connection phase,
+    #: so the orchestrator skips SQL entity resolution + the documents/chunks/entities rows + the
+    #: commit witness and issues one ``retain`` instead. Bank-scoped via
+    #: :meth:`store_owned_retain_for`.
+    store_owned_retain: bool = False
+
+    def store_owned_retain_for(self, bank_id: str) -> bool:
+        """Per-bank form of :attr:`store_owned_retain`. Defaults to the class attribute; a router
+        that keeps some banks in a store-owned backend and others in SQL overrides it to answer PER
+        BANK. See :meth:`owns_document_store_for`."""
+        return self.store_owned_retain
+
     def writes_memory_rows_in_sql_for(self, bank_id: str) -> bool:
         """Per-bank form of :attr:`writes_memory_rows_in_sql`. Defaults to the class attribute, so a
         single-store extension needs no override. A store that keeps different banks in different

@@ -674,7 +674,7 @@ async def _streaming_batch_write_ext(
     # write-group witness, one server-side retain. Everything below (the two-phase Protocol-B
     # dance) is for a store whose memory rows live elsewhere but whose metadata still lands in
     # Postgres.
-    if getattr(provider, "store_owned_retain", False):
+    if provider.store_owned_retain_for(bank_id):
         return await _streaming_store_owned_retain(
             provider=provider,
             pool=pool,
@@ -2379,7 +2379,7 @@ async def _streaming_retain_batch(
             # trigram scan + entity INSERTs entirely — the PG-free path touches no Postgres in retain.
             from ..memories import get_memories as _get_memories_p1
 
-            _store_owned_retain = getattr(_get_memories_p1(), "store_owned_retain", False)
+            _store_owned_retain = _get_memories_p1().store_owned_retain_for(bank_id)
             p1_start = time.time()
             phase1 = await _pre_resolve_phase1(
                 pool,
@@ -2990,7 +2990,7 @@ async def _try_delta_retain(
     # diff) is a follow-up. Full retain of an unchanged doc is still cheap.
     from ..memories import get_memories as _get_memories_delta
 
-    if getattr(_get_memories_delta(), "store_owned_retain", False):
+    if _get_memories_delta().store_owned_retain_for(bank_id):
         return None
 
     # Need a single document_id
