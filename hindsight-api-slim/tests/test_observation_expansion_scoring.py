@@ -1,12 +1,18 @@
 """Shared-source scoring for the observation graph arm (issue #3085).
 
 ``expand_observations`` ranks candidate observations by how many source facts
-they share with the seeds' entity neighbourhood. That count used to be computed
-by a correlated subquery per candidate row, which made the query's cost grow with
-``len(source_memory_ids)`` — unbounded, because consolidation appends to that
-array and never prunes it (#1725). It is now computed set-wise. These tests pin
-the *semantics* that rewrite has to preserve: the score is the number of distinct
-shared source facts, and it orders the results.
+they share with the seeds' entity neighbourhood. #3451 computed that count
+set-wise instead of by a correlated subquery per candidate row, because the
+per-row form makes the query's cost grow with ``len(source_memory_ids)`` —
+unbounded, since consolidation appends to that array and never prunes it
+(#1725).
+
+This branch reverts that rewrite: the score is once again a correlated
+subquery, and the #3085 fan-out comes back with it. These tests are kept
+deliberately — they pin the *semantics*, not the plan (the score is the number
+of distinct shared source facts, and it orders the results), so they hold for
+either form and are what shows the revert changed only the cost. Restore #3451
+and they must still pass.
 """
 
 import uuid
