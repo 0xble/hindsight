@@ -6335,6 +6335,7 @@ class MemoryEngine(MemoryEngineInterface):
             chunks_dict = None
             total_chunk_tokens = 0
             chunk_fetch_start = time.time()
+            if include_chunks:
             if include_chunks and top_scored:
                 from .response_models import ChunkInfo
 
@@ -6345,15 +6346,8 @@ class MemoryEngine(MemoryEngineInterface):
                 ordered_items: list[tuple[str, str]] = []
                 seen_chunk_ids: set[str] = set()
                 observation_ids_ordered: list[uuid.UUID] = []
-                # chunk_id -> document_id, harvested from the hits themselves. A store that owns the
-                # document store keeps NO SQL chunks row (PG-free retain writes none), so the chunk
-                # metadata cannot come from the chunks table — it comes from the hits, whose chunk_id
-                # and document_id are enough to fetch the text from the store.
-                chunk_doc: dict[str, str] = {}
                 for sr in top_scored:
                     chunk_id = sr.retrieval.chunk_id
-                    if chunk_id and getattr(sr.retrieval, "document_id", None):
-                        chunk_doc.setdefault(chunk_id, sr.retrieval.document_id)
                     if chunk_id and chunk_id not in seen_chunk_ids:
                         ordered_items.append(("chunk", chunk_id))
                         seen_chunk_ids.add(chunk_id)
@@ -6450,39 +6444,43 @@ class MemoryEngine(MemoryEngineInterface):
                     # per-chunk ``dict`` allocation for an overlay it never runs.
                     _chunk_store = get_memories()
                     _owns_docs = _chunk_store.owns_document_store_for(bank_id)
-                    if _chunk_store.store_owned_retain_for(bank_id):
-                        # PG-free retain writes NO SQL chunks row, so the metadata cannot be queried
-                        # from the chunks table (it is empty). Synthesize each row from the hit's
-                        # chunk_id + document_id — the chunk_index is the chunk_id's suffix after the
-                        # ``{bank}_{document}_`` prefix — and let the overlay below fill in the text
-                        # from the store. One ``list_chunk_texts`` per document, same as before.
+                    _chunk_cols = (
+                        "chunk_id, chunk_text, chunk_index, document_id"
+                        if _owns_docs
+                        else "chunk_id, chunk_text, chunk_index"
+                    )
+                    async with acquire_with_retry(backend) as conn:
+                        chunks_rows = await conn.fetch(
+                            f"""
+                            SELECT {_chunk_cols}
+                            FROM {fq_table("chunks")}
+                            WHERE chunk_id = ANY($1::text[])
+                            """,
+                            chunk_ids_ordered,
+                        )
+                    if _owns_docs and not chunks_rows:
+                        # A store that owns the document store AND wrote no SQL chunks row (PG-free
+                        # retain) leaves the chunks table empty, so the query above found nothing.
+                        # Synthesize the metadata from the chunk_ids themselves — a chunk_id is
+                        # ``{bank_id}_{document_id}_{chunk_index}`` and bank_id is known, so the last
+                        # ``_``-segment is the index and everything between is the document_id — then
+                        # let the overlay below fill in the text from the store. Independent of the
+                        # per-request capability flags: it fires whenever docs are owned and SQL is
+                        # empty, which is exactly the PG-free case.
+                        _pfx = f"{bank_id}_"
                         chunks_rows = []
                         for _cid in chunk_ids_ordered:
-                            _doc = chunk_doc.get(_cid)
-                            if _doc is None:
+                            if not _cid.startswith(_pfx):
                                 continue
-                            _prefix = f"{bank_id}_{_doc}_"
-                            _idx_s = _cid[len(_prefix):] if _cid.startswith(_prefix) else _cid.rsplit("_", 1)[-1]
+                            _doc, _, _idx_s = _cid[len(_pfx):].rpartition("_")
+                            if not _doc:
+                                continue
                             try:
                                 _idx = int(_idx_s)
                             except ValueError:
                                 continue
                             chunks_rows.append(
                                 {"chunk_id": _cid, "chunk_text": "", "chunk_index": _idx, "document_id": _doc}
-                            )
-                    else:
-                        if _owns_docs:
-                            _chunk_cols = "chunk_id, chunk_text, chunk_index, document_id"
-                        else:
-                            _chunk_cols = "chunk_id, chunk_text, chunk_index"
-                        async with acquire_with_retry(backend) as conn:
-                            chunks_rows = await conn.fetch(
-                                f"""
-                                SELECT {_chunk_cols}
-                                FROM {fq_table("chunks")}
-                                WHERE chunk_id = ANY($1::text[])
-                                """,
-                                chunk_ids_ordered,
                             )
 
                     if _owns_docs:
