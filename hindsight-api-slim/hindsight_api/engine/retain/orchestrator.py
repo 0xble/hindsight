@@ -276,6 +276,7 @@ from .types import (
     CausalRelation,
     ChunkMetadata,
     ConcurrentAppendConflict,
+    EntityResolutionResult,
     ExtractedFact,
     Phase1Result,
     ProcessedFact,
@@ -389,6 +390,7 @@ async def _pre_resolve_phase1(
     config,
     log_buffer: list[str],
     skip_semantic_ann: bool = False,
+    skip_entity_resolution: bool = False,
 ) -> Phase1Result:
     """
     Phase 1: Run expensive read-heavy operations on a separate connection
@@ -399,9 +401,21 @@ async def _pre_resolve_phase1(
 
     Running these outside the transaction avoids holding row locks during
     slow reads, eliminating TimeoutErrors under concurrent load.
+
+    ``skip_entity_resolution`` is set for a store that resolves/mints entities itself
+    (``store_owned_retain``): the store owns its own entity registry and resolves raw names
+    server-side inside its atomic retain, so the Postgres trigram scan + entity INSERTs here
+    are pure waste (and the whole point of the PG-free path is to not touch Postgres). We return an
+    empty entity result; the store-owned write path reconstructs raw names straight from the facts.
     """
     set_stage("retain.phase1.resolve")
     from .link_utils import compute_semantic_links_ann
+
+    if skip_entity_resolution:
+        # No Postgres. Semantic ANN is already deferred in streaming, so there is nothing read-heavy
+        # left to do — the store-owned write path carries entity NAMES to the server itself.
+        empty = EntityResolutionResult(resolved_entities=[], entity_to_unit=[], unit_to_entity_ids={})
+        return Phase1Result(entities=empty, semantic_ann_links=[])
 
     user_entities_per_content = {idx: content.entities for idx, content in enumerate(contents) if content.entities}
 
@@ -655,6 +669,30 @@ async def _streaming_batch_write_ext(
     :class:`ConcurrentAppendConflict` for a lost append race, exactly like the Postgres path —
     the staged writes are discarded on that path too.
     """
+    # A store that resolves entities and commits the whole retain atomically in one server-side
+    # call (``store_owned_retain``) takes the PG-free path: no connection phase at all, no
+    # write-group witness, one server-side retain. Everything below (the two-phase Protocol-B
+    # dance) is for a store whose memory rows live elsewhere but whose metadata still lands in
+    # Postgres.
+    if getattr(provider, "store_owned_retain", False):
+        return await _streaming_store_owned_retain(
+            provider=provider,
+            pool=pool,
+            bank_id=bank_id,
+            batch_contents=batch_contents,
+            batch_extracted=batch_extracted,
+            batch_processed=batch_processed,
+            batch_chunk_meta=batch_chunk_meta,
+            effective_doc_id=effective_doc_id,
+            config=config,
+            log_buffer=log_buffer,
+            is_first_batch=is_first_batch,
+            append_base_hash=append_base_hash,
+            ext_txn=ext_txn,
+            doc_tracking_done=doc_tracking_done,
+            p2_start=p2_start,
+        )
+
     # ---- STORE PHASE (no connection held) ----
     # Chunk ids are a deterministic function of identity (mirrors chunk_storage.store_chunks_batch),
     # so facts can be tagged with document_id + chunk_id before the metadata rows are written.
@@ -711,14 +749,18 @@ async def _streaming_batch_write_ext(
         )
 
     # ---- CONNECTION PHASE (short transaction: local metadata + commit witness) ----
+    # [PG-PROFILE] sub-step timing to find where retain wall-time goes (Phase 0 of PG-free retain).
+    _pt = {"c0": time.time()}
     try:
         async with acquire_with_retry(pool) as conn:
+            _pt["acq"] = time.time()
             async with conn.transaction():
                 # Ownership gate: lock the document row (serializes concurrent same-document
                 # writers) and read its pre-existing hash for the takeover check.
                 existing_hash = await pool.ops.lock_document_for_write(
                     conn, fq_table("documents"), effective_doc_id, bank_id
                 )
+                _pt["lock"] = time.time()
 
                 if not doc_tracking_done[0]:
                     # Append compare-and-swap under the row lock (same as the Postgres path).
@@ -770,6 +812,7 @@ async def _streaming_batch_write_ext(
                         pipeline_aborted[0] = True
                         return _ExtStreamingWriteResult(aborted=True, batch_result_ids=batch_result_ids)
 
+                _pt["track"] = time.time()
                 # Chunk metadata rows (bulky bodies were already stored before this call).
                 if batch_chunk_meta:
                     await chunk_storage.store_chunks_batch(
@@ -780,11 +823,13 @@ async def _streaming_batch_write_ext(
                         ops=pool.ops,
                         store_document_text=getattr(config, "store_document_text", True),
                     )
+                _pt["chunks"] = time.time()
 
                 # Entity registry reassert (Postgres `entities`): re-create the resolved parents
                 # this txn so a concurrent prune can't leave the postings dangling (#2662).
                 if unit_ids:
                     await entity_resolver.reassert_entities_batch(bank_id, phase1.entities.resolved_entities, conn=conn)
+                _pt["entities"] = time.time()
 
                 # Transactional-outbox row — must ride this Postgres transaction.
                 if is_last and outbox_callback is not None:
@@ -792,9 +837,29 @@ async def _streaming_batch_write_ext(
 
                 # The commit witness: its presence at commit is what the recovery sweep consults.
                 await provider.write_txn_witness(ext_txn, conn=conn, fq_table=fq_table)
+                _pt["witness"] = time.time()
 
+            _pt["commit"] = time.time()
             # Postgres committed the witness: publish the write-group (object-store marker, no conn).
             await provider.decide_txn(ext_txn, commit=True)
+            _pt["decide"] = time.time()
+
+            def _d(a, b):
+                return int((_pt.get(b, _pt["c0"]) - _pt.get(a, _pt["c0"])) * 1000)
+
+            logger.info(
+                "[PG-PROFILE] total=%dms acquire=%d lock=%d doctrack=%d chunks=%d entities=%d "
+                "witness+outbox=%d pg_commit=%d decide=%d",
+                int((_pt["decide"] - _pt["c0"]) * 1000),
+                _d("c0", "acq"),
+                _d("acq", "lock"),
+                _d("lock", "track"),
+                _d("track", "chunks"),
+                _d("chunks", "entities"),
+                _d("entities", "witness"),
+                _d("witness", "commit"),
+                _d("commit", "decide"),
+            )
             logger.info(f"[streaming] Phase 2 (ext write txn): {time.time() - p2_start:.3f}s")
     except BaseException:
         # The witness never committed (this also covers a lost-append ConcurrentAppendConflict)
@@ -806,6 +871,115 @@ async def _streaming_batch_write_ext(
             logger.warning(f"[streaming] best-effort abort of ext txn for {effective_doc_id} failed", exc_info=True)
         raise
 
+    return _ExtStreamingWriteResult(aborted=False, batch_result_ids=batch_result_ids)
+
+
+async def _streaming_store_owned_retain(
+    *,
+    provider,
+    pool,
+    bank_id: str,
+    batch_contents: list,
+    batch_extracted: list,
+    batch_processed: list,
+    batch_chunk_meta: list,
+    effective_doc_id: str,
+    config,
+    log_buffer: list[str],
+    is_first_batch: bool,
+    append_base_hash,
+    ext_txn,
+    doc_tracking_done: list[bool],
+    p2_start: float,
+) -> _ExtStreamingWriteResult:
+    """The PG-free retain write for a store that owns entity resolution + atomicity.
+
+    ONE server-side retain does everything the old two-phase path split across an object-store
+    write and a Postgres connection phase:
+
+    * resolves each fact's raw entity NAMES (reconstructed here with no Postgres, exactly the merge
+      the PG resolver used to do) against the store's own entity registry, minting deterministic ids
+      for new names;
+    * writes the memories with their entity ids attached;
+    * on the document's first batch, tombstones the prior version of the document in the SAME atomic
+      entry (a re-retain replaces; the same-entry upserts are spared).
+
+    No connection is acquired, no ``documents``/``chunks``/``entities`` rows, no commit witness, no
+    ``decide_txn`` — the store's single write is already atomic, so Protocol B has nothing left to
+    make atomic *together*. Document/chunk BODIES were already sent to the store's document store by
+    ``_store_document_bodies`` (``owns_document_store``); the small Postgres metadata rows that the
+    Protocol-B path still wrote are simply gone.
+
+    Known gaps, tracked for the follow-on phases:
+    * Concurrent same-document ownership/takeover is no longer serialized by a Postgres row lock;
+      the store's atomic replace gives last-writer-wins. A store-side document content-hash CAS is a
+      follow-up. ``append_base_hash`` (strict-append base check) is likewise deferred to that CAS,
+      so an append here does not verify its base — it just does not replace.
+    * The transactional-outbox (webhook delivery) is not emitted here; the intended design is
+      at-least-once emission from the store, which replaces the Postgres outbox row.
+    """
+    # Tag each fact with its document + deterministic chunk id (mirrors the Protocol-B store phase
+    # and chunk_storage.store_chunks_batch, so a fact's chunk_id matches its chunk metadata).
+    chunk_id_by_index = {}
+    if batch_chunk_meta:
+        chunk_id_by_index = {
+            cm.chunk_index: f"{bank_id}_{effective_doc_id}_{cm.chunk_index}" for cm in batch_chunk_meta
+        }
+    for fact, processed_fact in zip(batch_extracted, batch_processed):
+        processed_fact.document_id = effective_doc_id
+        if batch_chunk_meta and fact.chunk_index is not None:
+            cid = chunk_id_by_index.get(fact.chunk_index)
+            if cid:
+                processed_fact.chunk_id = cid
+
+    # Mint the unit ids WITHOUT writing (defer_index) — connection-free and Postgres-free; the
+    # single server-side retain below is the only write.
+    unit_ids = await fact_storage.insert_facts_batch(
+        None, bank_id, batch_processed, ops=pool.ops, txn=ext_txn, defer_index=True
+    )
+    batch_result_ids = _map_results_to_contents(batch_contents, batch_processed, unit_ids if unit_ids else [])
+
+    if unit_ids:
+        # Reconstruct each fact's raw entity NAMES (LLM-extracted ∪ user-supplied), the exact merge
+        # the Postgres resolver did — but without touching Postgres. The server resolves/mints.
+        user_entities_per_content = {
+            idx: content.entities for idx, content in enumerate(batch_contents) if getattr(content, "entities", None)
+        }
+        _texts, _dates, entities_per_fact = entity_processing._prepare_facts_for_entity_processing(
+            batch_processed, user_entities_per_content
+        )
+        unit_entity_names = {
+            unit_ids[i]: [e["text"] for e in entities_per_fact[i]]
+            for i in range(min(len(unit_ids), len(entities_per_fact)))
+        }
+        # Replace the document's prior version only on its FIRST batch (later batches append to what
+        # batch 1 just wrote — replacing again would tombstone those siblings), and never when
+        # appending to an existing document.
+        replace_id = effective_doc_id if (is_first_batch and append_base_hash is None) else ""
+        # 0.0 → the server's default trigram-Jaccard threshold; a configured value overrides it.
+        threshold = float(getattr(config, "entity_similarity_threshold", 0.0) or 0.0)
+        resp = await provider.retain(
+            bank_id,
+            unit_ids,
+            batch_processed,
+            document_id=effective_doc_id,
+            unit_entity_names=unit_entity_names,
+            replace_document_id=replace_id,
+            resolve_threshold=threshold,
+        )
+        log_buffer.append(
+            f"[streaming] pg-free retain doc={effective_doc_id} units={len(unit_ids)} "
+            f"seq={resp.seq} new_entities={resp.new_entities}"
+        )
+    # Mark the document tracked so the post-loop "no facts / not-yet-tracked" finalizer does NOT
+    # fire. That finalizer (a) writes a Postgres documents row and (b) runs handle_document_tracking,
+    # whose store.delete_document tombstones by document_id — which, landing at a LATER seq than this
+    # retain, would delete the very memories we just wrote (the same-entry sparing only protects the
+    # replace inside the store's atomic retain, not a later separate tombstone). The atomic retain
+    # above is the whole write, so tracking is complete here. Set it even when there were 0 units,
+    # matching the Protocol-B path which marks the document tracked regardless of extraction results.
+    doc_tracking_done[0] = True
+    logger.info(f"[streaming] Phase 2 (pg-free retain): {time.time() - p2_start:.3f}s")
     return _ExtStreamingWriteResult(aborted=False, batch_result_ids=batch_result_ids)
 
 
@@ -2200,7 +2374,12 @@ async def _streaming_retain_batch(
             entity_resolver.discard_pending_stats()
             mb_start = time.time()
 
-            # Phase 1 — Entity Resolution only (no ANN — deferred to Phase 3)
+            # Phase 1 — Entity Resolution only (no ANN — deferred to Phase 3). A store that resolves
+            # and mints entities itself (server-side, ``store_owned_retain``) skips the Postgres
+            # trigram scan + entity INSERTs entirely — the PG-free path touches no Postgres in retain.
+            from ..memories import get_memories as _get_memories_p1
+
+            _store_owned_retain = getattr(_get_memories_p1(), "store_owned_retain", False)
             p1_start = time.time()
             phase1 = await _pre_resolve_phase1(
                 pool,
@@ -2211,6 +2390,7 @@ async def _streaming_retain_batch(
                 config,
                 log_buffer,
                 skip_semantic_ann=True,
+                skip_entity_resolution=_store_owned_retain,
             )
 
             logger.info(f"[streaming] Phase 1 (entity resolution): {time.time() - p1_start:.3f}s")
@@ -2803,6 +2983,16 @@ async def _try_delta_retain(
     (``0`` if the submission matched prior content exactly and nothing was
     re-extracted).
     """
+    # A store-owned (PG-free) retain resolves entities and replaces atomically server-side; the
+    # delta optimization's chunk-diff still rides a Postgres connection phase (documents/chunks
+    # tombstones + witness), so for now fall straight through to the full streaming retain, which
+    # has its own PG-free path. Re-enabling delta for a store-owned backend (a store-side chunk
+    # diff) is a follow-up. Full retain of an unchanged doc is still cheap.
+    from ..memories import get_memories as _get_memories_delta
+
+    if getattr(_get_memories_delta(), "store_owned_retain", False):
+        return None
+
     # Need a single document_id
     effective_doc_id = document_id
     if not effective_doc_id:
