@@ -6345,8 +6345,15 @@ class MemoryEngine(MemoryEngineInterface):
                 ordered_items: list[tuple[str, str]] = []
                 seen_chunk_ids: set[str] = set()
                 observation_ids_ordered: list[uuid.UUID] = []
+                # chunk_id -> document_id, harvested from the hits themselves. A store that owns the
+                # document store keeps NO SQL chunks row (PG-free retain writes none), so the chunk
+                # metadata cannot come from the chunks table — it comes from the hits, whose chunk_id
+                # and document_id are enough to fetch the text from the store.
+                chunk_doc: dict[str, str] = {}
                 for sr in top_scored:
                     chunk_id = sr.retrieval.chunk_id
+                    if chunk_id and getattr(sr.retrieval, "document_id", None):
+                        chunk_doc.setdefault(chunk_id, sr.retrieval.document_id)
                     if chunk_id and chunk_id not in seen_chunk_ids:
                         ordered_items.append(("chunk", chunk_id))
                         seen_chunk_ids.add(chunk_id)
@@ -6443,19 +6450,40 @@ class MemoryEngine(MemoryEngineInterface):
                     # per-chunk ``dict`` allocation for an overlay it never runs.
                     _chunk_store = get_memories()
                     _owns_docs = _chunk_store.owns_document_store_for(bank_id)
-                    if _owns_docs:
-                        _chunk_cols = "chunk_id, chunk_text, chunk_index, document_id"
+                    if _chunk_store.store_owned_retain_for(bank_id):
+                        # PG-free retain writes NO SQL chunks row, so the metadata cannot be queried
+                        # from the chunks table (it is empty). Synthesize each row from the hit's
+                        # chunk_id + document_id — the chunk_index is the chunk_id's suffix after the
+                        # ``{bank}_{document}_`` prefix — and let the overlay below fill in the text
+                        # from the store. One ``list_chunk_texts`` per document, same as before.
+                        chunks_rows = []
+                        for _cid in chunk_ids_ordered:
+                            _doc = chunk_doc.get(_cid)
+                            if _doc is None:
+                                continue
+                            _prefix = f"{bank_id}_{_doc}_"
+                            _idx_s = _cid[len(_prefix):] if _cid.startswith(_prefix) else _cid.rsplit("_", 1)[-1]
+                            try:
+                                _idx = int(_idx_s)
+                            except ValueError:
+                                continue
+                            chunks_rows.append(
+                                {"chunk_id": _cid, "chunk_text": "", "chunk_index": _idx, "document_id": _doc}
+                            )
                     else:
-                        _chunk_cols = "chunk_id, chunk_text, chunk_index"
-                    async with acquire_with_retry(backend) as conn:
-                        chunks_rows = await conn.fetch(
-                            f"""
-                            SELECT {_chunk_cols}
-                            FROM {fq_table("chunks")}
-                            WHERE chunk_id = ANY($1::text[])
-                            """,
-                            chunk_ids_ordered,
-                        )
+                        if _owns_docs:
+                            _chunk_cols = "chunk_id, chunk_text, chunk_index, document_id"
+                        else:
+                            _chunk_cols = "chunk_id, chunk_text, chunk_index"
+                        async with acquire_with_retry(backend) as conn:
+                            chunks_rows = await conn.fetch(
+                                f"""
+                                SELECT {_chunk_cols}
+                                FROM {fq_table("chunks")}
+                                WHERE chunk_id = ANY($1::text[])
+                                """,
+                                chunk_ids_ordered,
+                            )
 
                     if _owns_docs:
                         # Overlay the store's chunk TEXT (empty in the SQL row for this store) —
@@ -7596,9 +7624,18 @@ class MemoryEngine(MemoryEngineInterface):
                 else:
                     deleted = unit_id if fact_type is not None else None
                     if deleted:
-                        # Tag the store tombstone so it commits atomically with this transaction.
-                        _del_txn = await _store.begin_txn(conn=conn, fq_table=fq_table, bank_id=bank_id, mutating=True)
-                        await _store.delete_facts(bank_id, [unit_id], txn=_del_txn)
+                        if _store.store_owned_retain_for(bank_id):
+                            # Store-owned: the tombstone is the ONLY write here (the relink/prune
+                            # enqueues above join memory_units/unit_entities, which this store keeps
+                            # no rows in — so they touch nothing; stale-observation cleanup routes to
+                            # the store and is not part of this txn either). One store-side delete needs
+                            # no write-group — a plain, immediately-durable tombstone leaves no witness
+                            # to go undecided (a store-owned retain creates none of these either).
+                            await _store.delete_facts(bank_id, [unit_id])
+                        else:
+                            # Tag the store tombstone so it commits atomically with this transaction.
+                            _del_txn = await _store.begin_txn(conn=conn, fq_table=fq_table, bank_id=bank_id, mutating=True)
+                            await _store.delete_facts(bank_id, [unit_id], txn=_del_txn)
 
                 # Invalidate observations referencing this (now-deleted) source memory
                 if bank_id and fact_type in ("experience", "world"):
