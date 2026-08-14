@@ -30,9 +30,10 @@ Most operations are a method here, so the call chains route through the interfac
 rather than reimplement it per store; where the two differ, they usually differ by
 what the method does — the Postgres implementation writes join rows and reprocesses
 links, one that owns the store no-ops those passes and does its own thing. A handful
-of call sites still branch on the two capability flags (``writes_memory_rows_in_sql``
-for the inline-SQL fast paths, ``owns_document_store`` for the document/chunk bodies)
-where the shapes are genuinely different; those are the seams, not accidental leaks.
+of call sites still branch on the capability flags (``writes_memory_rows_in_sql`` for
+the inline-SQL fast paths, ``owns_document_store`` for the document/chunk bodies, and
+``derives_semantic_links_internally`` for the retain-time kNN link pass) where the
+shapes are genuinely different; those are the seams, not accidental leaks.
 """
 
 from __future__ import annotations
@@ -438,6 +439,23 @@ class MemoriesExtension(Extension, ABC):
     #: the inline SQL. Cold, never-searched, key-based — see docs/documents-chunks.md.
     owns_document_store: bool = False
 
+    #: Whether this store derives the semantic (kNN) neighbours of a memory itself, so retain must
+    #: NOT compute them in Postgres. Default False: the SQL stores have no standing kNN index, so
+    #: retain runs a pgvector ANN pass over ``memory_units`` and materializes the neighbours as
+    #: ``semantic`` ``memory_links`` rows, which the SQL graph arm reads back at recall time.
+    #: A store that keeps its own vector index can answer the same question from that index (at read
+    #: time, or from links it derived at fold time), so for it the Postgres work is redundant — and
+    #: for a store whose memories don't live in ``memory_units`` at all it is worse than redundant:
+    #: it queries a table that holds none of its rows and writes ``memory_links`` rows nothing on its
+    #: read path consults. Setting this True makes retain skip BOTH halves for this store's banks —
+    #: the ANN query and the ``memory_links`` write, on every retain path (full, delta, import).
+    #:
+    #: Setting it True is a promise, not just an optimization: this store's :meth:`graph_retriever`
+    #: (or :meth:`graph_direct_links`) must serve the semantic neighbours itself, because after the
+    #: skip there are no ``semantic`` rows in ``memory_links`` for these banks for the SQL graph arm
+    #: to find. Leave it False for a store that relies on the Postgres link graph.
+    derives_semantic_links_internally: bool = False
+
     def writes_memory_rows_in_sql_for(self, bank_id: str) -> bool:
         """Per-bank form of :attr:`writes_memory_rows_in_sql`. Defaults to the class attribute, so a
         single-store extension needs no override. A store that keeps different banks in different
@@ -451,16 +469,6 @@ class MemoriesExtension(Extension, ABC):
         """Per-bank form of :attr:`owns_document_store`. Defaults to the class attribute; a store
         that keeps some banks in a separate backend overrides it. See :meth:`writes_memory_rows_in_sql_for`."""
         return self.owns_document_store
-
-    #: Whether this store derives the semantic (kNN) link graph itself, so retain must NOT run the
-    #: Postgres ANN pass that populates ``memory_links``. Default False: the SQL stores have no
-    #: standing kNN index, so retain computes each committed unit's semantic neighbours with a
-    #: pgvector ANN pass and writes ``memory_links`` rows, which the recall graph arm then reads.
-    #: A store that keeps its own vector index can serve the same neighbours from it (at read time,
-    #: or from links it derived at fold time) — for such a store the Postgres pass is pure waste: it
-    #: scans a ``memory_units`` table that is empty for its banks and writes ``memory_links`` rows
-    #: nothing on its read path consults. Setting this True makes retain skip that pass entirely.
-    derives_semantic_links_internally: bool = False
 
     def derives_semantic_links_internally_for(self, bank_id: str) -> bool:
         """Per-bank form of :attr:`derives_semantic_links_internally`. Defaults to the class

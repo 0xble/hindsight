@@ -401,7 +401,16 @@ async def _pre_resolve_phase1(
     slow reads, eliminating TimeoutErrors under concurrent load.
     """
     set_stage("retain.phase1.resolve")
+    from ..memories import get_memories
     from .link_utils import compute_semantic_links_ann
+
+    # A store that derives the semantic graph itself answers those neighbours from its own
+    # vector index, so the pgvector query below — and the memory_links rows it feeds — would
+    # be work nothing ever reads. Gated here, in the one place every retain path (full, delta,
+    # import) resolves Phase 1, so no caller can reintroduce the query by forgetting the flag.
+    if not skip_semantic_ann and get_memories().derives_semantic_links_internally_for(bank_id):
+        skip_semantic_ann = True
+        log_buffer.append("  Semantic ANN: skipped (store derives semantic links internally)")
 
     user_entities_per_content = {idx: content.entities for idx, content in enumerate(contents) if content.entities}
 
@@ -511,6 +520,8 @@ async def _insert_facts_and_links(
     memory_links here.
     """
     set_stage("retain.phase2.insert_facts")
+    from ..memories import get_memories
+
     unit_ids = await fact_storage.insert_facts_batch(conn, bank_id, processed_facts, ops=ops, txn=txn)
     step_start = time.time()
     log_buffer.append(f"  Insert facts: {len(unit_ids)} units in {time.time() - step_start:.3f}s")
@@ -544,9 +555,18 @@ async def _insert_facts_and_links(
         temporal_link_count = await link_creation.create_temporal_links_batch(conn, bank_id, unit_ids, ops=ops)
         log_buffer.append(f"  Temporal links: {temporal_link_count} links in {time.time() - step_start:.3f}s")
 
-        # Create semantic links (within-batch + pre-computed ANN from Phase 1)
+        # Create semantic links (within-batch + pre-computed ANN from Phase 1).
+        # A store that derives them internally gets neither half: Phase 1 already skipped the
+        # ANN query for it, while the within-batch similarities are computed in Python — so
+        # without this gate those would still land in memory_links, rows its read path never
+        # consults.
+        skip_links_reason = None
         if skip_semantic_links:
-            log_buffer.append("  Semantic links: skipped (deferred to final ANN pass)")
+            skip_links_reason = "deferred to final ANN pass"
+        elif get_memories().derives_semantic_links_internally_for(bank_id):
+            skip_links_reason = "store derives semantic links internally"
+        if skip_links_reason:
+            log_buffer.append(f"  Semantic links: skipped ({skip_links_reason})")
             semantic_link_count = 0
         else:
             step_start = time.time()
@@ -1561,10 +1581,21 @@ async def _run_final_semantic_ann(
     fact_types from the database, then runs ANN in chunks of _ANN_CHUNK_SIZE
     seeds. This replaces per-batch within-batch + fire-and-forget ANN with
     one efficient pass that sees the full bank.
+
+    A store that derives the semantic graph itself does none of this: it serves those
+    neighbours from its own vector index, so the pass would query ``memory_units`` and
+    write ``memory_links`` rows its read path never consults. For a store whose facts
+    don't live in ``memory_units`` at all it degenerates further — the lookup below finds
+    none of its units and logs "(unexpected)" on every retain.
     """
+    from ..memories import get_memories
     from .link_utils import _bulk_insert_links, compute_semantic_links_ann
 
     if not unit_ids:
+        return
+
+    if get_memories().derives_semantic_links_internally_for(bank_id):
+        log_buffer.append("[streaming] Final ANN: skipped (store derives semantic links internally)")
         return
 
     # Load embeddings and fact_types for all committed units
@@ -2657,16 +2688,10 @@ async def _streaming_retain_batch(
     # Final ANN pass: create semantic links for ALL committed units at once.
     # This replaces per-batch within-batch + fire-and-forget ANN with a single
     # efficient pass after all facts are in the database.
-    #
-    # Skipped for a store that derives the semantic graph itself: the pass would
-    # run a pgvector ANN over the SQL memory_units table — empty for such a store,
-    # since its facts live in its own index — and write memory_links rows its read
-    # path never consults. That is a full redundant pass on every retain; the store
-    # serves the same neighbours from its own vector index instead.
+    # A store that derives the semantic graph itself opts out inside
+    # _run_final_semantic_ann — see the guard there.
     # ---------------------------------------------------------------------------
-    from ..memories import get_memories
-
-    if all_unit_ids and not pipeline_aborted[0] and not get_memories().derives_semantic_links_internally_for(bank_id):
+    if all_unit_ids and not pipeline_aborted[0]:
         ann_start = time.time()
         try:
             await _run_final_semantic_ann(

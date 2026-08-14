@@ -15,8 +15,18 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from hindsight_api.engine.retain import embedding_utils, entity_processing, link_creation, link_utils, orchestrator
+from hindsight_api.engine import memories as memories_mod
+from hindsight_api.engine.memories.postgres import PostgresMemories
+from hindsight_api.engine.retain import (
+    embedding_utils,
+    entity_processing,
+    fact_storage,
+    link_creation,
+    link_utils,
+    orchestrator,
+)
 from hindsight_api.engine.retain.orchestrator import (
+    _insert_facts_and_links,
     _map_results_to_contents,
     _pre_resolve_phase1,
     _process_extracted_facts,
@@ -306,3 +316,158 @@ class TestSemanticLinkThresholdPropagation:
         )
 
         assert captured_thresholds == [0.84]
+
+
+class _SelfIndexedStore(PostgresMemories):
+    """A store that owns its vector index, so it derives the semantic neighbours itself.
+
+    Subclasses the Postgres store because only the capability answer matters here — the gates
+    ask this one question and nothing else on the store is reached.
+    """
+
+    name = "self-indexed"
+    derives_semantic_links_internally = True
+
+    def __init__(self, sql_link_banks: set[str] | None = None):
+        super().__init__({})
+        # Banks this store still leaves to the Postgres link graph (empty = it owns them all).
+        self._sql_link_banks = sql_link_banks or set()
+
+    def derives_semantic_links_internally_for(self, bank_id: str) -> bool:
+        return bank_id not in self._sql_link_banks
+
+
+class TestSelfIndexedStoreSkipsSemanticLinkWork:
+    """A store that derives the semantic graph itself must see NO retain-time kNN work in
+    Postgres — not the ANN probe, and not the ``memory_links`` rows the probe feeds. Both halves
+    are gated at their single choke point so every retain path (full, delta, import) inherits the
+    skip; these tests pin each gate, since a store that opts in has no ``memory_links`` for the
+    SQL graph arm to fall back on."""
+
+    @pytest.mark.asyncio
+    async def test_phase1_skips_the_ann_probe(self, monkeypatch):
+        """Phase 1 is where delta retain and bank import run their ANN probe."""
+        ann_calls: list[str] = []
+
+        @asynccontextmanager
+        async def fake_acquire_with_retry(_pool):
+            yield object()
+
+        async def fake_resolve_entities(*_args, **_kwargs):
+            return EntityResolutionResult(resolved_entities=[], entity_to_unit=[], unit_to_entity_ids={})
+
+        async def fake_compute_semantic_links_ann(_conn, bank_id, *_args, **_kwargs):
+            ann_calls.append(bank_id)
+            return [("unit", "other", "semantic", 0.9, None)]
+
+        # Owns the index for every bank except "legacy-sql-bank" — the answer is per bank.
+        store = _SelfIndexedStore({"legacy-sql-bank"})
+        monkeypatch.setattr(orchestrator, "acquire_with_retry", fake_acquire_with_retry)
+        monkeypatch.setattr(entity_processing, "resolve_entities", fake_resolve_entities)
+        monkeypatch.setattr(link_utils, "compute_semantic_links_ann", fake_compute_semantic_links_ann)
+        monkeypatch.setattr(memories_mod, "get_memories", lambda: store)
+
+        async def run(bank_id: str):
+            return await _pre_resolve_phase1(
+                pool=object(),
+                entity_resolver=object(),
+                bank_id=bank_id,
+                contents=[_make_content()],
+                processed_facts=[_make_processed_fact(0)],
+                config=SimpleNamespace(entity_labels=None, semantic_link_min_similarity=0.82),
+                log_buffer=[],
+            )
+
+        owned = await run("vector-bank")
+        assert ann_calls == []
+        assert owned.semantic_ann_links == []
+
+        # A bank this store leaves in SQL still gets the probe, on the same store instance.
+        legacy = await run("legacy-sql-bank")
+        assert ann_calls == ["legacy-sql-bank"]
+        assert len(legacy.semantic_ann_links) == 1
+
+    @pytest.mark.asyncio
+    async def test_phase2_writes_no_semantic_memory_links(self, monkeypatch):
+        """The within-batch similarities are computed in Python, so skipping the ANN probe alone
+        would still leave ``memory_links`` rows behind. Phase 2 has to skip the write too."""
+        semantic_writes: list[str] = []
+
+        async def fake_insert_facts_batch(*_args, **_kwargs):
+            return ["unit-1"]
+
+        async def fake_create_semantic_links_batch(_conn, bank_id, *_args, **_kwargs):
+            semantic_writes.append(bank_id)
+            return 1
+
+        async def fake_create_temporal_links_batch(*_args, **_kwargs):
+            return 0
+
+        async def fake_create_causal_links_batch(*_args, **_kwargs):
+            return 0
+
+        store = _SelfIndexedStore({"legacy-sql-bank"})
+        monkeypatch.setattr(fact_storage, "insert_facts_batch", fake_insert_facts_batch)
+        monkeypatch.setattr(link_creation, "create_semantic_links_batch", fake_create_semantic_links_batch)
+        monkeypatch.setattr(link_creation, "create_temporal_links_batch", fake_create_temporal_links_batch)
+        monkeypatch.setattr(link_creation, "create_causal_links_batch", fake_create_causal_links_batch)
+        monkeypatch.setattr(memories_mod, "get_memories", lambda: store)
+
+        entity_resolver = SimpleNamespace(
+            reassert_entities_batch=AsyncMock(),
+            link_units_to_entities_batch=AsyncMock(),
+        )
+
+        async def run(bank_id: str):
+            return await _insert_facts_and_links(
+                object(),
+                entity_resolver,
+                bank_id,
+                [_make_content()],
+                [_make_extracted_fact("f", 0)],
+                [_make_processed_fact(0)],
+                SimpleNamespace(semantic_link_min_similarity=0.82),
+                [],
+                resolved_entities=[],
+                entity_to_unit=[],
+                unit_to_entity_ids={},
+                semantic_ann_links=[],
+            )
+
+        assert await run("vector-bank") == [["unit-1"]]
+        assert semantic_writes == []
+
+        # ...and the store's SQL-backed bank keeps the Postgres link graph.
+        assert await run("legacy-sql-bank") == [["unit-1"]]
+        assert semantic_writes == ["legacy-sql-bank"]
+
+    @pytest.mark.asyncio
+    async def test_streaming_final_ann_pass_is_skipped(self, monkeypatch):
+        """Streaming (full) retain defers its links to this post-commit pass, which reaches
+        pgvector directly rather than through Phase 1 — so it carries its own guard. Nothing
+        should be loaded from memory_units either: the guard runs before the lookup."""
+        conn = SimpleNamespace(fetch=AsyncMock(return_value=[]))
+        ann_calls: list[str] = []
+
+        @asynccontextmanager
+        async def fake_acquire_with_retry(_pool):
+            yield conn
+
+        async def fake_compute_semantic_links_ann(*_args, **_kwargs):
+            ann_calls.append("called")
+            return []
+
+        monkeypatch.setattr(orchestrator, "acquire_with_retry", fake_acquire_with_retry)
+        monkeypatch.setattr(link_utils, "compute_semantic_links_ann", fake_compute_semantic_links_ann)
+        monkeypatch.setattr(memories_mod, "get_memories", lambda: _SelfIndexedStore())
+
+        await _run_final_semantic_ann(
+            SimpleNamespace(ops=object()),
+            "vector-bank",
+            ["unit"],
+            threshold=0.84,
+            log_buffer=[],
+        )
+
+        assert ann_calls == []
+        conn.fetch.assert_not_awaited()
