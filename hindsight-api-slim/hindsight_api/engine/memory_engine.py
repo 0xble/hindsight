@@ -6335,7 +6335,6 @@ class MemoryEngine(MemoryEngineInterface):
             chunks_dict = None
             total_chunk_tokens = 0
             chunk_fetch_start = time.time()
-            if include_chunks:
             if include_chunks and top_scored:
                 from .response_models import ChunkInfo
 
