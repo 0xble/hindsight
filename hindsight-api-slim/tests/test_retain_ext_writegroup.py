@@ -63,11 +63,20 @@ def _make_common(monkeypatch, tracker, *, calls):
     """Patch the module-level collaborators the helper reaches for."""
     monkeypatch.setattr(orch, "acquire_with_retry", lambda pool: tracker.acquire())
 
-    async def _insert_facts_batch(conn, bank_id, processed, ops=None, txn=None):
-        calls.append(("insert_facts", conn, tracker.open))
-        tracker.store_writes_saw_open.append(tracker.open)
+    async def _insert_facts_batch(conn, bank_id, processed, ops=None, txn=None, defer_index=False):
+        # defer_index=True mints ids WITHOUT writing — the entity-bearing write happens in
+        # index_facts below, so this call is a no-op store-side (records no write).
+        calls.append(("insert_facts", conn, tracker.open, defer_index))
         assert conn is None, "ext store write must not receive a connection"
+        if not defer_index:
+            tracker.store_writes_saw_open.append(tracker.open)
         return ["u1"]
+
+    async def _index_facts(bank_id, unit_ids, facts, document_id=None, unit_entity_ids=None, txn=None):
+        # The single, entity-bearing store write — must be connection-free and carry the txn.
+        calls.append(("index_facts", tracker.open))
+        tracker.store_writes_saw_open.append(tracker.open)
+        assert txn is not None, "the deferred store write must ride the write-group txn"
 
     async def _store_chunks_batch(conn, bank_id, doc_id, meta, ops=None, store_document_text=True):
         calls.append(("store_chunks", tracker.open))
@@ -77,6 +86,7 @@ def _make_common(monkeypatch, tracker, *, calls):
         calls.append(("handle_doc_tracking", tracker.open))
 
     monkeypatch.setattr(orch.fact_storage, "insert_facts_batch", _insert_facts_batch)
+    monkeypatch.setattr(orch.fact_storage, "index_facts", _index_facts)
     monkeypatch.setattr(orch.chunk_storage, "store_chunks_batch", _store_chunks_batch)
     monkeypatch.setattr(orch.fact_storage, "handle_document_tracking", _handle_doc_tracking)
     monkeypatch.setattr(orch, "_map_results_to_contents", lambda contents, pf, uids: [list(uids)])
@@ -109,10 +119,12 @@ class _EntityResolver:
         self.postings = []
         self.reasserts = []
 
-    async def record_unit_entity_postings(self, pairs, bank_id=None, txn=None):
-        # THE contract: the store re-posting runs with no connection held.
+    async def record_unit_entity_postings(self, pairs, bank_id=None, txn=None, store_write=True):
+        # THE contract: the posting runs with no connection held, whichever path called it.
+        # `store_write` says whether a second store write happens at all, and `txn` is the
+        # write-group it belongs to when it does — the two paths differ on both, so record both.
         assert self._t.open is False, "entity posting must run connection-free"
-        self.postings.append((pairs, txn))
+        self.postings.append((pairs, txn, store_write))
 
     async def reassert_entities_batch(self, bank_id, resolved, conn):
         assert conn is not None
@@ -173,13 +185,14 @@ async def test_store_writes_are_connection_free_and_witness_is_in_txn(monkeypatc
 
     assert result.aborted is False
     assert result.batch_result_ids == [["u1"]]
-    # The fact write happened with no connection held.
+    # The fact write happened with no connection held (a single deferred write via index_facts).
     assert tracker.store_writes_saw_open == [False]
-    # Entity re-posting happened (also connection-free — asserted inside the fake), and it rode
-    # the SAME write-group as the fact write. It re-writes the rows that write just created, so a
-    # store that records what its groups wrote must see it as part of the group — otherwise the
-    # posting lands outside the group's accounting and a later replay of the group loses it.
-    assert er.postings == [([("u1", "e1", None)], kw["ext_txn"])]
+    assert ("index_facts", False) in calls  # the entity-bearing store write ran connection-free
+    # Co-occurrence ran connection-free with store_write=False: the entity ids were written INLINE
+    # by the index_facts above, tagged with the write-group, so there is no second store write left
+    # for a txn to cover. The group's accounting still includes the postings — by way of the write
+    # that carried them — which is what the delta path below has to achieve the other way.
+    assert er.postings == [([("u1", "e1", None)], None, False)]
     # Witness written with a real connection, exactly once; commit published after release.
     assert len(provider.witnesses) == 1 and provider.witnesses[0][1] is not None
     assert provider.decisions == [True]
@@ -334,11 +347,15 @@ async def test_delta_store_writes_are_connection_free(monkeypatch):
 
     assert result.fell_back is False
     assert result.result_unit_ids == [["u1"]]
-    # Fact write + body store + entity re-posting all happened connection-free.
+    # Fact write + body store + entity re-posting all happened connection-free. The delta path
+    # still writes-then-reposts (store_write=True) — only the streaming path uses the single write.
     assert tracker.store_writes_saw_open == [False]
     assert ("store_document_bodies", False) in calls
-    # ...and the posting rode the same write-group as the fact write (see the streaming test).
-    assert er.postings == [([("u1", "e1", None)], kw["ext_txn"])]
+    # ...and because the delta path DOES re-post to the store (store_write=True), that second write
+    # must ride the same write-group as the fact write — it re-writes rows the group just created,
+    # so a store that records what its groups wrote has to see it as part of the group or a replay
+    # of the group loses the posting.
+    assert er.postings == [([("u1", "e1", None)], kw["ext_txn"], True)]
     # Witness inside the txn; publish after release.
     assert len(provider.witnesses) == 1 and provider.witnesses[0][1] is not None
     assert provider.decisions == [True]

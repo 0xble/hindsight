@@ -670,14 +670,18 @@ async def _streaming_batch_write_ext(
             if cid:
                 processed_fact.chunk_id = cid
 
-    # Stage the memory records to the store (conn unused by a store-owned backend), tagged with
-    # ext_txn. This is the slow object-store write we are keeping OUT of the connection window.
-    unit_ids = await fact_storage.insert_facts_batch(None, bank_id, batch_processed, ops=pool.ops, txn=ext_txn)
+    # Mint the unit ids WITHOUT writing (defer_index): entities can only be resolved onto real ids
+    # after they exist, so we write the memories to the store ONCE below — with their entity ids
+    # already attached — instead of writing them here and then re-upserting each one with entities.
+    # That reattach cost a SECOND full object-store write per memory (plus a read-back of the just-
+    # written records), doubling the store round-trips on the slow path. Connection-free either way.
+    unit_ids = await fact_storage.insert_facts_batch(
+        None, bank_id, batch_processed, ops=pool.ops, txn=ext_txn, defer_index=True
+    )
     batch_result_ids = _map_results_to_contents(batch_contents, batch_processed, unit_ids if unit_ids else [])
 
     if unit_ids:
-        # Remap Phase-1 placeholder ids onto the real unit ids, then re-write each memory with its
-        # entity ids attached — also connection-free for a store-owned backend.
+        # Remap Phase-1 placeholder ids onto the real unit ids.
         resolved_entity_ids = [entity.entity_id for entity in phase1.entities.resolved_entities]
         remapped_entity_to_unit, _remapped_unit_to_entity_ids, _remapped_semantic = _remap_phase1_results(
             resolved_entity_ids, phase1.entities.entity_to_unit, phase1.entities.unit_to_entity_ids, [], unit_ids
@@ -686,7 +690,25 @@ async def _streaming_batch_write_ext(
             (unit_id, resolved_entity_ids[idx], fact_date)
             for idx, (unit_id, _local_idx, fact_date) in enumerate(remapped_entity_to_unit)
         ]
-        await entity_resolver.record_unit_entity_postings(unit_entity_pairs, bank_id=bank_id, txn=ext_txn)
+        # The single, entity-bearing store write — connection-free, and tagged with ext_txn so it
+        # commits (and becomes visible) atomically with the rest of the write-group. This replaces
+        # the earlier insert-then-reattach pair with one write.
+        unit_entity_ids: dict[str, list[str]] = {}
+        for unit_id, entity_id, _fd in unit_entity_pairs:
+            unit_entity_ids.setdefault(unit_id, []).append(entity_id)
+        await fact_storage.index_facts(
+            bank_id,
+            unit_ids,
+            batch_processed,
+            document_id=effective_doc_id,
+            unit_entity_ids=unit_entity_ids,
+            txn=ext_txn,
+        )
+        # The store row was just written with its entities inline, so skip the (now redundant)
+        # second store write and keep ONLY the co-occurrence accumulation the entity graph needs.
+        await entity_resolver.record_unit_entity_postings(
+            unit_entity_pairs, bank_id=bank_id, store_write=False
+        )
 
     # ---- CONNECTION PHASE (short transaction: local metadata + commit witness) ----
     try:
