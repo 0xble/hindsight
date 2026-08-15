@@ -11731,6 +11731,14 @@ class MemoryEngine(MemoryEngineInterface):
                 bank_id=bank_id, operation=BankReadOperation.GET_ENTITY_GRAPH, request_context=request_context
             )
             await self._validate_operation(self._operation_validator.validate_bank_read(ctx))
+
+        # A store that owns its entities keeps no rows in the SQL entity_cooccurrences/entities
+        # tables, so the query below would return an empty graph. Read the store's own aggregate.
+        from .memories import get_memories
+
+        _eg_store = get_memories()
+        if _eg_store.store_owned_retain_for(bank_id):
+            return await _eg_store.get_entity_graph(bank_id=bank_id, limit=limit, min_count=min_count)
         backend = await self._get_backend()
         async with acquire_with_retry(backend) as conn:
             edge_rows = await conn.fetch(

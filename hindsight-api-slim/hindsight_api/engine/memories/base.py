@@ -716,6 +716,13 @@ class MemoriesExtension(Extension, ABC):
         SQL ``documents`` table instead); the engine only calls it for a store that owns its docs."""
         raise NotImplementedError
 
+    async def get_entity_graph(self, *, bank_id: str, limit: int = 1000, min_count: int = 1) -> dict:
+        """The entity co-occurrence graph (``{nodes, edges, ...}``) from the store's OWN aggregate.
+        Only a store that owns its entities overrides this (a Postgres store reads its
+        ``entity_cooccurrences`` table); the engine calls it only for a store-owned bank, whose SQL
+        table is empty."""
+        raise NotImplementedError
+
     async def get_chunk_text(self, *, bank_id: str, document_id: str, chunk_index: int) -> "str | None":
         """One chunk's text by position, or ``None`` if the document/index does not exist."""
         raise NotImplementedError
