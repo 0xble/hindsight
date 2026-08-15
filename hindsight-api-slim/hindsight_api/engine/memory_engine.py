@@ -12084,10 +12084,16 @@ class MemoryEngine(MemoryEngineInterface):
                 """,
                 bank_id,
             )
-            doc_count_row = await conn.fetchrow(
-                f"SELECT COUNT(*) as count FROM {fq_table('documents')} WHERE bank_id = $1",
-                bank_id,
-            )
+            # Document count, like link/node counts above, must be asked of the store: a store that
+            # owns its documents keeps no rows in the SQL `documents` table, so the query returns 0.
+            if store.owns_document_store_for(bank_id):
+                total_documents = await store.count_documents(bank_id=bank_id)
+            else:
+                doc_count_row = await conn.fetchrow(
+                    f"SELECT COUNT(*) as count FROM {fq_table('documents')} WHERE bank_id = $1",
+                    bank_id,
+                )
+                total_documents = doc_count_row["count"] if doc_count_row else 0
             # Consolidation freshness (last-consolidated, pending, failed) lives on the memories,
             # so a store that keeps them outside SQL must answer this — the memory_units query
             # returns 0/None for it. Same {last_consolidated_at, pending, failed} shape either way.
@@ -12140,7 +12146,7 @@ class MemoryEngine(MemoryEngineInterface):
                 "link_counts_by_fact_type": {},
                 "link_breakdown": [],
                 "operations": ops_by_status,
-                "total_documents": doc_count_row["count"] if doc_count_row else 0,
+                "total_documents": total_documents,
                 "last_consolidated_at": last_consolidated_at.isoformat() if last_consolidated_at else None,
                 "last_memory_write_at": last_memory_write_at.isoformat() if last_memory_write_at else None,
                 "pending_consolidation": consolidation_row["pending"] if consolidation_row else 0,
