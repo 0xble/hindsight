@@ -710,6 +710,12 @@ class MemoriesExtension(Extension, ABC):
         mis-routed call is loud rather than silently empty."""
         raise NotImplementedError
 
+    async def count_documents(self, *, bank_id: str) -> int:
+        """This bank's document count, from the store's own registry — the bank-stats document
+        total. Only an ``owns_document_store`` store overrides this (a Postgres store counts the
+        SQL ``documents`` table instead); the engine only calls it for a store that owns its docs."""
+        raise NotImplementedError
+
     async def get_chunk_text(self, *, bank_id: str, document_id: str, chunk_index: int) -> "str | None":
         """One chunk's text by position, or ``None`` if the document/index does not exist."""
         raise NotImplementedError
