@@ -7278,20 +7278,32 @@ class MemoryEngine(MemoryEngineInterface):
                 )
 
                 # For a store that keeps memories outside SQL, deleting the documents row does not
-                # cascade to its memories (they are not SQL rows) — drop them through the store,
-                # tagged with a write-group so the store tombstone commits atomically with the
-                # Postgres document delete (a rolled-back delete must not orphan the memories).
-                if deleted and not _store.writes_memory_rows_in_sql_for(bank_id):
-                    _del_txn = await _store.begin_txn(conn=conn, fq_table=fq_table, bank_id=bank_id, mutating=True)
-                    await _store.delete_document(
-                        conn=conn, fq_table=fq_table, bank_id=bank_id, document_id=document_id, txn=_del_txn
-                    )
-                    # A store that owns the document store also drops the document RECORD (its
-                    # extracted text + chunk bodies; the orphan sweep reclaims the blobs), under the
-                    # same write-group so it commits atomically with the Postgres document delete.
-                    # This is the EXPLICIT deletion — distinct from the re-ingest facts-delete above.
-                    if _store.owns_document_store_for(bank_id):
-                        await _store.delete_document_record(bank_id=bank_id, document_id=document_id, txn=_del_txn)
+                # cascade to its memories (they are not SQL rows) — drop them through the store.
+                if not _store.writes_memory_rows_in_sql_for(bank_id):
+                    # A store-owned (PG-free) bank writes NO Postgres documents row, so the DELETE
+                    # above is a no-op and `deleted` is None — the deletion must be DRIVEN off the
+                    # store, not gated on the SQL result (otherwise a store-owned document could never
+                    # be deleted at all). The memory tombstone-by-document and the doc-record delete
+                    # are the only writes, both in the store, so no write-group is needed — nothing in
+                    # Postgres to be atomic with. (The legacy path that DID write a documents row for
+                    # such a store still tagged a txn; that row no longer exists under PG-free retain.)
+                    had_memories = bool(unit_ids) or units_count > 0
+                    if _store.store_owned_retain_for(bank_id):
+                        await _store.delete_document(conn=conn, fq_table=fq_table, bank_id=bank_id, document_id=document_id)
+                        if _store.owns_document_store_for(bank_id):
+                            await _store.delete_document_record(bank_id=bank_id, document_id=document_id)
+                        # Report the deletion off the store's own count (SQL `deleted` is None here).
+                        if had_memories or _store.owns_document_store_for(bank_id):
+                            deleted = deleted or document_id
+                    elif deleted:
+                        # Legacy store-outside-SQL that still writes a Postgres documents row: keep
+                        # the write-group so the store tombstone commits atomically with the SQL delete.
+                        _del_txn = await _store.begin_txn(conn=conn, fq_table=fq_table, bank_id=bank_id, mutating=True)
+                        await _store.delete_document(
+                            conn=conn, fq_table=fq_table, bank_id=bank_id, document_id=document_id, txn=_del_txn
+                        )
+                        if _store.owns_document_store_for(bank_id):
+                            await _store.delete_document_record(bank_id=bank_id, document_id=document_id, txn=_del_txn)
 
                 # Invalidate observations referencing these (now-deleted) memories
                 if unit_ids:
@@ -8713,7 +8725,19 @@ class MemoryEngine(MemoryEngineInterface):
                     # One cross-store write-group for this curation edit/invalidate/revert: the
                     # store's writes below are tagged so they commit together with this Postgres
                     # transaction; decided (published) after it commits.
-                    _curation_txn = await store.begin_txn(conn=conn, fq_table=fq_table, bank_id=bank_id, mutating=True)
+                    #
+                    # A store that owns the whole retain keeps the edited MEMORY in the store (its
+                    # apply_edit / invalidate / restore below), and its one write is atomic on its own —
+                    # there is nothing to make atomic with a Postgres witness. Skip the write-group
+                    # (``_curation_txn = None`` → the store writes are plain, immediately visible), so
+                    # curation leaves no undecided txn to stall the store's indexer (same reasoning as
+                    # consolidation). The Postgres entity/posting writes below become plain best-effort
+                    # rows the store's reads no longer consult.
+                    _curation_txn = (
+                        None
+                        if store.store_owned_retain_for(bank_id)
+                        else await store.begin_txn(conn=conn, fq_table=fq_table, bank_id=bank_id, mutating=True)
+                    )
 
                     # --- Apply edit (live rows only) ---
                     if edit_plan is not None and live2:
@@ -8856,7 +8880,9 @@ class MemoryEngine(MemoryEngineInterface):
 
                 # Postgres committed the curation change: publish the store's write-group. On a
                 # crash before here the writes stay invisible and the recovery sweep resolves them.
-                await store.decide_txn(_curation_txn, commit=True)
+                # No-op for a store-owned edit (no write-group; its store writes were already visible).
+                if _curation_txn is not None:
+                    await store.decide_txn(_curation_txn, commit=True)
                 phase2_committed = True
         finally:
             # Entities were resolved (and possibly autocommitted) in Phase 1 but the edit did not
