@@ -2307,6 +2307,24 @@ async def _streaming_retain_batch(
 
                 _edge_provider = get_memories()
                 _edge_txn = None
+                if _edge_provider.store_owned_retain_for(bank_id):
+                    # Store-owned 0-fact (re-)ingest: the document's bodies are already in the store
+                    # (via _store_document_bodies) and there are no new memories. A re-ingest that now
+                    # yields 0 facts must drop the document's PRIOR memories — ONE plain store-side
+                    # delete-by-document. No Postgres documents row, no lock, no write-group
+                    # (store-only), so nothing is left undecided to stall the store's indexer. This
+                    # is the 0-fact analogue of the fact-bearing PG-free path's replace-tombstone.
+                    await _edge_provider.delete_document(
+                        conn=None, fq_table=fq_table, bank_id=bank_id, document_id=effective_doc_id
+                    )
+                    doc_tracking_done[0] = True
+                    combined_content = ""
+                    log_buffer.append(f"[streaming] Document {effective_doc_id} tracked (0 facts, store-owned, PG-free)")
+                    log_buffer.append(
+                        f"[streaming] Consumer batch {consumer_batch_idx + 1}: "
+                        f"0 facts extracted from {len(batch)} chunks, skipping"
+                    )
+                    return
                 async with acquire_with_retry(pool) as conn:
                     async with conn.transaction():
                         # Same create-and-lock the fact-bearing path uses. Routed
