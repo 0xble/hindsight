@@ -695,6 +695,21 @@ class MemoriesExtension(Extension, ABC):
         """A document's metadata (and, if asked, its extracted ``original_text``), or ``None``."""
         raise NotImplementedError
 
+    async def list_documents(
+        self,
+        *,
+        bank_id: str,
+        search_query: "str | None" = None,
+        limit: int = 100,
+        offset: int = 0,
+    ) -> dict:
+        """Page this bank's documents from the store's OWN registry — the ``{items, total, limit,
+        offset}`` shape the documents browser expects. Only a store that owns its document metadata
+        overrides this (a Postgres-backed store lists from the SQL ``documents`` table instead, so
+        the engine only calls this for an ``owns_document_store`` store). Default raises so a
+        mis-routed call is loud rather than silently empty."""
+        raise NotImplementedError
+
     async def get_chunk_text(self, *, bank_id: str, document_id: str, chunk_index: int) -> "str | None":
         """One chunk's text by position, or ``None`` if the document/index does not exist."""
         raise NotImplementedError

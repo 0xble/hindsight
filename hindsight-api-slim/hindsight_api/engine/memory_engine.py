@@ -9554,6 +9554,16 @@ class MemoryEngine(MemoryEngineInterface):
                 bank_id=bank_id, operation=BankReadOperation.LIST_DOCUMENTS, request_context=request_context
             )
             await self._validate_operation(self._operation_validator.validate_bank_read(ctx))
+
+        # A store that owns its document metadata keeps no rows in the SQL `documents` table, so the
+        # query below would return an empty page for it. List from the store's own registry instead.
+        from .memories import get_memories
+
+        _docs_store = get_memories()
+        if _docs_store.owns_document_store_for(bank_id):
+            return await _docs_store.list_documents(
+                bank_id=bank_id, search_query=search_query, limit=limit, offset=offset
+            )
         backend = await self._get_backend()
         async with acquire_with_retry(backend) as conn:
             # Build query conditions
