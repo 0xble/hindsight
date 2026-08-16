@@ -12423,6 +12423,61 @@ class MemoryEngine(MemoryEngineInterface):
 
             return [self._row_to_mental_model(row, detail=detail) for row in rows]
 
+    async def count_mental_models(
+        self,
+        bank_id: str,
+        *,
+        tags: list[str] | None = None,
+        tags_match: str = "any",
+        request_context: "RequestContext",
+    ) -> int:
+        """Count pinned mental models for a bank, applying the same tag filter as ``list_mental_models``.
+
+        Unlike ``list_mental_models`` this ignores limit/offset and returns the total number of
+        matching rows, so callers can paginate without under-counting large banks.
+
+        Args:
+            bank_id: Bank identifier
+            tags: Optional tags to filter by
+            tags_match: How to match tags - 'any', 'all', or 'exact'
+            request_context: Request context for authentication
+
+        Returns:
+            Total number of mental models matching the filter.
+        """
+        await self._authenticate_tenant(request_context)
+        if self._operation_validator:
+            from hindsight_api.extensions import BankReadContext, BankReadOperation
+
+            ctx = BankReadContext(
+                bank_id=bank_id, operation=BankReadOperation.LIST_MENTAL_MODELS, request_context=request_context
+            )
+            await self._validate_operation(self._operation_validator.validate_bank_read(ctx))
+        backend = await self._get_backend()
+
+        async with acquire_with_retry(backend) as conn:
+            # Build tag filter — must match list_mental_models exactly so filtered totals line up.
+            tag_filter = ""
+            params: list[Any] = [bank_id]
+            if tags:
+                if tags_match == "all":
+                    tag_filter = " AND tags @> $2::varchar[]"
+                elif tags_match == "exact":
+                    tag_filter = " AND tags = $2::varchar[]"
+                else:  # any
+                    tag_filter = " AND tags && $2::varchar[]"
+                params.append(tags)
+
+            row = await conn.fetchrow(
+                f"""
+                SELECT COUNT(*) AS total
+                FROM {fq_table("mental_models")}
+                WHERE bank_id = $1 {tag_filter}
+                """,
+                *params,
+            )
+            return int(row["total"]) if row else 0
+
     async def get_mental_model(
         self,
         bank_id: str,
@@ -15158,6 +15213,7 @@ class MemoryEngine(MemoryEngineInterface):
                         "retry_count": row["retry_count"] or 0,
                         "next_retry_at": next_retry_at.isoformat() if next_retry_at else None,
                         "progress": result_metadata.get("progress"),
+                        "mental_model_id": result_metadata.get("mental_model_id"),
                     }
                 )
 
@@ -15287,6 +15343,7 @@ class MemoryEngine(MemoryEngineInterface):
                         "next_retry_at": row["next_retry_at"].isoformat() if row["next_retry_at"] else None,
                         "progress": result_metadata.get("progress"),
                         "result_metadata": result_metadata,
+                        "mental_model_id": result_metadata.get("mental_model_id"),
                         "child_operations": child_statuses,
                         "task_payload": task_payload,
                     }
@@ -15304,6 +15361,7 @@ class MemoryEngine(MemoryEngineInterface):
                         "next_retry_at": row["next_retry_at"].isoformat() if row["next_retry_at"] else None,
                         "progress": result_metadata.get("progress"),
                         "result_metadata": result_metadata,
+                        "mental_model_id": result_metadata.get("mental_model_id"),
                         "task_payload": task_payload,
                     }
             else:

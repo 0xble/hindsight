@@ -163,6 +163,68 @@ class TestMentalModelsCRUD:
         await memory.delete_bank(bank_id, request_context=request_context)
 
     @pytest.mark.asyncio
+    async def test_count_mental_models(self, memory: MemoryEngine, request_context):
+        """count_mental_models ignores limit/offset and honors the same tag filter as list."""
+        bank_id = f"test-mental-model-count-{uuid.uuid4().hex[:8]}"
+        await memory.get_bank_profile(bank_id=bank_id, request_context=request_context)
+
+        for i in range(4):
+            await memory.create_mental_model(
+                bank_id=bank_id,
+                name=f"Model {i}",
+                source_query=f"Query {i}",
+                content=f"Content {i}",
+                tags=["shared"] + (["odd"] if i % 2 else []),
+                request_context=request_context,
+            )
+
+        # Total count is not affected by a limit that only lists a page.
+        listed = await memory.list_mental_models(bank_id=bank_id, limit=2, request_context=request_context)
+        assert len(listed) == 2
+        total = await memory.count_mental_models(bank_id=bank_id, request_context=request_context)
+        assert total == 4
+
+        # Tag-filtered count reflects the filter (2 of the 4 have the "odd" tag).
+        odd_total = await memory.count_mental_models(bank_id=bank_id, tags=["odd"], request_context=request_context)
+        assert odd_total == 2
+
+        await memory.delete_bank(bank_id, request_context=request_context)
+
+    @pytest.mark.asyncio
+    async def test_list_mental_models_endpoint_returns_total(self, memory: MemoryEngine, api_client, request_context):
+        """GET /mental-models returns total + echoed limit/offset, not just a capped items list."""
+        bank_id = f"test-mm-list-total-{uuid.uuid4().hex[:8]}"
+        await memory.get_bank_profile(bank_id=bank_id, request_context=request_context)
+
+        for i in range(4):
+            await memory.create_mental_model(
+                bank_id=bank_id,
+                name=f"Model {i}",
+                source_query=f"Query {i}",
+                content=f"Content {i}",
+                tags=["shared"] + (["odd"] if i % 2 else []),
+                request_context=request_context,
+            )
+
+        # A small limit pages the items but total reflects the whole bank.
+        resp = await api_client.get(f"/v1/default/banks/{bank_id}/mental-models?limit=2&offset=1")
+        assert resp.status_code == 200, resp.text
+        body = resp.json()
+        assert len(body["items"]) == 2
+        assert body["total"] == 4
+        assert body["limit"] == 2
+        assert body["offset"] == 1
+
+        # Tag filter narrows the total.
+        resp = await api_client.get(f"/v1/default/banks/{bank_id}/mental-models?tags=odd&limit=10")
+        assert resp.status_code == 200, resp.text
+        body = resp.json()
+        assert body["total"] == 2
+        assert len(body["items"]) == 2
+
+        await memory.delete_bank(bank_id, request_context=request_context)
+
+    @pytest.mark.asyncio
     async def test_update_mental_model(self, memory: MemoryEngine, request_context):
         """Test updating a mental model."""
         bank_id = f"test-mental-model-update-{uuid.uuid4().hex[:8]}"

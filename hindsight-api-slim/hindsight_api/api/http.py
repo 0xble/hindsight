@@ -2315,6 +2315,15 @@ class MentalModelListResponse(BaseModel):
     """Response model for listing mental models."""
 
     items: list[MentalModelResponse]
+    total: int = Field(
+        description="Total number of mental models matching the filter, ignoring limit/offset.",
+    )
+    limit: int = Field(
+        description="Maximum number of items returned in this page (echoes the request).",
+    )
+    offset: int = Field(
+        description="Number of items skipped before this page (echoes the request).",
+    )
 
 
 # =========================================================================
@@ -3212,6 +3221,10 @@ class OperationResponse(BaseModel):
         default=None,
         description="Last-known progress snapshot for a running operation; null if none was recorded.",
     )
+    mental_model_id: str | None = Field(
+        default=None,
+        description="Mental model this operation refreshed (refresh_mental_model ops only); null otherwise.",
+    )
 
 
 class ConsolidationRequest(BaseModel):
@@ -3373,6 +3386,10 @@ class OperationStatusResponse(BaseModel):
     result_metadata: dict[str, Any] | None = Field(
         default=None,
         description="Internal metadata for debugging. Structure may change without notice. Not for production use.",
+    )
+    mental_model_id: str | None = Field(
+        default=None,
+        description="Mental model this operation refreshed (refresh_mental_model ops only); null otherwise.",
     )
     child_operations: list[ChildOperationStatus] | None = Field(
         default=None, description="Child operations for batch operations (if applicable)"
@@ -5198,7 +5215,18 @@ def _register_routes(app: FastAPI):
                 offset=offset,
                 request_context=request_context,
             )
-            return MentalModelListResponse(items=[MentalModelResponse(**m) for m in mental_models])
+            total = await app.state.memory.count_mental_models(
+                bank_id=bank_id,
+                tags=tags_filter,
+                tags_match=tags_match,
+                request_context=request_context,
+            )
+            return MentalModelListResponse(
+                items=[MentalModelResponse(**m) for m in mental_models],
+                total=total,
+                limit=limit,
+                offset=offset,
+            )
         except OperationValidationError as e:
             raise HTTPException(status_code=e.status_code, detail=e.reason)
         except (AuthenticationError, HTTPException):

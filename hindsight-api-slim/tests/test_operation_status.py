@@ -58,6 +58,25 @@ async def _insert_operation(pool, bank_id: str, status: str) -> str:
     return str(op_id)
 
 
+async def _insert_refresh_operation(pool, bank_id: str, status: str, mental_model_id: str) -> str:
+    """Insert a refresh_mental_model operation carrying mental_model_id in result_metadata."""
+    import json
+
+    op_id = uuid.uuid4()
+    await pool.execute(
+        """
+        INSERT INTO async_operations
+            (operation_id, bank_id, operation_type, status, task_payload, result_metadata)
+        VALUES ($1, $2, 'refresh_mental_model', $3, '{"test": true}'::jsonb, $4::jsonb)
+        """,
+        op_id,
+        bank_id,
+        status,
+        json.dumps({"mental_model_id": mental_model_id, "name": "Some Model"}),
+    )
+    return str(op_id)
+
+
 @pytest.mark.asyncio
 async def test_list_operations_returns_processing_status(api_client, memory, test_bank_id):
     """GET /operations should return 'processing' status, not collapse it to 'pending'."""
@@ -74,6 +93,35 @@ async def test_list_operations_returns_processing_status(api_client, memory, tes
     statuses_by_id = {op["id"]: op["status"] for op in ops}
     assert statuses_by_id[pending_id] == "pending"
     assert statuses_by_id[processing_id] == "processing"
+
+
+@pytest.mark.asyncio
+async def test_refresh_operation_surfaces_mental_model_id(api_client, memory, test_bank_id):
+    """refresh_mental_model ops should expose mental_model_id (from result_metadata) on both
+    the list and get endpoints; non-refresh ops leave it null."""
+    pool = memory._pool
+    await _ensure_bank(pool, test_bank_id)
+
+    mm_id = str(uuid.uuid4())
+    refresh_id = await _insert_refresh_operation(pool, test_bank_id, "completed", mm_id)
+    retain_id = await _insert_operation(pool, test_bank_id, "completed")
+
+    # List endpoint. Null fields are dropped from the response envelope (ExcludeNoneRoute),
+    # so a non-refresh op simply omits mental_model_id rather than emitting null.
+    response = await api_client.get(f"/v1/default/banks/{test_bank_id}/operations")
+    assert response.status_code == 200
+    ops = {op["id"]: op for op in response.json()["operations"]}
+    assert ops[refresh_id]["mental_model_id"] == mm_id
+    assert ops[retain_id].get("mental_model_id") is None
+
+    # Get endpoint
+    response = await api_client.get(f"/v1/default/banks/{test_bank_id}/operations/{refresh_id}")
+    assert response.status_code == 200
+    assert response.json()["mental_model_id"] == mm_id
+
+    response = await api_client.get(f"/v1/default/banks/{test_bank_id}/operations/{retain_id}")
+    assert response.status_code == 200
+    assert response.json().get("mental_model_id") is None
 
 
 @pytest.mark.asyncio
