@@ -150,7 +150,7 @@ async def tool_search_mental_models(
         f"""
         SELECT
             id, name, content,
-            tags, created_at, last_refreshed_at, trigger,
+            tags, created_at, last_refreshed_at, last_refreshed_source_watermark, trigger,
             1 - (embedding <=> $2::vector) as relevance
         FROM {fq_table("mental_models")}
         WHERE bank_id = $1 AND embedding IS NOT NULL {filters}
@@ -167,6 +167,13 @@ async def tool_search_mental_models(
         if last_refreshed_at and last_refreshed_at.tzinfo is None:
             last_refreshed_at = last_refreshed_at.replace(tzinfo=timezone.utc)
 
+        # Staleness keys off the source-data watermark (the newest in-scope memory the
+        # last refresh saw), not the wall-clock refresh time. Fall back to
+        # last_refreshed_at for rows not yet stamped by the migration backfill.
+        source_watermark = row["last_refreshed_source_watermark"] or last_refreshed_at
+        if source_watermark and source_watermark.tzinfo is None:
+            source_watermark = source_watermark.replace(tzinfo=timezone.utc)
+
         # Per-MM staleness: new in-scope memories since last refresh (includes pending).
         # The scoped query has no index to use and scans the bank's memories in full, so
         # skip it for a model the bank-wide watermark already proves current: nothing was
@@ -174,7 +181,7 @@ async def tool_search_mental_models(
         # model still gets the exact answer — the agent trusts a model without a verifying
         # recall() only on `is_stale is False`, so guessing conservatively here would buy
         # LLM turns to save a query. No watermark (absent, or an empty bank) → ask.
-        if last_memory_write_at is not None and not _may_need_refresh(last_refreshed_at, last_memory_write_at):
+        if last_memory_write_at is not None and not _may_need_refresh(source_watermark, last_memory_write_at):
             is_stale = False
         else:
             is_stale = await memory_engine.compute_mental_model_is_stale(conn, bank_id, row)

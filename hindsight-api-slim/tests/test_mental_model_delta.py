@@ -283,14 +283,16 @@ class TestDeltaRefreshPlumbing:
         patch_llm_call,
         monkeypatch,
     ):
-        """A successful no-op refresh advances ``last_refreshed_at`` to the newest
-        in-scope memory it actually saw — not ``now()``.
+        """A successful no-op refresh advances the source watermark
+        (``last_refreshed_source_watermark``) to the newest in-scope memory it actually
+        saw — not ``now()`` — and leaves the wall-clock ``last_refreshed_at`` untouched
+        (no content was written).
 
-        The scheduled-refresh gate uses ``last_refreshed_at`` as its watermark. If a
-        no-op refresh left it unchanged, one unrelated memory would make every
-        maintenance tick submit another LLM refresh forever. Anchoring the watermark to
-        the newest processed memory stops that storm without jumping ahead of the real
-        data, so a row that commits later stays newer than the watermark (see
+        The scheduled-refresh gate keys off the source watermark. If a no-op refresh left
+        it unchanged, one unrelated memory would make every maintenance tick submit
+        another LLM refresh forever. Anchoring the watermark to the newest processed
+        memory stops that storm without jumping ahead of the real data, so a row that
+        commits later stays newer than the watermark (see
         ``test_delta_refresh_watermark_survives_straddling_commit``).
         """
         bank_id = f"test-delta-watermark-{uuid.uuid4().hex[:8]}"
@@ -361,22 +363,27 @@ class TestDeltaRefreshPlumbing:
 
         async with memory._pool.acquire() as conn:
             mm_row = await conn.fetchrow(
-                "SELECT id, tags, trigger, last_refreshed_at FROM mental_models WHERE bank_id = $1 AND id = $2",
+                "SELECT id, tags, trigger, last_refreshed_at, last_refreshed_source_watermark "
+                "FROM mental_models WHERE bank_id = $1 AND id = $2",
                 bank_id,
                 mm["id"],
             )
             assert mm_row is not None
-            after = mm_row["last_refreshed_at"]
+            after_watermark = mm_row["last_refreshed_source_watermark"]
+            after_last_refreshed_at = mm_row["last_refreshed_at"]
             is_stale = await memory.compute_mental_model_is_stale(conn, bank_id, mm_row)
             history_count = await conn.fetchval(
                 "SELECT COUNT(*) FROM mental_model_history WHERE bank_id = $1 AND mental_model_id = $2",
                 bank_id,
                 mm["id"],
             )
-        # Watermark advanced to the newest in-scope memory actually seen — exactly its
-        # updated_at, not now() — so the settled window no longer re-triggers.
-        assert after == fact_updated_at
-        assert after > before
+        # Source watermark advanced to the newest in-scope memory actually seen — exactly
+        # its updated_at, not now() — so the settled window no longer re-triggers.
+        assert after_watermark == fact_updated_at
+        assert after_watermark > before
+        # A no-op refresh writes no content, so the wall-clock last_refreshed_at is left
+        # exactly where it was (the '1 day ago' the test set up).
+        assert after_last_refreshed_at == before
         assert is_stale is False
         assert history_count == 0
 
@@ -507,7 +514,8 @@ class TestDeltaRefreshPlumbing:
 
         async with memory._pool.acquire() as conn:
             mm_row = await conn.fetchrow(
-                "SELECT id, tags, trigger, last_refreshed_at FROM mental_models WHERE bank_id = $1 AND id = $2",
+                "SELECT id, tags, trigger, last_refreshed_at, last_refreshed_source_watermark "
+                "FROM mental_models WHERE bank_id = $1 AND id = $2",
                 bank_id,
                 mm["id"],
             )
@@ -517,8 +525,8 @@ class TestDeltaRefreshPlumbing:
                 straddle_fact_id,
             )
             assert mm_row is not None
-            after = mm_row["last_refreshed_at"]
-            # Watermark advanced only to the committed baseline the refresh actually saw.
+            after = mm_row["last_refreshed_source_watermark"]
+            # Source watermark advanced only to the committed baseline the refresh actually saw.
             assert after == baseline_updated_at
             # The straddler was stamped before the cutoff (an exact-cutoff/now() watermark
             # would drop it), yet it is newer than max(seen), so the model reads stale.

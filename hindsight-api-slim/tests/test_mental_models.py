@@ -1512,6 +1512,161 @@ class TestMentalModelStaleness:
             await memory.delete_bank(bank_id, request_context=request_context)
 
 
+class TestMentalModelRefreshWatermark:
+    """last_refreshed_at is a wall-clock timestamp; last_refreshed_source_watermark
+    is the source-data watermark. They are decoupled: a content-writing refresh always
+    advances last_refreshed_at (so time-based schedulers see it happened), while
+    staleness keys off the source watermark (so a model whose source memories are
+    static settles as not-stale)."""
+
+    @staticmethod
+    async def _read_ts(memory: MemoryEngine, bank_id: str, mm_id: str) -> tuple:
+        """Return (last_refreshed_at, last_refreshed_source_watermark) straight from the row."""
+        pool = await memory._get_pool()
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow(
+                f"SELECT last_refreshed_at, last_refreshed_source_watermark "
+                f"FROM {fq_table('mental_models')} WHERE bank_id = $1 AND id = $2",
+                bank_id,
+                mm_id,
+            )
+        return row["last_refreshed_at"], row["last_refreshed_source_watermark"]
+
+    @staticmethod
+    async def _insert_memory_at(
+        memory: MemoryEngine,
+        bank_id: str,
+        *,
+        at,
+        tags: list[str] | None = None,
+        fact_type: str = "experience",
+    ) -> str:
+        """Insert a memory whose updated_at/created_at are pinned to ``at``."""
+        pool = await memory._get_pool()
+        mem_id = str(uuid.uuid4())
+        async with pool.acquire() as conn:
+            await conn.execute(
+                f"""
+                INSERT INTO {fq_table("memory_units")}
+                    (id, bank_id, text, event_date, fact_type, tags, created_at, updated_at)
+                VALUES ($1, $2, $3, $4, $5, $6::varchar[], $4, $4)
+                """,
+                mem_id,
+                bank_id,
+                "test memory",
+                at,
+                fact_type,
+                tags if tags is not None else [],
+            )
+        return mem_id
+
+    async def test_last_refreshed_at_advances_when_source_watermark_unchanged(
+        self, memory: MemoryEngine, request_context
+    ):
+        """Core regression for the reported bug: a content-writing refresh whose source
+        watermark is unchanged (no new memories) must STILL advance last_refreshed_at to
+        a later wall-clock time. Previously last_refreshed_at was set to the watermark,
+        so it never moved for models with static sources and time-based schedulers
+        re-refreshed forever."""
+        from datetime import datetime, timedelta, timezone
+
+        bank_id = f"test-mm-wm-advance-{uuid.uuid4().hex[:8]}"
+        await memory.get_bank_profile(bank_id, request_context=request_context)
+        mm = await memory.create_mental_model(
+            bank_id=bank_id, name="MM", source_query="q", content="c", request_context=request_context
+        )
+
+        # A fixed source watermark that does NOT change between the two refreshes —
+        # i.e. no new in-scope memory arrived.
+        fixed_watermark = datetime(2020, 1, 1, tzinfo=timezone.utc)
+
+        await memory.update_mental_model(
+            bank_id=bank_id,
+            mental_model_id=mm["id"],
+            content="refresh-1",
+            refresh_watermark=fixed_watermark,
+            request_context=request_context,
+        )
+        lra_1, wm_1 = await self._read_ts(memory, bank_id, mm["id"])
+
+        await memory.update_mental_model(
+            bank_id=bank_id,
+            mental_model_id=mm["id"],
+            content="refresh-2",
+            refresh_watermark=fixed_watermark,
+            request_context=request_context,
+        )
+        lra_2, wm_2 = await self._read_ts(memory, bank_id, mm["id"])
+
+        # The wall-clock refresh time advanced on the second content-writing refresh...
+        assert lra_2 > lra_1, "last_refreshed_at must advance on every content-writing refresh"
+        # ...even though the source watermark is byte-for-byte unchanged.
+        assert wm_1 == fixed_watermark
+        assert wm_2 == fixed_watermark
+        # last_refreshed_at is a real wall-clock time, not the (much older) watermark.
+        assert lra_2 > fixed_watermark + timedelta(days=365)
+
+        # The serialized API dict exposes BOTH fields, and they carry the two meanings.
+        got = await memory.get_mental_model(bank_id, mm["id"], request_context=request_context)
+        assert got["last_refreshed_source_watermark"] == fixed_watermark.isoformat()
+        assert datetime.fromisoformat(got["last_refreshed_at"]) > fixed_watermark + timedelta(days=365)
+
+        await memory.delete_bank(bank_id, request_context=request_context)
+
+    async def test_staleness_keys_off_source_watermark_not_last_refreshed_at(
+        self, memory: MemoryEngine, request_context
+    ):
+        """The "due for refresh?" decision must compare new memories against the source
+        watermark, NOT the wall-clock last_refreshed_at. Guards against re-introducing
+        the opposite regression (never-refresh): a recent last_refreshed_at must not mask
+        a memory that is newer than the source watermark."""
+        from datetime import datetime, timezone
+
+        bank_id = f"test-mm-wm-stale-{uuid.uuid4().hex[:8]}"
+        await memory.get_bank_profile(bank_id, request_context=request_context)
+        mm = await memory.create_mental_model(
+            bank_id=bank_id, name="MM", source_query="q", content="c", request_context=request_context
+        )
+
+        # A memory that lands in the middle of 2021.
+        mem_at = datetime(2021, 6, 1, tzinfo=timezone.utc)
+        await self._insert_memory_at(memory, bank_id, at=mem_at)
+
+        # Case 1 — source watermark BEFORE the memory: even though last_refreshed_at is
+        # NOW() (very recent), the model is stale because the source watermark it was
+        # built from predates the memory.
+        await memory.update_mental_model(
+            bank_id=bank_id,
+            mental_model_id=mm["id"],
+            content="built-before-memory",
+            refresh_watermark=datetime(2021, 1, 1, tzinfo=timezone.utc),
+            request_context=request_context,
+        )
+        lra, wm = await self._read_ts(memory, bank_id, mm["id"])
+        assert wm == datetime(2021, 1, 1, tzinfo=timezone.utc)
+        assert lra.year >= 2024, "last_refreshed_at is wall-clock NOW(), not the 2021 watermark"
+        got = await memory.get_mental_model(bank_id, mm["id"], request_context=request_context)
+        assert got["is_stale"] is True, "a memory newer than the source watermark makes the model stale"
+
+        # Case 2 — source watermark AT/AFTER the memory: last_refreshed_at is unchanged
+        # from case 1 (still recent), but the model is now NOT stale because its source
+        # watermark already covers the memory. This is exactly the case the old code got
+        # wrong: it would keep re-refreshing off the never-advancing timestamp.
+        await memory.update_mental_model(
+            bank_id=bank_id,
+            mental_model_id=mm["id"],
+            content="built-after-memory",
+            refresh_watermark=mem_at,
+            request_context=request_context,
+        )
+        _, wm2 = await self._read_ts(memory, bank_id, mm["id"])
+        assert wm2 == mem_at
+        got = await memory.get_mental_model(bank_id, mm["id"], request_context=request_context)
+        assert got["is_stale"] is False, "no memory is newer than the source watermark → not stale"
+
+        await memory.delete_bank(bank_id, request_context=request_context)
+
+
 @pytest.mark.hs_llm_core
 class TestMentalModelRefreshTagSecurity:
     """Test that mental model refresh respects tag-based security boundaries."""

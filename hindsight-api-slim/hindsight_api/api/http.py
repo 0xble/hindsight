@@ -2293,7 +2293,23 @@ class MentalModelResponse(BaseModel):
     tags: list[str] = FieldWithDefault(list)
     max_tokens: int | None = Field(default=None)
     trigger: MentalModelTrigger | None = Field(default=None)
-    last_refreshed_at: str | None = None
+    last_refreshed_at: str | None = Field(
+        default=None,
+        description=(
+            "Wall-clock time of the most recent refresh that wrote content. Advances on every "
+            "content-writing refresh, even when no new source memories arrived — use this for "
+            "time-based refresh schedulers. Distinct from `last_refreshed_source_watermark`."
+        ),
+    )
+    last_refreshed_source_watermark: str | None = Field(
+        default=None,
+        description=(
+            "Source-data watermark: the newest in-scope memory the last refresh saw. Staleness "
+            "(`is_stale`) keys off this, not `last_refreshed_at`. Stays put when a model's source "
+            "memories are static, so a model whose sources never change settles as not-stale even "
+            "though refreshes keep advancing `last_refreshed_at`. Null for rows not yet stamped."
+        ),
+    )
     created_at: str | None = None
     reflect_response: dict | None = Field(
         default=None,
@@ -2303,10 +2319,11 @@ class MentalModelResponse(BaseModel):
         default=None,
         description=(
             "True when memories matching this mental model's tag/fact_type scope have been written "
-            "since last_refreshed_at. Exact, and costly to compute, so it is populated only by the "
-            "single mental-model read at detail=full — never when listing. For a whole list, compare "
-            "each `last_refreshed_at` against the bank's `last_memory_write_at` from GET /stats: "
-            "at or after it means up to date, older means it may need a refresh."
+            "since last_refreshed_source_watermark. Exact, and costly to compute, so it is populated "
+            "only by the single mental-model read at detail=full — never when listing. For a whole "
+            "list, compare each `last_refreshed_source_watermark` against the bank's "
+            "`last_memory_write_at` from GET /stats: at or after it means up to date, older means it "
+            "may need a refresh."
         ),
     )
 

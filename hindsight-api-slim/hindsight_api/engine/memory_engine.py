@@ -12412,7 +12412,7 @@ class MemoryEngine(MemoryEngineInterface):
                 f"""
                 SELECT id, bank_id, name, source_query, content, tags,
                        last_refreshed_at, created_at, reflect_response,
-                       max_tokens, trigger, structured_content
+                       max_tokens, trigger, structured_content, last_refreshed_source_watermark
                 FROM {fq_table("mental_models")}
                 WHERE bank_id = $1 {tag_filter}
                 ORDER BY last_refreshed_at DESC
@@ -12468,7 +12468,7 @@ class MemoryEngine(MemoryEngineInterface):
                 f"""
                 SELECT id, bank_id, name, source_query, content, tags,
                        last_refreshed_at, created_at, reflect_response,
-                       max_tokens, trigger, structured_content
+                       max_tokens, trigger, structured_content, last_refreshed_source_watermark
                 FROM {fq_table("mental_models")}
                 WHERE bank_id = $1 AND id = $2
                 """,
@@ -12586,7 +12586,7 @@ class MemoryEngine(MemoryEngineInterface):
             VALUES ($1, $2, 'pinned', $3, ' ', $4, $5, $6, $7, COALESCE($8, 2048), COALESCE($9, '{{"refresh_after_consolidation": false}}'::jsonb){sv_val})
             RETURNING id, bank_id, name, source_query, content, tags,
                       last_refreshed_at, created_at, reflect_response,
-                      max_tokens, trigger, structured_content
+                      max_tokens, trigger, structured_content, last_refreshed_source_watermark
             """,
             mental_model_id,
             bank_id,
@@ -12710,12 +12710,14 @@ class MemoryEngine(MemoryEngineInterface):
         scope_filter: "_MentalModelScopeFilter",
         refresh_cutoff: datetime,
     ) -> datetime | None:
-        """Watermark to persist after a refresh: the newest in-scope memory visible at
-        the snapshot, clamped so it never regresses below the current ``last_refreshed_at``.
+        """Source watermark to persist after a refresh: the newest in-scope memory
+        visible at the snapshot, clamped so it never regresses below the model's
+        current source watermark (``last_refreshed_source_watermark``, falling back to
+        ``last_refreshed_at`` for rows not yet stamped by the migration backfill).
 
         A still-uncommitted straddling row is excluded from this max, so when it commits
         it stays newer than the watermark and is caught next time. Returns ``None`` when
-        no in-scope memory is visible (leave ``last_refreshed_at`` untouched, so an
+        no in-scope memory is visible (leave the source watermark untouched, so an
         in-flight first row is not skipped). Kept as its own method — like
         ``_mental_model_refresh_cutoff`` — so mock unit tests of the refresh wiring can
         stub it instead of reaching a real pool.
@@ -12725,8 +12727,9 @@ class MemoryEngine(MemoryEngineInterface):
         watermark_params = [*scope_filter.params, refresh_cutoff]
         watermark_where = [*scope_filter.where, f"updated_at <= ${len(watermark_params)}"]
         async with acquire_with_retry(backend) as conn:
-            current_last_refreshed_at = await conn.fetchval(
-                f"SELECT last_refreshed_at FROM {fq_table('mental_models')} WHERE bank_id = $1 AND id = $2",
+            current_source_watermark = await conn.fetchval(
+                f"SELECT COALESCE(last_refreshed_source_watermark, last_refreshed_at) "
+                f"FROM {fq_table('mental_models')} WHERE bank_id = $1 AND id = $2",
                 bank_id,
                 mental_model_id,
             )
@@ -12736,8 +12739,8 @@ class MemoryEngine(MemoryEngineInterface):
             )
         if newest_in_scope is None:
             return None
-        if current_last_refreshed_at is not None:
-            return max(newest_in_scope, current_last_refreshed_at)
+        if current_source_watermark is not None:
+            return max(newest_in_scope, current_source_watermark)
         return newest_in_scope
 
     async def _execute_mental_model_refresh(
@@ -12899,12 +12902,20 @@ class MemoryEngine(MemoryEngineInterface):
         # so the agentic loop only retrieves genuinely new information.
         created_after: datetime | None = None
         if use_delta:
-            last_refreshed_at_raw = mental_model.get("last_refreshed_at")
-            if last_refreshed_at_raw is not None:
-                if isinstance(last_refreshed_at_raw, str):
-                    created_after = datetime.fromisoformat(last_refreshed_at_raw)
+            # Delta mode scopes recall to memories newer than the last refresh's
+            # *source watermark* — the newest in-scope memory the previous refresh
+            # actually saw — not the wall-clock last_refreshed_at. Using the wall-clock
+            # time would skip memories that were created between the watermark and the
+            # refresh's completion. Fall back to last_refreshed_at for rows not yet
+            # stamped by the migration backfill.
+            delta_since_raw = mental_model.get("last_refreshed_source_watermark") or mental_model.get(
+                "last_refreshed_at"
+            )
+            if delta_since_raw is not None:
+                if isinstance(delta_since_raw, str):
+                    created_after = datetime.fromisoformat(delta_since_raw)
                 else:
-                    created_after = last_refreshed_at_raw
+                    created_after = delta_since_raw
                 reflect_kwargs["created_after"] = created_after
 
         window = MentalModelRefreshWindow(
@@ -13561,13 +13572,16 @@ class MemoryEngine(MemoryEngineInterface):
             tags: New tags (if changing)
             trigger: New trigger settings (if changing)
             reflect_response: Full reflect API response payload (if changing)
-            refresh_watermark: Watermark persisted by a successful refresh — the newest
-                ``updated_at`` among the in-scope memories visible at the refresh
-                snapshot (not ``now()``), so a row that commits after the snapshot stays
-                newer than the watermark and is not silently dropped. None means "no
-                in-scope memory was visible": on the no-op path ``last_refreshed_at`` is
-                left unchanged (so an in-flight row is not skipped); on the content path
-                it falls back to NOW().
+            refresh_watermark: Source-data watermark persisted by a successful refresh —
+                the newest ``updated_at`` among the in-scope memories visible at the
+                refresh snapshot (not ``now()``), so a row that commits after the snapshot
+                stays newer than the watermark and is not silently dropped. Written to the
+                dedicated ``last_refreshed_source_watermark`` column, which is what
+                staleness keys off. Distinct from ``last_refreshed_at``, which is always
+                the wall-clock time of the refresh. None means "no in-scope memory was
+                visible": the source watermark is left unchanged (so an in-flight row is
+                not skipped). On the content path ``last_refreshed_at`` still advances to
+                NOW() regardless, so time-based schedulers see the refresh happened.
             request_context: Request context for authentication
 
         Returns:
@@ -13643,10 +13657,15 @@ class MemoryEngine(MemoryEngineInterface):
                 params.append(content)
                 content_sql = f"${param_idx}"
                 param_idx += 1
-                if refresh_watermark is None:
-                    updates.append("last_refreshed_at = NOW()")
-                else:
-                    updates.append(f"last_refreshed_at = ${param_idx}")
+                # A content-writing refresh always advances last_refreshed_at to the
+                # wall-clock time of *this* refresh — even when refresh_watermark is
+                # unchanged (static source memories). last_refreshed_at is a wall-clock
+                # timestamp; the source-data watermark lives in its own column so
+                # time-based schedulers stop re-refreshing a model whose sources never
+                # move.
+                updates.append("last_refreshed_at = NOW()")
+                if refresh_watermark is not None:
+                    updates.append(f"last_refreshed_source_watermark = ${param_idx}")
                     params.append(refresh_watermark)
                     param_idx += 1
                 # Snapshot the previous version for history. The actual write goes
@@ -13676,11 +13695,14 @@ class MemoryEngine(MemoryEngineInterface):
                     param_idx += 1
             elif refresh_watermark is not None:
                 # A successful delta refresh can find no topic-relevant facts even though
-                # the coarse staleness query found new rows. Advance the watermark to the
-                # newest in-scope memory we saw (without re-embedding unchanged content or
-                # adding history) so this no-op window stops re-triggering, while any row
-                # that commits later stays newer than the watermark and is still caught.
-                updates.append(f"last_refreshed_at = ${param_idx}")
+                # the coarse staleness query found new rows. Advance the *source
+                # watermark* to the newest in-scope memory we saw (without re-embedding
+                # unchanged content or adding history) so this no-op window stops
+                # re-triggering, while any row that commits later stays newer than the
+                # watermark and is still caught. last_refreshed_at is deliberately left
+                # untouched here: no content was written, so the wall-clock "last
+                # refresh" did not change.
+                updates.append(f"last_refreshed_source_watermark = ${param_idx}")
                 params.append(refresh_watermark)
                 param_idx += 1
 
@@ -13739,7 +13761,7 @@ class MemoryEngine(MemoryEngineInterface):
                 WHERE bank_id = $1 AND id = $2
                 RETURNING id, bank_id, name, source_query, content, tags,
                           last_refreshed_at, created_at, reflect_response,
-                          max_tokens, trigger, structured_content
+                          max_tokens, trigger, structured_content, last_refreshed_source_watermark
             """
 
             row = await conn.fetchrow(query, *params)
@@ -13851,7 +13873,7 @@ class MemoryEngine(MemoryEngineInterface):
                 WHERE bank_id = $1 AND id = $2
                 RETURNING id, bank_id, name, source_query, content, tags,
                           last_refreshed_at, created_at, reflect_response,
-                          max_tokens, trigger, structured_content
+                          max_tokens, trigger, structured_content, last_refreshed_source_watermark
                 """,
                 bank_id,
                 mental_model_id,
@@ -13990,7 +14012,8 @@ class MemoryEngine(MemoryEngineInterface):
         "kp.id, kp.bank_id, kp.parent_id, kp.kind, kp.name, kp.mental_model_id, "
         "kp.sort_order, kp.managed, kp.created_at, kp.updated_at, "
         "mm.tags AS mm_tags, mm.source_query AS mm_source_query, "
-        "mm.last_refreshed_at AS mm_last_refreshed_at"
+        "mm.last_refreshed_at AS mm_last_refreshed_at, "
+        "mm.last_refreshed_source_watermark AS mm_last_refreshed_source_watermark"
     )
 
     def _kp_join(self) -> str:
@@ -14196,7 +14219,10 @@ class MemoryEngine(MemoryEngineInterface):
                 for r in rows:
                     if r["kind"] != "page":
                         continue
-                    by_id[r["id"]]["is_stale"] = _may_need_refresh(r["mm_last_refreshed_at"], watermark)
+                    # Staleness keys off the source-data watermark (fall back to the
+                    # wall-clock last_refreshed_at for rows not yet backfilled).
+                    source_watermark = r["mm_last_refreshed_source_watermark"] or r["mm_last_refreshed_at"]
+                    by_id[r["id"]]["is_stale"] = _may_need_refresh(source_watermark, watermark)
         return nodes
 
     async def get_knowledge_page(
@@ -14618,7 +14644,12 @@ class MemoryEngine(MemoryEngineInterface):
         """Check whether a mental model is out of date.
 
         A mental model is stale when a memory in its **scope** has been ingested after
-        ``last_refreshed_at``. The scope uses the same resolved flat-tag or compound
+        its source watermark — ``last_refreshed_source_watermark``, falling back to
+        ``last_refreshed_at`` for rows not yet stamped by the migration backfill. The
+        source watermark is the newest in-scope memory the last refresh actually saw;
+        keying off it (rather than the wall-clock ``last_refreshed_at``) is what lets a
+        model whose sources are static settle as "not stale" even though refreshes keep
+        advancing ``last_refreshed_at``. The scope uses the same resolved flat-tag or compound
         ``trigger.tag_groups`` filtering as the refresh it gates, plus the
         ``trigger.fact_types`` filter when set. Memories still pending consolidation are
         included because they are already rows in ``memory_units``; no separate
@@ -14637,8 +14668,11 @@ class MemoryEngine(MemoryEngineInterface):
             except (KeyError, TypeError):
                 return None
 
-        last_refreshed_at = _get("last_refreshed_at")
-        if not last_refreshed_at:
+        # Staleness keys off the source-data watermark, not the wall-clock refresh
+        # time. Fall back to last_refreshed_at when the watermark column is absent from
+        # the row or NULL (rows predating the migration backfill, or a narrow SELECT).
+        source_watermark = _get("last_refreshed_source_watermark") or _get("last_refreshed_at")
+        if not source_watermark:
             return True
 
         raw_tags = _get("tags")
@@ -14663,7 +14697,7 @@ class MemoryEngine(MemoryEngineInterface):
             conn=conn,
             fq_table=fq_table,
             bank_id=bank_id,
-            since=last_refreshed_at,
+            since=source_watermark,
             fact_types=fact_types,
             tags=tag_filtering.tags,
             tags_match=tag_filtering.tags_match,
@@ -14683,6 +14717,11 @@ class MemoryEngine(MemoryEngineInterface):
             "name": row["name"],
             "tags": row["tags"] or [],
             "last_refreshed_at": row["last_refreshed_at"].isoformat() if row["last_refreshed_at"] else None,
+            "last_refreshed_source_watermark": (
+                row["last_refreshed_source_watermark"].isoformat()
+                if row.get("last_refreshed_source_watermark")
+                else None
+            ),
             "created_at": row["created_at"].isoformat() if row["created_at"] else None,
         }
         if detail == "metadata":
