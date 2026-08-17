@@ -1174,6 +1174,7 @@ class MemoriesExtension(Extension, ABC):
         event_date,
         mentioned_at,
         entity_ids: list[str] | None,
+        entity_names: list[str] | None = None,
         txn=None,
     ) -> None:
         """Apply a curation field edit to a live memory.
@@ -1184,10 +1185,20 @@ class MemoriesExtension(Extension, ABC):
         embedding is *not* written here — the caller re-embeds from the new fields
         and calls :meth:`set_memory_embedding` after.
 
-        ``entity_ids`` is the resolved entity set the memory should now carry; a
-        store that keeps them on the memory writes them here, one that keeps them
-        in a join table has already re-linked them and ignores this. ``None`` means
-        the entity set was not part of this edit.
+        The new entity set for the memory is supplied one of two ways, and a store
+        uses whichever fits how it keeps its registry:
+
+        * ``entity_names`` — the raw names the edit resolved to. A store that owns
+          its entity registry resolves + mints these against its OWN registry
+          (exactly as its :meth:`retain` does) and rewrites the memory's entity
+          ids from the result, so a brand-new entity created by an edit lands in
+          that registry. When it is not ``None`` it is the authoritative set and
+          ``entity_ids`` is ignored.
+        * ``entity_ids`` — the already-resolved set, for a store whose registry is
+          the host's SQL (the host minted them and, for a join-table store, has
+          already re-linked them, so it ignores this).
+
+        Both ``None`` means the entity set was not part of this edit.
         """
         raise NotImplementedError
 
