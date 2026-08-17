@@ -1035,6 +1035,7 @@ async def _delta_batch_write_ext(
         chunk_texts=[new_chunks_with_contents[i] for i in sorted(new_chunks_with_contents)],
         merged_tags=merged_tags,
         config=config,
+        retain_params=retain_params,
     )
 
     # Deterministic chunk ids for the new/changed chunks (mirrors chunk_storage.store_chunks_batch
@@ -1865,6 +1866,7 @@ async def _store_document_bodies(
     merged_tags: list[str] | None,
     config: Any,
     content_hash: str | None = None,
+    retain_params: dict | None = None,
 ) -> None:
     """Route a document's bulky bodies — its extracted text and ordered chunk texts — to the
     store's dedicated document store, when the store owns one. No-op for Postgres.
@@ -1872,10 +1874,14 @@ async def _store_document_bodies(
     Content-addressed and idempotent, so this is safe to call up front, before the facts commit:
     a re-ingest re-uploads only the bodies whose hash changed, and a retain that later rolls back
     leaves only orphan bodies the store's sweep reclaims (they are referenced by no committed
-    record). The SQL ``documents``/``chunks`` rows still carry the small metadata (id,
-    content_hash, chunk_index, tags) — only their bulky text columns are left empty (see
-    ``fact_storage._upsert_document_row`` / ``chunk_storage.store_chunks_batch``). Cold,
-    never-searched, key-based — see docs/documents-chunks.md.
+    record). Cold, never-searched, key-based — see docs/documents-chunks.md.
+
+    ``retain_params`` rides along in the record's metadata. It used to be true that "the SQL
+    ``documents`` row still carries the small metadata" — it is not, for a store that owns the
+    whole retain: there is no SQL row at all, so anything not carried here is simply lost, and
+    ``get_document`` returned null ``retain_params`` / ``document_metadata`` /
+    ``observation_scopes`` for such a bank. The store's metadata map is ``string -> string``, so
+    the params are carried as one JSON value rather than flattened.
     """
     from ..memories import get_memories
 
@@ -1897,7 +1903,7 @@ async def _store_document_bodies(
         original_text=combined_content if getattr(config, "store_document_text", True) else None,
         chunk_texts=list(chunk_texts),
         tags=list(merged_tags or []),
-        metadata={},
+        metadata=({"retain_params": json.dumps(retain_params)} if retain_params else {}),
     )
 
 
@@ -2037,6 +2043,7 @@ async def _streaming_retain_batch(
         chunk_texts=all_pre_chunks,
         merged_tags=merged_tags,
         config=config,
+        retain_params=retain_params,
     )
 
     # Track whether document tracking has been done (by the first batch)
@@ -3357,6 +3364,7 @@ async def _try_delta_retain(
                     chunk_texts=[new_chunks_with_contents[i] for i in sorted(new_chunks_with_contents)],
                     merged_tags=merged_tags,
                     config=config,
+                    retain_params=retain_params,
                 )
                 log_buffer.append(f"  Document metadata update in {time.time() - step_start:.3f}s")
 

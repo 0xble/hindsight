@@ -7231,12 +7231,12 @@ class MemoryEngine(MemoryEngineInterface):
                             "created_at": _epoch_ms_to_datetime(_rec.get("created_at")),
                             "updated_at": _epoch_ms_to_datetime(_rec.get("updated_at")),
                             "tags": list(_rec.get("tags") or []),
-                            # `retain_params` is not carried in the store's document record today,
-                            # so `retain_params`, `document_metadata` and `observation_scopes` come
-                            # back null for such a bank. That is a gap in what the write path
-                            # persists, not something this read can recover — surfacing null beats
-                            # 404-ing the whole document.
-                            "retain_params": None,
+                            # The store's metadata map is string -> string, so the write path
+                            # carries retain_params as one JSON value (see
+                            # `retain/orchestrator._store_document_bodies`). Documents written
+                            # before that carry nothing here and still read back with null
+                            # params — null beats 404-ing the whole document.
+                            "retain_params": (_rec.get("metadata") or {}).get("retain_params"),
                         }
                 else:
                     # The documents row is still SQL; only the per-fact-type counts come from the
