@@ -1388,6 +1388,9 @@ class _MemoryEditPlan:
     # mismatch (a concurrent entity-only edit landed between the phases) triggers a bounded in-txn
     # re-embed so the stored vector stays consistent with the committed entity set.
     names: list[str]
+    # The raw entity names to hand a store that owns its entity registry (it resolves + mints them
+    # itself). None for a SQL-registry store, which uses the pre-resolved ``edit_entity_ids`` instead.
+    entity_names_for_store: list[str] | None = None
     embedding: str | None = None
 
 
@@ -8597,39 +8600,49 @@ class MemoryEngine(MemoryEngineInterface):
                 entity_resolution = None
                 resolved_for_unit = None
                 edit_entity_ids = None
+                entity_names_for_store = None
                 entity_date = None
                 if new_entities is not None:
                     entity_date = new_occ_start or live.mentioned_at
-                    # resolve_entities_only find-or-creates the corrected entities (idempotent) and
-                    # autocommits them on this short connection; the Phase-2 relink writes exactly
-                    # this resolved set, keeping the stored embedding consistent with the links.
                     entities_resolved = True
-                    entity_resolution = await resolve_entities_only(
-                        self.entity_resolver,
-                        conn,
-                        bank_id,
-                        [str(memory_uuid)],
-                        [new_text],
-                        new_context or "",
-                        [entity_date],
-                        [[{"text": name, "type": "CONCEPT"} for name in new_entities]],
-                        entity_labels=entity_labels,
-                    )
-                    resolved_for_unit = entity_resolution.unit_to_entity_ids.get(str(memory_uuid), [])
-                    edit_entity_ids = [str(eid) for eid in resolved_for_unit]
-                    # Canonical names of the newly-resolved set (the entity registry is always in
-                    # SQL, whichever store owns the memory rows), used to build the embedding.
-                    name_rows = (
-                        await conn.fetch(
-                            f"SELECT canonical_name FROM {fq_table('entities')} "
-                            f"WHERE id = ANY($1::uuid[]) AND bank_id = $2 ORDER BY id",
-                            resolved_for_unit,
+                    if store.store_owned_retain_for(bank_id):
+                        # The store owns its entity registry: hand it the raw names and let its
+                        # apply_edit resolve + mint them (exactly as its retain does), so a new
+                        # entity from an edit lands in that registry. Nothing is written to — or
+                        # read from — the SQL entities table; the names ARE the input, and the
+                        # embedding is built from them directly.
+                        names = list(new_entities)
+                        entity_names_for_store = names
+                    else:
+                        # resolve_entities_only find-or-creates the corrected entities (idempotent)
+                        # and autocommits them on this short connection; the Phase-2 relink writes
+                        # exactly this resolved set, keeping the embedding consistent with the links.
+                        entity_resolution = await resolve_entities_only(
+                            self.entity_resolver,
+                            conn,
                             bank_id,
+                            [str(memory_uuid)],
+                            [new_text],
+                            new_context or "",
+                            [entity_date],
+                            [[{"text": name, "type": "CONCEPT"} for name in new_entities]],
+                            entity_labels=entity_labels,
                         )
-                        if resolved_for_unit
-                        else []
-                    )
-                    names = [r["canonical_name"] for r in name_rows]
+                        resolved_for_unit = entity_resolution.unit_to_entity_ids.get(str(memory_uuid), [])
+                        edit_entity_ids = [str(eid) for eid in resolved_for_unit]
+                        # Canonical names of the newly-resolved set (this store's registry is the
+                        # host's SQL), used to build the embedding.
+                        name_rows = (
+                            await conn.fetch(
+                                f"SELECT canonical_name FROM {fq_table('entities')} "
+                                f"WHERE id = ANY($1::uuid[]) AND bank_id = $2 ORDER BY id",
+                                resolved_for_unit,
+                                bank_id,
+                            )
+                            if resolved_for_unit
+                            else []
+                        )
+                        names = [r["canonical_name"] for r in name_rows]
                 else:
                     # Entities untouched: the embedding uses the unit's current linked names.
                     emap = await store.entity_map_for_units(
@@ -8649,6 +8662,7 @@ class MemoryEngine(MemoryEngineInterface):
                     edit_entity_ids=edit_entity_ids,
                     entity_date=entity_date,
                     names=names,
+                    entity_names_for_store=entity_names_for_store,
                 )
 
             # --- Classify the state change (applied in Phase 2). Edit + invalidate can co-occur
@@ -8741,7 +8755,13 @@ class MemoryEngine(MemoryEngineInterface):
 
                     # --- Apply edit (live rows only) ---
                     if edit_plan is not None and live2:
-                        if edit_plan.resolved_for_unit is not None:
+                        if edit_plan.entity_names_for_store is not None:
+                            # The store owns its entity registry: apply_edit below resolves + mints
+                            # these names and rewrites the memory's entity ids. There are no SQL
+                            # postings to clear/relink and no prune queue — the store keeps entity
+                            # ids on the memory itself, so the edit's rewrite replaces the whole set.
+                            edit_embedding = edit_plan.embedding
+                        elif edit_plan.resolved_for_unit is not None:
                             # Entities are being changed: rebuild unit_entities to the resolved set.
                             # The entities this unit is about to stop referencing may have been
                             # holding on by that posting alone, so queue them as prune candidates
@@ -8804,6 +8824,7 @@ class MemoryEngine(MemoryEngineInterface):
                             event_date=edit_plan.new_event_date,
                             mentioned_at=edit_plan.mentioned_at,
                             entity_ids=edit_plan.edit_entity_ids,
+                            entity_names=edit_plan.entity_names_for_store,
                             txn=_curation_txn,
                         )
                         if edit_embedding is not None:
