@@ -947,6 +947,68 @@ def _stored(unit_id, text, fact_type, **kw):
     return StoredMemory(unit_id=unit_id, text=text, fact_type=fact_type, created_at=datetime.now(timezone.utc), **kw)
 
 
+async def test_store_document_bodies_carries_retain_params(restore_default_store):
+    """A store that owns the whole retain has NO SQL `documents` row, so anything the write path
+    does not put in the store record is lost outright.
+
+    `retain_params` was passed as `metadata={}`, which is why `get_document` returned null
+    `retain_params` / `document_metadata` / `observation_scopes` for such a bank. The store's
+    metadata map is string -> string, so the params ride as one JSON value.
+    """
+    import json as _json
+
+    from hindsight_api.engine.retain.orchestrator import _store_document_bodies
+
+    store = InMemoryMemories({})
+    set_memories(store)
+    suffix = uuid.uuid4().hex[:8]
+    bank_id = f"seam-params-{suffix}"
+    doc_id = f"doc-{suffix}"
+    params = {"metadata": {"source": "upload"}, "observation_scopes": ["team"], "chunk_size": 800}
+
+    class _Cfg:
+        store_document_text = True
+
+    await _store_document_bodies(
+        bank_id=bank_id,
+        document_id=doc_id,
+        combined_content="body text",
+        chunk_texts=["body text"],
+        merged_tags=["t"],
+        config=_Cfg(),
+        retain_params=params,
+    )
+
+    carried = store.documents[doc_id]["metadata"].get("retain_params")
+    assert carried is not None, "retain_params must reach the store record, not be dropped"
+    assert _json.loads(carried) == params, carried
+
+
+async def test_store_document_bodies_omits_absent_retain_params(restore_default_store):
+    """No params ⇒ no key, rather than a "null" string that the read would then hand back as the
+    literal string. The read path json-parses whatever is there."""
+    from hindsight_api.engine.retain.orchestrator import _store_document_bodies
+
+    store = InMemoryMemories({})
+    set_memories(store)
+    suffix = uuid.uuid4().hex[:8]
+    doc_id = f"doc-{suffix}"
+
+    class _Cfg:
+        store_document_text = True
+
+    await _store_document_bodies(
+        bank_id=f"seam-noparams-{suffix}",
+        document_id=doc_id,
+        combined_content="body",
+        chunk_texts=["body"],
+        merged_tags=None,
+        config=_Cfg(),
+        retain_params=None,
+    )
+    assert "retain_params" not in store.documents[doc_id]["metadata"]
+
+
 async def test_recall_include_chunks_hydrates_body_from_store(memory, request_context, restore_default_store):
     """include_chunks must overlay chunk TEXT from the store, not the empty SQL chunks row.
 
