@@ -1990,8 +1990,8 @@ class BankStatsResponse(BaseModel):
         default=None,
         description=(
             "When a memory was last written in this bank — stored, edited, or consolidated (ISO format). "
-            "Null if the bank has no memories. A mental model whose `last_refreshed_at` is at or after this "
-            "is up to date whatever its tags; an older one may need a refresh, which only the single "
+            "Null if the bank has no memories. A mental model whose `last_memory_seen_at` is at or after "
+            "this is up to date whatever its tags; an older one may need a refresh, which only the single "
             "mental-model read can confirm."
         ),
     )
@@ -2293,7 +2293,26 @@ class MentalModelResponse(BaseModel):
     tags: list[str] = FieldWithDefault(list)
     max_tokens: int | None = Field(default=None)
     trigger: MentalModelTrigger | None = Field(default=None)
-    last_refreshed_at: str | None = None
+    last_refreshed_at: str | None = Field(
+        default=None,
+        description=(
+            "When a refresh last finished for this model — wall-clock, in ISO format. Advances on "
+            "every refresh that completes, including one that found nothing new and preserved the "
+            "content, and on a direct edit of `content`. A refresh that failed leaves it alone. "
+            "This is the field to answer 'have I already refreshed this?'; it says nothing about "
+            "whether the model is behind the data, which is `last_memory_seen_at` / `is_stale`."
+        ),
+    )
+    last_memory_seen_at: str | None = Field(
+        default=None,
+        description=(
+            "How far through the bank's memories this model is written — the newest in-scope memory "
+            "the last refresh saw, in ISO format. Stands still when nothing in the model's scope has "
+            "been written, however often it is refreshed. Compare against `last_memory_write_at` "
+            "from GET /stats to flag a whole list cheaply: at or after it means up to date, older "
+            "means it may need a refresh. Null for a model no refresh has stamped yet."
+        ),
+    )
     created_at: str | None = None
     reflect_response: dict | None = Field(
         default=None,
@@ -2303,9 +2322,9 @@ class MentalModelResponse(BaseModel):
         default=None,
         description=(
             "True when memories matching this mental model's tag/fact_type scope have been written "
-            "since last_refreshed_at. Exact, and costly to compute, so it is populated only by the "
+            "since last_memory_seen_at. Exact, and costly to compute, so it is populated only by the "
             "single mental-model read at detail=full — never when listing. For a whole list, compare "
-            "each `last_refreshed_at` against the bank's `last_memory_write_at` from GET /stats: "
+            "each `last_memory_seen_at` against the bank's `last_memory_write_at` from GET /stats: "
             "at or after it means up to date, older means it may need a refresh."
         ),
     )
