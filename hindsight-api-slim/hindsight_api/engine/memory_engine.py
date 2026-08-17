@@ -186,6 +186,49 @@ def count_tokens(text: str) -> int:
     return len(_get_tiktoken_encoding().encode(text))
 
 
+def _parse_chunk_id(chunk_id: str | None) -> "tuple[str, str, int] | None":
+    """Split a ``{bank_id}_{document_id}_{index}`` chunk_id into its parts.
+
+    Retain builds chunk ids in exactly this shape (see ``retain/chunk_storage.py``), which makes
+    them self-describing — the addressed chunk route has no bank in its path and normally recovers
+    it from the SQL row, but a store that owns the document store has no such row. Both splits are
+    from the RIGHT: the index is the final segment, and the document id before it is a UUID, which
+    contains no underscore. A bank id containing underscores is therefore still parsed correctly.
+
+    Returns ``None`` when the id is not in that shape, so the caller falls through to the SQL
+    lookup rather than guessing.
+    """
+    if not chunk_id:
+        return None
+    head, _, idx_s = chunk_id.rpartition("_")
+    if not head or not idx_s:
+        return None
+    bank_id, _, document_id = head.rpartition("_")
+    if not bank_id or not document_id:
+        return None
+    try:
+        return bank_id, document_id, int(idx_s)
+    except ValueError:
+        return None
+
+
+def _epoch_ms_to_datetime(value: Any) -> datetime | None:
+    """Epoch milliseconds -> aware datetime, for records read from a store rather than from SQL.
+
+    A store returns timestamps as integers; the SQL rows these records stand in for come back as
+    datetimes, and the response builders call ``.isoformat()`` on them. Normalising here keeps
+    those builders unaware of where the record came from. ``0`` means unset, not the epoch.
+    """
+    if not value:
+        return None
+    if isinstance(value, datetime):
+        return value
+    try:
+        return datetime.fromtimestamp(int(value) / 1000.0, tz=timezone.utc)
+    except (TypeError, ValueError, OSError, OverflowError):
+        return None
+
+
 def fq_table(table_name: str) -> str:
     """Get fully-qualified table name with current schema.
 
@@ -7121,23 +7164,50 @@ class MemoryEngine(MemoryEngineInterface):
                     bank_id,
                 )
             else:
-                # A store that keeps memories outside SQL: the documents row is still SQL, but its
-                # per-fact-type counts come from the store (scan the document's memories; count the
-                # observations built on them via observations_for_sources).
-                _drow = await conn.fetchrow(
-                    f"""
-                    SELECT d.id, d.bank_id, d.original_text, d.content_hash,
-                           d.created_at, d.updated_at, d.tags, d.retain_params
-                    FROM {fq_table("documents")} d
-                    WHERE d.id = $1 AND d.bank_id = $2
-                    """,
-                    document_id,
-                    bank_id,
-                )
-                if _drow is None:
-                    doc = None
+                # A store that keeps memories outside SQL. Where the document RECORD lives depends
+                # on a second capability: a store that also owns the document store keeps no SQL
+                # `documents` row at all, so reading one here returns nothing and the caller 404s a
+                # document that the LIST route just returned. `list_documents` already branches on
+                # this; the addressed read has to branch the same way or the two disagree.
+                if _store.owns_document_store_for(bank_id):
+                    _rec = await _store.get_document_record(
+                        bank_id=bank_id, document_id=document_id, include_text=True
+                    )
+                    if _rec is None:
+                        doc = None
+                    else:
+                        doc = {
+                            "id": _rec.get("document_id") or document_id,
+                            "bank_id": bank_id,
+                            "original_text": _rec.get("original_text"),
+                            "content_hash": _rec.get("content_hash"),
+                            "created_at": _epoch_ms_to_datetime(_rec.get("created_at")),
+                            "updated_at": _epoch_ms_to_datetime(_rec.get("updated_at")),
+                            "tags": list(_rec.get("tags") or []),
+                            # `retain_params` is not carried in the store's document record today,
+                            # so `retain_params`, `document_metadata` and `observation_scopes` come
+                            # back null for such a bank. That is a gap in what the write path
+                            # persists, not something this read can recover — surfacing null beats
+                            # 404-ing the whole document.
+                            "retain_params": None,
+                        }
                 else:
-                    doc = dict(_drow)
+                    # The documents row is still SQL; only the per-fact-type counts come from the
+                    # store (scan the document's memories; count the observations built on them
+                    # via observations_for_sources).
+                    _drow = await conn.fetchrow(
+                        f"""
+                        SELECT d.id, d.bank_id, d.original_text, d.content_hash,
+                               d.created_at, d.updated_at, d.tags, d.retain_params
+                        FROM {fq_table("documents")} d
+                        WHERE d.id = $1 AND d.bank_id = $2
+                        """,
+                        document_id,
+                        bank_id,
+                    )
+                    doc = dict(_drow) if _drow is not None else None
+
+                if doc is not None:
                     _page = await _store.scan_memories(
                         conn=conn, fq_table=fq_table, bank_id=bank_id, document_id=document_id, limit=1_000_000
                     )
@@ -7153,20 +7223,14 @@ class MemoryEngine(MemoryEngineInterface):
                         else []
                     )
                     doc["observation_count"] = len(_obs)
-                    # A store that owns the document store keeps the extracted text in
-                    # its own store, not in documents.original_text (which is NULL here). Overlay
-                    # it from the store so get_document still returns the body.
-                    if _store.owns_document_store_for(bank_id):
-                        _rec = await _store.get_document_record(
-                            bank_id=bank_id, document_id=document_id, include_text=True
-                        )
-                        if _rec is not None:
-                            doc["original_text"] = _rec.get("original_text")
+                    # No text overlay here any more: when the store owns the document store the
+                    # branch above already read the record WITH its text, so overlaying would be a
+                    # second round-trip for a value we hold.
 
             if not doc:
                 return None
 
-            retain_params_parsed = conn.parse_json(doc["retain_params"])
+            retain_params_parsed = conn.parse_json(doc["retain_params"]) if doc["retain_params"] else None
 
             # document_metadata is sourced from retain_params.metadata
             document_metadata = retain_params_parsed.get("metadata") if retain_params_parsed else None
@@ -9840,6 +9904,39 @@ class MemoryEngine(MemoryEngineInterface):
             Dict with chunk details including chunk_text, or None if not found
         """
         await self._authenticate_tenant(request_context)
+
+        # A store that owns the document store keeps no SQL `chunks` row to look this id up in.
+        # The id is self-describing — retain builds it as `{bank_id}_{document_id}_{index}` — so
+        # the bank and document are recoverable from it without a row. Attempted before touching
+        # SQL because for such a bank the SELECT below can only ever miss.
+        _parsed = _parse_chunk_id(chunk_id)
+        if _parsed is not None:
+            _cbank, _cdoc, _cidx = _parsed
+            from .memories import get_memories
+
+            _chunk_store = get_memories()
+            if _chunk_store.owns_document_store_for(_cbank):
+                if self._operation_validator:
+                    from hindsight_api.extensions import BankReadContext, BankReadOperation
+
+                    ctx = BankReadContext(
+                        bank_id=_cbank, operation=BankReadOperation.GET_CHUNK, request_context=request_context
+                    )
+                    await self._validate_operation(self._operation_validator.validate_bank_read(ctx))
+                _text = await _chunk_store.get_chunk_text(
+                    bank_id=_cbank, document_id=_cdoc, chunk_index=_cidx
+                )
+                if _text is None:
+                    return None
+                return {
+                    "chunk_id": chunk_id,
+                    "document_id": _cdoc,
+                    "bank_id": _cbank,
+                    "chunk_index": _cidx,
+                    "chunk_text": _text,
+                    "created_at": "",
+                }
+
         backend = await self._get_backend()
         async with acquire_with_retry(backend) as conn:
             chunk = await conn.fetchrow(
@@ -9922,6 +10019,41 @@ class MemoryEngine(MemoryEngineInterface):
                 bank_id=bank_id, operation=BankReadOperation.LIST_DOCUMENT_CHUNKS, request_context=request_context
             )
             await self._validate_operation(self._operation_validator.validate_bank_read(ctx))
+        from .memories import get_memories
+
+        _chunks_store = get_memories()
+        if _chunks_store.owns_document_store_for(bank_id):
+            # A store that owns the document store keeps neither the SQL `documents` row nor the
+            # SQL `chunks` rows, so the existence check below 404s and the page below is empty.
+            # Serve the whole route from the store instead of overlaying text onto rows that do
+            # not exist.
+            texts = await _chunks_store.list_chunk_texts(bank_id=bank_id, document_id=document_id)
+            if texts is None:
+                return None
+            total = len(texts)
+            window = list(enumerate(texts))[offset : offset + limit]
+            return {
+                "items": [
+                    {
+                        # Rebuilt to the same shape retain writes
+                        # (chunk_storage.py: f"{bank_id}_{document_id}_{index}") so an id from
+                        # this route is accepted by the addressed chunk route.
+                        "chunk_id": f"{bank_id}_{document_id}_{idx}",
+                        "document_id": document_id,
+                        "bank_id": bank_id,
+                        "chunk_index": idx,
+                        "chunk_text": text,
+                        # The store does not carry a per-chunk creation time; the document's is
+                        # the closest true value and inventing one per chunk would be worse.
+                        "created_at": "",
+                    }
+                    for idx, text in window
+                ],
+                "total": total,
+                "limit": limit,
+                "offset": offset,
+            }
+
         backend = await self._get_backend()
         async with acquire_with_retry(backend) as conn:
             # Verify document exists
@@ -12411,6 +12543,37 @@ class MemoryEngine(MemoryEngineInterface):
                 bank_id=bank_id, operation=BankReadOperation.GET_ENTITY, request_context=request_context
             )
             await self._validate_operation(self._operation_validator.validate_bank_read(ctx))
+        from .memories import get_memories
+
+        _store = get_memories()
+        if _store.store_owned_retain_for(bank_id):
+            # A store that owns its entity registry writes no SQL `entities` rows, so the query
+            # below matches nothing and the caller 404s an entity that `list_entities` just
+            # returned. Resolve the one id against the store's registry instead — an ADDRESSED
+            # lookup, not a page-and-scan, so this stays O(1) in the registry size.
+            _id = str(entity_uuid)
+            names = await _store.resolve_entity_names(
+                conn=None, fq_table=None, bank_id=bank_id, entity_ids=[_id]
+            )
+            if _id not in names:
+                return None
+            counts = await _store.entity_memory_counts(
+                conn=None, fq_table=None, bank_id=bank_id, entity_ids=[_id]
+            )
+            return {
+                "id": _id,
+                "canonical_name": names[_id],
+                # Absent from the counts map means no live memories reference it (an orphan),
+                # which is 0 rather than missing.
+                "mention_count": counts.get(_id, 0),
+                # first/last seen live on the registry record, which this lookup does not carry;
+                # `list_entities` is the route that surfaces them.
+                "first_seen": None,
+                "last_seen": None,
+                "metadata": {},
+                "observations": [],
+            }
+
         backend = await self._get_backend()
 
         async with acquire_with_retry(backend) as conn:
