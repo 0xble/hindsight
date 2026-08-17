@@ -1990,8 +1990,8 @@ class BankStatsResponse(BaseModel):
         default=None,
         description=(
             "When a memory was last written in this bank — stored, edited, or consolidated (ISO format). "
-            "Null if the bank has no memories. A mental model whose `last_refreshed_at` is at or after this "
-            "is up to date whatever its tags; an older one may need a refresh, which only the single "
+            "Null if the bank has no memories. A mental model whose `last_memory_seen_at` is at or after "
+            "this is up to date whatever its tags; an older one may need a refresh, which only the single "
             "mental-model read can confirm."
         ),
     )
@@ -2110,6 +2110,9 @@ class DirectiveListResponse(BaseModel):
     """Response model for listing directives."""
 
     items: list[DirectiveResponse]
+    total: int = Field(description="Total number of directives matching the filter (not just this page)")
+    limit: int = Field(description="Page size that was applied")
+    offset: int = Field(description="Offset that was applied")
 
 
 class CreateDirectiveRequest(BaseModel):
@@ -2293,7 +2296,26 @@ class MentalModelResponse(BaseModel):
     tags: list[str] = FieldWithDefault(list)
     max_tokens: int | None = Field(default=None)
     trigger: MentalModelTrigger | None = Field(default=None)
-    last_refreshed_at: str | None = None
+    last_refreshed_at: str | None = Field(
+        default=None,
+        description=(
+            "When a refresh last finished for this model — wall-clock, in ISO format. Advances on "
+            "every refresh that completes, including one that found nothing new and preserved the "
+            "content, and on a direct edit of `content`. A refresh that failed leaves it alone. "
+            "This is the field to answer 'have I already refreshed this?'; it says nothing about "
+            "whether the model is behind the data, which is `last_memory_seen_at` / `is_stale`."
+        ),
+    )
+    last_memory_seen_at: str | None = Field(
+        default=None,
+        description=(
+            "How far through the bank's memories this model is written — the newest in-scope memory "
+            "the last refresh saw, in ISO format. Stands still when nothing in the model's scope has "
+            "been written, however often it is refreshed. Compare against `last_memory_write_at` "
+            "from GET /stats to flag a whole list cheaply: at or after it means up to date, older "
+            "means it may need a refresh. Null for a model no refresh has stamped yet."
+        ),
+    )
     created_at: str | None = None
     reflect_response: dict | None = Field(
         default=None,
@@ -2303,9 +2325,9 @@ class MentalModelResponse(BaseModel):
         default=None,
         description=(
             "True when memories matching this mental model's tag/fact_type scope have been written "
-            "since last_refreshed_at. Exact, and costly to compute, so it is populated only by the "
+            "since last_memory_seen_at. Exact, and costly to compute, so it is populated only by the "
             "single mental-model read at detail=full — never when listing. For a whole list, compare "
-            "each `last_refreshed_at` against the bank's `last_memory_write_at` from GET /stats: "
+            "each `last_memory_seen_at` against the bank's `last_memory_write_at` from GET /stats: "
             "at or after it means up to date, older means it may need a refresh."
         ),
     )
@@ -2315,6 +2337,9 @@ class MentalModelListResponse(BaseModel):
     """Response model for listing mental models."""
 
     items: list[MentalModelResponse]
+    total: int = Field(description="Total number of mental models matching the filter (not just this page)")
+    limit: int = Field(description="Page size that was applied")
+    offset: int = Field(description="Offset that was applied")
 
 
 # =========================================================================
@@ -2921,17 +2946,21 @@ async def apply_bank_template_manifest(
     projected_mental_model_ids = {item.id for item in default_mental_models} & imported_mental_model_ids
     projected_directive_names = {item.name for item in default_directives} & imported_directive_names
 
+    # limit=None throughout the import path: a create/update decision per imported
+    # resource is only correct against the bank's *whole* set. Under the default
+    # page size a bank with more than 100 models would look like it lacked the
+    # ones past the first page, and the import would create duplicates.
     existing_by_id: dict[str, dict[str, Any]] = {}
     if bank_exists and manifest.mental_models:
-        existing = await memory.list_mental_models(bank_id=bank_id, request_context=request_context)
-        existing_by_id = {m["id"]: m for m in existing}
+        existing = await memory.list_mental_models(bank_id=bank_id, limit=None, request_context=request_context)
+        existing_by_id = {m["id"]: m for m in existing.items}
 
     existing_by_name: dict[str, dict[str, Any]] = {}
     if bank_exists and manifest.directives:
         existing_directives = await memory.list_directives(
-            bank_id=bank_id, active_only=False, request_context=request_context
+            bank_id=bank_id, active_only=False, limit=None, request_context=request_context
         )
-        existing_by_name = {d["name"]: d for d in existing_directives}
+        existing_by_name = {d["name"]: d for d in existing_directives.items}
 
     bank_writes: list[BankTemplateImportWrite] = []
     if config_updates:
@@ -2975,9 +3004,10 @@ async def apply_bank_template_manifest(
         if projected_mental_model_ids:
             provisioned = await memory.list_mental_models(
                 bank_id=bank_id,
+                limit=None,
                 request_context=request_context,
             )
-            provisioned_by_id = {item["id"]: item for item in provisioned}
+            provisioned_by_id = {item["id"]: item for item in provisioned.items}
             existing_by_id.update(
                 {
                     item_id: provisioned_by_id[item_id]
@@ -2989,9 +3019,10 @@ async def apply_bank_template_manifest(
             provisioned = await memory.list_directives(
                 bank_id=bank_id,
                 active_only=False,
+                limit=None,
                 request_context=request_context,
             )
-            provisioned_by_name = {item["name"]: item for item in provisioned}
+            provisioned_by_name = {item["name"]: item for item in provisioned.items}
             existing_by_name.update(
                 {name: provisioned_by_name[name] for name in projected_directive_names & provisioned_by_name.keys()}
             )
@@ -3019,17 +3050,18 @@ async def apply_default_bank_template_resources(
     """Apply only the resources from a server-owned default template."""
     existing_by_id: dict[str, dict[str, Any]] = {}
     if manifest.mental_models:
-        existing = await memory.list_mental_models(bank_id=bank_id, request_context=request_context)
-        existing_by_id = {model["id"]: model for model in existing}
+        existing = await memory.list_mental_models(bank_id=bank_id, limit=None, request_context=request_context)
+        existing_by_id = {model["id"]: model for model in existing.items}
 
     existing_by_name: dict[str, dict[str, Any]] = {}
     if manifest.directives:
         existing_directives = await memory.list_directives(
             bank_id=bank_id,
             active_only=False,
+            limit=None,
             request_context=request_context,
         )
-        existing_by_name = {directive["name"]: directive for directive in existing_directives}
+        existing_by_name = {directive["name"]: directive for directive in existing_directives.items}
 
     await _apply_bank_template_resources(
         memory,
@@ -3186,6 +3218,15 @@ class OperationResponse(BaseModel):
     filename: str | None = Field(
         default=None,
         description="Original filename for file-conversion operations (file_convert_retain); null for other task types.",
+    )
+    mental_model_id: str | None = Field(
+        default=None,
+        description=(
+            "Mental model this operation acted on (refresh_mental_model); null for other task types. "
+            "Without it the list cannot say which model an operation refreshed — `document_id` is null "
+            "for these, and the list carries no result_metadata. The single-operation read exposes the "
+            "same value under `result_metadata`."
+        ),
     )
     created_at: str
     updated_at: str | None = Field(
@@ -5189,7 +5230,7 @@ def _register_routes(app: FastAPI):
     ):
         """List mental models for a bank."""
         try:
-            mental_models = await app.state.memory.list_mental_models(
+            page = await app.state.memory.list_mental_models(
                 bank_id=bank_id,
                 tags=tags_filter,
                 tags_match=tags_match,
@@ -5198,7 +5239,12 @@ def _register_routes(app: FastAPI):
                 offset=offset,
                 request_context=request_context,
             )
-            return MentalModelListResponse(items=[MentalModelResponse(**m) for m in mental_models])
+            return MentalModelListResponse(
+                items=[MentalModelResponse(**m) for m in page.items],
+                total=page.total,
+                limit=limit,
+                offset=offset,
+            )
         except OperationValidationError as e:
             raise HTTPException(status_code=e.status_code, detail=e.reason)
         except (AuthenticationError, HTTPException):
@@ -5928,7 +5974,7 @@ def _register_routes(app: FastAPI):
     ):
         """List directives for a bank."""
         try:
-            directives = await app.state.memory.list_directives(
+            page = await app.state.memory.list_directives(
                 bank_id=bank_id,
                 tags=tags_filter,
                 tags_match=tags_match,
@@ -5937,7 +5983,12 @@ def _register_routes(app: FastAPI):
                 offset=offset,
                 request_context=request_context,
             )
-            return DirectiveListResponse(items=[DirectiveResponse(**d) for d in directives])
+            return DirectiveListResponse(
+                items=[DirectiveResponse(**d) for d in page.items],
+                total=page.total,
+                limit=limit,
+                offset=offset,
+            )
         except OperationValidationError as e:
             raise HTTPException(status_code=e.status_code, detail=e.reason)
         except (AuthenticationError, HTTPException):
@@ -7036,12 +7087,13 @@ def _register_routes(app: FastAPI):
             filtered_overrides = {k: v for k, v in bank_overrides.items() if k in template_config_fields}
             bank_config = BankTemplateConfig(**filtered_overrides) if filtered_overrides else None
 
-            # Get mental models
+            # Get mental models (limit=None — an export that stopped at the
+            # default page size would silently drop the rest of the bank)
             mental_models_raw = await app.state.memory.list_mental_models(
-                bank_id=bank_id, request_context=request_context
+                bank_id=bank_id, limit=None, request_context=request_context
             )
             template_mental_models: list[BankTemplateMentalModel] = []
-            for mm in mental_models_raw:
+            for mm in mental_models_raw.items:
                 trigger_data = mm.get("trigger", {})
                 trigger = MentalModelTrigger(**trigger_data) if trigger_data else MentalModelTrigger()
                 template_mental_models.append(
@@ -7055,12 +7107,12 @@ def _register_routes(app: FastAPI):
                     )
                 )
 
-            # Get directives
+            # Get directives (limit=None for the same reason as the models above)
             directives_raw = await app.state.memory.list_directives(
-                bank_id=bank_id, active_only=False, request_context=request_context
+                bank_id=bank_id, active_only=False, limit=None, request_context=request_context
             )
             template_directives: list[BankTemplateDirective] = []
-            for d in directives_raw:
+            for d in directives_raw.items:
                 template_directives.append(
                     BankTemplateDirective(
                         name=d["name"],

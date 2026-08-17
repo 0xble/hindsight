@@ -9,7 +9,7 @@ description: "One Hindsight memory plugin for coding agents — per-repo memory 
 
 Long-term project memory for **coding agents**, backed by [Hindsight](https://vectorize.io/hindsight).
 One package, several agents: a shared reflect-and-inject core with a thin entry point per agent
-(**opencode**, **Kilo CLI**, **Cline CLI**, **Prime Agent**, **Claude Code**, **Codex CLI**, **Antigravity CLI**, **Cursor CLI**, **GitHub Copilot CLI**, **Grok Build**). Ingestion is fully
+(**opencode**, **Kilo CLI**, **Cline CLI**, **Prime Agent**, **DeepSeek Harness**, **Claude Code**, **Codex CLI**, **Antigravity CLI**, **Cursor CLI**, **GitHub Copilot CLI**, **Grok Build**). Ingestion is fully
 automatic — there is no setup command: a repo's git history and conversations flow into its memory
 bank in the background as you work.
 
@@ -127,6 +127,21 @@ npx @vectorize-io/hindsight-coding-agents install prime-agent
 
 An extension entry in `~/.prime/agent/settings.json` — native tools, no MCP needed.
 
+#### <img src="/img/harness/dsh.svg" alt="" width="20" height="20" /> DeepSeek Harness
+
+```bash
+npx @vectorize-io/hindsight-coding-agents install dsh
+```
+
+A Cordis plugin row in `$DSH_HOME/cordis.patch.yml` (`~/.dsh` by default), which every dsh profile
+composes — native tools, no MCP needed. Two dsh-specific notes: one dsh process serves **several
+repositories** (its Web UI opens each session in whatever directory you pick), so the bank is
+resolved per session workspace rather than once per process; and dsh has no plugin-facing notice
+channel, so the seed line goes to the plugin log rather than the UI. Everything model-facing —
+recalled memory, the knowledge preamble, the `hindsight_*` tools — is unaffected. If you prefer the
+published-package route, `dsh plugin --profile web add @vectorize-io/hindsight-coding-agents` works
+too: the package ships the profile patch layer, so nothing else needs editing.
+
 Uninstall the same way: `npx @vectorize-io/hindsight-coding-agents uninstall claude-code` (or `uninstall all`).
 
 **Devin CLI needs Node 22.5 or newer.** Its hooks pass only a session id — the conversation itself
@@ -160,7 +175,8 @@ minimal, hand-wired setup.
 
 Adding an agent: hook-based → write a `HookSpec` entry point (see `src/cursor-hook.ts`) and register
 a `hookAdapter` in `src/harness/registry.ts`; persistent-plugin → implement `HarnessAdapter`
-(`src/core/types.ts`) fully (see `src/harness/opencode.ts`).
+(`src/core/types.ts`) fully (see `src/harness/opencode.ts`), or bind the host's own plugin API to
+`RuntimeCore` directly when it is not an opencode fork (see `src/cline.ts`, `src/dsh.ts`).
 
 ## Migrating from the per-agent plugins
 
@@ -193,12 +209,14 @@ transcripts are needed either way; going through them directly is simply the sho
 
 **How sessions are matched.** A conversation is imported only when the session itself records the
 directory it ran in — never inferred from a file or folder name. Claude Code writes that directory
-on its entries and Codex in its `session_meta` header, so both can be attributed exactly, including
-sessions started in a subdirectory of the repo. Guessing was tempting (Claude names its history
+on its entries, Codex in its `session_meta` header and DeepSeek Harness in its session-log header,
+so all three can be attributed exactly, including sessions started in a subdirectory of the repo. Guessing was tempting (Claude names its history
 folders after the project path) but unsafe: `/` and `.` both encode to `-`, so `repo-sub` is either
 the subdirectory `repo/sub` or an unrelated sibling repo — and a wrong guess files someone else's
 conversation into your bank. Sessions that record nothing are skipped and the count is reported.
-The other harnesses (opencode, Kilo, Cursor, Cline, Copilot, Devin) keep history in internal SQLite
+DeepSeek Harness logs are Zstandard-framed JSONL under `$DSH_HOME/sessions`, which needs Node 22.15+
+to read; an older Node skips the import with that reason rather than silently importing nothing. The
+other harnesses (opencode, Kilo, Cursor, Cline, Copilot, Devin) keep history in internal SQLite
 databases with unversioned schemas and are skipped with a reason.
 
 **Nothing else is translated.** The old plugin's behavioural settings — 12 `recall*`, 7 `retain*`,
@@ -240,9 +258,9 @@ Nothing to sign up for and nothing to host — memory runs on your machine. The 
   A session that begins before it is ready simply has no memory for a turn or two — a daemon that
   isn't up is treated as an unreachable server, exactly like a Cloud or self-hosted outage, with the
   same error handling and the same diagnostics. Nothing downstream of the URL knows which mode it is.
-- **It shuts down on idle**, after `daemonIdleTimeout` seconds. There is deliberately no
-  stop-on-exit: one daemon is shared, so ending one session must not cut memory out from under
-  another agent still working.
+- **It keeps running** until you stop it. There is deliberately no stop-on-exit: one daemon is
+  shared, so ending one session must not cut memory out from under another agent still working.
+  Set `daemonIdleTimeout` to have it exit after that many seconds of inactivity.
 - **macOS additionally needs a current Rust toolchain.** `litellm` (a transitive dependency of the
   API) publishes wheels only for Linux and Windows, so a Mac compiles it from source through
   maturin and its crates pin a recent `rustc`. Install from [rustup.rs](https://rustup.rs) and keep
@@ -259,7 +277,7 @@ environment carries over unchanged:
 | ------------------- | ------------------------------- | -------------- | ------------------------------------------ |
 | `serverMode`        | `HINDSIGHT_SERVER_MODE`         | `cloud`        | `cloud` \| `self-hosted` \| `daemon`       |
 | `apiPort`           | `HINDSIGHT_API_PORT`            | `9077`         | port the local daemon listens on           |
-| `daemonIdleTimeout` | `HINDSIGHT_DAEMON_IDLE_TIMEOUT` | `300`          | seconds of inactivity before it exits      |
+| `daemonIdleTimeout` | `HINDSIGHT_DAEMON_IDLE_TIMEOUT` | —              | seconds of inactivity before it exits      |
 | `daemonProfile`     | `HINDSIGHT_DAEMON_PROFILE`      | `coding-agent` | which local database it uses               |
 | `embedVersion`      | `HINDSIGHT_EMBED_VERSION`       | `latest`       | which `hindsight-embed` release to run     |
 | `embedPackagePath`  | `HINDSIGHT_EMBED_PACKAGE_PATH`  | —              | run a local checkout instead (development) |
