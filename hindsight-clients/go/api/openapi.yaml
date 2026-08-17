@@ -8797,6 +8797,9 @@ components:
         filename:
           nullable: true
           type: string
+        mental_model_id:
+          nullable: true
+          type: string
         created_at:
           title: Created At
           type: string

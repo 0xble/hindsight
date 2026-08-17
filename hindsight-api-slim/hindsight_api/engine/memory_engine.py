@@ -15184,6 +15184,9 @@ class MemoryEngine(MemoryEngineInterface):
                         "items_count": result_metadata.get("items_count", 0),
                         "document_id": result_metadata.get("document_id"),
                         "filename": result_metadata.get("original_filename"),
+                        # refresh_mental_model operations have no document_id, so without
+                        # this the log cannot say which model an operation refreshed.
+                        "mental_model_id": result_metadata.get("mental_model_id"),
                         "created_at": row["created_at"].isoformat(),
                         "updated_at": row["updated_at"].isoformat() if row["updated_at"] else None,
                         "status": row["status"],
