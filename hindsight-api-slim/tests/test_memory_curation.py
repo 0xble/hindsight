@@ -185,12 +185,11 @@ async def _entity_ids_for(conn, unit_id: uuid.UUID) -> list[uuid.UUID]:
     return [r["entity_id"] for r in rows]
 
 
-async def _obs_ids(conn, bank_id: str) -> list[str]:
-    rows = await conn.fetch(
-        "SELECT id FROM memory_units WHERE bank_id = $1 AND fact_type = 'observation'",
-        bank_id,
+async def _obs_ids(memory: MemoryEngine, bank_id: str, request_context: RequestContext) -> list[str]:
+    listing = await memory.list_memory_units(
+        bank_id, fact_type="observation", limit=1000, request_context=request_context
     )
-    return [str(r["id"]) for r in rows]
+    return [item["id"] for item in listing["items"]]
 
 
 async def _consolidated_at(conn, mem_id: uuid.UUID):
@@ -250,7 +249,7 @@ class TestInvalidate:
                 "archive is cold storage with no index; the schema drops search_vector (#2503)"
             )
             assert await _link_count(conn, m1) == 0, "links cascade-pruned on move"
-            assert str(obs_id) not in await _obs_ids(conn, bank_id), "derived observation removed"
+            assert str(obs_id) not in await _obs_ids(memory, bank_id, request_context), "derived observation removed"
             assert await _consolidated_at(conn, m2) is None, "surviving source reset for re-consolidation"
 
         await memory.delete_bank(bank_id, request_context=request_context)
@@ -385,7 +384,7 @@ class TestEdit:
             assert row["consolidated_at"] is None, "edited memory re-consolidates"
             assert "'assist'" not in row["search_vector"], "old text must not stay in native FTS search_vector"
             assert "'user'" in row["search_vector"], "new text must refresh native FTS search_vector"
-            assert str(obs_id) not in await _obs_ids(conn, bank_id), "stale observation re-derived"
+            assert str(obs_id) not in await _obs_ids(memory, bank_id, request_context), "stale observation re-derived"
             queued_ids = await conn.fetch("SELECT unit_id FROM graph_maintenance_queue WHERE bank_id = $1", bank_id)
             assert {row["unit_id"] for row in queued_ids} == {m1, m2}, "edited memory and incoming victim both queued"
 

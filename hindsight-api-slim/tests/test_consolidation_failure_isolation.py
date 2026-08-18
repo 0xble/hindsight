@@ -167,12 +167,12 @@ async def _insert_memory(conn, bank_id: str, text: str, tags: list[str]) -> uuid
     return mem_id
 
 
-async def _count_observations(memory: MemoryEngine, bank_id: str) -> int:
-    async with memory._pool.acquire() as conn:
-        return await conn.fetchval(
-            "SELECT count(*) FROM memory_units WHERE bank_id = $1 AND fact_type = 'observation'",
-            bank_id,
+async def _count_observations(memory: MemoryEngine, bank_id: str, request_context) -> int:
+    return (
+        await memory.list_memory_units(
+            bank_id, fact_type="observation", limit=1000, request_context=request_context
         )
+    )["total"]
 
 
 class _TxnSpy:
@@ -253,7 +253,7 @@ async def test_recall_failure_cancels_sibling_tag_groups(memory: MemoryEngine, r
         # Nothing was written: the cancelled groups never reached their commit,
         # and no orphan lands a write after the operation has already failed.
         await asyncio.sleep(0.2)
-        assert await _count_observations(memory, bank_id) == 0
+        assert await _count_observations(memory, bank_id, request_context) == 0
     finally:
         await memory.delete_bank(bank_id, request_context=request_context)
 

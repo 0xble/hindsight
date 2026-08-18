@@ -1739,16 +1739,8 @@ async def test_people_name_extraction(memory, request_context):
             )
 
         # Query entities to verify people names were extracted
-        async with memory._pool.acquire() as conn:
-            entities = await conn.fetch(
-                """
-                SELECT canonical_name, mention_count
-                FROM entities
-                WHERE bank_id = $1
-                ORDER BY mention_count DESC, canonical_name
-                """,
-                bank_id,
-            )
+        listing = await memory.list_entities(bank_id, limit=1000, request_context=request_context)
+        entities = listing["items"]
 
         logger.info(f"Extracted {len(entities)} entities")
         for entity in entities:
@@ -1805,15 +1797,8 @@ async def test_mention_count_accuracy(memory, request_context):
             )
 
         # Check Alice's mention count
-        async with memory._pool.acquire() as conn:
-            alice_entity = await conn.fetchrow(
-                """
-                SELECT canonical_name, mention_count
-                FROM entities
-                WHERE bank_id = $1 AND LOWER(canonical_name) LIKE '%alice%'
-                """,
-                bank_id,
-            )
+        listing = await memory.list_entities(bank_id, limit=1000, request_context=request_context)
+        alice_entity = next((e for e in listing["items"] if "alice" in e["canonical_name"].lower()), None)
 
         assert alice_entity is not None, "Alice entity should exist"
         logger.info(f"Alice mention_count after 5 separate retains: {alice_entity['mention_count']}")
@@ -1858,15 +1843,8 @@ async def test_mention_count_batch_retain(memory, request_context):
         )
 
         # Check Bob's mention count after batch retain
-        async with memory._pool.acquire() as conn:
-            bob_entity = await conn.fetchrow(
-                """
-                SELECT canonical_name, mention_count
-                FROM entities
-                WHERE bank_id = $1 AND LOWER(canonical_name) LIKE '%bob%'
-                """,
-                bank_id,
-            )
+        listing = await memory.list_entities(bank_id, limit=1000, request_context=request_context)
+        bob_entity = next((e for e in listing["items"] if "bob" in e["canonical_name"].lower()), None)
 
         assert bob_entity is not None, "Bob entity should exist after batch retain"
         logger.info(f"Bob mention_count after batch retain of 6 items: {bob_entity['mention_count']}")
@@ -1889,15 +1867,8 @@ async def test_mention_count_batch_retain(memory, request_context):
         )
 
         # Check updated mention count
-        async with memory._pool.acquire() as conn:
-            bob_entity_updated = await conn.fetchrow(
-                """
-                SELECT canonical_name, mention_count
-                FROM entities
-                WHERE bank_id = $1 AND LOWER(canonical_name) LIKE '%bob%'
-                """,
-                bank_id,
-            )
+        listing = await memory.list_entities(bank_id, limit=1000, request_context=request_context)
+        bob_entity_updated = next((e for e in listing["items"] if "bob" in e["canonical_name"].lower()), None)
 
         logger.info(f"Bob mention_count after second batch: {bob_entity_updated['mention_count']}")
 
@@ -3409,15 +3380,13 @@ async def test_streaming_chunk_batching_produces_same_facts(memory_mock_llm, req
         assert len(streaming_unit_ids) > 0, "Streaming should produce facts"
 
         # Verify facts are in the DB
-        async with memory._pool.acquire() as conn:
-            fact_count = await conn.fetchval(
-                "SELECT COUNT(*) FROM memory_units WHERE bank_id = $1",
-                bank_id,
-            )
-            assert fact_count == len(streaming_unit_ids), (
-                f"DB has {fact_count} facts, but streaming returned {len(streaming_unit_ids)} unit_ids"
-            )
+        fact_count = (await memory.list_memory_units(bank_id, limit=1000, request_context=request_context))["total"]
+        assert fact_count == len(streaming_unit_ids), (
+            f"DB has {fact_count} facts, but streaming returned {len(streaming_unit_ids)} unit_ids"
+        )
 
+        # documents/chunks aren't exposed by the read API — check them directly.
+        async with memory._pool.acquire() as conn:
             # Verify the document was tracked
             doc = await conn.fetchrow(
                 "SELECT id FROM documents WHERE bank_id = $1 AND id = $2",
@@ -3474,11 +3443,7 @@ async def test_streaming_chunk_batching_recovery(memory_mock_llm, request_contex
         first_unit_ids = result1[0] if result1 else []
         assert len(first_unit_ids) > 0, "First retain should produce facts"
 
-        async with memory._pool.acquire() as conn:
-            first_fact_count = await conn.fetchval(
-                "SELECT COUNT(*) FROM memory_units WHERE bank_id = $1",
-                bank_id,
-            )
+        first_fact_count = (await memory.list_memory_units(bank_id, limit=1000, request_context=request_context))["total"]
 
         logger.info(f"First retain: {first_fact_count} facts")
 
@@ -3497,11 +3462,7 @@ async def test_streaming_chunk_batching_recovery(memory_mock_llm, request_contex
                 request_context=request_context,
             )
 
-        async with memory._pool.acquire() as conn:
-            second_fact_count = await conn.fetchval(
-                "SELECT COUNT(*) FROM memory_units WHERE bank_id = $1",
-                bank_id,
-            )
+        second_fact_count = (await memory.list_memory_units(bank_id, limit=1000, request_context=request_context))["total"]
 
         logger.info(f"Second retain: {second_fact_count} facts")
 

@@ -152,15 +152,11 @@ class TestAdaptiveBatchSplitting:
         assert result["memories_failed"] == 0
 
         # Both memories must have consolidated_at set and consolidation_failed_at NULL
-        async with memory_no_llm_verify._pool.acquire() as conn:
-            rows = await conn.fetch(
-                """
-                SELECT id, consolidated_at, consolidation_failed_at
-                FROM memory_units
-                WHERE bank_id = $1 AND fact_type = 'experience'
-                """,
-                bank_id,
+        rows = (
+            await memory_no_llm_verify.list_memory_units(
+                bank_id, fact_type="experience", limit=1000, request_context=request_context
             )
+        )["items"]
         assert len(rows) == 2
         for row in rows:
             assert row["consolidated_at"] is not None, f"Memory {row['id']} should have consolidated_at set"
@@ -206,12 +202,11 @@ class TestAdaptiveBatchSplitting:
         assert result["memories_processed"] == 4
         assert result["memories_failed"] == 0
 
-        async with memory_no_llm_verify._pool.acquire() as conn:
-            rows = await conn.fetch(
-                "SELECT consolidated_at, consolidation_failed_at FROM memory_units "
-                "WHERE bank_id = $1 AND fact_type = 'experience'",
-                bank_id,
+        rows = (
+            await memory_no_llm_verify.list_memory_units(
+                bank_id, fact_type="experience", limit=1000, request_context=request_context
             )
+        )["items"]
         assert all(r["consolidated_at"] is not None for r in rows)
         assert all(r["consolidation_failed_at"] is None for r in rows)
 
@@ -243,11 +238,12 @@ class TestConsolidationFailedAt:
         assert result["memories_failed"] == 1
         assert result["memories_processed"] == 1
 
-        async with memory_no_llm_verify._pool.acquire() as conn:
-            row = await conn.fetchrow(
-                "SELECT consolidated_at, consolidation_failed_at FROM memory_units WHERE id = $1",
-                mem_id,
+        units = (
+            await memory_no_llm_verify.list_memory_units(
+                bank_id, fact_type="experience", limit=1000, request_context=request_context
             )
+        )["items"]
+        row = next(u for u in units if str(u["id"]) == str(mem_id))
 
         assert row["consolidated_at"] is None, "consolidated_at must NOT be set for a permanently failed memory"
         assert row["consolidation_failed_at"] is not None, "consolidation_failed_at must be set"
@@ -285,11 +281,12 @@ class TestConsolidationFailedAt:
             assert result["memories_processed"] == 0
 
         # Memory still has consolidation_failed_at set and consolidated_at NULL
-        async with memory_no_llm_verify._pool.acquire() as conn:
-            row = await conn.fetchrow(
-                "SELECT consolidated_at, consolidation_failed_at FROM memory_units WHERE id = $1",
-                mem_id,
+        units = (
+            await memory_no_llm_verify.list_memory_units(
+                bank_id, fact_type="experience", limit=1000, request_context=request_context
             )
+        )["items"]
+        row = next(u for u in units if str(u["id"]) == str(mem_id))
         assert row["consolidated_at"] is None
         assert row["consolidation_failed_at"] is not None
 
@@ -325,15 +322,12 @@ class TestConsolidationFailedAt:
         assert result["memories_processed"] == 2
         assert result["memories_failed"] == 1
 
-        async with memory_no_llm_verify._pool.acquire() as conn:
-            rows = {
-                str(r["id"]): r
-                for r in await conn.fetch(
-                    "SELECT id, consolidated_at, consolidation_failed_at FROM memory_units "
-                    "WHERE bank_id = $1 AND fact_type = 'experience'",
-                    bank_id,
-                )
-            }
+        items = (
+            await memory_no_llm_verify.list_memory_units(
+                bank_id, fact_type="experience", limit=1000, request_context=request_context
+            )
+        )["items"]
+        rows = {str(r["id"]): r for r in items}
 
         # One should have failed, one should have succeeded
         failed = [r for r in rows.values() if r["consolidation_failed_at"] is not None]
@@ -375,12 +369,11 @@ class TestRecoverConsolidation:
 
         assert result["retried_count"] == 2
 
-        async with memory_no_llm_verify._pool.acquire() as conn:
-            rows = await conn.fetch(
-                "SELECT consolidated_at, consolidation_failed_at FROM memory_units "
-                "WHERE bank_id = $1 AND fact_type = 'experience'",
-                bank_id,
+        rows = (
+            await memory_no_llm_verify.list_memory_units(
+                bank_id, fact_type="experience", limit=1000, request_context=request_context
             )
+        )["items"]
         assert all(r["consolidation_failed_at"] is None for r in rows), "consolidation_failed_at must be cleared"
         assert all(r["consolidated_at"] is None for r in rows), "consolidated_at must also be cleared"
 
@@ -425,11 +418,12 @@ class TestRecoverConsolidation:
         assert run_result["memories_processed"] == 1
         assert run_result["memories_failed"] == 0
 
-        async with memory_no_llm_verify._pool.acquire() as conn:
-            row = await conn.fetchrow(
-                "SELECT consolidated_at, consolidation_failed_at FROM memory_units WHERE id = $1",
-                mem_id,
+        units = (
+            await memory_no_llm_verify.list_memory_units(
+                bank_id, fact_type="experience", limit=1000, request_context=request_context
             )
+        )["items"]
+        row = next(u for u in units if str(u["id"]) == str(mem_id))
         assert row["consolidated_at"] is not None, "Memory should be consolidated after recovery"
         assert row["consolidation_failed_at"] is None
 

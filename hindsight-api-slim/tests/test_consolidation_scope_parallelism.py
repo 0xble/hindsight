@@ -122,14 +122,14 @@ def _mock_llm_one_obs_per_fact():
     return wrapper, mock_llm
 
 
-async def _fetch_observation_tag_sets(memory: MemoryEngine, bank_id: str) -> list[frozenset[str]]:
+async def _fetch_observation_tag_sets(memory: MemoryEngine, bank_id: str, request_context) -> list[frozenset[str]]:
     """Return the tag set (as a frozenset) of every observation in the bank."""
-    async with memory._pool.acquire() as conn:
-        rows = await conn.fetch(
-            "SELECT tags FROM memory_units WHERE bank_id = $1 AND fact_type = 'observation'",
-            bank_id,
+    items = (
+        await memory.list_memory_units(
+            bank_id, fact_type="observation", limit=1000, request_context=request_context
         )
-    return [frozenset(r["tags"] or []) for r in rows]
+    )["items"]
+    return [frozenset(i["tags"] or []) for i in items]
 
 
 # ---------------------------------------------------------------------------
@@ -166,7 +166,7 @@ async def test_combined_mode_parallel_writes_to_memory_tag_set(memory: MemoryEng
             memory._consolidation_llm_config = original_llm
 
         assert result["status"] == "completed"
-        tag_sets = _ag_sorted(await _fetch_observation_tag_sets(memory, bank_id))
+        tag_sets = _ag_sorted(await _fetch_observation_tag_sets(memory, bank_id, request_context))
         assert tag_sets == _ag_sorted(
             [
                 frozenset({"user:alice"}),
@@ -207,7 +207,7 @@ async def test_shared_mode_parallel_writes_only_untagged_scope(memory: MemoryEng
             memory._consolidation_llm_config = original_llm
 
         assert result["status"] == "completed"
-        tag_sets = await _fetch_observation_tag_sets(memory, bank_id)
+        tag_sets = await _fetch_observation_tag_sets(memory, bank_id, request_context)
         # Every observation lands at the untagged scope — none carries a session tag.
         assert tag_sets and all(t == frozenset() for t in tag_sets), tag_sets
     finally:
@@ -246,7 +246,7 @@ async def test_per_tag_mode_parallel_writes_one_observation_per_tag(memory: Memo
 
         assert result["status"] == "completed"
 
-        tag_sets = await _fetch_observation_tag_sets(memory, bank_id)
+        tag_sets = await _fetch_observation_tag_sets(memory, bank_id, request_context)
         # M1 writes to [alice]; M2 writes to [alice] and [session]. The mock LLM
         # creates one observation per fact per pass, so we expect:
         #   - one [alice] obs from M1
@@ -286,7 +286,7 @@ async def test_all_combinations_mode_parallel_writes_every_subset(memory: Memory
             memory._consolidation_llm_config = original_llm
 
         assert result["status"] == "completed"
-        tag_sets = set(await _fetch_observation_tag_sets(memory, bank_id))
+        tag_sets = set(await _fetch_observation_tag_sets(memory, bank_id, request_context))
         assert tag_sets == {
             frozenset({"alice"}),
             frozenset({"session"}),
@@ -327,7 +327,7 @@ async def test_explicit_scope_list_parallel_writes_declared_scopes(memory: Memor
             memory._consolidation_llm_config = original_llm
 
         assert result["status"] == "completed"
-        tag_sets = set(await _fetch_observation_tag_sets(memory, bank_id))
+        tag_sets = set(await _fetch_observation_tag_sets(memory, bank_id, request_context))
         assert tag_sets == {frozenset({"scope_a"}), frozenset({"scope_b", "scope_c"})}
         # And NOT the memory's own tag.
         assert frozenset({"tag_ignored"}) not in tag_sets
