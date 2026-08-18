@@ -149,6 +149,10 @@ class StoredMemory:
     occurred_end: datetime | None = None
     mentioned_at: datetime | None = None
     created_at: datetime | None = None
+    # Write time, as opposed to the four content times above: when the memory was last
+    # written, which is the watermark a caller compares against to detect a change. Distinct
+    # from `created_at`, which never moves after the first write.
+    updated_at: datetime | None = None
     # Which observation scopes a memory is routed to. Consolidation reads it off
     # its candidates to decide which observation each one belongs in, so it has
     # to survive the round trip through the store.

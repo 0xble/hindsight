@@ -1563,6 +1563,26 @@ async def retain_batch(
             )
         existing_text = base_row["original_text"] if base_row else None
         append_base_hash = base_row["content_hash"] if base_row else _APPEND_BASE_ABSENT
+        # The base text comes from whichever store HOLDS it. For a store that owns the document
+        # store the SQL row keeps only metadata and `original_text` is NULL by construction
+        # (`fact_storage.upsert_document_metadata`), so this read returned nothing to prepend and
+        # the append silently became a replace — every earlier turn dropped. The content_hash
+        # above stays authoritative for the race gate either way: it is in SQL for both stores.
+        from ..memories import get_memories
+
+        _store = get_memories()
+        if not existing_text and _store.owns_document_store_for(bank_id):
+            _record = await _store.get_document_record(
+                bank_id=bank_id, document_id=effective_doc_id, include_text=True
+            )
+            if _record:
+                existing_text = _record.get("original_text")
+                # A store-owned bank may have no SQL documents row at all, in which case the hash
+                # the gate compares against has to come from the record too — otherwise a document
+                # that plainly exists reads as absent and the append base check is comparing
+                # against nothing.
+                if base_row is None:
+                    append_base_hash = _record.get("content_hash") or _APPEND_BASE_ABSENT
         if existing_text:
             # Prepend existing text as a new content item at the beginning
             existing_content: RetainContentDict = {"content": existing_text}
@@ -1867,6 +1887,7 @@ async def _store_document_bodies(
     config: Any,
     content_hash: str | None = None,
     retain_params: dict | None = None,
+    chunk_index_offset: int = 0,
 ) -> None:
     """Route a document's bulky bodies — its extracted text and ordered chunk texts — to the
     store's dedicated document store, when the store owns one. No-op for Postgres.
@@ -1888,6 +1909,22 @@ async def _store_document_bodies(
     store = get_memories()
     if not store.owns_document_store_for(bank_id):
         return
+    # `put_document` REPLACES a document's chunk list — it takes the ordered texts whole, because
+    # the store packs them into one object. A sub-batched retain calls this once per sub-batch
+    # with only that slice's chunks, so every call after the first replaced the document's chunks
+    # with its own few and the body ended up covered by one slice (issue #1888's store-side twin:
+    # the SQL rows were already offset by `chunk_index_offset`, the store's packed object was not).
+    # Restore the prefix the earlier sub-batches stored, so what goes in is the whole document.
+    # Sub-batches run sequentially, so [0, offset) is complete by the time this runs.
+    chunk_texts = list(chunk_texts)
+    if chunk_index_offset > 0:
+        prior = await store.get_chunk_texts(
+            bank_id=bank_id, refs=[(document_id, i) for i in range(chunk_index_offset)]
+        )
+        # A missing prior chunk becomes "" rather than being dropped: the list is positional, and
+        # shortening it would shift every following chunk's index — silent corruption in place of
+        # one absent chunk.
+        chunk_texts = [t or "" for t in prior] + chunk_texts
     # The record's content_hash must equal what the SQL documents row stores, so a read is
     # consistent whichever it comes from: sanitize + sha256 the same combined_content. The
     # streaming path already has it (passes it in); delta computes it here.
@@ -2044,6 +2081,11 @@ async def _streaming_retain_batch(
         merged_tags=merged_tags,
         config=config,
         retain_params=retain_params,
+        # `all_pre_chunks` is THIS sub-batch's chunks; the offset is where they sit in the
+        # document, and is what lets the store keep the earlier sub-batches' chunks instead of
+        # being handed one slice as if it were the whole document. The delta path's two calls need
+        # no offset: delta retain only runs on the first sub-batch, where the offset is 0.
+        chunk_index_offset=chunk_index_offset,
     )
 
     # Track whether document tracking has been done (by the first batch)

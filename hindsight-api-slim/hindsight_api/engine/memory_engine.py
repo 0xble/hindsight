@@ -4803,9 +4803,21 @@ class MemoryEngine(MemoryEngineInterface):
                 item_doc_id = item.get("document_id")
                 if item.get("update_mode") == "append" and item_doc_id:
                     append_doc_ids.add(item_doc_id)
+            from .memories import get_memories
+
+            _docs_owner = get_memories()
             for append_doc_id in append_doc_ids:
                 async with acquire_with_retry(backend) as conn:
                     existing_text = await fact_storage.get_document_content(conn, bank_id, append_doc_id)
+                # Same read as the orchestrator's append base, and it has to branch the same way:
+                # a store that owns the document store keeps the body there and leaves the SQL
+                # `original_text` NULL, so the SQL read counts zero prepended chunks and every
+                # later sub-batch starts its chunk_index on top of the ones the prepend consumed.
+                if not existing_text and _docs_owner.owns_document_store_for(bank_id):
+                    _rec = await _docs_owner.get_document_record(
+                        bank_id=bank_id, document_id=append_doc_id, include_text=True
+                    )
+                    existing_text = _rec.get("original_text") if _rec else None
                 if existing_text:
                     append_prepend_chunks[append_doc_id] = len(
                         fact_extraction.chunk_text(
