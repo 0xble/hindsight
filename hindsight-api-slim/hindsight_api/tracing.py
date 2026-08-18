@@ -133,6 +133,7 @@ PROVIDER_NAME_MAPPING = {
     "lmstudio": "lmstudio",
     "openai-codex": "openai",
     "claude-code": "anthropic",
+    "github-copilot": "github",
     "mock": "mock",
 }
 
