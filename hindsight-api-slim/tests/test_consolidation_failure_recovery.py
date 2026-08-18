@@ -122,6 +122,7 @@ class TestAdaptiveBatchSplitting:
     """Verify that a failing batch is halved and retried until batch_size=1 succeeds."""
 
     @pytest.mark.asyncio
+    @pytest.mark.memory_backend_incompatible
     async def test_splitting_recovers_all_memories(self, memory_no_llm_verify: MemoryEngine, request_context):
         """When a batch of 2 fails, both are retried individually and succeed."""
         bank_id = f"test-split-recovery-{uuid.uuid4().hex[:8]}"
@@ -171,6 +172,7 @@ class TestAdaptiveBatchSplitting:
         await memory_no_llm_verify.delete_bank(bank_id, request_context=request_context)
 
     @pytest.mark.asyncio
+    @pytest.mark.memory_backend_incompatible
     async def test_splitting_with_larger_batch(self, memory_no_llm_verify: MemoryEngine, request_context):
         """A batch of 4 that always fails at size>1 resolves to 4 individual calls."""
         bank_id = f"test-split-large-{uuid.uuid4().hex[:8]}"
@@ -217,6 +219,7 @@ class TestConsolidationFailedAt:
     """Verify that consolidation_failed_at is set — and consolidated_at is NOT — when all retries fail."""
 
     @pytest.mark.asyncio
+    @pytest.mark.memory_backend_incompatible
     async def test_single_memory_permanent_failure(self, memory_no_llm_verify: MemoryEngine, request_context):
         """A single memory that exhausts all LLM retries gets consolidation_failed_at, not consolidated_at."""
         bank_id = f"test-perm-fail-{uuid.uuid4().hex[:8]}"
@@ -251,6 +254,7 @@ class TestConsolidationFailedAt:
         await memory_no_llm_verify.delete_bank(bank_id, request_context=request_context)
 
     @pytest.mark.asyncio
+    @pytest.mark.memory_backend_incompatible
     async def test_failed_memory_excluded_from_next_run(self, memory_no_llm_verify: MemoryEngine, request_context):
         """A memory marked consolidation_failed_at is not re-processed on the next consolidation run."""
         bank_id = f"test-excluded-{uuid.uuid4().hex[:8]}"
@@ -293,6 +297,7 @@ class TestConsolidationFailedAt:
         await memory_no_llm_verify.delete_bank(bank_id, request_context=request_context)
 
     @pytest.mark.asyncio
+    @pytest.mark.memory_backend_incompatible
     async def test_partial_batch_failure(self, memory_no_llm_verify: MemoryEngine, request_context):
         """In a batch of 2, if only the first individual retry fails, the second still succeeds."""
         bank_id = f"test-partial-fail-{uuid.uuid4().hex[:8]}"
@@ -344,6 +349,7 @@ class TestRecoverConsolidation:
     """Verify the retry_failed_consolidation() method and the /consolidation/recover endpoint."""
 
     @pytest.mark.asyncio
+    @pytest.mark.memory_backend_incompatible
     async def test_recover_resets_failed_memories(self, memory_no_llm_verify: MemoryEngine, request_context):
         """retry_failed_consolidation resets consolidation_failed_at and consolidated_at."""
         bank_id = f"test-recover-reset-{uuid.uuid4().hex[:8]}"
@@ -392,6 +398,7 @@ class TestRecoverConsolidation:
         await memory_no_llm_verify.delete_bank(bank_id, request_context=request_context)
 
     @pytest.mark.asyncio
+    @pytest.mark.memory_backend_incompatible
     async def test_recover_then_consolidate_succeeds(self, memory_no_llm_verify: MemoryEngine, request_context):
         """After recovery, the memory is picked up by the next consolidation run."""
         bank_id = f"test-recover-consolidate-{uuid.uuid4().hex[:8]}"
@@ -430,6 +437,7 @@ class TestRecoverConsolidation:
         await memory_no_llm_verify.delete_bank(bank_id, request_context=request_context)
 
     @pytest.mark.asyncio
+    @pytest.mark.memory_backend_incompatible
     async def test_recover_endpoint_via_http(self, memory_no_llm_verify: MemoryEngine, request_context):
         """The POST /consolidation/recover endpoint returns the correct retried_count."""
         import httpx

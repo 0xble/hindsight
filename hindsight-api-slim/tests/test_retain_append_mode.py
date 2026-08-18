@@ -18,6 +18,7 @@ def _ts():
 
 
 @pytest.mark.asyncio
+@pytest.mark.memory_backend_incompatible
 async def test_append_mode_concatenates_content(memory, request_context):
     """
     When update_mode='append', new content should be appended to the existing

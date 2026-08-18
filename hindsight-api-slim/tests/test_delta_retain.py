@@ -236,6 +236,7 @@ async def test_delta_retain_modified_chunk(memory, request_context):
 
 
 @pytest.mark.asyncio
+@pytest.mark.memory_backend_incompatible
 async def test_delta_retain_entities_preserved_for_unchanged_chunks(memory, request_context):
     """
     Entities linked to unchanged chunks should be preserved after delta retain.
@@ -426,6 +427,7 @@ async def test_delta_retain_document_metadata_updated(memory, request_context):
 
 
 @pytest.mark.asyncio
+@pytest.mark.memory_backend_incompatible
 async def test_delta_retain_metadata_consistent_for_unchanged_units(memory, request_context):
     """Metadata updates should reach facts preserved by metadata-only retain."""
     bank_id = f"test_delta_unit_meta_{_ts()}"
@@ -473,6 +475,7 @@ async def test_delta_retain_metadata_consistent_for_unchanged_units(memory, requ
 
 
 @pytest.mark.asyncio
+@pytest.mark.memory_backend_incompatible
 async def test_delta_retain_drops_null_metadata_values(memory, request_context):
     """A null-valued metadata key must never reach memory_units (issue #3209).
 

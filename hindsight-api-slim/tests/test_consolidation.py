@@ -1945,6 +1945,7 @@ async def test_consolidation_with_observations_mission(memory: "MemoryEngine", r
 
 
 @pytest.mark.asyncio
+@pytest.mark.memory_backend_incompatible
 async def test_observation_scopes_explicit_multi_pass(memory: MemoryEngine, request_context):
     """Test that observation_scopes with an explicit list triggers separate consolidation passes.
 
@@ -2003,6 +2004,7 @@ async def test_observation_scopes_explicit_multi_pass(memory: MemoryEngine, requ
 
 
 @pytest.mark.asyncio
+@pytest.mark.memory_backend_incompatible
 async def test_observation_scopes_per_tag(memory: MemoryEngine, request_context):
     """Test that observation_scopes='per_tag' derives one pass per individual tag.
 
@@ -2098,6 +2100,7 @@ async def test_observation_scopes_combined(memory: MemoryEngine, request_context
 
 
 @pytest.mark.asyncio
+@pytest.mark.memory_backend_incompatible
 async def test_observation_scopes_all_combinations(memory: MemoryEngine, request_context):
     """Test that observation_scopes='all_combinations' generates passes for every tag subset.
 
@@ -2586,6 +2589,7 @@ def test_max_observations_per_scope_default():
 
 
 @pytest.mark.asyncio
+@pytest.mark.memory_backend_incompatible
 async def test_count_observations_for_scope(memory: MemoryEngine, request_context):
     """Test _count_observations_for_scope counts observations filtered by tags."""
     bank_id = f"test-count-obs-scope-{uuid.uuid4().hex[:8]}"
@@ -2677,6 +2681,7 @@ def _make_mock_llm_one_obs_per_fact():
 
 
 @pytest.mark.asyncio
+@pytest.mark.memory_backend_incompatible
 async def test_max_observations_per_scope_limits_creates(memory: MemoryEngine, request_context):
     """Mock LLM tries to create 1 obs per fact; with limit=2, only 2 should exist after 5 facts."""
     bank_id = f"test-max-obs-limit-{uuid.uuid4().hex[:8]}"
@@ -2733,6 +2738,7 @@ async def test_max_observations_per_scope_limits_creates(memory: MemoryEngine, r
 
 
 @pytest.mark.asyncio
+@pytest.mark.memory_backend_incompatible
 async def test_max_observations_per_scope_zero_forbids_all_creates(memory: MemoryEngine, request_context):
     """limit=0 means "no new observations": consolidation must create none.
 
@@ -2786,6 +2792,7 @@ async def test_max_observations_per_scope_zero_forbids_all_creates(memory: Memor
 
 
 @pytest.mark.asyncio
+@pytest.mark.memory_backend_incompatible
 async def test_max_observations_per_scope_allows_updates_at_capacity(memory: MemoryEngine, request_context):
     """At capacity, the LLM can still update existing observations."""
     from hindsight_api.engine.consolidation.consolidator import (
@@ -2886,6 +2893,7 @@ async def test_max_observations_per_scope_allows_updates_at_capacity(memory: Mem
 
 
 @pytest.mark.asyncio
+@pytest.mark.memory_backend_incompatible
 async def test_max_observations_per_scope_no_tags_skips_limit(memory: MemoryEngine, request_context):
     """With limit=1, memories with no tags should bypass the limit and create freely."""
     bank_id = f"test-max-obs-no-tags-{uuid.uuid4().hex[:8]}"
@@ -2935,6 +2943,7 @@ async def test_max_observations_per_scope_no_tags_skips_limit(memory: MemoryEngi
 
 
 @pytest.mark.asyncio
+@pytest.mark.memory_backend_incompatible
 async def test_max_observations_unlimited_default(memory: MemoryEngine, request_context):
     """With default config (-1), all creates go through."""
     bank_id = f"test-max-obs-unlimited-{uuid.uuid4().hex[:8]}"
@@ -2968,6 +2977,7 @@ async def test_max_observations_unlimited_default(memory: MemoryEngine, request_
 
 
 @pytest.mark.asyncio
+@pytest.mark.memory_backend_incompatible
 async def test_targeted_consolidation_filters_by_scopes(memory: MemoryEngine, request_context):
     """Consolidation with observation_scopes only processes memories matching those scopes."""
     bank_id = f"test-targeted-{uuid.uuid4().hex[:8]}"
@@ -3022,6 +3032,7 @@ async def test_targeted_consolidation_filters_by_scopes(memory: MemoryEngine, re
 
 
 @pytest.mark.asyncio
+@pytest.mark.memory_backend_incompatible
 async def test_targeted_consolidation_multiple_scopes(memory: MemoryEngine, request_context):
     """Consolidation with multiple observation_scopes matches memories in any scope."""
     bank_id = f"test-targeted-multi-{uuid.uuid4().hex[:8]}"
@@ -3056,6 +3067,7 @@ async def test_targeted_consolidation_multiple_scopes(memory: MemoryEngine, requ
 
 
 @pytest.mark.asyncio
+@pytest.mark.memory_backend_incompatible
 async def test_targeted_consolidation_no_scopes_processes_all(memory: MemoryEngine, request_context):
     """Consolidation without observation_scopes processes all unconsolidated memories (backward compat)."""
     bank_id = f"test-targeted-all-{uuid.uuid4().hex[:8]}"
@@ -3085,6 +3097,7 @@ async def test_targeted_consolidation_no_scopes_processes_all(memory: MemoryEngi
 
 
 @pytest.mark.asyncio
+@pytest.mark.memory_backend_incompatible
 async def test_targeted_consolidation_contains_semantics(memory: MemoryEngine, request_context):
     """Scope ["user:alice"] matches memories tagged ["user:alice", "team:eng"] (contains)."""
     bank_id = f"test-targeted-contains-{uuid.uuid4().hex[:8]}"

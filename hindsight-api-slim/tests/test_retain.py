@@ -1675,6 +1675,7 @@ async def test_entity_links_creation(memory, request_context):
 
 
 @pytest.mark.asyncio
+@pytest.mark.memory_backend_incompatible
 async def test_graph_entity_edges_cover_all_visible_units(memory, request_context):
     """
     Regression test: when a hot entity is shared by more than the per-entity
@@ -1715,6 +1716,7 @@ async def test_graph_entity_edges_cover_all_visible_units(memory, request_contex
 
 
 @pytest.mark.asyncio
+@pytest.mark.memory_backend_incompatible
 async def test_people_name_extraction(memory, request_context):
     """
     Test that people names are correctly extracted as entities.
@@ -1772,6 +1774,7 @@ async def test_people_name_extraction(memory, request_context):
 
 
 @pytest.mark.asyncio
+@pytest.mark.memory_backend_incompatible
 async def test_mention_count_accuracy(memory, request_context):
     """
     Test that mention_count is accurately tracked across retain calls.
@@ -1818,6 +1821,7 @@ async def test_mention_count_accuracy(memory, request_context):
 
 
 @pytest.mark.asyncio
+@pytest.mark.memory_backend_incompatible
 async def test_mention_count_batch_retain(memory, request_context):
     """
     Test that mention_count is accurate when using batch retain with multiple items.
@@ -2250,6 +2254,7 @@ async def test_temporal_links_within_same_batch(memory, request_context):
 
 
 @pytest.mark.asyncio
+@pytest.mark.memory_backend_incompatible
 async def test_user_provided_entities_resolve_flag_is_scoped_to_them(memory, request_context):
     """resolve_entities=False keeps a caller's own entity names literal (#3479).
 
@@ -2301,6 +2306,7 @@ async def test_user_provided_entities_resolve_flag_is_scoped_to_them(memory, req
 
 
 @pytest.mark.asyncio
+@pytest.mark.memory_backend_incompatible
 async def test_user_provided_entities(memory, request_context):
     """
     Test that user-provided entities are merged with auto-extracted entities.

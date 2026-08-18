@@ -192,6 +192,7 @@ async def test_observation_fact_type_in_database(memory, request_context, disabl
 
 
 @pytest.mark.asyncio
+@pytest.mark.memory_backend_incompatible
 async def test_entity_mention_counts(memory, request_context):
     """
     Test that entity mention counts are tracked correctly.
@@ -273,6 +274,7 @@ async def test_entity_mention_counts(memory, request_context):
 
 @pytest.mark.asyncio
 @pytest.mark.timeout(1200)
+@pytest.mark.memory_backend_incompatible
 async def test_entity_mention_ranking(memory, request_context):
     """
     Test that entity mention counts correctly rank entities.

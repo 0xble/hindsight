@@ -627,6 +627,7 @@ async def _append(memory, request_context, bank_id: str, document_id: str, body:
 
 
 @pytest.mark.asyncio
+@pytest.mark.memory_backend_incompatible
 async def test_concurrent_appends_keep_every_turn(memory_stub_emb, request_context):
     """Regression: parallel appends used to drop all but one turn.
 

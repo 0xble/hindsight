@@ -105,6 +105,7 @@ async def _pending_consolidations(memory, bank_id: str):
 
 
 @pytest.mark.asyncio
+@pytest.mark.memory_backend_incompatible
 async def test_multi_round_consolidation_refreshes_all_entity_models(
     memory: MemoryEngine, request_context, monkeypatch
 ):

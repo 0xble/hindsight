@@ -278,6 +278,7 @@ async def test_retrieve_semantic_bm25_grouped_by_fact_type(memory, request_conte
 
 
 @pytest.mark.asyncio
+@pytest.mark.memory_backend_incompatible
 async def test_fetch_unit_dates_ignores_noncanonical_uuid_inputs(memory, request_context):
     """The indexed UUID lookup preserves the old text-comparison input behavior."""
     from hindsight_api.engine.db.ops_postgresql import PostgreSQLOps

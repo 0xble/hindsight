@@ -196,6 +196,7 @@ class _TxnSpy:
 
 
 @pytest.mark.asyncio
+@pytest.mark.memory_backend_incompatible
 async def test_recall_failure_cancels_sibling_tag_groups(memory: MemoryEngine, request_context):
     """One group's recall times out → the other two groups are cancelled before
     they write, and the job propagates the original error without waiting for
@@ -259,6 +260,7 @@ async def test_recall_failure_cancels_sibling_tag_groups(memory: MemoryEngine, r
 
 
 @pytest.mark.asyncio
+@pytest.mark.memory_backend_incompatible
 async def test_failed_batch_aborts_its_write_group(memory: MemoryEngine, request_context):
     """A batch that raises before its witness commit decides its write-group
     abort, rather than leaving it pending for the recovery sweep."""
@@ -292,6 +294,7 @@ async def test_failed_batch_aborts_its_write_group(memory: MemoryEngine, request
 
 
 @pytest.mark.asyncio
+@pytest.mark.memory_backend_incompatible
 async def test_successful_batch_still_commits_its_write_group(memory: MemoryEngine, request_context):
     """Guard on the abort path: the happy path must still decide commit=True."""
     bank_id = f"test-commit-{uuid.uuid4().hex[:8]}"

@@ -139,6 +139,7 @@ async def _fetch_observation_tag_sets(memory: MemoryEngine, bank_id: str, reques
 
 
 @pytest.mark.asyncio
+@pytest.mark.memory_backend_incompatible
 async def test_combined_mode_parallel_writes_to_memory_tag_set(memory: MemoryEngine, request_context):
     """combined (default) → each memory yields exactly one observation tagged
     with the memory's full tag set. With three disjoint tag sets, dispatch
@@ -179,6 +180,7 @@ async def test_combined_mode_parallel_writes_to_memory_tag_set(memory: MemoryEng
 
 
 @pytest.mark.asyncio
+@pytest.mark.memory_backend_incompatible
 async def test_shared_mode_parallel_writes_only_untagged_scope(memory: MemoryEngine, request_context):
     """shared → every memory writes to the single untagged scope, ignoring its
     own tags. Three memories with disjoint tags therefore all consolidate into
@@ -215,6 +217,7 @@ async def test_shared_mode_parallel_writes_only_untagged_scope(memory: MemoryEng
 
 
 @pytest.mark.asyncio
+@pytest.mark.memory_backend_incompatible
 async def test_per_tag_mode_parallel_writes_one_observation_per_tag(memory: MemoryEngine, request_context):
     """per_tag with tags [a, b] → two observations, tagged [a] and [b] respectively.
 
@@ -263,6 +266,7 @@ async def test_per_tag_mode_parallel_writes_one_observation_per_tag(memory: Memo
 
 
 @pytest.mark.asyncio
+@pytest.mark.memory_backend_incompatible
 async def test_all_combinations_mode_parallel_writes_every_subset(memory: MemoryEngine, request_context):
     """all_combinations with tags [a, b] → three observations at [a], [b], [a, b]."""
     bank_id = f"test-allcombo-{uuid.uuid4().hex[:8]}"
@@ -297,6 +301,7 @@ async def test_all_combinations_mode_parallel_writes_every_subset(memory: Memory
 
 
 @pytest.mark.asyncio
+@pytest.mark.memory_backend_incompatible
 async def test_explicit_scope_list_parallel_writes_declared_scopes(memory: MemoryEngine, request_context):
     """Explicit list[list[str]] → observations land at exactly those scopes,
     regardless of the memory's own tag set."""
@@ -342,6 +347,7 @@ async def test_explicit_scope_list_parallel_writes_declared_scopes(memory: Memor
 
 
 @pytest.mark.asyncio
+@pytest.mark.memory_backend_incompatible
 async def test_overlapping_scopes_serialise_under_parallelism(memory: MemoryEngine, request_context):
     """Two groups whose write-scope sets intersect on scope S must not have
     overlapping in-flight LLM-recall windows for S.
@@ -424,6 +430,7 @@ async def test_overlapping_scopes_serialise_under_parallelism(memory: MemoryEngi
 
 
 @pytest.mark.asyncio
+@pytest.mark.memory_backend_incompatible
 async def test_per_batch_log_line_attributes_only_own_work(memory: MemoryEngine, request_context, caplog):
     """Per-batch log timings / llm_calls / tokens / processed must reflect only
     that batch's own work — not totals leaking in from other in-flight batches
@@ -502,6 +509,7 @@ async def test_per_batch_log_line_attributes_only_own_work(memory: MemoryEngine,
 
 
 @pytest.mark.asyncio
+@pytest.mark.memory_backend_incompatible
 async def test_disjoint_scopes_run_concurrently(memory: MemoryEngine, request_context):
     """When write-scope sets are pairwise disjoint, the dispatcher must let
     groups run in parallel — we should observe simultaneous in-flight recalls
