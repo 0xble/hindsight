@@ -251,6 +251,7 @@ export async function runHook(
     apiToken: cfg.apiToken,
     bank: bankId,
     maxParallelRetains: cfg.maxParallelRetains,
+    observationScopes: cfg.observationScopes,
   });
   const cacheFile = sessionCacheFile(spec.harness, sessionId || "no-session");
 

@@ -358,6 +358,7 @@ export async function runSessionStartHook(
       apiToken: cfg.apiToken,
       bank: bankId,
       maxParallelRetains: cfg.maxParallelRetains,
+      observationScopes: cfg.observationScopes,
     });
 
     const out = await buildSessionStartContext({ cwd, bankId, cfg, client, harness });

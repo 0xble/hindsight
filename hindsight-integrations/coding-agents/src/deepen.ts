@@ -134,6 +134,7 @@ async function main() {
       apiToken: API_TOKEN,
       bank: FINAL_BANK!,
       maxParallelRetains: cfg.maxParallelRetains,
+      observationScopes: cfg.observationScopes,
       log,
     });
     log(`deepen -> ${client.apiUrl} bank=${FINAL_BANK} harness=${harness.name}`);
