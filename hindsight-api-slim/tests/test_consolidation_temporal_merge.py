@@ -82,11 +82,15 @@ async def _retain_fact(
             bank_id,
             f"%{marker}%",
         )
-        fact_id = await conn.fetchval(
+        # Repeat the marker predicate rather than leaning on the sweep above: if the extractor
+        # ever emits two facts for this content, stamping both and returning an arbitrary one
+        # would make the caller's source-id assertions flaky rather than fail here.
+        stamped = await conn.fetch(
             """
             UPDATE memory_units
                SET event_date = $2, occurred_start = $3, occurred_end = $4, mentioned_at = $5
              WHERE bank_id = $1 AND fact_type <> 'observation' AND consolidated_at IS NULL
+               AND text LIKE $6
             RETURNING id
             """,
             bank_id,
@@ -94,9 +98,10 @@ async def _retain_fact(
             bounds.occurred_start,
             bounds.occurred_end,
             bounds.mentioned_at,
+            f"%{marker}%",
         )
-    assert fact_id is not None, f"retain produced no unconsolidated fact matching {marker!r}"
-    return fact_id
+    assert len(stamped) == 1, f"expected exactly one unconsolidated fact matching {marker!r}, got {len(stamped)}"
+    return stamped[0]["id"]
 
 
 async def _seed_undated_observation(

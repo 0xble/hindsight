@@ -230,7 +230,14 @@ class _TemporalBounds:
     these, never replace them: ``event_date``/``occurred_start`` keep the earliest known value
     and ``occurred_end``/``mentioned_at`` the latest, with a missing value on either side
     ignored. That is exactly the ``_aggregate_source_fields`` rule, and the Python mirror of the
-    ``LEAST(col, COALESCE(x, col))`` / ``GREATEST(col, COALESCE(x, col))`` the SQL paths apply.
+    ``LEAST``/``GREATEST`` the SQL paths apply.
+
+    The SQL spelling differs by reach, deliberately. The dedup folds only ever run on PostgreSQL
+    (``_dedup_active`` disables dedup on Oracle) and use the plain
+    ``LEAST(col, COALESCE(x, col))``, which is enough there because PostgreSQL ignores NULL
+    arguments. ``_execute_update_action`` also runs on Oracle, where LEAST/GREATEST return NULL
+    if any argument is NULL, so it wraps the whole expression in one more COALESCE — see the
+    comment there.
     """
 
     event_date: "datetime | None" = None
@@ -2494,6 +2501,15 @@ async def _execute_update_action(
 
             t0 = time.time()
             if store.writes_memory_rows_in_sql_for(bank_id):
+                # Unlike the dedup folds this statement also runs on Oracle, where LEAST/GREATEST
+                # return NULL as soon as ANY argument is NULL (PostgreSQL ignores NULL arguments).
+                # The inner COALESCE covers a NULL *parameter*; the outer one covers a NULL
+                # *column* — an observation with no occurred interval yet, which is precisely the
+                # #3477 case. Without it Oracle would compute LEAST(NULL, <source date>) = NULL and
+                # silently drop the date it was told to inherit. Keep the inner
+                # ``COALESCE($n, col)`` spelled exactly like this: the Oracle driver shim keys its
+                # TIMESTAMP-TZ input-size hint off that pattern (db/oracle.py::_apply_clob_input_sizes),
+                # and a NULL parameter binds as VARCHAR2 (ORA-00932) without it.
                 updated_rows = await conn.execute_rows_affected(
                     f"""
                     UPDATE {fq_table("memory_units")}
@@ -2503,10 +2519,10 @@ async def _execute_update_action(
                         proof_count = $4,
                         tags = $10,
                         updated_at = now(),
-                        event_date = LEAST(event_date, COALESCE($6, event_date)),
-                        occurred_start = LEAST(occurred_start, COALESCE($7, occurred_start)),
-                        occurred_end = GREATEST(occurred_end, COALESCE($8, occurred_end)),
-                        mentioned_at = GREATEST(mentioned_at, COALESCE($9, mentioned_at)){search_vector_clause}
+                        event_date = COALESCE(LEAST(event_date, COALESCE($6, event_date)), $6),
+                        occurred_start = COALESCE(LEAST(occurred_start, COALESCE($7, occurred_start)), $7),
+                        occurred_end = COALESCE(GREATEST(occurred_end, COALESCE($8, occurred_end)), $8),
+                        mentioned_at = COALESCE(GREATEST(mentioned_at, COALESCE($9, mentioned_at)), $9){search_vector_clause}
                     WHERE id = $5
                     """,
                     new_text,
