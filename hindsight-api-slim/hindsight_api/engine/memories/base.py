@@ -78,6 +78,20 @@ class StoreWriteUnavailable(RuntimeError):
     retry_after: int = 30
 
 
+class StoreWriteConflict(RuntimeError):
+    """A conditional write lost its race: the state it was based on moved before it committed.
+
+    Raised by a store whose write carried a precondition — the read-modify-write case, where the
+    caller read something, derived a new value from it, and asked the store to accept that value
+    only if nothing had changed underneath. Nothing was written.
+
+    Distinct from :class:`StoreWriteUnavailable`: that one means "not now, try again shortly" and
+    the same write will succeed unchanged. This one means the write is STALE — retrying it as-is
+    would re-apply a decision made on an old base. The caller has to re-read and redo the work,
+    which is what makes concurrent appends to one document safe rather than last-writer-wins.
+    """
+
+
 # Keys used in an implementation's opaque metadata bag for the `memory_units`
 # columns it has no first-class model of. These round-trip verbatim: they are
 # stored without interpretation and returned on every hit, which is what lets
@@ -709,10 +723,23 @@ class MemoriesExtension(Extension, ABC):
         file_content_type: str = "",
         file_original_name: str = "",
         txn: "MemoryTxn | None" = None,
+        expect_watermark: "int | None" = None,
     ) -> None:
         """Store (or replace) a document's bodies: its extracted text, its ordered chunk texts, and
         optionally the original uploaded file. Idempotent by content — re-ingest re-uploads only
-        what changed. Under a ``txn`` the record commits atomically with the retain's facts."""
+        what changed. Under a ``txn`` the record commits atomically with the retain's facts.
+
+        ``chunk_texts`` REPLACES the document's chunk list, so a caller holding only part of a
+        document (a retain sub-batch) must send the whole list, not its slice — see
+        ``_store_document_bodies``, which restores the prefix before calling this.
+
+        ``expect_watermark`` makes this a compare-and-set: the write is applied only if the store's
+        state is still the one the caller read (the ``watermark`` from
+        :meth:`get_document_record`), and otherwise raises :class:`StoreWriteConflict` having
+        written nothing. This is what makes a read-modify-write — appending onto the stored body —
+        safe against a concurrent one, which without it silently erases the other's turn. ``None``
+        writes unconditionally. A store with no notion of a watermark ignores it, and is expected
+        to serialize such writes some other way."""
         raise NotImplementedError
 
     async def document_content_hash(self, *, bank_id: str, document_id: str) -> "str | None":
@@ -720,7 +747,11 @@ class MemoriesExtension(Extension, ABC):
         raise NotImplementedError
 
     async def get_document_record(self, *, bank_id: str, document_id: str, include_text: bool = False) -> "dict | None":
-        """A document's metadata (and, if asked, its extracted ``original_text``), or ``None``."""
+        """A document's metadata (and, if asked, its extracted ``original_text``), or ``None``.
+
+        A returned record may carry a ``watermark``: an opaque token for the store state this read
+        observed, to hand back as ``put_document(expect_watermark=...)`` when the write is derived
+        from what was just read. Absent for a store that does not support conditional writes."""
         raise NotImplementedError
 
     async def list_documents(

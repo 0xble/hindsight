@@ -651,15 +651,19 @@ async def test_concurrent_appends_keep_every_turn(memory_stub_emb, request_conte
     missing = [marker for marker in ("TURN_ONE", "TURN_TWO", "TURN_THREE", "TURN_FOUR") if marker not in text]
     assert not missing, f"appends lost {missing}; document is {text!r}"
 
-    # The turns must also survive as memories, not just as document text: the
-    # losing writers used to cascade-delete the winner's units.
-    async with memory_stub_emb._pool.acquire() as conn:
-        rows = await conn.fetch(
-            "SELECT text FROM memory_units WHERE bank_id = $1 AND document_id = $2",
-            bank_id,
-            document_id,
-        )
-    stored = " ".join(r["text"] for r in rows)
+    # The turns must also survive as MEMORIES, not just as document text: the losing writers used
+    # to cascade-delete the winner's units. Read them back through the engine rather than with a
+    # SELECT against `memory_units` — the property is "the document's units are still there", and
+    # a store that owns its memories keeps no rows in that table, so the query asserted the
+    # storage layout rather than the behaviour and reported an empty string on a backend that had
+    # in fact kept every turn.
+    listed = await memory_stub_emb.list_memory_units(
+        bank_id,
+        document_id=document_id,
+        limit=1000,
+        request_context=request_context,
+    )
+    stored = " ".join(item["text"] for item in listed["items"])
     assert "TURN_ONE" in stored and "TURN_FOUR" in stored
 
 

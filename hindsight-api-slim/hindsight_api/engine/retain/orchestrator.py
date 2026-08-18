@@ -959,10 +959,20 @@ async def _streaming_store_owned_retain(
             unit_ids[i]: [e["text"] for e in entities_per_fact[i]]
             for i in range(min(len(unit_ids), len(entities_per_fact)))
         }
-        # Replace the document's prior version only on its FIRST batch (later batches append to what
-        # batch 1 just wrote — replacing again would tombstone those siblings), and never when
-        # appending to an existing document.
-        replace_id = effective_doc_id if (is_first_batch and append_base_hash is None) else ""
+        # Replace the document's prior version only on its FIRST batch — later batches append to
+        # what batch 1 just wrote, and replacing again would tombstone those siblings.
+        #
+        # An append replaces too, and must. `retain_batch` prepends the stored body to this same
+        # first batch, so what is being written already covers the old content: leaving the prior
+        # version in place keeps a SECOND copy of every earlier fact, carrying the metadata of the
+        # retain that created it. That is what `update_mode="append"` then looked like — the old
+        # units surviving with stale metadata beside the new ones, where Postgres reprocesses the
+        # whole document and ends with one set. The exception here was load-bearing only while the
+        # prepend was broken (the base text was read from a SQL column a store-owned bank leaves
+        # NULL, so an append's first batch carried the NEW content alone and replacing would have
+        # dropped every earlier turn). With the base read from the store that holds it, the first
+        # batch is the whole document again and replace is the correct — and the only safe — move.
+        replace_id = effective_doc_id if is_first_batch else ""
         # 0.0 → the server's default trigram-Jaccard threshold; a configured value overrides it.
         threshold = float(getattr(config, "entity_similarity_threshold", 0.0) or 0.0)
         resp = await provider.retain(
@@ -1559,6 +1569,11 @@ async def retain_batch(
     # ``_APPEND_BASE_ABSENT`` distinguishes "read a document that wasn't there"
     # from "not an append", which None alone cannot express.
     append_base_hash: str | None = None
+    # The store-side watermark for that same base — the token a conditional write uses to prove
+    # nothing landed in between. The content_hash gate above only covers stores that keep the
+    # document row in Postgres and can lock it; a store that owns the document store has no such
+    # row, so this is what serializes concurrent appends there.
+    append_base_watermark: int | None = None
     is_append = update_mode == "append" and bool(effective_doc_id) and is_first_batch
 
     if is_append:
@@ -1584,6 +1599,9 @@ async def retain_batch(
             )
             if _record:
                 existing_text = _record.get("original_text")
+                # Read WITH the base, not later: a watermark taken after the read would already
+                # include a writer that beat us, and the guard would pass while the base was stale.
+                append_base_watermark = _record.get("watermark")
                 # A store-owned bank may have no SQL documents row at all, in which case the hash
                 # the gate compares against has to come from the record too — otherwise a document
                 # that plainly exists reads as absent and the append base check is comparing
@@ -1768,6 +1786,7 @@ async def retain_batch(
         chunk_index_offset=chunk_index_offset,
         progress_callback=progress_callback,
         append_base_hash=append_base_hash,
+        append_base_watermark=append_base_watermark,
     )
 
 
@@ -1895,6 +1914,7 @@ async def _store_document_bodies(
     content_hash: str | None = None,
     retain_params: dict | None = None,
     chunk_index_offset: int = 0,
+    expect_watermark: int | None = None,
 ) -> None:
     """Route a document's bulky bodies — its extracted text and ordered chunk texts — to the
     store's dedicated document store, when the store owns one. No-op for Postgres.
@@ -1912,6 +1932,7 @@ async def _store_document_bodies(
     the params are carried as one JSON value rather than flattened.
     """
     from ..memories import get_memories
+    from ..memories.base import StoreWriteConflict
 
     store = get_memories()
     if not store.owns_document_store_for(bank_id):
@@ -1938,17 +1959,26 @@ async def _store_document_bodies(
     if content_hash is None:
         _sanitized = fact_extraction._sanitize_text(combined_content) or ""
         content_hash = hashlib.sha256(_sanitized.encode()).hexdigest()
-    await store.put_document(
-        bank_id=bank_id,
-        document_id=document_id,
-        content_hash=content_hash,
-        # Honour store_document_text: when a deployment opts out of keeping the full text, only the
-        # chunk texts (needed for citation) go to the store, not the whole document body.
-        original_text=combined_content if getattr(config, "store_document_text", True) else None,
-        chunk_texts=list(chunk_texts),
-        tags=list(merged_tags or []),
-        metadata=({"retain_params": json.dumps(retain_params)} if retain_params else {}),
-    )
+    # `expect_watermark` makes this a compare-and-set (the append case: the body being written was
+    # derived from the stored one). The store reports a lost race as `StoreWriteConflict`, which is
+    # exactly the retain-level `ConcurrentAppendConflict` the caller already knows how to redo —
+    # the Postgres path raises it from its own document-row gate. Translating here keeps the two
+    # stores' append semantics the same instead of one of them being last-writer-wins.
+    try:
+        await store.put_document(
+            bank_id=bank_id,
+            document_id=document_id,
+            content_hash=content_hash,
+            # Honour store_document_text: when a deployment opts out of keeping the full text,
+            # only the chunk texts (needed for citation) go to the store, not the whole body.
+            original_text=combined_content if getattr(config, "store_document_text", True) else None,
+            chunk_texts=list(chunk_texts),
+            tags=list(merged_tags or []),
+            metadata=({"retain_params": json.dumps(retain_params)} if retain_params else {}),
+            expect_watermark=expect_watermark,
+        )
+    except StoreWriteConflict as e:
+        raise ConcurrentAppendConflict(str(e)) from e
 
 
 # ---------------------------------------------------------------------------
@@ -1984,6 +2014,7 @@ async def _streaming_retain_batch(
     chunk_index_offset: int = 0,
     progress_callback: "Callable[..., Awaitable[None]] | None" = None,
     append_base_hash: str | None = None,
+    append_base_watermark: int | None = None,
 ) -> tuple[list[list[str]], TokenUsage]:
     """
     Process a large document in streaming mini-batches to bound memory usage.
@@ -2088,6 +2119,10 @@ async def _streaming_retain_batch(
         merged_tags=merged_tags,
         config=config,
         retain_params=retain_params,
+        # An append derives the new body from the stored one, so its write is conditional on that
+        # base still being current. Only the first sub-batch carries it: it is the one that read
+        # the base, and the later sub-batches build on what it just wrote, not on the old document.
+        expect_watermark=append_base_watermark if is_first_batch else None,
         # `all_pre_chunks` is THIS sub-batch's chunks; the offset is where they sit in the
         # document, and is what lets the store keep the earlier sub-batches' chunks instead of
         # being handed one slice as if it were the whole document. The delta path's two calls need

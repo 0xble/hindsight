@@ -106,6 +106,12 @@ class _Provider:
         self.decisions = []
         self.witnesses = []
 
+    def store_owned_retain_for(self, bank_id):
+        # False: these tests are about the Protocol-B two-phase write-group — the path for a store
+        # whose memory rows live elsewhere but whose document metadata still lands in Postgres. A
+        # store-owned retain skips that dance entirely and has its own tests.
+        return False
+
     async def write_txn_witness(self, txn, *, conn, fq_table):
         self.witnesses.append((txn, conn))
 
