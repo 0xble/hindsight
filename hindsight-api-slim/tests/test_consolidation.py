@@ -213,31 +213,17 @@ class TestConsolidationIntegration:
         )
 
         # Check observation and its entity links
-        async with memory._pool.acquire() as conn:
-            observation = await conn.fetchrow(
-                """
-                SELECT id
-                FROM memory_units
-                WHERE bank_id = $1 AND fact_type = 'observation'
-                LIMIT 1
-                """,
-                bank_id,
-            )
+        observations = await memory.list_memory_units(
+            bank_id, fact_type="observation", limit=1, request_context=request_context
+        )
 
-            # Consolidation must create an observation
-            assert observation is not None, "Consolidation must create an observation"
+        # Consolidation must create an observation
+        assert observations["items"], "Consolidation must create an observation"
 
-            # Check if entity links were copied
-            entity_links = await conn.fetch(
-                """
-                SELECT entity_id
-                FROM unit_entities
-                WHERE unit_id = $1
-                """,
-                observation["id"],
-            )
-            # Observation should have inherited entity links from source memory
-            assert entity_links is not None
+        # An observation carries the entities of the facts it was drawn from, so the
+        # detail view is where the copied links show up.
+        observation = await memory.get_memory_unit(bank_id, observations["items"][0]["id"], request_context)
+        assert observation["entities"] is not None
 
         # Cleanup
         await memory.delete_bank(bank_id, request_context=request_context)
@@ -459,29 +445,23 @@ class TestConsolidationIntegration:
         await memory.wait_for_background_tasks()
 
         # Check observations after consolidation
-        async with memory._pool.acquire() as conn:
-            observations = await conn.fetch(
-                """
-                SELECT id, text, source_memory_ids
-                FROM memory_units
-                WHERE bank_id = $1 AND fact_type = 'observation'
-                """,
-                bank_id,
-            )
+        observations = (
+            await memory.list_memory_units(bank_id, fact_type="observation", limit=500, request_context=request_context)
+        )["items"]
 
-            # The contradiction should be reflected in observations — either:
-            # 1. Merged into one observation with temporal context (e.g., "used to love, now hates")
-            # 2. The original observation updated to reflect the new state
-            # 3. Two separate observations capturing each state
-            # The key is that the contradiction is tracked, not ignored.
-            assert len(observations) >= 1, "Should have at least one observation after contradiction"
+        # The contradiction should be reflected in observations — either:
+        # 1. Merged into one observation with temporal context (e.g., "used to love, now hates")
+        # 2. The original observation updated to reflect the new state
+        # 3. Two separate observations capturing each state
+        # The key is that the contradiction is tracked, not ignored.
+        assert len(observations) >= 1, "Should have at least one observation after contradiction"
 
-            # Format as numbered list rather than pipe-separated — weaker judge
-            # models read pipe-joins as a single conflated statement.
-            obs_listing = "\n".join(f"Observation {i + 1}: {obs['text']}" for i, obs in enumerate(observations))
-            all_source_ids = []
-            for obs in observations:
-                all_source_ids.extend(obs["source_memory_ids"] or [])
+        # Format as numbered list rather than pipe-separated — weaker judge
+        # models read pipe-joins as a single conflated statement.
+        obs_listing = "\n".join(f"Observation {i + 1}: {obs['text']}" for i, obs in enumerate(observations))
+        all_source_ids = []
+        for obs in observations:
+            all_source_ids.extend(obs["source_memory_ids"])
 
         # Either the observations reference both sentiments (via text content) or the
         # consolidation linked both source memories together. The judge evaluates the
@@ -1405,34 +1385,29 @@ class TestObservationDrillDown:
         )
 
         # Get the observation with source_memory_ids
-        async with memory._pool.acquire() as conn:
-            obs_rows = await conn.fetch(
-                """
-                SELECT id, text, proof_count, source_memory_ids
-                FROM memory_units
-                WHERE bank_id = $1 AND fact_type = 'observation'
-                """,
-                bank_id,
-            )
+        obs_rows = (
+            await memory.list_memory_units(bank_id, fact_type="observation", limit=500, request_context=request_context)
+        )["items"]
 
         assert obs_rows, "Consolidation must create observations"
 
         # Collect all source_memory_ids across all observations
         all_source_ids = []
         for obs in obs_rows:
-            all_source_ids.extend(obs["source_memory_ids"] or [])
+            all_source_ids.extend(obs["source_memory_ids"])
 
         assert all_source_ids, "Observations must have source_memory_ids"
 
-        # Verify source_memory_ids point to actual memories
-        async with memory._pool.acquire() as conn:
-            source_memories = await conn.fetch(
-                """
-                SELECT id, text FROM memory_units
-                WHERE id = ANY($1) AND fact_type IN ('world', 'experience')
-                """,
-                all_source_ids,
+        # Verify source_memory_ids point to actual memories. The list arm takes both
+        # source fact types at once, so the lineage is checked against the same set
+        # the SQL IN clause used to name.
+        source_facts = (
+            await memory.list_memory_units(
+                bank_id, fact_type=["world", "experience"], limit=500, request_context=request_context
             )
+        )["items"]
+        wanted = set(all_source_ids)
+        source_memories = [m for m in source_facts if m["id"] in wanted]
 
         assert len(source_memories) >= 1, (
             f"source_memory_ids should point to valid memories. IDs: {all_source_ids}, Found: {len(source_memories)}"

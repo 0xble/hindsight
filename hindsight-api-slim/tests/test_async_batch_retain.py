@@ -766,17 +766,24 @@ async def test_degenerate_fact_preserves_later_chunk_provenance(memory, request_
             request_context=request_context,
         )
 
-        pool = await memory._get_pool()
-        rows = await pool.fetch(
-            """
-            SELECT units.text AS fact_text, chunks.chunk_index AS chunk_index
-            FROM memory_units units
-            JOIN chunks ON chunks.chunk_id = units.chunk_id
-            WHERE units.bank_id = $1
-            """,
-            bank_id,
-        )
-        assert {(row["fact_text"], row["chunk_index"]) for row in rows} == {
+        # Each fact carries the chunk it came from, and the document's chunks carry
+        # their index, so the join the assertion needs is over two API reads.
+        chunk_index_by_id = {
+            chunk["chunk_id"]: chunk["chunk_index"]
+            for chunk in (
+                await memory.list_document_chunks(
+                    bank_id, "degen-provenance-document", limit=500, request_context=request_context
+                )
+            )["items"]
+        }
+        units = (await memory.list_memory_units(bank_id, limit=500, request_context=request_context))["items"]
+        # Chunkless units (an observation, say) were dropped by the inner join before
+        # and are dropped here for the same reason: they have no provenance to check.
+        assert {
+            (unit["text"], chunk_index_by_id[unit["chunk_id"]])
+            for unit in units
+            if unit["chunk_id"] in chunk_index_by_id
+        } == {
             ("chunk zero real fact", 0),
             ("chunk one real fact", 1),
         }
