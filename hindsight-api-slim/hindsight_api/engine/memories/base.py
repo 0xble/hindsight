@@ -727,6 +727,52 @@ class MemoriesExtension(Extension, ABC):
         """One chunk's text by position, or ``None`` if the document/index does not exist."""
         raise NotImplementedError
 
+    async def count_memories_many(
+        self, *, bank_ids: "list[str]", strong: bool = False
+    ) -> "dict[str, dict[str, int]]":
+        """Per-bank fact counts for MANY banks — ``{bank_id: {fact_type: count}}``.
+
+        A bank absent from the result has nothing to count, so one unknown bank cannot fail a page.
+
+        Declared here for the same reason as :meth:`get_chunk_texts`: a bank list wants a count for
+        every bank on the page, and the per-bank shape makes that a round-trip per bank. A store
+        that can answer them together overrides this; the default is the per-bank loop, which is
+        correct everywhere and merely saves nothing.
+
+        ``strong`` asks for read-your-writes. A store whose counts lag (because they come from a
+        periodically-refreshed index rather than a live read) may answer the default form from that
+        lagging view; the loop below ignores the flag because a per-bank count is already live.
+        """
+        out: dict[str, dict[str, int]] = {}
+        for bank_id in bank_ids:
+            counts = await self.count_memories(conn=None, fq_table=None, bank_id=bank_id)
+            if counts:
+                out[bank_id] = counts
+        return out
+
+    async def get_chunk_texts(
+        self, *, bank_id: str, refs: "list[tuple[str, int]]"
+    ) -> "list[str | None]":
+        """Many chunks' text at once — ``refs`` is ``(document_id, chunk_index)``.
+
+        Returns one entry per ref, in the SAME order, ``None`` where the chunk does not exist.
+
+        Declared here, not left to the store, because a chunk-hydrated recall wants one chunk from
+        each of many documents and the per-chunk shape makes that a round-trip per document. A store
+        that can fetch them together overrides this; the default below is correct for every store and
+        simply does not save anything.
+
+        **It has to be on this interface to be reachable.** A routing store generates its delegators
+        from the methods declared here, so a fetch-many that exists only on a concrete store is
+        invisible through the router — the call silently falls back and the optimisation is dead code
+        in exactly the deployment it was written for. That has now happened twice; see
+        ``store_owned_retain_for``.
+        """
+        return [
+            await self.get_chunk_text(bank_id=bank_id, document_id=doc_id, chunk_index=idx)
+            for doc_id, idx in refs
+        ]
+
     async def list_chunk_texts(self, *, bank_id: str, document_id: str) -> "list[str] | None":
         """Every chunk's text in order, or ``None`` if the document does not exist."""
         raise NotImplementedError
