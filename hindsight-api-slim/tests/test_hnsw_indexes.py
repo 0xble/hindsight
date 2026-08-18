@@ -337,6 +337,11 @@ async def test_recall_reuses_semantic_pool_for_graph_seeds(memory, request_conte
 
 
 @pytest.mark.asyncio
+# Asserts *how* the graph arm seeds — that recall calls link_expansion_retrieval's
+# _find_semantic_seeds — rather than what it returns. A store with its own graph
+# retrieval never goes through that function, so the assertion is specific to the
+# SQL retrieval path.
+@pytest.mark.memory_backend_incompatible
 async def test_recall_keeps_graph_seed_query_for_stricter_semantic_floor(memory, request_context, monkeypatch):
     """A semantic floor above the graph floor must retain the dedicated seed query."""
     from hindsight_api.engine.response_models import MinScores
