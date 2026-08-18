@@ -119,11 +119,12 @@ class _EntityResolver:
         self.postings = []
         self.reasserts = []
 
-    async def record_unit_entity_postings(self, pairs, bank_id=None, store_write=True):
-        # THE contract: co-occurrence accumulation runs with no connection held. store_write=False
-        # here because the entity ids were already written inline by index_facts (single write).
+    async def record_unit_entity_postings(self, pairs, bank_id=None, store_write=True, txn=None):
+        # THE contract: the posting runs with no connection held, whether or not it writes to the
+        # store. Both knobs are recorded: `store_write` says whether a store write happens at all,
+        # `txn` which write-group it joins when it does.
         assert self._t.open is False, "entity posting must run connection-free"
-        self.postings.append((pairs, store_write))
+        self.postings.append((pairs, store_write, txn))
 
     async def reassert_entities_batch(self, bank_id, resolved, conn):
         assert conn is not None
@@ -179,17 +180,19 @@ async def test_store_writes_are_connection_free_and_witness_is_in_txn(monkeypatc
     _make_common(monkeypatch, tracker, calls=calls)
     provider, er = _Provider(), _EntityResolver(tracker)
 
-    result = await orch._streaming_batch_write_ext(
-        **_kwargs(tracker, provider, er, doc_tracking_done=[False], existing_hash="__pending__", new_hash="h")
-    )
+    kw = _kwargs(tracker, provider, er, doc_tracking_done=[False], existing_hash="__pending__", new_hash="h")
+    result = await orch._streaming_batch_write_ext(**kw)
 
     assert result.aborted is False
     assert result.batch_result_ids == [["u1"]]
     # The fact write happened with no connection held (a single deferred write via index_facts).
     assert tracker.store_writes_saw_open == [False]
     assert ("index_facts", False) in calls  # the entity-bearing store write ran connection-free
-    # Co-occurrence ran connection-free, with store_write=False (entities already written inline).
-    assert er.postings == [([("u1", "e1", None)], False)]
+    # The posting ran connection-free with `store_write=False`: the entity ids were already
+    # written inline by that single `index_facts`, which itself rode `ext_txn`. There is no second
+    # store write left to enrol in the group, so no txn is passed — what remains is the Postgres
+    # co-occurrence accumulation, which is not a store write at all.
+    assert er.postings == [([("u1", "e1", None)], False, None)]
     # Witness written with a real connection, exactly once; commit published after release.
     assert len(provider.witnesses) == 1 and provider.witnesses[0][1] is not None
     assert provider.decisions == [True]
@@ -339,9 +342,8 @@ async def test_delta_store_writes_are_connection_free(monkeypatch):
     # _build_retain_params is a plain module function; keep it real but feed simple dicts.
     provider, er = _Provider(), _EntityResolver(tracker)
 
-    result = await orch._delta_batch_write_ext(
-        **_delta_kwargs(tracker, provider, er, doc_hash_at_load=None)  # None → hash check can't trip
-    )
+    kw = _delta_kwargs(tracker, provider, er, doc_hash_at_load=None)  # None → hash check can't trip
+    result = await orch._delta_batch_write_ext(**kw)
 
     assert result.fell_back is False
     assert result.result_unit_ids == [["u1"]]
@@ -349,7 +351,10 @@ async def test_delta_store_writes_are_connection_free(monkeypatch):
     # still writes-then-reposts (store_write=True) — only the streaming path uses the single write.
     assert tracker.store_writes_saw_open == [False]
     assert ("store_document_bodies", False) in calls
-    assert er.postings == [([("u1", "e1", None)], True)]
+    # The delta path still does the store re-posting, and it rides the same write-group as the
+    # fact write: it re-writes rows that group just created, so a store recording what its groups
+    # wrote must see it as part of the group or a replay loses it.
+    assert er.postings == [([("u1", "e1", None)], True, kw["ext_txn"])]
     # Witness inside the txn; publish after release.
     assert len(provider.witnesses) == 1 and provider.witnesses[0][1] is not None
     assert provider.decisions == [True]
