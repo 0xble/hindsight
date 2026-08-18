@@ -35,6 +35,18 @@ def _bank_id(prefix: str = "oracle") -> str:
     return f"test-{prefix}-{uuid.uuid4().hex[:8]}"
 
 
+def _as_utc(value: datetime | None) -> datetime | None:
+    """Attach UTC to a timestamp oracledb handed back naive.
+
+    Values are written as UTC-aware, but the driver reads some timestamp columns back
+    without a tzinfo, and a naive/aware comparison is silently False rather than an error.
+    Normalise before comparing instants.
+    """
+    if value is None or value.tzinfo is not None:
+        return value
+    return value.replace(tzinfo=timezone.utc)
+
+
 async def _safe_cleanup(memory: MemoryEngine, bank_id: str, request_context: RequestContext) -> None:
     """Delete a bank, suppressing deadlock/lock errors in test teardown.
 
@@ -1239,8 +1251,8 @@ class TestOracleSpecific:
                     "SELECT occurred_start, occurred_end FROM memory_units WHERE id = $1",
                     seeded["id"],
                 )
-            assert updated["occurred_start"] == early, "a NULL occurred_start must take the source's date"
-            assert updated["occurred_end"] == late, "a NULL occurred_end must take the source's date"
+            assert _as_utc(updated["occurred_start"]) == early, "a NULL occurred_start must take the source's date"
+            assert _as_utc(updated["occurred_end"]) == late, "a NULL occurred_end must take the source's date"
         finally:
             config.enable_observations = previous_observations
             await _safe_cleanup(oracle_memory, bank_id, request_context)
