@@ -66,17 +66,18 @@ _ITERATIVE_SCAN_GUCS = frozenset({"hnsw.iterative_scan", "hnsw.max_scan_tuples"}
 def iterative_scan_enabled() -> bool:
     """Whether ANN scans may resume to satisfy a query's LIMIT.
 
-    Read from the environment per call rather than captured at import, matching
-    configured_vector_extension() above. Turning it off restores the previous depth
-    exactly: a scan stops when its first candidate list drains, so no recall retrieves
-    more rows than that list holds, whatever its budget.
-    """
-    from .config import DEFAULT_ANN_ITERATIVE_SCAN, ENV_ANN_ITERATIVE_SCAN
+    Turning it off restores the previous depth exactly: a scan stops when its first
+    candidate list drains, so no recall retrieves more rows than that list holds,
+    whatever its budget.
 
-    raw = os.getenv(ENV_ANN_ITERATIVE_SCAN)
-    if raw is None:
-        return DEFAULT_ANN_ITERATIVE_SCAN
-    return raw.strip().lower() in ("true", "1", "yes", "on")
+    Resolved through the config object rather than read from the environment, so a
+    value set any other way — a CLI override applied with dataclasses.replace, a
+    programmatically built config — is honoured, and the parsing and validation live
+    in one place. Imported inside the function because config imports this module.
+    """
+    from .config import get_config
+
+    return get_config().ann_iterative_scan
 
 
 def ann_max_scan_tuples() -> int:
@@ -91,16 +92,9 @@ def ann_max_scan_tuples() -> int:
     Approximate, and the initial scan is not counted, so even 1 leaves intact the
     depth a query had before scans could resume.
     """
-    from .config import DEFAULT_ANN_MAX_SCAN_TUPLES, ENV_ANN_MAX_SCAN_TUPLES
+    from .config import get_config
 
-    raw = os.getenv(ENV_ANN_MAX_SCAN_TUPLES)
-    if raw is None:
-        return DEFAULT_ANN_MAX_SCAN_TUPLES
-    try:
-        return max(1, int(raw))
-    except ValueError:
-        logger.warning("Invalid %s=%r — using %s", ENV_ANN_MAX_SCAN_TUPLES, raw, DEFAULT_ANN_MAX_SCAN_TUPLES)
-        return DEFAULT_ANN_MAX_SCAN_TUPLES
+    return get_config().ann_max_scan_tuples
 
 
 # Per-backend ANN search-time tuning GUCs. Each entry is a tuple of

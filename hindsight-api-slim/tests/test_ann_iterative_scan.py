@@ -172,7 +172,7 @@ def _near_query_vector(seed: int) -> str:
 
 
 @pytest.mark.asyncio
-async def test_the_kill_switch_flips_real_retrieval_depth(memory, request_context, monkeypatch):
+async def test_the_kill_switch_flips_real_retrieval_depth(memory, request_context, env_flag):
     """End to end, through the pool: on, the budget reaches the index; off, it does not.
 
     Both halves matter. On is the fix — with iterative scans off the ground-layer search
@@ -207,9 +207,10 @@ async def test_the_kill_switch_flips_real_retrieval_depth(memory, request_contex
             await conn.execute(f"ANALYZE {table}")
 
         async def semantic_rows(iterative: str) -> int:
-            monkeypatch.setenv("HINDSIGHT_API_ANN_ITERATIVE_SCAN", iterative)
-            # The pool re-applies its session settings on every acquire, so the flag
-            # takes effect on the next connection — no restart, which is the point.
+            env_flag("HINDSIGHT_API_ANN_ITERATIVE_SCAN", iterative)
+            # The pool re-applies its session settings on every acquire, so a fresh
+            # connection resolves the flag again rather than inheriting the value the
+            # process started with.
             async with pool.acquire() as conn:
                 # The property under test belongs to the ANN scan, not to the planner's
                 # choice: on a table this size a full scan plus a sort is genuinely
@@ -253,38 +254,61 @@ async def test_the_kill_switch_flips_real_retrieval_depth(memory, request_contex
 # ---------------------------------------------------------------------------
 
 
-def test_the_kill_switch_removes_the_resume_settings(monkeypatch):
+@pytest.fixture
+def env_flag(monkeypatch):
+    """Set one of the ANN env vars and rebuild the cached config from it.
+
+    The values are resolved through HindsightConfig, which is built from the
+    environment once and cached, so a bare setenv would not be seen.
+    """
+    from hindsight_api.config import clear_config_cache
+
+    def _set(name: str, value: str) -> None:
+        monkeypatch.setenv(name, value)
+        clear_config_cache()
+
+    yield _set
+    clear_config_cache()
+
+
+def test_the_kill_switch_removes_the_resume_settings(env_flag):
     """Turning it off must leave a connection exactly as it was before the feature.
 
     Dropping the GUCs rather than sending iterative_scan=off matters for two reasons:
     a pgvector older than 0.8 rejects them outright (it reserves the "hnsw." prefix),
     and an operator who pinned values server-side keeps them.
     """
-    monkeypatch.setenv("HINDSIGHT_API_ANN_ITERATIVE_SCAN", "false")
+    env_flag("HINDSIGHT_API_ANN_ITERATIVE_SCAN", "false")
     settings = ann_search_tuning_settings("pgvector", kind="high_recall")
 
     assert settings == (("hnsw.ef_search", "200"),)
 
 
-def test_the_scan_ceiling_is_tunable(monkeypatch):
+def test_the_scan_ceiling_is_tunable(env_flag):
     """The dial between the previous behaviour and full budget depth."""
-    monkeypatch.setenv("HINDSIGHT_API_ANN_MAX_SCAN_TUPLES", "1500")
+    env_flag("HINDSIGHT_API_ANN_MAX_SCAN_TUPLES", "1500")
     settings = dict(ann_search_tuning_settings("pgvector", kind="high_recall"))
 
     assert settings["hnsw.max_scan_tuples"] == "1500"
     assert settings["hnsw.iterative_scan"] == "strict_order"
 
 
-def test_an_unreadable_ceiling_falls_back_to_the_default(monkeypatch):
+def test_an_unreadable_ceiling_is_rejected_at_config_load(monkeypatch):
+    """Parsing and validation belong to HindsightConfig, not to this module."""
+    from hindsight_api.config import HindsightConfig, clear_config_cache
+
     monkeypatch.setenv("HINDSIGHT_API_ANN_MAX_SCAN_TUPLES", "not-a-number")
-    settings = dict(ann_search_tuning_settings("pgvector", kind="high_recall"))
+    clear_config_cache()
+    try:
+        with pytest.raises(ValueError):
+            HindsightConfig.from_env()
+    finally:
+        clear_config_cache()
 
-    assert settings["hnsw.max_scan_tuples"] == str(ann_max_scan_tuples())
 
-
-def test_retain_probing_is_unaffected_by_the_switch(monkeypatch):
+def test_retain_probing_is_unaffected_by_the_switch(env_flag):
     """Link probing never resumed; the switch has nothing to take from it."""
-    monkeypatch.setenv("HINDSIGHT_API_ANN_ITERATIVE_SCAN", "false")
+    env_flag("HINDSIGHT_API_ANN_ITERATIVE_SCAN", "false")
     settings = dict(ann_search_tuning_settings("pgvector", kind="low_latency"))
 
     assert settings == {"hnsw.ef_search": "60"}
