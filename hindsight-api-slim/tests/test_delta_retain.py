@@ -324,6 +324,7 @@ async def test_delta_retain_new_entities_created_for_new_chunks(memory, request_
 
 
 @pytest.mark.asyncio
+@pytest.mark.memory_backend_incompatible
 async def test_delta_retain_links_preserved_for_unchanged_chunks(memory, request_context):
     """
     Memory links (temporal, semantic, entity) for unchanged chunks should be preserved.

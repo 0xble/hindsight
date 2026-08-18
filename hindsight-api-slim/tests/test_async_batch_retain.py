@@ -664,6 +664,7 @@ async def test_all_degenerate_facts_still_persist_document_chunks(memory, reques
 
 
 @pytest.mark.asyncio
+@pytest.mark.memory_backend_incompatible
 async def test_streaming_offsets_chunk_local_causal_fact_indices(memory, request_context, monkeypatch):
     """Causal targets from independently extracted chunks must stay within their source chunk."""
     from hindsight_api.engine.response_models import TokenUsage

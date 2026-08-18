@@ -258,6 +258,7 @@ class TestConsolidationIntegration:
         await memory.delete_bank(bank_id, request_context=request_context)
 
     @pytest.mark.asyncio
+    @pytest.mark.memory_backend_incompatible
     async def test_consolidation_uses_source_memory_ids(self, memory: MemoryEngine, request_context):
         """Test that observations use source_memory_ids (not memory_links) to track source facts.
 
@@ -3256,6 +3257,7 @@ def test_consolidation_prompt_split_is_cacheable_and_complete():
 
 
 @pytest.mark.asyncio
+@pytest.mark.memory_backend_incompatible
 async def test_create_observation_populates_search_vector_native(memory, request_context):
     """Observations created via consolidation must have search_vector populated
     when text_search_extension == 'native', so BM25 retrieval finds them."""

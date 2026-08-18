@@ -21,6 +21,13 @@ from hindsight_api.engine.retain import embedding_processing
 # ---------------------------------------------------------------------------
 
 
+# Most of this module seeds its fixtures by INSERTing memory_units / memory_links /
+# entities directly with the helpers below, then asserts on those rows (including the
+# embedding and search_vector columns). Those classes and tests carry
+# ``memory_backend_incompatible``; the handful that go through the engine end to end
+# — test_not_found_returns_none, test_recall_excludes_invalidated — deliberately do not.
+
+
 async def _insert_memory(
     conn,
     memory: MemoryEngine,
@@ -206,6 +213,8 @@ async def _ensure_bank(memory: MemoryEngine, bank_id: str, request_context: Requ
 
 
 class TestInvalidate:
+    pytestmark = pytest.mark.memory_backend_incompatible
+
     @pytest.mark.asyncio
     async def test_invalidate_moves_to_archive_and_prunes(self, memory: MemoryEngine, request_context: RequestContext):
         bank_id = f"test-curation-inv-{uuid.uuid4().hex[:8]}"
@@ -333,6 +342,8 @@ class TestInvalidate:
 
 
 class TestEdit:
+    pytestmark = pytest.mark.memory_backend_incompatible
+
     @pytest.mark.asyncio
     async def test_edit_changes_text_and_rederives(self, memory: MemoryEngine, request_context: RequestContext):
         bank_id = f"test-curation-edit-{uuid.uuid4().hex[:8]}"
@@ -614,6 +625,8 @@ class TestCurationRelinking:
     tests below drain the queue inline: by the time ``update_memory_unit``
     returns, the links are already rebuilt.
     """
+    pytestmark = pytest.mark.memory_backend_incompatible
+
 
     @pytest.mark.asyncio
     async def test_edit_with_only_outgoing_links_queues_itself(
@@ -708,6 +721,7 @@ class TestCurationRelinking:
 
 class TestGuardsAndListing:
     @pytest.mark.asyncio
+    @pytest.mark.memory_backend_incompatible
     async def test_cannot_curate_observation(self, memory: MemoryEngine, request_context: RequestContext):
         bank_id = f"test-curation-obs-{uuid.uuid4().hex[:8]}"
         await _ensure_bank(memory, bank_id, request_context)
@@ -733,6 +747,7 @@ class TestGuardsAndListing:
         await memory.delete_bank(bank_id, request_context=request_context)
 
     @pytest.mark.asyncio
+    @pytest.mark.memory_backend_incompatible
     async def test_list_filters_by_state(self, memory: MemoryEngine, request_context: RequestContext):
         bank_id = f"test-curation-list-{uuid.uuid4().hex[:8]}"
         await _ensure_bank(memory, bank_id, request_context)
@@ -768,6 +783,7 @@ class TestGuardsAndListing:
         await memory.delete_bank(bank_id, request_context=request_context)
 
     @pytest.mark.asyncio
+    @pytest.mark.memory_backend_incompatible
     async def test_list_and_get_memory_units_include_metadata(
         self, memory: MemoryEngine, request_context: RequestContext
     ):
@@ -809,6 +825,7 @@ class TestGuardsAndListing:
         await memory.delete_bank(bank_id, request_context=request_context)
 
     @pytest.mark.asyncio
+    @pytest.mark.memory_backend_incompatible
     async def test_list_filters_by_document(self, memory: MemoryEngine, request_context: RequestContext):
         bank_id = f"test-curation-doc-{uuid.uuid4().hex[:8]}"
         await _ensure_bank(memory, bank_id, request_context)
@@ -848,6 +865,7 @@ class TestGuardsAndListing:
         await memory.delete_bank(bank_id, request_context=request_context)
 
     @pytest.mark.asyncio
+    @pytest.mark.memory_backend_incompatible
     async def test_list_filters_by_entity(self, memory: MemoryEngine, request_context: RequestContext):
         bank_id = f"test-curation-entity-{uuid.uuid4().hex[:8]}"
         await _ensure_bank(memory, bank_id, request_context)
@@ -950,6 +968,8 @@ class TestCausalLinkPreservation:
     edge drops it for good. Edits must leave them alone, and the
     invalidate/revert round-trip must carry them through the archive.
     """
+    pytestmark = pytest.mark.memory_backend_incompatible
+
 
     @pytest.mark.asyncio
     async def test_edit_preserves_causal_links_and_drops_derived(

@@ -393,6 +393,7 @@ async def test_export_bank_contents(memory, request_context):
 
 
 @pytest.mark.asyncio
+@pytest.mark.memory_backend_incompatible
 async def test_export_tolerates_legacy_null_and_numeric_fact_metadata(memory, request_context):
     """A bank holding legacy metadata must still be exportable (issue #3209).
 
@@ -793,6 +794,7 @@ async def test_bank_roundtrip_carries_mental_model_history(memory, request_conte
 
 
 @pytest.mark.asyncio
+@pytest.mark.memory_backend_incompatible
 async def test_bank_roundtrip_carries_knowledge_pages(memory, request_context):
     """A whole-bank archive restores the Knowledge Pages tree — nested folders +
     pages, parent_id / mental_model_id / managed / sort_order preserved — and
@@ -896,6 +898,7 @@ async def test_import_bank_refuses_existing_bank(memory, request_context):
 
 
 @pytest.mark.asyncio
+@pytest.mark.memory_backend_incompatible
 async def test_export_import_roundtrip_without_llm(memory, request_context, monkeypatch):
     """Export from one bank and import into another without re-running the LLM."""
     src = _unique_bank("transfer_src")

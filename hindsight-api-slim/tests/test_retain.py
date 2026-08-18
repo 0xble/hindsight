@@ -1447,6 +1447,7 @@ async def test_chunks_truncation_behavior(memory, request_context):
 
 
 @pytest.mark.asyncio
+@pytest.mark.memory_backend_incompatible
 async def test_temporal_links_creation(memory, request_context):
     """
     Test that temporal links are created between facts with nearby event dates.
@@ -1526,6 +1527,7 @@ async def test_temporal_links_creation(memory, request_context):
 
 
 @pytest.mark.asyncio
+@pytest.mark.memory_backend_incompatible
 async def test_semantic_links_creation(memory, request_context):
     """
     Test that semantic links are created between facts with similar content.
@@ -1600,6 +1602,7 @@ async def test_semantic_links_creation(memory, request_context):
 
 
 @pytest.mark.asyncio
+@pytest.mark.memory_backend_incompatible
 async def test_entity_links_creation(memory, request_context):
     """
     Test that entity edges surface in the /graph response between facts that
@@ -1890,6 +1893,7 @@ async def test_mention_count_batch_retain(memory, request_context):
 
 
 @pytest.mark.asyncio
+@pytest.mark.memory_backend_incompatible
 async def test_causal_links_creation(memory, request_context):
     """
     Test that causal links are created between facts with causal relationships.
@@ -1964,6 +1968,7 @@ async def test_causal_links_creation(memory, request_context):
 
 
 @pytest.mark.asyncio
+@pytest.mark.memory_backend_incompatible
 async def test_all_link_types_together(memory, request_context):
     """
     Integration test: Verify all link types can be created in a single retain operation.
@@ -2037,6 +2042,7 @@ async def test_all_link_types_together(memory, request_context):
 
 
 @pytest.mark.asyncio
+@pytest.mark.memory_backend_incompatible
 async def test_semantic_links_within_same_batch(memory, request_context):
     """
     Test that semantic links are created between facts retained in the SAME batch.
@@ -2098,6 +2104,7 @@ async def test_semantic_links_within_same_batch(memory, request_context):
 
 
 @pytest.mark.asyncio
+@pytest.mark.memory_backend_incompatible
 async def test_semantic_links_phase1_ann_cross_batch(memory, request_context):
     """
     Test that Phase 1 ANN search creates semantic links between facts from
@@ -2167,6 +2174,7 @@ async def test_semantic_links_phase1_ann_cross_batch(memory, request_context):
 
 
 @pytest.mark.asyncio
+@pytest.mark.memory_backend_incompatible
 async def test_temporal_links_within_same_batch(memory, request_context):
     """
     Test that temporal links are created between facts retained in the SAME batch.
@@ -3054,6 +3062,7 @@ async def test_named_strategy_applied_end_to_end(memory, request_context):
 
 
 @pytest.mark.asyncio
+@pytest.mark.memory_backend_incompatible
 async def test_semantic_ann_uses_hnsw_index(memory, request_context):
     """
     Test that Phase 1 ANN semantic search creates links between similar world
@@ -3126,6 +3135,7 @@ async def test_semantic_ann_uses_hnsw_index(memory, request_context):
 
 
 @pytest.mark.asyncio
+@pytest.mark.memory_backend_incompatible
 async def test_temporal_links_scoped_by_fact_type(memory, request_context):
     """
     Test that temporal links only connect facts of the SAME fact_type.
