@@ -121,20 +121,13 @@ async def test_append_mode_metadata_consistent_for_unchanged_and_new_units(memor
         assert doc is not None
         assert doc["document_metadata"] == {"source": "crm"}
 
-        pool = await memory._get_pool()
-        async with pool.acquire() as conn:
-            rows = await conn.fetch(
-                "SELECT metadata FROM memory_units WHERE bank_id = $1 AND document_id = $2",
-                bank_id,
-                document_id,
-            )
+        listing = await memory.list_memory_units(bank_id, document_id=document_id, request_context=request_context)
+        rows = listing["items"]
 
         assert rows
         for row in rows:
-            metadata = row["metadata"]
-            if isinstance(metadata, str):
-                metadata = json.loads(metadata)
-            assert metadata == {"source": "crm"}
+            # list_memory_units already parses the JSON metadata into a dict.
+            assert row["metadata"] == {"source": "crm"}
     finally:
         await memory.delete_bank(bank_id, request_context=request_context)
 
