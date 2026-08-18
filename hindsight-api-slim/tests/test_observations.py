@@ -234,9 +234,7 @@ async def test_entity_mention_counts(memory, request_context):
         await memory.wait_for_background_tasks()
 
         # Check entity mention counts
-        entities = (
-            await memory.list_entities(bank_id, limit=1000, request_context=request_context)
-        )["items"]
+        entities = (await memory.list_entities(bank_id, limit=1000, request_context=request_context))["items"]
 
         print(f"\n=== Entity Mention Counts Test ===")
         print(f"Total entities: {len(entities)}")
@@ -314,9 +312,7 @@ async def test_entity_mention_ranking(memory, request_context):
 
         # Phase 3: Verify entities are ranked by mention count
         print("\n=== Phase 3: Check entity ranking ===")
-        all_entities = (
-            await memory.list_entities(bank_id, limit=1000, request_context=request_context)
-        )["items"]
+        all_entities = (await memory.list_entities(bank_id, limit=1000, request_context=request_context))["items"]
 
         print(f"\nAll entities by mention count:")
         for e in all_entities:

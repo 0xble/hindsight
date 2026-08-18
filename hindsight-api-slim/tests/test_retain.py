@@ -3459,7 +3459,9 @@ async def test_streaming_chunk_batching_recovery(memory_mock_llm, request_contex
         first_unit_ids = result1[0] if result1 else []
         assert len(first_unit_ids) > 0, "First retain should produce facts"
 
-        first_fact_count = (await memory.list_memory_units(bank_id, limit=1000, request_context=request_context))["total"]
+        first_fact_count = (await memory.list_memory_units(bank_id, limit=1000, request_context=request_context))[
+            "total"
+        ]
 
         logger.info(f"First retain: {first_fact_count} facts")
 
@@ -3478,7 +3480,9 @@ async def test_streaming_chunk_batching_recovery(memory_mock_llm, request_contex
                 request_context=request_context,
             )
 
-        second_fact_count = (await memory.list_memory_units(bank_id, limit=1000, request_context=request_context))["total"]
+        second_fact_count = (await memory.list_memory_units(bank_id, limit=1000, request_context=request_context))[
+            "total"
+        ]
 
         logger.info(f"Second retain: {second_fact_count} facts")
 

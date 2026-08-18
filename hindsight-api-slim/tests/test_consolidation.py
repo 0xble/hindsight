@@ -887,9 +887,7 @@ class TestConsolidationTagRouting:
         # If observations were created, ensure alice and bob are not merged into same observation
         # (cross-scope merging should not produce an observation with both tags)
         if obs_after:
-            observations_with_both = [
-                o for o in obs_after if o["tags"] and "alice" in o["tags"] and "bob" in o["tags"]
-            ]
+            observations_with_both = [o for o in obs_after if o["tags"] and "alice" in o["tags"] and "bob" in o["tags"]]
             assert len(observations_with_both) == 0, (
                 "Should not merge different scopes into one observation with both tags"
             )
@@ -1974,9 +1972,7 @@ async def test_observation_scopes_explicit_multi_pass(memory: MemoryEngine, requ
     )
 
     observations = (
-        await memory.list_memory_units(
-            bank_id, fact_type="observation", limit=1000, request_context=request_context
-        )
+        await memory.list_memory_units(bank_id, fact_type="observation", limit=1000, request_context=request_context)
     )["items"]
 
     try:
@@ -2028,9 +2024,7 @@ async def test_observation_scopes_per_tag(memory: MemoryEngine, request_context)
     )
 
     observations = (
-        await memory.list_memory_units(
-            bank_id, fact_type="observation", limit=1000, request_context=request_context
-        )
+        await memory.list_memory_units(bank_id, fact_type="observation", limit=1000, request_context=request_context)
     )["items"]
 
     try:
@@ -2075,9 +2069,7 @@ async def test_observation_scopes_combined(memory: MemoryEngine, request_context
     )
 
     observations = (
-        await memory.list_memory_units(
-            bank_id, fact_type="observation", limit=1000, request_context=request_context
-        )
+        await memory.list_memory_units(bank_id, fact_type="observation", limit=1000, request_context=request_context)
     )["items"]
 
     try:
@@ -2125,9 +2117,7 @@ async def test_observation_scopes_all_combinations(memory: MemoryEngine, request
     )
 
     observations = (
-        await memory.list_memory_units(
-            bank_id, fact_type="observation", limit=1000, request_context=request_context
-        )
+        await memory.list_memory_units(bank_id, fact_type="observation", limit=1000, request_context=request_context)
     )["items"]
 
     try:

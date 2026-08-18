@@ -169,9 +169,7 @@ async def _insert_memory(conn, bank_id: str, text: str, tags: list[str]) -> uuid
 
 async def _count_observations(memory: MemoryEngine, bank_id: str, request_context) -> int:
     return (
-        await memory.list_memory_units(
-            bank_id, fact_type="observation", limit=1000, request_context=request_context
-        )
+        await memory.list_memory_units(bank_id, fact_type="observation", limit=1000, request_context=request_context)
     )["total"]
 
 

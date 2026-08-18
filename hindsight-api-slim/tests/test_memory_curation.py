@@ -625,8 +625,8 @@ class TestCurationRelinking:
     tests below drain the queue inline: by the time ``update_memory_unit``
     returns, the links are already rebuilt.
     """
-    pytestmark = pytest.mark.memory_backend_incompatible
 
+    pytestmark = pytest.mark.memory_backend_incompatible
 
     @pytest.mark.asyncio
     async def test_edit_with_only_outgoing_links_queues_itself(
@@ -968,8 +968,8 @@ class TestCausalLinkPreservation:
     edge drops it for good. Edits must leave them alone, and the
     invalidate/revert round-trip must carry them through the archive.
     """
-    pytestmark = pytest.mark.memory_backend_incompatible
 
+    pytestmark = pytest.mark.memory_backend_incompatible
 
     @pytest.mark.asyncio
     async def test_edit_preserves_causal_links_and_drops_derived(

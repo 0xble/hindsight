@@ -125,9 +125,7 @@ def _mock_llm_one_obs_per_fact():
 async def _fetch_observation_tag_sets(memory: MemoryEngine, bank_id: str, request_context) -> list[frozenset[str]]:
     """Return the tag set (as a frozenset) of every observation in the bank."""
     items = (
-        await memory.list_memory_units(
-            bank_id, fact_type="observation", limit=1000, request_context=request_context
-        )
+        await memory.list_memory_units(bank_id, fact_type="observation", limit=1000, request_context=request_context)
     )["items"]
     return [frozenset(i["tags"] or []) for i in items]
 
