@@ -6555,42 +6555,68 @@ class MemoryEngine(MemoryEngineInterface):
                             #    per document. That, not the number of calls, was the cost: measured
                             #    end to end, a 30-hit recall spent ~20.6s here, ~690ms per document,
                             #    against ~735ms for the entire un-hydrated recall.
-                            async def _hydrate_doc(doc_id: str, doc_rows: list[dict]) -> None:
-                                if len(doc_rows) == 1:
-                                    row = doc_rows[0]
-                                    text = await _chunk_store.get_chunk_text(
-                                        bank_id=bank_id, document_id=doc_id, chunk_index=row["chunk_index"]
-                                    )
-                                    if text is not None:
-                                        row["chunk_text"] = text
-                                    return
-                                texts = await _chunk_store.list_chunk_texts(
-                                    bank_id=bank_id, document_id=doc_id
-                                ) or []
-                                for row in doc_rows:
-                                    idx = row["chunk_index"]
-                                    if 0 <= idx < len(texts):
-                                        row["chunk_text"] = texts[idx]
-
-                            # Bounded so a wide recall cannot open an unbounded fan-out at the store.
-                            _sem = asyncio.Semaphore(_CHUNK_HYDRATION_CONCURRENCY)
-
-                            async def _guarded(doc_id: str, doc_rows: list[dict]) -> None:
-                                async with _sem:
-                                    await _hydrate_doc(doc_id, doc_rows)
-
-                            # A document whose fetch fails leaves its rows with the empty text they
-                            # already have, rather than failing the whole recall over one chunk body.
-                            _results = await asyncio.gather(
-                                *(_guarded(d, r) for d, r in rows_by_doc.items()), return_exceptions=True
-                            )
-                            for _doc_id, _err in zip(rows_by_doc, _results):
-                                if isinstance(_err, BaseException):
+                            # 3. Concurrency only hides round-trips, it does not remove them. A
+                            #    recall's hits are spread thin across documents — measured, 88
+                            #    chunks over 76 documents — so per-document fetching is ~76 round
+                            #    trips, and at a bounded concurrency that is still several waves.
+                            #    A store that can fetch many chunks at once turns the whole thing
+                            #    into one, so prefer that and keep the per-document path for stores
+                            #    that cannot.
+                            _batched = getattr(_chunk_store, "get_chunk_texts", None)
+                            if _batched is not None:
+                                _rows = [r for rows in rows_by_doc.values() for r in rows]
+                                _refs = [(r["document_id"], r["chunk_index"]) for r in _rows]
+                                try:
+                                    _texts = await _batched(bank_id=bank_id, refs=_refs)
+                                    for _row, _text in zip(_rows, _texts):
+                                        if _text is not None:
+                                            _row["chunk_text"] = _text
+                                except Exception as _err:
+                                    # Returning the hits without text beats failing a whole recall
+                                    # over chunk bodies, which is how the per-document path behaves
+                                    # too — one failure there costs one document, not the request.
                                     logger.warning(
-                                        "chunk hydration failed for document %s; returning it without text: %s",
-                                        _doc_id,
+                                        "batched chunk hydration failed; returning %d chunk(s) without text: %s",
+                                        len(_rows),
                                         _err,
                                     )
+                            else:
+                                async def _hydrate_doc(doc_id: str, doc_rows: list[dict]) -> None:
+                                    if len(doc_rows) == 1:
+                                        row = doc_rows[0]
+                                        text = await _chunk_store.get_chunk_text(
+                                            bank_id=bank_id, document_id=doc_id, chunk_index=row["chunk_index"]
+                                        )
+                                        if text is not None:
+                                            row["chunk_text"] = text
+                                        return
+                                    texts = await _chunk_store.list_chunk_texts(
+                                        bank_id=bank_id, document_id=doc_id
+                                    ) or []
+                                    for row in doc_rows:
+                                        idx = row["chunk_index"]
+                                        if 0 <= idx < len(texts):
+                                            row["chunk_text"] = texts[idx]
+
+                                # Bounded so a wide recall cannot open an unbounded fan-out at the store.
+                                _sem = asyncio.Semaphore(_CHUNK_HYDRATION_CONCURRENCY)
+
+                                async def _guarded(doc_id: str, doc_rows: list[dict]) -> None:
+                                    async with _sem:
+                                        await _hydrate_doc(doc_id, doc_rows)
+
+                                # A document whose fetch fails leaves its rows with the empty text they
+                                # already have, rather than failing the whole recall over one chunk body.
+                                _results = await asyncio.gather(
+                                    *(_guarded(d, r) for d, r in rows_by_doc.items()), return_exceptions=True
+                                )
+                                for _doc_id, _err in zip(rows_by_doc, _results):
+                                    if isinstance(_err, BaseException):
+                                        logger.warning(
+                                            "chunk hydration failed for document %s; returning it without text: %s",
+                                            _doc_id,
+                                            _err,
+                                        )
                     else:
                         # Default SQL store: chunk_text is already in the row — keep the asyncpg
                         # Records (no dict copy); the reads below index them the same way.
