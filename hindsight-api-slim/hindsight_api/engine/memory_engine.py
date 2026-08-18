@@ -6178,6 +6178,27 @@ class MemoryEngine(MemoryEngineInterface):
                     pre_filtered_count = len(merged_candidates) - max_candidates
                     merged_candidates = merged_candidates[:max_candidates]
 
+                # Materialize the payload for the candidates that survived fusion, for a store
+                # that returned scores rather than payloads. THIS is why ranking can be cheap: the
+                # wide arms move ids and scores, and only what got this far is fetched in full.
+                #
+                # Placed after the trim and before ANY reader of the payload — the reranker scores
+                # text, the boosts read timestamps, the response returns both. Nothing between
+                # retrieval and here touches it except the tracer's entry-point log.
+                # A store that already returns full results makes this a single `return`.
+                _hydrate_start = time.time()
+                from .memories import get_memories as _get_memories_for_hydrate
+
+                await _get_memories_for_hydrate().hydrate_results(
+                    bank_id=bank_id, results=[mc.retrieval for mc in merged_candidates]
+                )
+                if tracer:
+                    tracer.add_phase_metric(
+                        "hydrate_results",
+                        time.time() - _hydrate_start,
+                        {"candidates": len(merged_candidates)},
+                    )
+
                 if reranking == "cross_encoder":
                     # Cancellation checkpoint: the cross-encoder rerank is the
                     # single most CPU-expensive stage and runs in a worker thread

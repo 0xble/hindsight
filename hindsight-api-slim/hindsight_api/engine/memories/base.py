@@ -727,6 +727,24 @@ class MemoriesExtension(Extension, ABC):
         """One chunk's text by position, or ``None`` if the document/index does not exist."""
         raise NotImplementedError
 
+    async def hydrate_results(self, *, bank_id: str, results: "list") -> None:
+        """Fill in the payload for retrieval results a store returned without one, IN PLACE.
+
+        Default: nothing to do. A store that returns fully-populated results from retrieval — the
+        Postgres one does — is already hydrated, and this costs it a single ``return``.
+
+        It exists because ranking does not need payloads. Fusion orders candidates by id and arm
+        score, and only the few that survive are ever read, so a store CAN return scores for the
+        wide arms and materialize the rest afterwards. A store that does so must populate at least
+        ``text`` here, and should also restore ``entity_ids`` — leaving it ``None`` sends recall down
+        the ``entity_map_for_units`` path, which re-fetches the very memories this just fetched.
+
+        Declared here rather than probed for, because a routing store generates its delegators from
+        this interface: a method that exists only on a concrete store is unreachable in a cloud
+        deployment, and the call silently does nothing. That has cost three optimisations already.
+        """
+        return None
+
     async def count_memories_many(
         self, *, bank_ids: "list[str]", strong: bool = False
     ) -> "dict[str, dict[str, int]]":
