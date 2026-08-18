@@ -79,16 +79,16 @@ async def _insert_entity_mm(conn, bank_id: str, tag: str) -> str:
     return mm_id
 
 
-async def _unconsolidated_count(memory, bank_id: str) -> int:
-    async with memory._pool.acquire() as conn:
-        return await conn.fetchval(
-            """
-            SELECT COUNT(*) FROM memory_units
-            WHERE bank_id = $1 AND consolidated_at IS NULL
-              AND consolidation_failed_at IS NULL AND fact_type IN ('experience', 'world')
-            """,
-            bank_id,
-        )
+async def _unconsolidated_count(memory, bank_id: str, request_context) -> int:
+    # consolidation_state='pending' is the read API's name for exactly this predicate:
+    # not consolidated, not failed, and a source fact type.
+    page = await memory.list_memory_units(
+        bank_id=bank_id,
+        consolidation_state="pending",
+        limit=1,
+        request_context=request_context,
+    )
+    return page["total"]
 
 
 async def _pending_consolidations(memory, bank_id: str):
@@ -203,7 +203,7 @@ async def test_multi_round_consolidation_refreshes_all_entity_models(
     assert consolidation_runs >= 2, (
         f"expected a multi-round drain (round limit 3, backlog > 3), but only {consolidation_runs} consolidation(s) ran"
     )
-    remaining = await _unconsolidated_count(memory, bank_id)
+    remaining = await _unconsolidated_count(memory, bank_id, request_context)
     assert remaining == 0, f"backlog did not fully drain: {remaining} unconsolidated memories remain"
 
     # 6. KEY ASSERTION — every refresh_after_consolidation model must be refreshed

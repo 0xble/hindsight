@@ -28,6 +28,20 @@ from hindsight_api.engine.reflect.tools import (
 from tests.llm_judge import assert_meets_criteria
 
 
+async def _unconsolidated(memory: MemoryEngine, bank_id: str, request_context) -> int:
+    """How many source facts are still waiting to be consolidated.
+
+    consolidation_state='pending' is the read API's name for the predicate these
+    tests used to spell out in SQL: consolidated_at IS NULL and a source fact type.
+    It additionally excludes facts whose consolidation permanently failed — the
+    stricter reading, and the one the assertions here actually mean.
+    """
+    page = await memory.list_memory_units(
+        bank_id=bank_id, consolidation_state="pending", limit=1, request_context=request_context
+    )
+    return page["total"]
+
+
 @pytest.fixture(autouse=True)
 def enable_observations():
     """Enable observations for all tests in this module."""
@@ -3011,17 +3025,10 @@ async def test_targeted_consolidation_filters_by_scopes(memory: MemoryEngine, re
             alice_obs = await _count_observations_for_scope(conn, bank_id, ["user:alice"])
             assert alice_obs == 1
 
-            # Bob and Charlie should still be unconsolidated
-            unconsolidated = await conn.fetchval(
-                """
-                SELECT COUNT(*) FROM memory_units
-                WHERE bank_id = $1
-                  AND consolidated_at IS NULL
-                  AND fact_type IN ('experience', 'world')
-                """,
-                bank_id,
-            )
-            assert unconsolidated == 2
+        # Bob and Charlie should still be unconsolidated. consolidation_state='pending'
+        # is the read API's name for this predicate; it also excludes facts whose
+        # consolidation failed, which is the stricter (and here equivalent) reading.
+        assert await _unconsolidated(memory, bank_id, request_context) == 2
 
         # Now consolidate bob
         result = await run_consolidation_job(
@@ -3033,17 +3040,7 @@ async def test_targeted_consolidation_filters_by_scopes(memory: MemoryEngine, re
         assert result["memories_processed"] == 1
 
         # Charlie still unconsolidated
-        async with memory._pool.acquire() as conn:
-            unconsolidated = await conn.fetchval(
-                """
-                SELECT COUNT(*) FROM memory_units
-                WHERE bank_id = $1
-                  AND consolidated_at IS NULL
-                  AND fact_type IN ('experience', 'world')
-                """,
-                bank_id,
-            )
-            assert unconsolidated == 1
+        assert await _unconsolidated(memory, bank_id, request_context) == 1
     finally:
         memory._consolidation_llm_config = original_llm
         await memory.delete_bank(bank_id, request_context=request_context)
@@ -3077,17 +3074,7 @@ async def test_targeted_consolidation_multiple_scopes(memory: MemoryEngine, requ
         assert result["observations_created"] == 2
 
         # Bob still unconsolidated
-        async with memory._pool.acquire() as conn:
-            unconsolidated = await conn.fetchval(
-                """
-                SELECT COUNT(*) FROM memory_units
-                WHERE bank_id = $1
-                  AND consolidated_at IS NULL
-                  AND fact_type IN ('experience', 'world')
-                """,
-                bank_id,
-            )
-            assert unconsolidated == 1
+        assert await _unconsolidated(memory, bank_id, request_context) == 1
     finally:
         memory._consolidation_llm_config = original_llm
         await memory.delete_bank(bank_id, request_context=request_context)
@@ -3179,17 +3166,8 @@ async def test_enable_auto_consolidation_flag(memory: MemoryEngine, request_cont
         )
 
         # Check that memories are NOT consolidated
-        async with memory._pool.acquire() as conn:
-            unconsolidated = await conn.fetchval(
-                """
-                SELECT COUNT(*) FROM memory_units
-                WHERE bank_id = $1
-                  AND consolidated_at IS NULL
-                  AND fact_type IN ('experience', 'world')
-                """,
-                bank_id,
-            )
-            assert unconsolidated > 0, "Memories should remain unconsolidated when auto consolidation is disabled"
+        unconsolidated = await _unconsolidated(memory, bank_id, request_context)
+        assert unconsolidated > 0, "Memories should remain unconsolidated when auto consolidation is disabled"
 
         observations = (
             await memory.list_memory_units(
