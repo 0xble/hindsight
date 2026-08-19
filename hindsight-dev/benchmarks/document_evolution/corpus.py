@@ -100,7 +100,12 @@ measured at the p95.
         ),
         Round(
             fact="A new operation, reflect, answers questions by synthesizing stored memories, budgeting 80ms.",
-            asserts="A reflect operation answers questions over stored memories and budgets 80ms.",
+            # Tests the fact, not one phrasing of it. The first version demanded the
+            # document say reflect "answers questions"; documents that described it
+            # as synthesising stored memories — the same operation, the wording the
+            # source fact itself uses — were scored as missing it. A claim that a
+            # correct document can fail measures the corpus, not the pipeline.
+            asserts="There is a reflect operation over stored memories, with a budget of 80ms.",
         ),
         Round(
             fact="The p95 latency budget was raised from 200ms to 250ms.",

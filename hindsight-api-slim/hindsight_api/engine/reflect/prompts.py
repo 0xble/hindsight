@@ -413,6 +413,14 @@ def build_system_prompt_for_tools(
                 "- 'blocks' holds the section's content, ONE block per paragraph, list, table or code fence",
                 "- Never put two paragraphs in one block, and never put a heading inside a block",
                 "- Inside a block, write list items and table rows on their own lines as usual",
+                # Stating the structure is a more clerical task than writing prose, and a
+                # model doing clerical work gets terse: measured against the markdown
+                # answer it replaced, the first version of this produced noticeably
+                # shorter documents that judges liked less. Say plainly that the
+                # structure is the shape, not a budget.
+                "- The structure is how the answer is laid out, NOT a reason to say less: give each "
+                "block the same specifics, numbers, names and examples you would write in prose",
+                "- Prefer a section with several blocks over one block that summarises them away",
                 *common_output_rules,
             ]
         )

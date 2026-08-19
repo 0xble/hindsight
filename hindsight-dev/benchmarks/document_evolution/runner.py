@@ -363,7 +363,10 @@ async def run_build(
                 print(
                     f"[{build}] {case.name} rep {repetition + 1}/{repetitions}: "
                     f"{len(run.rounds) - 1} rounds, "
-                    f"{sum(r.delta_from_previous.damaged for r in run.rounds)} damaged"
+                    f"{sum(r.delta_from_previous.damaged for r in run.rounds)} damaged",
+                    # A run takes tens of minutes; buffered progress that only
+                    # appears at the end is no progress at all.
+                    flush=True,
                 )
                 if not keep_banks:
                     await client.delete_bank(run.bank_id)

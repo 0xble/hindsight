@@ -97,3 +97,37 @@ model under test.
 Each round contributes one fact and declares what must be true afterwards
 (`asserts`), and what must no longer be stated (`supersedes`) when it replaces an
 earlier fact.
+
+Write those claims about the **fact**, not about one phrasing of it. A claim
+demanding that a document call an operation "answers questions" failed against
+documents describing it as "synthesises stored memories" — the same operation,
+in the wording the source fact itself used. A claim a correct document can fail
+measures the corpus, not the pipeline.
+
+## Baseline
+
+`baseline_report.json` holds the run behind PR #3622: `main` (400fd3684) against
+the branch, three repetitions of the three cases, 45 refresh rounds per build,
+identical authored seeds, `gemini-3.1-flash-lite` driving both the pipeline and
+the judge.
+
+| | main | branch |
+|---|---|---|
+| collapsed tables | 3 | 0 |
+| table rows lost | 9 | 0 |
+| nesting lost | 6 | 0 |
+| hard breaks lost | 5 | 0 |
+| damaged rounds | 6 | 0 |
+| drifted sections | 14 | 0 |
+| delta applied | 45/45 | 45/45 |
+| failed rounds / skipped ops | 0 / 0 | 0 / 0 |
+| median ms per refresh | 12935 | 12940 |
+
+Content came out level: 100% recall and zero stale claims on both sides, and a
+pairwise preference of two wins to main, three to the branch, four ties — with
+the branch's documents about 10% shorter, which is the direction the judge's
+length bias pushes against it.
+
+Read the structural column as the result and the content column as a guard: the
+change was made to stop documents being destroyed, and the evidence needed was
+that it does that without making them worse.

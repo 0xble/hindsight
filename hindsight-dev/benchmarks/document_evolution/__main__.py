@@ -150,6 +150,10 @@ async def _compare(args: argparse.Namespace) -> None:
     verdicts.add_column(f"{right.build} recall", justify="right")
     verdicts.add_column(f"{left.build} stale", justify="right")
     verdicts.add_column(f"{right.build} stale", justify="right")
+    # Length sits next to preference on purpose: LLM judges favour longer
+    # answers, so a preference that tracks the length column is a confound to
+    # read sceptically rather than a quality signal.
+    verdicts.add_column("mean bytes", justify="right")
     verdicts.add_column("preferred")
 
     report: dict[str, dict[str, float | str]] = {}
@@ -180,12 +184,15 @@ async def _compare(args: argparse.Namespace) -> None:
             wins[preference.winner] = wins.get(preference.winner, 0) + 1
         preferred = ", ".join(f"{label}={count}" for label, count in wins.items())
 
+        left_bytes = statistics.mean(len(r.final_document) for r in left_runs)
+        right_bytes = statistics.mean(len(r.final_document) for r in right_runs)
         verdicts.add_row(
             case_name,
             f"{left_cov.recall:.0%}",
             f"{right_cov.recall:.0%}",
             f"{left_cov.staleness:.0%}",
             f"{right_cov.staleness:.0%}",
+            f"{left_bytes:.0f} / {right_bytes:.0f}",
             preferred,
         )
         report[case_name] = {
@@ -194,10 +201,16 @@ async def _compare(args: argparse.Namespace) -> None:
             f"{left.build}_staleness": left_cov.staleness,
             f"{right.build}_staleness": right_cov.staleness,
             "preference": preferred,
+            f"{left.build}_mean_bytes": left_bytes,
+            f"{right.build}_mean_bytes": right_bytes,
         }
 
     console.print(verdicts)
-    console.print("[dim]recall: facts that reached the document. stale: superseded claims still stated.[/dim]")
+    console.print(
+        "[dim]recall: facts that reached the document. stale: superseded claims still stated. "
+        f"mean bytes: {left.build} / {right.build} — judges favour longer documents, so read a "
+        "preference that tracks this column sceptically.[/dim]"
+    )
     if args.out:
         Path(args.out).write_text(
             json.dumps(

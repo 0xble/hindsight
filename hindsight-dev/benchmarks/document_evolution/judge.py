@@ -116,19 +116,30 @@ _PREFERENCE_SYSTEM = (
 )
 
 
+# A single temperature-0 judge call still flips on a borderline claim — a
+# document saying an operation "synthesizes memories" was once scored as not
+# supporting "answers questions over memories", which is a difference in wording
+# rather than in content. Asking three times and taking the majority costs a few
+# calls and stops one pedantic reading from moving a build's score.
+_CLAIM_VOTES = 3
+
+
 async def judge_coverage(document: str, stated: list[str], superseded: list[str]) -> CoverageResult:
-    """Check every claim against the final document, one call each."""
+    """Check every claim against the final document, by majority of three."""
 
     async def verdict(claim: str) -> ClaimVerdict:
-        payload = await _ask(
-            f"DOCUMENT:\n---\n{document}\n---\n\nCLAIM: {claim}",
-            _CLAIM_SYSTEM,
-        )
-        return ClaimVerdict(
-            claim=claim,
-            supported=bool(payload.get("supported")),
-            reasoning=str(payload.get("reasoning") or ""),
-        )
+        prompt = f"DOCUMENT:\n---\n{document}\n---\n\nCLAIM: {claim}"
+        payloads = await asyncio.gather(*(_ask(prompt, _CLAIM_SYSTEM) for _ in range(_CLAIM_VOTES)))
+        votes = [bool(p.get("supported")) for p in payloads]
+        supported = sum(votes) * 2 > len(votes)
+        # Keep a reasoning from the losing side when the vote was not unanimous:
+        # a split verdict is the interesting one to read.
+        dissent = next((p for p, v in zip(payloads, votes, strict=False) if v is not supported), None)
+        agreeing = next((p for p, v in zip(payloads, votes, strict=False) if v is supported), {})
+        reasoning = str((dissent or agreeing).get("reasoning") or "")
+        if dissent is not None:
+            reasoning = f"[{sum(votes)}/{len(votes)} supported] {reasoning}"
+        return ClaimVerdict(claim=claim, supported=supported, reasoning=reasoning)
 
     stated_verdicts, superseded_verdicts = await asyncio.gather(
         asyncio.gather(*(verdict(c) for c in stated)),
