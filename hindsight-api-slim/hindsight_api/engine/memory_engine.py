@@ -7505,11 +7505,21 @@ class MemoryEngine(MemoryEngineInterface):
                     # such a store still tagged a txn; that row no longer exists under PG-free retain.)
                     had_memories = bool(unit_ids) or units_count > 0
                     if _store.store_owned_retain_for(bank_id):
+                        # Whether the RECORD existed has to be established before deleting it, and it
+                        # cannot be inferred from `owns_document_store_for` — that is a capability of
+                        # the store, true for every bank it serves, so using it here reported a
+                        # successful deletion for a document that never existed and turned the 404
+                        # this endpoint promises into a 200.
+                        doc_existed = (
+                            await _store.document_content_hash(bank_id=bank_id, document_id=document_id) is not None
+                            if _store.owns_document_store_for(bank_id)
+                            else False
+                        )
                         await _store.delete_document(conn=conn, fq_table=fq_table, bank_id=bank_id, document_id=document_id)
                         if _store.owns_document_store_for(bank_id):
                             await _store.delete_document_record(bank_id=bank_id, document_id=document_id)
-                        # Report the deletion off the store's own count (SQL `deleted` is None here).
-                        if had_memories or _store.owns_document_store_for(bank_id):
+                        # Report the deletion off the store's own state (SQL `deleted` is None here).
+                        if had_memories or doc_existed:
                             deleted = deleted or document_id
                     elif deleted:
                         # Legacy store-outside-SQL that still writes a Postgres documents row: keep
