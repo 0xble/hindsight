@@ -12007,6 +12007,7 @@ class MemoryEngine(MemoryEngineInterface):
         recall_chunks_max_tokens_override: int | None = None,
         created_after: datetime | None = None,
         created_before: datetime | None = None,
+        answer_as_document: bool = False,
         _skip_span: bool = False,
         _operation_label: str = "reflect",
     ) -> ReflectResult:
@@ -12310,6 +12311,7 @@ class MemoryEngine(MemoryEngineInterface):
                         llm_output_language=getattr(resolved_reflect_config, "llm_output_language", None),
                         cancel_check=request_context.raise_if_cancelled,
                         store_document_text=config_dict.get("store_document_text", DEFAULT_STORE_DOCUMENT_TEXT),
+                        answer_as_document=answer_as_document,
                     ),
                     timeout=wall_timeout,
                 )
@@ -12486,6 +12488,7 @@ class MemoryEngine(MemoryEngineInterface):
             # Return response (compatible with existing API)
             result = ReflectResult(
                 text=agent_result.text,
+                document=agent_result.document,
                 based_on=based_on,
                 structured_output=agent_result.structured_output,
                 usage=usage,
@@ -13887,6 +13890,11 @@ class MemoryEngine(MemoryEngineInterface):
             recall_include_chunks=recall_include_chunks_override,
             recall_max_tokens_override=recall_max_tokens_override,
             recall_chunks_max_tokens_override=recall_chunks_max_tokens_override,
+            # The refresh stores a document, so the agent states its structure and
+            # the markdown is rendered from it. The model never writes the markdown
+            # that gets persisted, and nothing has to read markdown back to find
+            # out what the model meant (#3361).
+            answer_as_document=True,
             _skip_span=True,
             # Attribute these LLM calls to the mental-model refresh, not a
             # plain reflect, so traces group under the right operation.
@@ -14441,7 +14449,11 @@ class MemoryEngine(MemoryEngineInterface):
         # show up on the refresh that caused it instead of one refresh later.
         if final_structured is None:
             try:
-                structured = split_markdown(final_content)
+                # The agent emitted the document (``answer_as_document``), so its
+                # structure is used as-is. Splitting is the fallback for a run that
+                # produced plain text instead — an older stub, a provider that
+                # dropped the tool call, or the iteration-limit answer.
+                structured = reflect_result.document or split_markdown(final_content)
                 rendered = render_document(structured)
             except Exception as exc:
                 # Both or neither: a half-applied split would store a structure the

@@ -60,12 +60,15 @@ def patch_reflect(monkeypatch):
         assert len(calls) == 1
     """
 
-    def _install(memory: MemoryEngine, *, text: str, facts: list[dict] | None = None):
+    def _install(memory: MemoryEngine, *, text: str, facts: list[dict] | None = None, document: Any = None):
         calls: list[dict] = []
 
         async def fake_reflect_async(**kwargs):
             calls.append(kwargs)
-            return _canned_reflect_result(text, facts)
+            result = _canned_reflect_result(text, facts)
+            # ``document`` mirrors what the real agent returns in document mode.
+            result.document = document
+            return result
 
         monkeypatch.setattr(memory, "reflect_async", fake_reflect_async)
         return calls
@@ -278,6 +281,123 @@ class TestDeltaRefreshPlumbing:
         doc = StructuredDocument.model_validate(stored["structured_content"])
         assert stored["content"] == render_document(doc)
         assert [s.id for s in doc.sections] == ["new"], "the stale structure must not survive"
+        assert "| 1 | 2 |" in stored["content"].splitlines()
+
+        await memory.delete_bank(bank_id, request_context=request_context)
+
+    async def test_full_refresh_stores_the_document_the_agent_emitted(
+        self,
+        memory: MemoryEngine,
+        request_context: RequestContext,
+        patch_reflect,
+    ):
+        """The generation path never reads markdown back.
+
+        In document mode the agent states the document's structure, so the
+        refresh stores that structure verbatim and renders the markdown from it.
+        Splitting only happens when a run produced plain text instead.
+        """
+        from hindsight_api.engine.reflect.structured_doc import (
+            StructuredDocument,
+            document_from_sections,
+            render_document,
+        )
+
+        bank_id = f"test-doc-answer-{uuid.uuid4().hex[:8]}"
+        await memory.get_bank_profile(bank_id, request_context=request_context)
+        mm = await memory.create_mental_model(
+            bank_id=bank_id,
+            name="API Reference",
+            source_query="Document the API",
+            content="## Old\n\nOriginal.\n",
+            trigger={"mode": "full"},
+            request_context=request_context,
+        )
+
+        emitted = document_from_sections(
+            {
+                "sections": [
+                    {
+                        "heading": "Operations",
+                        "level": 2,
+                        "blocks": ["| Op | Budget |\n| --- | --- |\n| retain | 12ms |", "- top\n  - nested"],
+                    }
+                ]
+            }
+        )
+        # ``text`` is deliberately something else: if the refresh were still
+        # deriving the document from markdown, it would store this instead.
+        patch_reflect(memory, text="IGNORED MARKDOWN", document=emitted)
+
+        await memory.refresh_mental_model(bank_id=bank_id, mental_model_id=mm["id"], request_context=request_context)
+        stored = await memory.get_mental_model(
+            bank_id=bank_id, mental_model_id=mm["id"], request_context=request_context
+        )
+        assert stored is not None
+        assert StructuredDocument.model_validate(stored["structured_content"]) == emitted
+        assert stored["content"] == render_document(emitted)
+        assert "IGNORED MARKDOWN" not in stored["content"]
+        assert "| retain | 12ms |" in stored["content"].splitlines()
+
+        await memory.delete_bank(bank_id, request_context=request_context)
+
+    async def test_refresh_asks_the_agent_for_a_document(
+        self,
+        memory: MemoryEngine,
+        request_context: RequestContext,
+        patch_reflect,
+    ):
+        """The refresh must request document mode; markdown mode would reintroduce the parse."""
+        bank_id = f"test-doc-flag-{uuid.uuid4().hex[:8]}"
+        await memory.get_bank_profile(bank_id, request_context=request_context)
+        mm = await memory.create_mental_model(
+            bank_id=bank_id,
+            name="API Reference",
+            source_query="Document the API",
+            content="## Old\n\nOriginal.\n",
+            trigger={"mode": "full"},
+            request_context=request_context,
+        )
+        calls = patch_reflect(memory, text="# Team\n\nSomething.\n")
+
+        await memory.refresh_mental_model(bank_id=bank_id, mental_model_id=mm["id"], request_context=request_context)
+
+        assert calls[0]["answer_as_document"] is True
+
+        await memory.delete_bank(bank_id, request_context=request_context)
+
+    async def test_plain_text_answer_still_produces_a_document(
+        self,
+        memory: MemoryEngine,
+        request_context: RequestContext,
+        patch_reflect,
+    ):
+        """A run that yields no document (provider dropped the tool call, iteration
+        limit) still gets a structure — split from its text, losslessly."""
+        from hindsight_api.engine.reflect.structured_doc import (
+            StructuredDocument,
+            render_document,
+        )
+
+        bank_id = f"test-doc-fallback-{uuid.uuid4().hex[:8]}"
+        await memory.get_bank_profile(bank_id, request_context=request_context)
+        mm = await memory.create_mental_model(
+            bank_id=bank_id,
+            name="API Reference",
+            source_query="Document the API",
+            content="## Old\n\nOriginal.\n",
+            trigger={"mode": "full"},
+            request_context=request_context,
+        )
+        patch_reflect(memory, text="## Ops\n\n| a | b |\n| --- | --- |\n| 1 | 2 |\n", document=None)
+
+        await memory.refresh_mental_model(bank_id=bank_id, mental_model_id=mm["id"], request_context=request_context)
+        stored = await memory.get_mental_model(
+            bank_id=bank_id, mental_model_id=mm["id"], request_context=request_context
+        )
+        assert stored is not None
+        doc = StructuredDocument.model_validate(stored["structured_content"])
+        assert stored["content"] == render_document(doc)
         assert "| 1 | 2 |" in stored["content"].splitlines()
 
         await memory.delete_bank(bank_id, request_context=request_context)
@@ -1713,9 +1833,16 @@ class TestDeltaRefreshGeminiEval:
             f"second: {second_content[:300]!r}"
         )
         rr = second.get("reflect_response") or {}
-        # The LLM may emit zero ops (best case) or non-effective ops (still no
-        # change to render); both are acceptable so long as the bytes match.
-        assert rr.get("delta_applied") is True
+        # Three outcomes all satisfy "nothing drifted": the delta ran and emitted
+        # zero ops, it emitted non-effective ops, or the window held no new facts
+        # at all and the content was preserved without an LLM call. Which one you
+        # get depends on whether consolidation had produced a new observation by
+        # the time the second refresh ran, so pinning one of them makes the test
+        # flake on timing rather than on behaviour.
+        assert rr.get("delta_applied") is True or rr.get("delta_skipped_reason") == "no_new_facts", (
+            f"expected a clean no-change refresh, got {rr.get('delta_applied')=} "
+            f"{rr.get('delta_skipped_reason')=} {rr.get('refresh_skipped')=}"
+        )
 
         await gemini_memory.delete_bank(bank_id, request_context=request_context)
 

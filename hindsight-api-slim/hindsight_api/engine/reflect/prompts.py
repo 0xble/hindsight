@@ -115,6 +115,7 @@ def build_system_prompt_for_tools(
     has_mental_models: bool = False,
     include_observations: bool = True,
     budget: str | None = None,
+    answer_as_document: bool = False,
 ) -> str:
     """
     Build the system prompt for tool-calling reflect agent.
@@ -393,19 +394,40 @@ def build_system_prompt_for_tools(
     steps.append("When ready, call done() with your answer and supporting IDs")
     parts.extend(f"{idx}. {step}" for idx, step in enumerate(steps, 1))
 
-    parts.extend(
-        [
-            "",
-            "## Output Format: Well-Formatted Markdown Answer",
-            "Call done() with a well-formatted markdown 'answer' field.",
-            "- USE markdown formatting for structure (headers, lists, bold, italic, code blocks, tables, etc.)",
-            "- CRITICAL: Add blank lines before and after block elements (tables, code blocks, lists)",
-            "- Format for clarity and readability with proper spacing and hierarchy",
-            "- NEVER include memory IDs, UUIDs, or 'Memory references' in the answer text",
-            "- Put IDs ONLY in the memory_ids/mental_model_ids/observation_ids arrays, not in the answer",
-            "- CRITICAL: This is a NON-CONVERSATIONAL system. NEVER ask follow-up questions, offer further assistance, or suggest next steps. Your answer must be complete and self-contained. The user cannot reply.",
-        ]
-    )
+    common_output_rules = [
+        "- NEVER include memory IDs, UUIDs, or 'Memory references' in the answer text",
+        "- Put IDs ONLY in the memory_ids/mental_model_ids/observation_ids arrays, not in the answer",
+        "- CRITICAL: This is a NON-CONVERSATIONAL system. NEVER ask follow-up questions, offer further assistance, or suggest next steps. Your answer must be complete and self-contained. The user cannot reply.",
+    ]
+    if answer_as_document:
+        # The document is stored as structure and the markdown is rendered from
+        # it, so asking for "a markdown answer" here would be asking for the one
+        # thing the caller does not want (see tools_schema's document tool).
+        parts.extend(
+            [
+                "",
+                "## Output Format: Structured Document",
+                "Call done() with a 'document' field. Do NOT write a markdown document — "
+                "state its structure and the markdown is generated from it.",
+                "- Each section carries its heading text (no '#') and a level; the heading is NOT a block",
+                "- 'blocks' holds the section's content, ONE block per paragraph, list, table or code fence",
+                "- Never put two paragraphs in one block, and never put a heading inside a block",
+                "- Inside a block, write list items and table rows on their own lines as usual",
+                *common_output_rules,
+            ]
+        )
+    else:
+        parts.extend(
+            [
+                "",
+                "## Output Format: Well-Formatted Markdown Answer",
+                "Call done() with a well-formatted markdown 'answer' field.",
+                "- USE markdown formatting for structure (headers, lists, bold, italic, code blocks, tables, etc.)",
+                "- CRITICAL: Add blank lines before and after block elements (tables, code blocks, lists)",
+                "- Format for clarity and readability with proper spacing and hierarchy",
+                *common_output_rules,
+            ]
+        )
 
     # Volatile "now" reference goes here — after all the static instructions and
     # right before the bank-specific/custom data. Everything above is identical

@@ -27,6 +27,12 @@ from .prompts import (
     build_system_prompt_for_tools,
     split_context_history,
 )
+from .structured_doc import (
+    StructuredDocument,
+    document_from_sections,
+    render_document,
+    split_markdown,
+)
 from .tokenization import count_cl100k_tokens
 from .tools_schema import get_reflect_tools
 
@@ -441,6 +447,7 @@ async def _run_reflect_agent_inner(
     llm_output_language: str | None = None,
     cancel_check: Callable[[], None] | None = None,
     store_document_text: bool = True,
+    answer_as_document: bool = False,
     *,
     reflect_id: str,
     provider_impl: Any,
@@ -504,6 +511,7 @@ async def _run_reflect_agent_inner(
         include_observations=include_observations,
         include_recall=include_recall,
         include_expand=include_expand,
+        answer_as_document=answer_as_document,
     )
     # Build set of enabled tool names to guard against LLM hallucinating disabled tool calls
     enabled_tools: frozenset[str] = frozenset(t["function"]["name"] for t in tools if t.get("type") == "function")
@@ -516,6 +524,7 @@ async def _run_reflect_agent_inner(
         has_mental_models=has_mental_models,
         include_observations=include_observations,
         budget=budget,
+        answer_as_document=answer_as_document,
     )
     messages: list[dict[str, Any]] = [
         {"role": "system", "content": system_prompt},
@@ -1186,8 +1195,21 @@ async def _process_done_tool(
     # ``done`` is a structured tool call: trust its ``answer`` field verbatim.
     # Sibling id fields (memory_ids, ...) live in their own arguments and are
     # validated separately below -- they can't bleed into a parsed answer string.
-    answer = args.get("answer", "").strip()
+    #
+    # In document mode the model states the document's structure instead, and the
+    # markdown is rendered from it. The rendered text still flows on as ``text``
+    # so every consumer (structured-output extraction, the length rewrite, the
+    # HTTP response) is unchanged -- what changes is that nobody has to read the
+    # model's markdown back to find out what it meant.
+    document: StructuredDocument | None = None
+    raw_document = args.get("document")
+    if isinstance(raw_document, dict):
+        document = document_from_sections(raw_document)
+        answer = render_document(document).strip()
+    else:
+        answer = args.get("answer", "").strip()
     if not answer:
+        document = None
         answer = NO_ANSWER_TEXT
 
     final_usage = usage
@@ -1217,6 +1239,12 @@ async def _process_done_tool(
             return_usage=True,
         )
         answer = rewritten.strip()
+        if document is not None:
+            # The rewrite is text-level, so the emitted structure no longer
+            # describes the answer. Re-deriving it from the rewritten markdown is
+            # lossless (headings and blank lines only) and keeps the invariant
+            # that the stored text is exactly what the stored structure renders.
+            document = split_markdown(answer)
         final_usage = TokenUsageSummary(
             input_tokens=usage.input_tokens + rewrite_usage.input_tokens,
             output_tokens=usage.output_tokens + rewrite_usage.output_tokens,
@@ -1255,6 +1283,7 @@ async def _process_done_tool(
     log_completion(answer, iterations)
     return ReflectAgentResult(
         text=answer,
+        document=document,
         structured_output=structured_output,
         iterations=iterations,
         tools_called=total_tools_called,
@@ -1469,6 +1498,17 @@ def _summarize_input(tool_name: str, args: dict[str, Any]) -> str:
         depth = args.get("depth", "chunk")
         return f"(memory_ids=[{len(memory_ids)} ids], depth={depth})"
     elif tool_name == "done":
+        raw_document = args.get("document")
+        if isinstance(raw_document, dict):
+            sections = raw_document.get("sections") or []
+            blocks = sum(len(s.get("blocks") or []) for s in sections if isinstance(s, dict))
+            memory_ids = args.get("memory_ids", [])
+            mental_model_ids = args.get("mental_model_ids", [])
+            observation_ids = args.get("observation_ids", [])
+            return (
+                f"(document={len(sections)} sections/{blocks} blocks, mem={len(memory_ids)}, "
+                f"mm={len(mental_model_ids)}, obs={len(observation_ids)})"
+            )
         answer = args.get("answer", "")
         answer_preview = f"'{answer[:30]}...'" if len(answer) > 30 else f"'{answer}'"
         memory_ids = args.get("memory_ids", [])

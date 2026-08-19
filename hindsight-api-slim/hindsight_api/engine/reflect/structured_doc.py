@@ -321,6 +321,56 @@ def split_markdown(markdown: str) -> StructuredDocument:
     return StructuredDocument(sections=sections)
 
 
+def document_from_sections(payload: dict) -> StructuredDocument:
+    """Build a document from the ``done`` tool's emitted sections.
+
+    This is the generation path: the model states the document's structure and
+    the markdown it renders to is derived, so no markdown the model wrote is
+    ever read back to work out what it meant. Ids are assigned here — the model
+    is never asked for one, since a generated document has no prior ids to echo.
+
+    Tolerant by design, because a tool call is still model output: a missing
+    heading, an out-of-range level or a non-string block is coerced rather than
+    rejected. A block holding several blank-line-separated fragments is split
+    into one block each, so the document keeps the granularity delta operations
+    address even when the model packs a whole section into one string.
+    """
+    sections: list[Section] = []
+    used_ids: set[str] = set()
+    block_ids: set[str] = set()
+
+    for raw_section in payload.get("sections") or []:
+        if not isinstance(raw_section, dict):
+            continue
+        heading = str(raw_section.get("heading") or "").strip().lstrip("#").strip()
+        try:
+            level = int(raw_section.get("level") or 2)
+        except (TypeError, ValueError):
+            level = 2
+        level = min(6, max(1, level))
+
+        lines: list[str] = []
+        for raw_block in raw_section.get("blocks") or []:
+            if raw_block is None:
+                continue
+            text = normalize_block_text(str(raw_block))
+            if not text.strip():
+                continue
+            if lines:
+                lines.append("")
+            lines.extend(text.split("\n"))
+
+        blocks = _split_into_blocks(lines, block_ids)
+        if not heading and not blocks:
+            continue
+        base_id = slugify_heading(heading) if heading else PREAMBLE_SECTION_ID
+        section_id = make_unique_id(base_id, used_ids)
+        used_ids.add(section_id)
+        sections.append(Section(id=section_id, heading=heading, level=level, blocks=blocks))
+
+    return StructuredDocument(sections=sections)
+
+
 class CanonicalDocument(BaseModel):
     """A document and the structure it renders from — the pair that must be stored together.
 
