@@ -181,6 +181,11 @@ def _near_query_vector(seed: int) -> str:
 
 
 @pytest.mark.asyncio
+# Serialized onto the same xdist worker as the other per-bank index tests: this
+# issues CREATE INDEX CONCURRENTLY against the shared public.memory_units, and
+# concurrent index DDL on one relation deadlocks by design (see the note in
+# test_repair_bank_vector_indexes.py).
+@pytest.mark.xdist_group("vector_index_reconcile")
 async def test_the_kill_switch_flips_real_retrieval_depth(memory, request_context, ann_config):
     """End to end, through the pool: on, the budget reaches the index; off, it does not.
 
@@ -195,14 +200,13 @@ async def test_the_kill_switch_flips_real_retrieval_depth(memory, request_contex
     index are built directly: the property belongs to the index scan, and going through
     retain would drag in extraction and consolidation.
     """
+    from hindsight_api.engine.retain.bank_utils import _vector_index_clause, get_or_create_bank_profile
     from hindsight_api.engine.search.retrieval import retrieve_semantic_bm25_combined_sql
-    from hindsight_api.engine.retain.bank_utils import get_or_create_bank_profile
     from hindsight_api.engine.task_backend import fq_table
+    from hindsight_api.engine.vector_index_health import reconcile_bank_vector_indexes
 
     bank_id = f"test_iter_scan_{uuid.uuid4().hex[:8]}"
     budget = 400  # deliberately above the standing ef_search of 200
-    # Creating the bank also builds its per-(bank, fact_type) partial vector index —
-    # the same one recall uses — so this exercises the production index, not a stand-in.
     await get_or_create_bank_profile(memory._backend, bank_id)
     pool = await memory._get_pool()
     probe = _near_query_vector(0)
@@ -214,6 +218,18 @@ async def test_the_kill_switch_flips_real_retrieval_depth(memory, request_contex
                 [(bank_id, f"filler fact {i}", _near_query_vector(i)) for i in range(_ROWS)],
             )
             await conn.execute(f"ANALYZE {table}")
+            # Give the bank its per-(bank, fact_type) partial vector index — the same
+            # one recall uses — through the production reconcile, so this measures the
+            # real index rather than a stand-in.
+            #
+            # Bank creation used to build it, which is what this test relied on. Since
+            # #2645/#3485 coverage is reconciled separately (the repair suite pins that:
+            # "bank creation must not build indexes"), so the index has to be asked for.
+            # No threshold patching needed — the shipped default is 0, so a partition
+            # holding rows qualifies.
+            index_clause = _vector_index_clause()
+            assert index_clause is not None, "per-bank-index backend expected"
+            await reconcile_bank_vector_indexes(conn, "public", bank_id, index_clause)
 
         async def semantic_rows(iterative: bool) -> int:
             ann_config("ann_iterative_scan", iterative)
