@@ -1855,6 +1855,30 @@ class _StoreOwnedMemories:
         return False
 
 
+class _BankRowsOnlyConn:
+    """A connection that answers the bank-config queries and nothing else.
+
+    Returns no rows for everything, which is a legitimate state (a bank with no mental models or
+    webhooks) and lets the test assert that Postgres was consulted at all — the half of
+    `export_bank` that must NOT move to the store.
+    """
+
+    def __init__(self):
+        self.fetched: list[str] = []
+
+    async def fetch(self, sql: str, *args):
+        self.fetched.append(sql)
+        return []
+
+    async def fetchrow(self, sql: str, *args):
+        self.fetched.append(sql)
+        return None
+
+    async def fetchval(self, sql: str, *args):
+        self.fetched.append(sql)
+        return None
+
+
 class _FakeStoreOwned(_StoreOwnedMemories):
     """A minimal store-owned bank: one document, two chunks, two causally-linked facts.
 
@@ -1954,26 +1978,37 @@ async def test_export_of_a_store_owned_bank_contains_its_memories():
 
 
 @pytest.mark.asyncio
-async def test_export_does_not_refuse_a_sql_backed_bank():
-    """The guard must not fire for a Postgres bank — it gets past the check and on to the query.
+async def test_export_bank_of_a_store_owned_bank_carries_its_memories():
+    """The whole-bank archive takes memories from the store and everything else from SQL.
 
-    `backend=None` makes the export fail once it tries to acquire a connection; any error OTHER
-    than the refusal proves the guard let it through, which is the property under test.
+    `export_bank` is a superset of the document export: only the memories move, while bank config,
+    mental models, directives, webhooks, knowledge pages and the history tails stay in Postgres for
+    every deployment. Both halves are asserted, because routing all of it to the store would lose
+    the config and routing none of it would lose the memories.
     """
-    from hindsight_api.engine.transfer.export import export_documents
-    from hindsight_api.extensions.operation_validator import OperationValidationError
+    from hindsight_api.engine.transfer.export import export_bank
 
-    with pytest.raises(Exception) as ei:  # noqa: PT011 - the type is the assertion
-        await export_documents(None, "bank-x", None, memories=_SqlMemories())
-    assert not isinstance(ei.value, OperationValidationError), "the guard fired for a SQL bank"
+    conn = _BankRowsOnlyConn()
+    archive = await export_bank(conn, "bank-x", memories=_FakeStoreOwned())
+
+    with zipfile.ZipFile(io.BytesIO(archive)) as zf:
+        names = zf.namelist()
+        doc_names = [n for n in names if n.startswith("documents/")]
+        assert doc_names, names
+        doc = json.loads(zf.read(doc_names[0]))
+
+    # The memories came from the store...
+    assert [f["text"] for f in doc["facts"]] == ["the cause", "the effect"]
+    assert doc["facts"][1]["causal_relations"] == [{"relation_type": "caused_by", "target_fact_index": 0}]
+    # ...and Postgres was still consulted for the bank's own rows.
+    assert conn.fetched, "export_bank must still read bank config/history from Postgres"
 
 
 @pytest.mark.asyncio
-async def test_export_without_a_store_is_unchanged():
-    """No store passed (the admin CLI's shape) must not start refusing every export."""
+async def test_a_sql_backed_bank_is_not_read_through_the_store():
+    """A Postgres bank must keep taking the connection path, not be routed to the store."""
     from hindsight_api.engine.transfer.export import export_documents
-    from hindsight_api.extensions.operation_validator import OperationValidationError
 
-    with pytest.raises(Exception) as ei:  # noqa: PT011
-        await export_documents(None, "bank-x", None)
-    assert not isinstance(ei.value, OperationValidationError)
+    with pytest.raises(Exception) as ei:  # noqa: PT011 - backend=None fails once SQL is reached
+        await export_documents(None, "bank-x", None, memories=_SqlMemories())
+    assert "list_documents" not in str(ei.value), "a SQL bank must not be read through the store"

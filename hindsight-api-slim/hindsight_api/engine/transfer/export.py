@@ -22,7 +22,6 @@ from uuid import UUID
 
 import anyio.to_thread
 
-from ...extensions.operation_validator import OperationValidationError
 from ..causal_links import CAUSAL_LINK_TYPES
 from ..db_utils import acquire_with_retry
 from ..metadata_utils import as_string_metadata
@@ -181,36 +180,6 @@ def _is_store_owned(memories: Any, bank_id: str) -> bool:
         return not memories.writes_memory_rows_in_sql_for(bank_id)
     except Exception:  # noqa: BLE001 - a store that cannot answer is treated as SQL-backed
         return False
-
-
-def _refuse_if_store_owned(memories: Any, bank_id: str) -> None:
-    """Refuse to export a bank whose memories are not in SQL.
-
-    Every loader below reads `memory_units`, `unit_entities`, `memory_links`, `documents` and
-    `chunks` directly. For a store-owned bank those tables are empty, so the export used to walk
-    them, find nothing, and return a well-formed archive containing no memories — with a 200. An
-    operator taking a backup or migrating a bank only discovers that at restore time, which is why
-    this refuses instead: an error names the problem at the moment it is actionable.
-
-    Implementing the export properly needs more than routing these queries through the store. The
-    read model does not currently carry two things the archive requires — a memory's causal edges,
-    and a chunk listing — so both stores' interface has to grow before this can be lifted. It is a
-    deliberate gap, not an oversight, and the refusal is what keeps it honest meanwhile.
-    """
-    if memories is None:
-        return
-    try:
-        sql_backed = memories.writes_memory_rows_in_sql_for(bank_id)
-    except Exception:  # noqa: BLE001 - a store that cannot answer is treated as SQL-backed
-        return
-    if sql_backed:
-        return
-    raise OperationValidationError(
-        f"Bank '{bank_id}' keeps its memories outside SQL, and export does not support that yet. "
-        "It would otherwise produce an archive with no memories and report success. "
-        "Nothing has been written.",
-        status_code=501,
-    )
 
 
 async def export_documents(
@@ -421,13 +390,21 @@ async def export_bank(
     ``_current_schema`` and passes its raw connection; the engine acquires one
     after tenant auth).
     """
-    _refuse_if_store_owned(memories, bank_id)
     # Whole-bank export always carries observations (they're bank-level state)
     # and, with them, the per-fact consolidation lifecycle so the target restores
     # exact eligibility instead of re-consolidating historical facts (#2965).
-    loaded = await _load_documents(conn, bank_id, None, include_lifecycle=True)
-    documents = loaded.documents
-    observations = await _load_observations(conn, bank_id, loaded.unit_index)
+    #
+    # Only the memories move to the store. Everything below — bank config, mental models,
+    # directives, webhooks, knowledge pages, the history tails — lives in Postgres for every
+    # deployment, so `conn` stays the source for all of it.
+    if _is_store_owned(memories, bank_id):
+        loaded = await _load_documents_from_store(memories, bank_id, None, include_lifecycle=True)
+        documents = loaded.documents
+        observations = await _load_observations_from_store(memories, bank_id, loaded.unit_index)
+    else:
+        loaded = await _load_documents(conn, bank_id, None, include_lifecycle=True)
+        documents = loaded.documents
+        observations = await _load_observations(conn, bank_id, loaded.unit_index)
 
     bank_rows = {table: await _dump_bank_rows(conn, table, bank_id) for table in _BANK_ROW_TABLES}
     for table in CARRIED_HISTORY_TABLES:

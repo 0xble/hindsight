@@ -8,7 +8,6 @@ import asyncio
 import io
 import json
 import logging
-import os
 import struct
 import zipfile
 from dataclasses import dataclass
@@ -20,6 +19,7 @@ import asyncpg
 import typer
 
 from ..config import DEFAULT_DATABASE_SCHEMA, HindsightConfig, load_dotenv_for_entrypoint
+from ..engine.memories import get_memories
 from ..engine.memory_engine import _current_schema
 from ..engine.retain.bank_utils import _vector_index_clause
 from ..engine.schema import fq_table_explicit as _fq_table
@@ -775,20 +775,15 @@ def repair_bank(
 async def _run_export_bank(db_url: str, bank_id: str, output: Path, schema: str, include_history: bool) -> int:
     """Export a whole bank to a ZIP archive.
 
-    Refuses outright when a memories extension is configured. This command talks to Postgres on a
-    raw connection and has no store to ask, so for a store-owned bank it would read empty tables and
-    write a well-formed archive with no memories in it — the failure an operator only discovers at
-    restore time. Whether THIS bank is store-owned cannot be determined from here, so the presence
-    of the extension is the signal, and the API export is the one that knows.
+    The memories store is resolved from config here and handed to the export, because a bank whose
+    memories live outside SQL cannot be read from this connection: the tables would be empty and the
+    archive would come out well-formed and empty, which an operator only discovers at restore time.
+    A Postgres deployment resolves to the SQL store, whose capability probe sends the export down
+    exactly the path it always took.
+
+    Resolving it in a short-lived CLI process is safe because the store connects lazily on first
+    use rather than in `initialize()`.
     """
-    if os.environ.get("HINDSIGHT_API_MEMORIES_EXTENSION"):
-        typer.echo(
-            "A memories extension is configured (HINDSIGHT_API_MEMORIES_EXTENSION), so this command "
-            "cannot tell whether the bank's memories live outside SQL. Exporting from here risks an "
-            "archive with no memories in it. Use the API export instead. Nothing was written.",
-            err=True,
-        )
-        raise typer.Exit(1)
     conn = await _admin_connect(db_url)
     try:
         # export_bank resolves table names via fq_table (the _current_schema
@@ -801,6 +796,7 @@ async def _run_export_bank(db_url: str, bank_id: str, output: Path, schema: str,
             bank_id,
             include_history=include_history,
             bank_rows_json_encoding="decoded",
+            memories=get_memories(),
         )
     finally:
         await conn.close()
