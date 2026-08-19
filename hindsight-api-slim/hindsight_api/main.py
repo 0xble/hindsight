@@ -21,8 +21,7 @@ import warnings
 
 import uvicorn
 
-from . import MemoryEngine, __version__
-from .api import create_app
+from . import __version__
 from .banner import print_banner
 from .config import (
     DEFAULT_ACCESS_LOG,
@@ -41,7 +40,43 @@ from .daemon import (
     IdleTimeoutMiddleware,
     daemonize,
 )
-from .extensions import DefaultExtensionContext, OperationValidatorExtension, TenantExtension, load_extension
+
+# `create_app`, `MemoryEngine` and the extension machinery are NOT imported at module level, and
+# that is load-bearing rather than tidiness. uvicorn's multiprocess supervisor uses spawn, so every
+# worker rebuilds `__main__` by re-running `sys.argv[0]` — pip's console-script wrapper — whose top
+# line is `from hindsight_api.main import main`. Anything this module pulls in at import time is
+# therefore paid by EVERY spawned worker before uvicorn's child bootstrap begins; a worker still
+# importing when the supervisor's 5 s healthcheck arrives is SIGKILLed and respawned, forever, with
+# no traceback. Measured: `.api` alone is ~6.2 s to import and `.extensions` ~2.6 s, and the whole
+# line the console script runs went 6578 ms -> 312 ms by moving them here.
+#
+# They resolve through the module `__getattr__` below on first USE, which keeps them ordinary
+# module attributes: `main()` refers to them as plain globals, and `patch("hindsight_api.main.
+# MemoryEngine")` still finds and replaces them. Importing them inside `main()` instead would do
+# neither — the name would be invisible to `patch`, and a local import would shadow any patch that
+# did land. See docs/plans/recall-latency.md.
+_LAZY_IMPORTS: "dict[str, tuple[str, str]]" = {
+    "MemoryEngine": (".", "MemoryEngine"),
+    "create_app": (".api", "create_app"),
+    "DefaultExtensionContext": (".extensions", "DefaultExtensionContext"),
+    "OperationValidatorExtension": (".extensions", "OperationValidatorExtension"),
+    "TenantExtension": (".extensions", "TenantExtension"),
+    "load_extension": (".extensions", "load_extension"),
+}
+
+
+def __getattr__(name: str):
+    try:
+        module_name, attribute = _LAZY_IMPORTS[name]
+    except KeyError:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}") from None
+
+    from importlib import import_module
+
+    value = getattr(import_module(module_name, __package__), attribute)
+    globals()[name] = value
+    return value
+
 
 # Filter deprecation warnings from third-party libraries
 warnings.filterwarnings("ignore", message="websockets.legacy is deprecated")
@@ -51,7 +86,7 @@ warnings.filterwarnings("ignore", message="websockets.server.WebSocketServerProt
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
 # Global reference for cleanup
-_memory: MemoryEngine | None = None
+_memory: "MemoryEngine | None" = None
 
 
 def _cleanup():
@@ -246,6 +281,19 @@ def main():
     atexit.register(_cleanup)
     signal.signal(signal.SIGINT, _signal_handler)
     signal.signal(signal.SIGTERM, _signal_handler)
+
+    # Bind the lazily-resolved names through the MODULE, not as bare globals: a module
+    # `__getattr__` (PEP 562) is consulted for `module.X` access, but NOT for a plain global lookup
+    # inside this module's own functions — that raises NameError. Reading them off the module object
+    # both triggers the lazy import and picks up anything a test has patched onto the module, which
+    # a local `from .x import y` would silently shadow.
+    _this = sys.modules[__name__]
+    MemoryEngine = _this.MemoryEngine
+    create_app = _this.create_app
+    load_extension = _this.load_extension
+    OperationValidatorExtension = _this.OperationValidatorExtension
+    TenantExtension = _this.TenantExtension
+    DefaultExtensionContext = _this.DefaultExtensionContext
 
     # Load operation validator extension if configured
     operation_validator = load_extension("OPERATION_VALIDATOR", OperationValidatorExtension)
