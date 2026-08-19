@@ -213,7 +213,13 @@ class TestDocumentFlagsReachTheDeltaLeg:
 
 
 class TestTriggerRoundTrip:
-    """A flag that does not survive being stored is not honoured either."""
+    """A flag that does not survive being stored is not honoured either.
+
+    This list is deliberately exhaustive over ``MentalModelTrigger``: it is the
+    cheapest place for a flag added later to be noticed, and the failure it
+    guards against — a field that round-trips as ``None`` — looks like the flag
+    being ignored rather than like a storage bug.
+    """
 
     async def test_every_flag_survives_create(self, memory, request_context):
         bank_id = f"test-trigger-rt-{uuid.uuid4().hex[:8]}"
@@ -232,6 +238,11 @@ class TestTriggerRoundTrip:
             "recall_chunks_max_tokens": 777,
             "response_schema": {"type": "object"},
             "keep_trace": True,
+            # Gates *automatic* refreshes (#3621) rather than shaping one, so it is
+            # honoured in the submit path and covered there; it is here because a
+            # flag that does not survive being stored is not honoured either, and
+            # this list is what keeps the audit complete as flags are added.
+            "min_refresh_interval_seconds": 900,
         }
         mm = await memory.create_mental_model(
             bank_id=bank_id,

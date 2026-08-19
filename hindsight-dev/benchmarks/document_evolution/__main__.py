@@ -16,6 +16,7 @@ import json
 import statistics
 from pathlib import Path
 
+from pydantic import BaseModel, ConfigDict
 from rich.console import Console
 from rich.table import Table
 
@@ -26,6 +27,30 @@ from .runner import BenchmarkArtifact, CaseRun, run_build
 
 console = Console()
 DEFAULT_RESULTS_DIR = Path(__file__).resolve().parents[1] / "results" / "document_evolution"
+
+
+class StructuralSummary(BaseModel):
+    """The no-LLM half of a build's result, in one typed row.
+
+    Every field counts something lost, so zero is the good value and the report
+    can render the whole model without knowing which metric is which.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+    rounds: int = 0
+    collapsed_tables: int = 0
+    table_rows_lost: int = 0
+    nesting_lost: int = 0
+    hard_breaks_lost: int = 0
+    fences_lost: int = 0
+    quotes_lost: int = 0
+    headings_lost: int = 0
+    damaged_rounds: int = 0
+    drifted_sections: int = 0
+    delta_applied_rounds: int = 0
+    failed_rounds: int = 0
+    ops_skipped: int = 0
+    median_ms: float = 0.0
 
 
 class _MeanCoverage:
@@ -45,7 +70,7 @@ def _mean_coverage(results: list) -> _MeanCoverage:
     )
 
 
-def _structural_summary(runs: list[CaseRun]) -> dict[str, float]:
+def _structural_summary(runs: list[CaseRun]) -> StructuralSummary:
     """Damage counts across every round of every run — the no-LLM half.
 
     Recomputed here from the stored documents rather than read off the runner's
@@ -65,23 +90,23 @@ def _structural_summary(runs: list[CaseRun]) -> dict[str, float]:
                 damage_in_untouched_sections(previous.document, current.document, set(current.touched_sections))
             )
     if not rounds:
-        return {}
-    return {
-        "rounds": len(rounds),
-        "collapsed_tables": sum(d.collapsed_tables_introduced for d in damage),
-        "table_rows_lost": sum(d.table_rows_lost for d in damage),
-        "nesting_lost": sum(d.indented_list_lines_lost for d in damage),
-        "hard_breaks_lost": sum(d.hard_break_lines_lost for d in damage),
-        "fences_lost": sum(d.fenced_blocks_lost for d in damage),
-        "quotes_lost": sum(d.blockquote_lines_lost for d in damage),
-        "headings_lost": sum(len(d.headings_lost) for d in damage),
-        "damaged_rounds": sum(d.damaged for d in damage),
-        "drifted_sections": sum(len(r.drifted_sections) for r in rounds),
-        "delta_applied_rounds": sum(r.delta_applied for r in rounds),
-        "failed_rounds": sum(bool(r.error or r.refresh_skipped) for r in rounds),
-        "ops_skipped": sum(r.ops_skipped for r in rounds),
-        "median_ms": statistics.median(r.duration_ms for r in rounds),
-    }
+        return StructuralSummary()
+    return StructuralSummary(
+        rounds=len(rounds),
+        collapsed_tables=sum(d.collapsed_tables_introduced for d in damage),
+        table_rows_lost=sum(d.table_rows_lost for d in damage),
+        nesting_lost=sum(d.indented_list_lines_lost for d in damage),
+        hard_breaks_lost=sum(d.hard_break_lines_lost for d in damage),
+        fences_lost=sum(d.fenced_blocks_lost for d in damage),
+        quotes_lost=sum(d.blockquote_lines_lost for d in damage),
+        headings_lost=sum(len(d.headings_lost) for d in damage),
+        damaged_rounds=sum(d.damaged for d in damage),
+        drifted_sections=sum(len(r.drifted_sections) for r in rounds),
+        delta_applied_rounds=sum(r.delta_applied for r in rounds),
+        failed_rounds=sum(bool(r.error or r.refresh_skipped) for r in rounds),
+        ops_skipped=sum(r.ops_skipped for r in rounds),
+        median_ms=statistics.median(r.duration_ms for r in rounds),
+    )
 
 
 async def _run(args: argparse.Namespace) -> None:
@@ -115,11 +140,11 @@ def _print_structural(artifact: BenchmarkArtifact) -> None:
         summary = _structural_summary([r for r in artifact.runs if r.case == case])
         table.add_row(
             case,
-            str(int(summary["rounds"])),
-            str(int(summary["damaged_rounds"])),
-            str(int(summary["collapsed_tables"])),
-            str(int(summary["table_rows_lost"])),
-            str(int(summary["drifted_sections"])),
+            str(summary.rounds),
+            str(summary.damaged_rounds),
+            str(summary.collapsed_tables),
+            str(summary.table_rows_lost),
+            str(summary.drifted_sections),
         )
     console.print(table)
 
@@ -137,8 +162,10 @@ async def _compare(args: argparse.Namespace) -> None:
     comparison.add_column(right.build, justify="right")
     left_summary = _structural_summary(left.runs)
     right_summary = _structural_summary(right.runs)
-    for key in sorted(set(left_summary) | set(right_summary)):
-        comparison.add_row(key, str(left_summary.get(key, "-")), str(right_summary.get(key, "-")))
+    left_row = left_summary.model_dump()
+    right_row = right_summary.model_dump()
+    for key in sorted(left_row):
+        comparison.add_row(key, str(left_row[key]), str(right_row[key]))
     console.print(comparison)
 
     if args.no_judge:
@@ -217,7 +244,10 @@ async def _compare(args: argparse.Namespace) -> None:
                 {
                     "left": left.build,
                     "right": right.build,
-                    "structural": {left.build: left_summary, right.build: right_summary},
+                    "structural": {
+                        left.build: left_summary.model_dump(),
+                        right.build: right_summary.model_dump(),
+                    },
                     "content": report,
                 },
                 indent=2,
