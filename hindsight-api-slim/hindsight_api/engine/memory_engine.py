@@ -7622,7 +7622,17 @@ class MemoryEngine(MemoryEngineInterface):
                         if _store.owns_document_store_for(bank_id):
                             await _store.delete_document_record(bank_id=bank_id, document_id=document_id)
                         # Report the deletion off the store's own state (SQL `deleted` is None here).
-                        if had_memories or doc_existed:
+                        #
+                        # When the store owns the document store its RECORD is the authority, and
+                        # the memory count is deliberately not consulted: "document not found" is a
+                        # statement about the document, and a document with no memories still
+                        # exists. It also cannot be trusted here — the per-document count is a
+                        # per-segment tally that does not subtract a delete still sitting in the
+                        # un-folded tail, so straight after a delete it reports the pre-delete
+                        # number and a second delete of the same document would report success. That
+                        # made the endpoint's 404 depend on how far behind the indexer happened to
+                        # be, which is why it passed alone and failed under load.
+                        if doc_existed if _store.owns_document_store_for(bank_id) else had_memories:
                             deleted = deleted or document_id
                     elif deleted:
                         # Legacy store-outside-SQL that still writes a Postgres documents row: keep
