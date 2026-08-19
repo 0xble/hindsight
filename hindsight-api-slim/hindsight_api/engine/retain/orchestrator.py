@@ -1739,7 +1739,13 @@ async def retain_batch(
             return [[] for _ in contents], TokenUsage(), 0
 
     # --- Delta retain: check if we can skip unchanged chunks ---
-    if is_first_batch:
+    #
+    # Every slice of an OVERSIZED item gets to try, not just the first. Each one diffs the same
+    # complete body against what is stored, so the first slice does the real work and the rest find
+    # nothing left to change and fall through to the metadata-only path. Gating on the first slice
+    # alone left slices 2..N doing a full extraction of their own content regardless, which is what
+    # made an oversized replacement re-extract a document it had just diffed correctly.
+    if is_first_batch or document_body_override is not None:
         delta_result = await _try_delta_retain(
             pool,
             embeddings_model,
@@ -3260,9 +3266,19 @@ async def _try_delta_retain(
         logger.info(f"Delta retain skipped for {effective_doc_id}: existing chunks lack content_hash (pre-migration)")
         return None
 
-    # Chunk new content and classify changes
+    # Chunk new content and classify changes.
+    #
+    # For an OVERSIZED item the retain is split into slices, and `contents` is only this slice while
+    # `existing_chunks` covers the whole stored document. Diffing those two classifies every chunk
+    # merely absent from this slice as REMOVED — measured on a 20-chunk document:
+    # `unchanged=1 changed=0 new=0 removed=19` — so their memories were tombstoned and the later
+    # slices re-added and re-extracted them. The complete body is right here as
+    # `document_body_override`, so the diff is taken against that and compares like with like.
     step_start = time.time()
-    new_chunks_with_contents = _chunk_contents_for_delta(contents, config)
+    _diff_contents = (
+        [RetainContent(content=document_body_override)] if document_body_override is not None else contents
+    )
+    new_chunks_with_contents = _chunk_contents_for_delta(_diff_contents, config)
     log_buffer.append(
         f"[delta] Chunked new content: {len(new_chunks_with_contents)} chunks in {time.time() - step_start:.3f}s"
     )
