@@ -6180,8 +6180,21 @@ class MemoryEngine(MemoryEngineInterface):
                             fact_type=ft_name,
                         )
 
-                # Record entry points (from semantic results) for legacy graph view
-                for rank, retrieval in enumerate(semantic_results[:10], start=1):  # Top 10 as entry points
+                # Record entry points (from semantic results) for legacy graph view.
+                #
+                # These have to be hydrated first. The arms move ids and scores and the payload is
+                # fetched later, for only what survives the trim — so a store that does not return
+                # full results has no `text` on them yet, and the trace recorded every entry point
+                # with an empty string. Hydration happens here rather than by moving the recording
+                # after the trim, because an entry point is a top-10 SEMANTIC result and need not
+                # have survived fusion at all. Costs one extra fetch of at most ten records, and
+                # only when a trace was asked for.
+                _entry_points = semantic_results[:10]
+                if _entry_points:
+                    from .memories import get_memories as _get_memories_for_trace
+
+                    await _get_memories_for_trace().hydrate_results(bank_id=bank_id, results=_entry_points)
+                for rank, retrieval in enumerate(_entry_points, start=1):
                     tracer.add_entry_point(retrieval.id, retrieval.text, retrieval.similarity or 0.0, rank)
 
                 tracer.add_phase_metric(
