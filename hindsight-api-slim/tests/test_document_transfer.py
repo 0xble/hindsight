@@ -1863,7 +1863,7 @@ async def test_download_route_rejects_unauthorized_keys(api_client, memory, requ
 
 
 class _StoreOwnedMemories:
-    """A memories store that keeps memories outside SQL, like the memlake extension."""
+    """A memories store that keeps memories outside SQL, like an external store extension."""
 
     def writes_memory_rows_in_sql_for(self, bank_id: str) -> bool:
         return False
