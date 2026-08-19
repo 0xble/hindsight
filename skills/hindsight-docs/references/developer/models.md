@@ -188,7 +188,7 @@ Each provider has a recommended default model that's used when `HINDSIGHT_API_LL
 | `requesty` | `openai/gpt-4o-mini` |
 | `openai-codex` | `gpt-5.4-mini` |
 | `claude-code` | `claude-sonnet-4-5-20250929` |
-| `github-copilot` | `gpt-5.6-sol` |
+| `github-copilot` | `gpt-5.6-terra` |
 | `bedrock` | `us.amazon.nova-2-lite-v1:0` |
 | `fireworks` | `accounts/fireworks/models/llama-v3p1-8b-instruct` |
 | `nous` | `deepseek/deepseek-v4-flash` |
@@ -347,13 +347,13 @@ Use a GitHub Copilot subscription for Hindsight's extraction, consolidation, and
 
 ```bash
 export HINDSIGHT_API_LLM_PROVIDER=github-copilot
-export HINDSIGHT_API_LLM_MODEL=gpt-5.6-sol
+export HINDSIGHT_API_LLM_MODEL=gpt-5.6-terra
 # No HINDSIGHT_API_LLM_API_KEY is needed.
 ```
 
-The provider starts one shared Copilot runtime for all Hindsight LLM lanes. That runtime uses a hook-free temporary `COPILOT_HOME` containing only the signed-in account metadata needed to locate the system-keychain credential. Each call then uses an isolated transient session with repository instructions, skills, Copilot memory, built-in tools, and the cross-session store disabled. This prevents the memory integration from recursively retaining its own extraction calls.
+The provider starts one shared Copilot runtime for all Hindsight LLM lanes. That runtime uses a hook-free temporary `COPILOT_HOME` containing only the signed-in account selection; the credential itself is resolved by the runtime from the system keychain or an existing `gh` CLI login. Each call then uses an isolated transient session with repository instructions, skills, Copilot memory, built-in tools, and the cross-session store disabled. This prevents the memory integration from recursively retaining its own extraction calls.
 
-For automation, the Copilot SDK also accepts `COPILOT_GITHUB_TOKEN`, `GH_TOKEN`, or `GITHUB_TOKEN`. GitHub Actions and server-to-server deployments must have the appropriate Copilot organization policy and token permissions.
+For automation, the Copilot SDK also accepts `COPILOT_GITHUB_TOKEN`, `GH_TOKEN`, or `GITHUB_TOKEN`. With one of those set, Copilot CLI never has to have been run on the host, so containers and CI images work with no `~/.copilot` at all. GitHub Actions and server-to-server deployments must have the appropriate Copilot organization policy and token permissions.
 
 **Important notes:**
 - Usage counts against the authenticated account or organization's Copilot allowance and AI Credits.

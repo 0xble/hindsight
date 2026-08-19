@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 import shutil
 import tempfile
 import threading
@@ -90,23 +91,41 @@ class _InvocationResult:
     finish_reason: str | None
 
 
+_TOKEN_ENV_VARS = ("COPILOT_GITHUB_TOKEN", "GH_TOKEN", "GITHUB_TOKEN")
+
+
+def _has_token_credentials() -> bool:
+    """Whether the SDK can authenticate without a signed-in Copilot CLI account."""
+    return any(os.environ.get(name) for name in _TOKEN_ENV_VARS)
+
+
 def _sync_copilot_auth_metadata(target_home: Path, source_home: Path | None = None) -> None:
-    """Copy only the account selector needed for system-keychain authentication.
+    """Copy only the account selector into the isolated runtime home.
 
     The normal Copilot home also contains user hooks, plugins, MCP servers,
     skills, and session state. Pointing Hindsight's internal runtime there made
     every internal LLM request run the Hindsight hooks again, creating an
-    explosive recursion loop. ``config.json`` contains the signed-in account
-    metadata Copilot needs to locate its keychain credential, so copying only
-    that file preserves authentication without importing executable config.
+    explosive recursion loop. ``config.json`` carries the signed-in account
+    selection, so copying only that file preserves the account choice without
+    importing executable config. The credential itself is never in this file:
+    the runtime resolves it from the system keychain or from a `gh` CLI login.
     """
+    target_home.mkdir(parents=True, exist_ok=True)
     source = (source_home or Path.home() / ".copilot") / "config.json"
     if not source.is_file():
+        if _has_token_credentials():
+            # A headless deployment (container, CI) authenticates from the token
+            # environment and never runs Copilot CLI, so there is no signed-in
+            # account on disk to carry over. An empty home is correct there.
+            logger.info(
+                "No Copilot account metadata at %s; authenticating from the token environment instead",
+                source,
+            )
+            return
         raise RuntimeError(
             f"GitHub Copilot account metadata was not found at {source}. "
-            "Start Copilot CLI and sign in before using the github-copilot provider."
+            "Start Copilot CLI and sign in, or set COPILOT_GITHUB_TOKEN, GH_TOKEN, or GITHUB_TOKEN."
         )
-    target_home.mkdir(parents=True, exist_ok=True)
     shutil.copy2(source, target_home / "config.json")
 
 
@@ -308,7 +327,33 @@ def _is_quota_error(error: Exception) -> bool:
     return any(marker in text for marker in ("quota", "usage limit", "weekly limit", "ai credits"))
 
 
+def _is_configuration_error(error: BaseException) -> bool:
+    """Whether the runtime will reject this request identically on every attempt.
+
+    These surface as JsonRpcError, which is otherwise indistinguishable from a
+    transport failure. Treating one as a runtime failure costs a full Copilot
+    CLI restart per attempt and can never succeed, so they are terminal.
+    """
+    text = str(error).lower()
+    # Gate on "model" so a transient outage phrased as "service is not
+    # available" stays retryable; only the model selection is terminal.
+    if "model" not in text:
+        return False
+    return any(
+        marker in text
+        for marker in (
+            "is not available",
+            "unknown model",
+            "not found",
+            "invalid model",
+            "unsupported model",
+        )
+    )
+
+
 def _is_runtime_failure(error: BaseException) -> bool:
+    if _is_configuration_error(error):
+        return False
     if isinstance(error, (TimeoutError, ConnectionError, OSError)):
         return True
     if type(error).__name__ in {"ProcessExitedError", "JsonRpcError"}:
@@ -623,6 +668,8 @@ class GitHubCopilotLLM(LLMInterface):
             except ValidationError:
                 raise
             except Exception as error:
+                if _is_configuration_error(error):
+                    raise RuntimeError(f"GitHub Copilot rejected the request configuration: {error}") from error
                 if _is_authentication_error(error):
                     raise RuntimeError(
                         "GitHub Copilot authentication failed. Start Copilot CLI and sign in, "
@@ -736,6 +783,8 @@ class GitHubCopilotLLM(LLMInterface):
                 )
                 return result
             except Exception as error:
+                if _is_configuration_error(error):
+                    raise RuntimeError(f"GitHub Copilot rejected the request configuration: {error}") from error
                 if _is_authentication_error(error):
                     raise RuntimeError(
                         "GitHub Copilot authentication failed. Start Copilot CLI and sign in, "

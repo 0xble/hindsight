@@ -7,7 +7,7 @@ def test_all_copied_llm_registries_allow_github_copilot_without_an_api_key(monke
     registry_files = sorted((root / "hindsight-integrations").glob("**/llm.py"))
 
     monkeypatch.setenv("HINDSIGHT_API_LLM_PROVIDER", "github-copilot")
-    monkeypatch.setenv("HINDSIGHT_API_LLM_MODEL", "gpt-5.6-sol")
+    monkeypatch.setenv("HINDSIGHT_API_LLM_MODEL", "gpt-5.6-terra")
     monkeypatch.delenv("HINDSIGHT_API_LLM_API_KEY", raising=False)
 
     assert registry_files
@@ -19,7 +19,7 @@ def test_all_copied_llm_registries_allow_github_copilot_without_an_api_key(monke
         detected = namespace["detect_llm_config"]({})
         assert detected["provider"] == "github-copilot"
         assert detected["api_key"] == ""
-        assert detected["model"] == "gpt-5.6-sol"
+        assert detected["model"] == "gpt-5.6-terra"
 
 
 def test_openclaw_no_key_registries_include_github_copilot():

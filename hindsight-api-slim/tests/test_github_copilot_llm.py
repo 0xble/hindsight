@@ -101,7 +101,7 @@ def _usage_event():
 
     return SimpleNamespace(
         data=AssistantUsageData(
-            model="gpt-5.6-sol",
+            model="gpt-5.6-terra",
             input_tokens=120,
             output_tokens=30,
             cache_read_tokens=20,
@@ -119,7 +119,7 @@ def _provider(monkeypatch, events, *, error: Exception | None = None) -> tuple[G
         provider="github-copilot",
         api_key="",
         base_url="",
-        model="gpt-5.6-sol",
+        model="gpt-5.6-terra",
         timeout=15,
     )
     return provider, client
@@ -127,7 +127,7 @@ def _provider(monkeypatch, events, *, error: Exception | None = None) -> tuple[G
 
 def test_provider_registration_and_default_model(monkeypatch):
     assert requires_api_key("github-copilot") is False
-    assert PROVIDER_DEFAULT_MODELS["github-copilot"] == "gpt-5.6-sol"
+    assert PROVIDER_DEFAULT_MODELS["github-copilot"] == "gpt-5.6-terra"
 
     runtime = _FakeRuntime(_FakeClient([]))
     monkeypatch.setattr(provider_module, "_acquire_runtime", lambda _url: runtime)
@@ -135,7 +135,7 @@ def test_provider_registration_and_default_model(monkeypatch):
         provider="github-copilot",
         api_key="",
         base_url="",
-        model="gpt-5.6-sol",
+        model="gpt-5.6-terra",
         reasoning_effort=None,
     )
 
@@ -155,7 +155,7 @@ def test_openai_template_base_url_is_ignored(monkeypatch):
         provider="github-copilot",
         api_key="",
         base_url="https://api.openai.com/v1",
-        model="gpt-5.6-sol",
+        model="gpt-5.6-terra",
     )
 
     assert provider.base_url == ""
@@ -190,7 +190,7 @@ def test_invalid_reasoning_effort_does_not_acquire_runtime(monkeypatch):
             provider="github-copilot",
             api_key="",
             base_url="",
-            model="gpt-5.6-sol",
+            model="gpt-5.6-terra",
             reasoning_effort="extreme",
         )
 
@@ -215,7 +215,7 @@ async def test_plain_call_isolates_session_and_reports_usage(monkeypatch):
     assert usage.output_tokens == 30
     assert usage.cached_tokens == 20
     assert usage.thoughts_tokens == 10
-    assert client.create_kwargs["model"] == "gpt-5.6-sol"
+    assert client.create_kwargs["model"] == "gpt-5.6-terra"
     assert client.create_kwargs["available_tools"] == []
     assert client.create_kwargs["system_message"] == {
         "mode": "replace",
@@ -390,7 +390,7 @@ async def test_attempt_timeout_includes_runtime_startup(monkeypatch):
         provider="github-copilot",
         api_key="",
         base_url="",
-        model="gpt-5.6-sol",
+        model="gpt-5.6-terra",
         timeout=0.01,
     )
 
@@ -438,7 +438,7 @@ async def test_session_cleanup_timeout_invalidates_runtime(monkeypatch):
         provider="github-copilot",
         api_key="",
         base_url="",
-        model="gpt-5.6-sol",
+        model="gpt-5.6-terra",
         timeout=0.05,
     )
 
@@ -532,3 +532,70 @@ def test_prompt_serializes_tool_history():
     assert prompt.system_prompt == "Use memory tools."
     assert '"tool_call_id": "call-1"' in prompt.user_prompt
     assert '"name": "recall"' in prompt.user_prompt
+
+
+class JsonRpcError(RuntimeError):
+    """Stand-in for the SDK error class, which is matched by name."""
+
+
+@pytest.mark.asyncio
+async def test_configuration_error_is_terminal_and_spares_the_runtime(monkeypatch):
+    """An unavailable model is rejected identically forever.
+
+    It arrives as JsonRpcError, which _is_runtime_failure would otherwise treat
+    as a dead transport — restarting the Copilot CLI once per attempt for an
+    error that can never succeed.
+    """
+    error = JsonRpcError('Request session.create failed with message: Model "gpt-9" is not available.')
+    provider, client = _provider(monkeypatch, [], error=error)
+
+    with pytest.raises(RuntimeError, match="rejected the request configuration"):
+        await provider.call(messages=[{"role": "user", "content": "hi"}], max_retries=3, initial_backoff=0)
+
+    assert client.create_count == 1
+    assert provider._runtime.invalidations == []
+
+
+@pytest.mark.asyncio
+async def test_configuration_error_is_terminal_for_tool_calls(monkeypatch):
+    error = JsonRpcError("Model is not available.")
+    provider, client = _provider(monkeypatch, [], error=error)
+
+    with pytest.raises(RuntimeError, match="rejected the request configuration"):
+        await provider.call_with_tools(
+            messages=[{"role": "user", "content": "hi"}],
+            tools=[{"type": "function", "function": {"name": "noop", "parameters": {}}}],
+            max_retries=3,
+            initial_backoff=0,
+        )
+
+    assert client.create_count == 1
+    assert provider._runtime.invalidations == []
+
+
+def test_missing_account_metadata_falls_back_to_token_credentials(monkeypatch, tmp_path):
+    """A container that never ran Copilot CLI authenticates from the token env."""
+    monkeypatch.delenv("COPILOT_GITHUB_TOKEN", raising=False)
+    monkeypatch.delenv("GH_TOKEN", raising=False)
+    monkeypatch.setenv("GITHUB_TOKEN", "ghp_token")
+    target = tmp_path / "isolated-home"
+
+    provider_module._sync_copilot_auth_metadata(target, source_home=tmp_path / "absent")
+
+    assert target.is_dir()
+    assert not (target / "config.json").exists()
+
+
+def test_missing_account_metadata_without_credentials_raises(monkeypatch, tmp_path):
+    for name in provider_module._TOKEN_ENV_VARS:
+        monkeypatch.delenv(name, raising=False)
+
+    with pytest.raises(RuntimeError, match="COPILOT_GITHUB_TOKEN"):
+        provider_module._sync_copilot_auth_metadata(tmp_path / "isolated-home", source_home=tmp_path / "absent")
+
+
+def test_transient_service_outage_is_not_mistaken_for_a_config_error():
+    """ "is not available" alone must stay retryable — only the model is terminal."""
+    assert provider_module._is_configuration_error(JsonRpcError("Copilot service is not available.")) is False
+    assert provider_module._is_runtime_failure(JsonRpcError("Copilot service is not available.")) is True
+    assert provider_module._is_configuration_error(JsonRpcError('Model "gpt-9" is not available.')) is True

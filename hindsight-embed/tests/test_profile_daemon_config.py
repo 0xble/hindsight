@@ -625,7 +625,7 @@ def test_configure_from_env_accepts_github_copilot_without_api_key(temp_home, mo
     monkeypatch.setattr(cli, "CONFIG_FILE", config_dir / "embed")
 
     monkeypatch.setenv("HINDSIGHT_API_LLM_PROVIDER", "github-copilot")
-    monkeypatch.setenv("HINDSIGHT_API_LLM_MODEL", "gpt-5.6-sol")
+    monkeypatch.setenv("HINDSIGHT_API_LLM_MODEL", "gpt-5.6-terra")
     monkeypatch.delenv("HINDSIGHT_API_LLM_API_KEY", raising=False)
     monkeypatch.setenv("OPENAI_API_KEY", "unrelated-openai-key")
 
@@ -634,7 +634,7 @@ def test_configure_from_env_accepts_github_copilot_without_api_key(temp_home, mo
 
     contents = (config_dir / "embed").read_text()
     assert "HINDSIGHT_API_LLM_PROVIDER=github-copilot" in contents
-    assert "HINDSIGHT_API_LLM_MODEL=gpt-5.6-sol" in contents
+    assert "HINDSIGHT_API_LLM_MODEL=gpt-5.6-terra" in contents
     active_lines = [line for line in contents.splitlines() if line and not line.startswith("#")]
     assert not any(line.startswith("HINDSIGHT_API_LLM_API_KEY=") for line in active_lines)
 
