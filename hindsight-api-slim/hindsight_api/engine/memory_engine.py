@@ -5170,10 +5170,20 @@ class MemoryEngine(MemoryEngineInterface):
         When ``include_observations`` is set, consolidated observations are also
         exported (and restored on import) instead of being regenerated.
         """
+        from .memories import get_memories
         from .transfer import export_documents
 
         await self._get_backend()
-        return await export_documents(self._backend, bank_id, document_ids, include_observations=include_observations)
+        # The store decides whether this bank's memories are in SQL at all: the loaders read
+        # `memory_units` directly, and for a store-owned bank that table is empty, which used to
+        # produce an empty archive with a 200 rather than an error.
+        return await export_documents(
+            self._backend,
+            bank_id,
+            document_ids,
+            include_observations=include_observations,
+            memories=get_memories(),
+        )
 
     async def submit_export_documents_async(
         self,

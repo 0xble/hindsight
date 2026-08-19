@@ -1843,3 +1843,66 @@ async def test_download_route_rejects_unauthorized_keys(api_client, memory, requ
         assert r.status_code == 404
     finally:
         await memory.delete_bank(bank, request_context=request_context)
+
+
+# --------------------------------------------------------------------------- store-owned refusal
+
+
+class _StoreOwnedMemories:
+    """A memories store that keeps memories outside SQL, like the memlake extension."""
+
+    def writes_memory_rows_in_sql_for(self, bank_id: str) -> bool:
+        return False
+
+
+class _SqlMemories:
+    def writes_memory_rows_in_sql_for(self, bank_id: str) -> bool:
+        return True
+
+
+@pytest.mark.asyncio
+async def test_export_refuses_a_store_owned_bank_instead_of_returning_an_empty_archive():
+    """The export must fail loudly rather than succeed with nothing in it.
+
+    Every loader reads `memory_units` and friends directly, so for a bank whose memories live
+    outside SQL those tables are empty: the export walked them, found nothing, and returned a
+    well-formed archive with a 200. An operator taking a backup only finds out at restore time,
+    which is the worst possible moment. Asserted on the refusal rather than on archive contents
+    because an empty archive is exactly what a passing-but-wrong implementation produces.
+    """
+    from hindsight_api.engine.transfer.export import export_bank, export_documents
+    from hindsight_api.extensions.operation_validator import OperationValidationError
+
+    with pytest.raises(OperationValidationError) as ei:
+        await export_documents(None, "bank-x", None, memories=_StoreOwnedMemories())
+    assert ei.value.status_code == 501
+    assert "bank-x" in ei.value.reason
+
+    with pytest.raises(OperationValidationError):
+        await export_bank(None, "bank-x", memories=_StoreOwnedMemories())
+
+
+@pytest.mark.asyncio
+async def test_export_does_not_refuse_a_sql_backed_bank():
+    """The guard must not fire for a Postgres bank — it gets past the check and on to the query.
+
+    `backend=None` makes the export fail once it tries to acquire a connection; any error OTHER
+    than the refusal proves the guard let it through, which is the property under test.
+    """
+    from hindsight_api.engine.transfer.export import export_documents
+    from hindsight_api.extensions.operation_validator import OperationValidationError
+
+    with pytest.raises(Exception) as ei:  # noqa: PT011 - the type is the assertion
+        await export_documents(None, "bank-x", None, memories=_SqlMemories())
+    assert not isinstance(ei.value, OperationValidationError), "the guard fired for a SQL bank"
+
+
+@pytest.mark.asyncio
+async def test_export_without_a_store_is_unchanged():
+    """No store passed (the admin CLI's shape) must not start refusing every export."""
+    from hindsight_api.engine.transfer.export import export_documents
+    from hindsight_api.extensions.operation_validator import OperationValidationError
+
+    with pytest.raises(Exception) as ei:  # noqa: PT011
+        await export_documents(None, "bank-x", None)
+    assert not isinstance(ei.value, OperationValidationError)
