@@ -3112,16 +3112,34 @@ async def _try_delta_retain(
     (``0`` if the submission matched prior content exactly and nothing was
     re-extracted).
     """
-    # A store-owned (PG-free) retain keeps its documents and chunks outside SQL, so the chunk diff
-    # below has to ask the store for them. It used to skip delta entirely for such a bank on the
-    # grounds that "full retain of an unchanged doc is still cheap" — which is true of cost and
-    # false of behaviour: the full-replace path deletes the document's facts and rebuilds them, so
-    # every observation built on those facts is orphaned or destroyed by a re-ingest that changed
-    # nothing. Delta exists as much to leave unchanged things alone as to save work.
+    # Delta is DISABLED for a store-owned (PG-free) bank, and the reason is the write path, not the
+    # chunk diff. Two things this path relies on do not exist for such a bank:
+    #
+    #   * the concurrency control. `_delta_batch_write_ext` serializes concurrent writers on
+    #     `SELECT content_hash FROM documents ... FOR UPDATE`. A store-owned bank has no such row,
+    #     so `current_hash` is NULL, the ownership recheck is skipped, and parallel appends each
+    #     plan against the same base and overwrite each other — turns are lost, silently, with
+    #     every call returning success. The store's own compare-and-set (`put_document`'s
+    #     `expect_watermark`) is what would have to take the row lock's place.
+    #   * the document write itself. The delta path updates the document through
+    #     `upsert_document_metadata`, which is SQL — it writes nothing for a store-owned bank, so
+    #     the record would keep its pre-delta body.
+    #
+    # Falling through to the full streaming retain is therefore correct, but it is NOT free, and
+    # the cost is not the one previously recorded here ("full retain of an unchanged doc is still
+    # cheap"). Full replace deletes the document's facts and rebuilds them, so re-submitting a
+    # document that changed NOTHING orphans or destroys every observation standing on those facts
+    # and requeues them for consolidation — verified by
+    # test_delta_retain_orphan_observations.py, which fails against a store-owned bank for exactly
+    # that reason. Enabling delta here without first giving the write path a store-side CAS trades
+    # that for silent append loss, which is worse; both are covered by tests, in opposite
+    # directions, so the trade is measurable rather than a matter of opinion.
     from ..memories import get_memories as _get_memories_delta
 
     _delta_store = _get_memories_delta()
-    _store_owned_delta = _delta_store.store_owned_retain_for(bank_id)
+    if _delta_store.store_owned_retain_for(bank_id):
+        return None
+    _store_owned_delta = False
 
     # Need a single document_id
     effective_doc_id = document_id
