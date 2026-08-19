@@ -8271,15 +8271,37 @@ class MemoryEngine(MemoryEngineInterface):
                         result = {"memory_units_deleted": units_count, "entities_deleted": 0}
                     else:
                         # Delete all data for the bank — observations are included, no invalidation needed
-                        units_count = await conn.fetchval(
-                            f"SELECT COUNT(*) FROM {fq_table('memory_units')} WHERE bank_id = $1", bank_id
-                        )
-                        entities_count = await conn.fetchval(
-                            f"SELECT COUNT(*) FROM {fq_table('entities')} WHERE bank_id = $1", bank_id
-                        )
-                        documents_count = await conn.fetchval(
-                            f"SELECT COUNT(*) FROM {fq_table('documents')} WHERE bank_id = $1", bank_id
-                        )
+                        # What was deleted has to be counted where it actually lives. For a bank
+                        # whose memories, documents and entity registry are outside SQL, these three
+                        # tables are empty, so the endpoint reported deleting nothing while dropping
+                        # the whole bank — a success message that reads like a no-op.
+                        from .memories import get_memories as _get_memories_for_delete
+
+                        _del_store = _get_memories_for_delete()
+                        if _del_store.writes_memory_rows_in_sql_for(bank_id):
+                            units_count = await conn.fetchval(
+                                f"SELECT COUNT(*) FROM {fq_table('memory_units')} WHERE bank_id = $1", bank_id
+                            )
+                            entities_count = await conn.fetchval(
+                                f"SELECT COUNT(*) FROM {fq_table('entities')} WHERE bank_id = $1", bank_id
+                            )
+                            documents_count = await conn.fetchval(
+                                f"SELECT COUNT(*) FROM {fq_table('documents')} WHERE bank_id = $1", bank_id
+                            )
+                        else:
+                            _counts = await _del_store.count_memories(
+                                conn=conn, fq_table=fq_table, bank_id=bank_id
+                            )
+                            units_count = sum(_counts.values())
+                            documents_count = (
+                                await _del_store.count_documents(bank_id=bank_id)
+                                if _del_store.owns_document_store_for(bank_id)
+                                else 0
+                            )
+                            _ents = await _del_store.list_entities(
+                                conn=conn, fq_table=fq_table, bank_id=bank_id, search=None, limit=1, offset=0
+                            )
+                            entities_count = int(_ents.get("total") or 0)
 
                         # Delete documents (cascades to chunks)
                         await conn.execute(f"DELETE FROM {fq_table('documents')} WHERE bank_id = $1", bank_id)
