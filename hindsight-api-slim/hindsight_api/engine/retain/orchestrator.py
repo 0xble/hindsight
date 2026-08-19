@@ -3112,15 +3112,16 @@ async def _try_delta_retain(
     (``0`` if the submission matched prior content exactly and nothing was
     re-extracted).
     """
-    # A store-owned (PG-free) retain resolves entities and replaces atomically server-side; the
-    # delta optimization's chunk-diff still rides a Postgres connection phase (documents/chunks
-    # tombstones + witness), so for now fall straight through to the full streaming retain, which
-    # has its own PG-free path. Re-enabling delta for a store-owned backend (a store-side chunk
-    # diff) is a follow-up. Full retain of an unchanged doc is still cheap.
+    # A store-owned (PG-free) retain keeps its documents and chunks outside SQL, so the chunk diff
+    # below has to ask the store for them. It used to skip delta entirely for such a bank on the
+    # grounds that "full retain of an unchanged doc is still cheap" — which is true of cost and
+    # false of behaviour: the full-replace path deletes the document's facts and rebuilds them, so
+    # every observation built on those facts is orphaned or destroyed by a re-ingest that changed
+    # nothing. Delta exists as much to leave unchanged things alone as to save work.
     from ..memories import get_memories as _get_memories_delta
 
-    if _get_memories_delta().store_owned_retain_for(bank_id):
-        return None
+    _delta_store = _get_memories_delta()
+    _store_owned_delta = _delta_store.store_owned_retain_for(bank_id)
 
     # Need a single document_id
     effective_doc_id = document_id
@@ -3134,27 +3135,49 @@ async def _try_delta_retain(
     # outside the write TXN, so a concurrent retain could modify the document
     # between this read and the write. The write TXN verifies the hash hasn't
     # changed; if it has, we fall back to streaming (which has full protection).
-    async with acquire_with_retry(pool) as conn:
-        if document_body_override is not None:
-            doc_row_at_load = await conn.fetchrow(
-                f"SELECT content_hash, original_text FROM {fq_table('documents')} WHERE id = $1 AND bank_id = $2",
-                effective_doc_id,
-                bank_id,
+    if _store_owned_delta:
+        # Same two reads, asked of the store that actually holds them. The chunk records carry no
+        # separate id here — a chunk_id is `{bank_id}_{document_id}_{index}` by construction — and
+        # the hash is recomputed from the text with the same function that wrote it, so the
+        # comparison below is against like.
+        record = (
+            await _delta_store.get_document_record(bank_id=bank_id, document_id=effective_doc_id, include_text=True)
+            if document_body_override is not None
+            else None
+        )
+        doc_hash_at_load = await _delta_store.document_content_hash(bank_id=bank_id, document_id=effective_doc_id)
+        original_text_at_load = (record or {}).get("original_text") if record is not None else None
+        _texts = await _delta_store.list_chunk_texts(bank_id=bank_id, document_id=effective_doc_id) or []
+        existing_chunks = [
+            chunk_storage.ExistingChunk(
+                chunk_id=f"{bank_id}_{effective_doc_id}_{index}",
+                chunk_index=index,
+                content_hash=chunk_storage.compute_chunk_hash(text),
             )
-            doc_hash_at_load = doc_row_at_load["content_hash"] if doc_row_at_load else None
-            original_text_at_load = doc_row_at_load["original_text"] if doc_row_at_load else None
-        else:
-            doc_hash_at_load = await conn.fetchval(
-                f"SELECT content_hash FROM {fq_table('documents')} WHERE id = $1 AND bank_id = $2",
-                effective_doc_id,
-                bank_id,
-            )
-            original_text_at_load = None
+            for index, text in enumerate(_texts)
+        ]
+    else:
+        async with acquire_with_retry(pool) as conn:
+            if document_body_override is not None:
+                doc_row_at_load = await conn.fetchrow(
+                    f"SELECT content_hash, original_text FROM {fq_table('documents')} WHERE id = $1 AND bank_id = $2",
+                    effective_doc_id,
+                    bank_id,
+                )
+                doc_hash_at_load = doc_row_at_load["content_hash"] if doc_row_at_load else None
+                original_text_at_load = doc_row_at_load["original_text"] if doc_row_at_load else None
+            else:
+                doc_hash_at_load = await conn.fetchval(
+                    f"SELECT content_hash FROM {fq_table('documents')} WHERE id = $1 AND bank_id = $2",
+                    effective_doc_id,
+                    bank_id,
+                )
+                original_text_at_load = None
 
-        # Load chunks after the document version. If a concurrent writer commits
-        # between these reads, the hash precondition on metadata-only writes (or
-        # the extraction freshness recheck below) forces a streaming fallback.
-        existing_chunks = await chunk_storage.load_existing_chunks(conn, bank_id, effective_doc_id)
+            # Load chunks after the document version. If a concurrent writer commits
+            # between these reads, the hash precondition on metadata-only writes (or
+            # the extraction freshness recheck below) forces a streaming fallback.
+            existing_chunks = await chunk_storage.load_existing_chunks(conn, bank_id, effective_doc_id)
 
     # For an append, the document this delta plans against must still be the one
     # whose text the append concatenated onto. Every write below is gated on
@@ -3638,6 +3661,47 @@ async def _delta_metadata_only(
     expected_content_hash: str | None = None,
 ) -> tuple[list[list[str]], TokenUsage, int] | None:
     """Handle the case where no chunks changed — just update document metadata and tags."""
+    from ..memories import get_memories as _get_memories_meta
+
+    _meta_store = _get_memories_meta()
+    if _meta_store.store_owned_retain_for(bank_id):
+        # The document and its chunks are not in SQL, so the row lock and the hash read above have
+        # nothing to read: the whole point of this path — "the document has not moved, so leave its
+        # facts alone" — would otherwise decide it HAD moved and fall back to a full retain, which
+        # rebuilds the facts and orphans every observation standing on them.
+        current_content_hash = await _meta_store.document_content_hash(bank_id=bank_id, document_id=document_id)
+        if expected_content_hash is not None and current_content_hash != expected_content_hash:
+            log_buffer.append(
+                f"[delta] Document {document_id} changed before metadata update — falling back to full retain"
+            )
+            return None
+        combined_content = (
+            document_body_override
+            if document_body_override is not None
+            else "\n".join([c.get("content", "") for c in contents_dicts])
+        )
+        retain_params, merged_tags = _build_retain_params(contents_dicts, document_tags)
+        # Re-put the record with the SAME body hashes: PutDocuments mints upload URLs only for
+        # bodies it is missing, and none are missing, so this changes labels without moving bytes.
+        chunk_texts = await _meta_store.list_chunk_texts(bank_id=bank_id, document_id=document_id) or []
+        await _meta_store.put_document(
+            bank_id=bank_id,
+            document_id=document_id,
+            content_hash=current_content_hash or "",
+            original_text=combined_content,
+            chunk_texts=chunk_texts,
+            tags=merged_tags,
+            metadata=retain_params,
+        )
+        if outbox_callback is not None:
+            # The outbox is still SQL for every deployment, so it keeps its own connection.
+            async with acquire_with_retry(pool) as conn:
+                await outbox_callback(conn)
+        total_time = time.time() - start_time
+        log_buffer.append(f"DELTA RETAIN (no changes): metadata updated in {total_time:.3f}s")
+        logger.info("\n" + "\n".join(log_buffer) + "\n")
+        return [[] for _ in contents], TokenUsage(), 0
+
     async with acquire_with_retry(pool) as conn:
         async with conn.transaction():
             # Lock the document row to serialize with concurrent retains
