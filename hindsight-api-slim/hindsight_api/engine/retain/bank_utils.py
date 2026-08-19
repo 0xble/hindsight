@@ -550,8 +550,52 @@ async def list_banks(pool, *, search_query: str | None = None) -> list:
                 }
             )
 
+        # Banks whose memories live outside SQL have no `documents` / `memory_units` rows for the
+        # joins above to take a MAX over, so their `last_write_at` came back NULL and they sorted as
+        # if never written. The store can answer it, and the Counters RPC is BATCHED — every such
+        # bank costs one call in total — so it is done here, BEFORE the sort. Doing it in the
+        # page-level overlay instead would fix the field but leave the order wrong, and
+        # inconsistent across pages, which is worse than uniformly wrong.
+        await _apply_store_last_write(result, sort_keys)
+
         result.sort(key=lambda bank: sort_keys[bank["bank_id"]], reverse=True)
         return result
+
+
+async def _apply_store_last_write(banks: list[dict], sort_keys: "dict[str, datetime]") -> None:
+    """Fill `last_write_at` (and the sort key) from the store, for banks SQL cannot answer for.
+
+    One batched call for all of them. A bank the store has no time for is left exactly as it was —
+    absent means "unknown", never "the epoch", so an un-folded bank keeps whatever ordering it had
+    rather than being pushed to the bottom on a guess.
+    """
+    from ..memories import get_memories
+
+    store = get_memories()
+    external = [b for b in banks if not store.writes_memory_rows_in_sql_for(b["bank_id"])]
+    if not external:
+        return
+    ids = [b["bank_id"] for b in external]
+    try:
+        times = await store.last_write_at_many(bank_ids=ids)
+        # Asked for separately, because they are different questions: `last_document_at` is
+        # INGESTION time and must not move when an existing document is re-retained, while
+        # `last_write_at` must. Reporting one under both names looked harmless and is not — it makes
+        # a rewrite read as a new document.
+        doc_times = await store.last_document_at_many(bank_ids=ids)
+    except Exception as e:  # noqa: BLE001 - ordering is a nicety; the list itself must still render
+        logger.warning(f"Could not read write times from the store for {len(external)} bank(s): {e}")
+        return
+    for bank in external:
+        doc_when = doc_times.get(bank["bank_id"])
+        if doc_when is not None:
+            bank["last_document_at"] = doc_when.isoformat()
+    for bank in external:
+        when = times.get(bank["bank_id"])
+        if when is None:
+            continue
+        bank["last_write_at"] = when.isoformat()
+        sort_keys[bank["bank_id"]] = when
 
 
 async def apply_store_fact_counts(pool, banks: list[dict]) -> None:
