@@ -3161,7 +3161,8 @@ export type MentalModelDryRunRefreshResult = {
     | "content_written"
     | "content_preserved_no_new_facts"
     | "refresh_failed_empty_candidate"
-    | "refresh_failed_delta_not_applied";
+    | "refresh_failed_delta_not_applied"
+    | "refresh_failed_structured_output";
   /**
    * Would Persist
    *
@@ -3393,7 +3394,8 @@ export type MentalModelRefreshTrace = {
     | "content_written"
     | "content_preserved_no_new_facts"
     | "refresh_failed_empty_candidate"
-    | "refresh_failed_delta_not_applied";
+    | "refresh_failed_delta_not_applied"
+    | "refresh_failed_structured_output";
   /**
    * Tool Calls
    *
@@ -3921,6 +3923,31 @@ export type OperationResponse = {
    */
   mental_model_id?: string | null;
   /**
+   * Refresh Outcome
+   *
+   * What a refresh_mental_model operation did with the document: rewrote it (`content_written`), ran and found nothing to change (`content_preserved_no_new_facts`), or refused to write (the `refresh_failed_*` values). Null for other task types, for operations that have not finished, and for refreshes recorded before this field existed.
+   */
+  refresh_outcome?:
+    | "content_written"
+    | "content_preserved_no_new_facts"
+    | "refresh_failed_empty_candidate"
+    | "refresh_failed_delta_not_applied"
+    | "refresh_failed_structured_output"
+    | null;
+  /**
+   * Refresh Failure Reason
+   *
+   * Why a failed refresh refused to write, finer-grained than the outcome. Null unless `refresh_outcome` is one of the `refresh_failed_*` values.
+   */
+  refresh_failure_reason?:
+    | "empty_candidate"
+    | "structured_doc_unreadable"
+    | "delta_ops_failed"
+    | "delta_ops_all_skipped"
+    | "delta_not_applied"
+    | "structured_output_failed"
+    | null;
+  /**
    * Created At
    */
   created_at: string;
@@ -4014,6 +4041,31 @@ export type OperationStatusResponse = {
   result_metadata?: {
     [key: string]: unknown;
   } | null;
+  /**
+   * Refresh Outcome
+   *
+   * What a refresh_mental_model operation did with the document: rewrote it (`content_written`), ran and found nothing to change (`content_preserved_no_new_facts`), or refused to write (the `refresh_failed_*` values). Null for other task types, for operations that have not finished, and for refreshes recorded before this field existed. Unlike `result_metadata` this is a supported, typed field.
+   */
+  refresh_outcome?:
+    | "content_written"
+    | "content_preserved_no_new_facts"
+    | "refresh_failed_empty_candidate"
+    | "refresh_failed_delta_not_applied"
+    | "refresh_failed_structured_output"
+    | null;
+  /**
+   * Refresh Failure Reason
+   *
+   * Why a failed refresh refused to write, finer-grained than the outcome. Null unless `refresh_outcome` is one of the `refresh_failed_*` values.
+   */
+  refresh_failure_reason?:
+    | "empty_candidate"
+    | "structured_doc_unreadable"
+    | "delta_ops_failed"
+    | "delta_ops_all_skipped"
+    | "delta_not_applied"
+    | "structured_output_failed"
+    | null;
   /**
    * Child Operations
    *

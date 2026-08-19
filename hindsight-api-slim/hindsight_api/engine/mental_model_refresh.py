@@ -34,11 +34,28 @@ ModeFallbackReason = Literal[
     "delta_ops_all_skipped",
 ]
 
+# What a refresh did with the document. ``refresh_failed_structured_output`` is
+# reachable only from the persist path (the dry run never extracts structured
+# output), so it never appears on a dry-run result — only on a real refresh.
 RefreshOutcome = Literal[
     "content_written",
     "content_preserved_no_new_facts",
     "refresh_failed_empty_candidate",
     "refresh_failed_delta_not_applied",
+    "refresh_failed_structured_output",
+]
+
+# Why a refresh refused to write, matching the ``reflect_response.refresh_skipped``
+# value persisted alongside the preserved document. Finer-grained than the outcome:
+# ``refresh_failed_delta_not_applied`` alone does not say whether the op call failed,
+# every op was rejected, or the baseline document could not be read.
+RefreshFailureReason = Literal[
+    "empty_candidate",
+    "structured_doc_unreadable",
+    "delta_ops_failed",
+    "delta_ops_all_skipped",
+    "delta_not_applied",
+    "structured_output_failed",
 ]
 
 

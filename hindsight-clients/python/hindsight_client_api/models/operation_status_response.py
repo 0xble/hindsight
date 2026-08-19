@@ -39,15 +39,37 @@ class OperationStatusResponse(BaseModel):
     next_retry_at: Optional[StrictStr] = None
     progress: Optional[OperationProgress] = None
     result_metadata: Optional[Dict[str, Any]] = None
+    refresh_outcome: Optional[StrictStr] = None
+    refresh_failure_reason: Optional[StrictStr] = None
     child_operations: Optional[List[ChildOperationStatus]] = None
     task_payload: Optional[Dict[str, Any]] = None
-    __properties: ClassVar[List[str]] = ["operation_id", "status", "operation_type", "created_at", "updated_at", "completed_at", "error_message", "retry_count", "next_retry_at", "progress", "result_metadata", "child_operations", "task_payload"]
+    __properties: ClassVar[List[str]] = ["operation_id", "status", "operation_type", "created_at", "updated_at", "completed_at", "error_message", "retry_count", "next_retry_at", "progress", "result_metadata", "refresh_outcome", "refresh_failure_reason", "child_operations", "task_payload"]
 
     @field_validator('status')
     def status_validate_enum(cls, value):
         """Validates the enum"""
         if value not in set(['pending', 'processing', 'completed', 'failed', 'cancelled', 'not_found']):
             raise ValueError("must be one of enum values ('pending', 'processing', 'completed', 'failed', 'cancelled', 'not_found')")
+        return value
+
+    @field_validator('refresh_outcome')
+    def refresh_outcome_validate_enum(cls, value):
+        """Validates the enum"""
+        if value is None:
+            return value
+
+        if value not in set(['content_written', 'content_preserved_no_new_facts', 'refresh_failed_empty_candidate', 'refresh_failed_delta_not_applied', 'refresh_failed_structured_output']):
+            raise ValueError("must be one of enum values ('content_written', 'content_preserved_no_new_facts', 'refresh_failed_empty_candidate', 'refresh_failed_delta_not_applied', 'refresh_failed_structured_output')")
+        return value
+
+    @field_validator('refresh_failure_reason')
+    def refresh_failure_reason_validate_enum(cls, value):
+        """Validates the enum"""
+        if value is None:
+            return value
+
+        if value not in set(['empty_candidate', 'structured_doc_unreadable', 'delta_ops_failed', 'delta_ops_all_skipped', 'delta_not_applied', 'structured_output_failed']):
+            raise ValueError("must be one of enum values ('empty_candidate', 'structured_doc_unreadable', 'delta_ops_failed', 'delta_ops_all_skipped', 'delta_not_applied', 'structured_output_failed')")
         return value
 
     model_config = ConfigDict(
@@ -144,6 +166,16 @@ class OperationStatusResponse(BaseModel):
         if self.result_metadata is None and "result_metadata" in self.model_fields_set:
             _dict['result_metadata'] = None
 
+        # set to None if refresh_outcome (nullable) is None
+        # and model_fields_set contains the field
+        if self.refresh_outcome is None and "refresh_outcome" in self.model_fields_set:
+            _dict['refresh_outcome'] = None
+
+        # set to None if refresh_failure_reason (nullable) is None
+        # and model_fields_set contains the field
+        if self.refresh_failure_reason is None and "refresh_failure_reason" in self.model_fields_set:
+            _dict['refresh_failure_reason'] = None
+
         # set to None if child_operations (nullable) is None
         # and model_fields_set contains the field
         if self.child_operations is None and "child_operations" in self.model_fields_set:
@@ -177,6 +209,8 @@ class OperationStatusResponse(BaseModel):
             "next_retry_at": obj.get("next_retry_at"),
             "progress": OperationProgress.from_dict(obj["progress"]) if obj.get("progress") is not None else None,
             "result_metadata": obj.get("result_metadata"),
+            "refresh_outcome": obj.get("refresh_outcome"),
+            "refresh_failure_reason": obj.get("refresh_failure_reason"),
             "child_operations": [ChildOperationStatus.from_dict(_item) for _item in obj["child_operations"]] if obj.get("child_operations") is not None else None,
             "task_payload": obj.get("task_payload")
         })

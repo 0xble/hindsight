@@ -173,7 +173,11 @@ from hindsight_api.engine.memory_engine import (
     _current_schema,
     _get_tiktoken_encoding,
 )
-from hindsight_api.engine.mental_model_refresh import MentalModelDryRunRefreshResult
+from hindsight_api.engine.mental_model_refresh import (
+    MentalModelDryRunRefreshResult,
+    RefreshFailureReason,
+    RefreshOutcome,
+)
 from hindsight_api.engine.providers.none_llm import LLMNotAvailableError
 from hindsight_api.engine.reflect import ReflectToolCallError
 from hindsight_api.engine.response_models import (
@@ -3277,6 +3281,22 @@ class OperationResponse(BaseModel):
             "same value under `result_metadata`."
         ),
     )
+    refresh_outcome: RefreshOutcome | None = Field(
+        default=None,
+        description=(
+            "What a refresh_mental_model operation did with the document: rewrote it "
+            "(`content_written`), ran and found nothing to change (`content_preserved_no_new_facts`), "
+            "or refused to write (the `refresh_failed_*` values). Null for other task types, for "
+            "operations that have not finished, and for refreshes recorded before this field existed."
+        ),
+    )
+    refresh_failure_reason: RefreshFailureReason | None = Field(
+        default=None,
+        description=(
+            "Why a failed refresh refused to write, finer-grained than the outcome. Null unless "
+            "`refresh_outcome` is one of the `refresh_failed_*` values."
+        ),
+    )
     created_at: str
     updated_at: str | None = Field(
         default=None,
@@ -3463,6 +3483,23 @@ class OperationStatusResponse(BaseModel):
     result_metadata: dict[str, Any] | None = Field(
         default=None,
         description="Internal metadata for debugging. Structure may change without notice. Not for production use.",
+    )
+    refresh_outcome: RefreshOutcome | None = Field(
+        default=None,
+        description=(
+            "What a refresh_mental_model operation did with the document: rewrote it "
+            "(`content_written`), ran and found nothing to change (`content_preserved_no_new_facts`), "
+            "or refused to write (the `refresh_failed_*` values). Null for other task types, for "
+            "operations that have not finished, and for refreshes recorded before this field existed. "
+            "Unlike `result_metadata` this is a supported, typed field."
+        ),
+    )
+    refresh_failure_reason: RefreshFailureReason | None = Field(
+        default=None,
+        description=(
+            "Why a failed refresh refused to write, finer-grained than the outcome. Null unless "
+            "`refresh_outcome` is one of the `refresh_failed_*` values."
+        ),
     )
     child_operations: list[ChildOperationStatus] | None = Field(
         default=None, description="Child operations for batch operations (if applicable)"
