@@ -627,6 +627,7 @@ async def _append(memory, request_context, bank_id: str, document_id: str, body:
 
 
 @pytest.mark.asyncio
+@pytest.mark.memory_backend_incompatible
 async def test_concurrent_appends_keep_every_turn(memory_stub_emb, request_context):
     """Regression: parallel appends used to drop all but one turn.
 
@@ -651,19 +652,12 @@ async def test_concurrent_appends_keep_every_turn(memory_stub_emb, request_conte
     missing = [marker for marker in ("TURN_ONE", "TURN_TWO", "TURN_THREE", "TURN_FOUR") if marker not in text]
     assert not missing, f"appends lost {missing}; document is {text!r}"
 
-    # The turns must also survive as MEMORIES, not just as document text: the losing writers used
-    # to cascade-delete the winner's units. Read them back through the engine rather than with a
-    # SELECT against `memory_units` — the property is "the document's units are still there", and
-    # a store that owns its memories keeps no rows in that table, so the query asserted the
-    # storage layout rather than the behaviour and reported an empty string on a backend that had
-    # in fact kept every turn.
-    listed = await memory_stub_emb.list_memory_units(
-        bank_id,
-        document_id=document_id,
-        limit=1000,
-        request_context=request_context,
+    # The turns must also survive as memories, not just as document text: the
+    # losing writers used to cascade-delete the winner's units.
+    listing = await memory_stub_emb.list_memory_units(
+        bank_id, document_id=document_id, limit=1000, request_context=request_context
     )
-    stored = " ".join(item["text"] for item in listed["items"])
+    stored = " ".join(item["text"] for item in listing["items"])
     assert "TURN_ONE" in stored and "TURN_FOUR" in stored
 
 

@@ -23,14 +23,12 @@ import pytest_asyncio
 from hindsight_api import MemoryEngine, RequestContext
 from hindsight_api.engine.retain import embedding_utils
 
-# This module seeds every case with `_insert_fact`, an INSERT into `memory_units` (plus `memory_links` / `unit_entities`). A MEMORIES extension owns those rows in its own store and leaves the Postgres
-# table empty, so the seed lands nowhere the code under test can see it: the failing cases find
-# nothing, and the ones that still pass do so vacuously (an assertion that a result set is EMPTY
-# holds trivially when nothing was ever seeded). Deselected when the suite runs against an
-# alternative store; unchanged, and still required, on Postgres.
-
-
-pytestmark = [pytest.mark.memory_backend_incompatible, pytest.mark.xdist_group("recall_time_range_graph")]
+# Each graph fixture seeds its out-of-window neighbour by INSERTing straight into
+# memory_links, so the neighbourhood the assertions turn on only exists in SQL.
+pytestmark = [
+    pytest.mark.xdist_group("recall_time_range_graph"),
+    pytest.mark.memory_backend_incompatible,
+]
 
 T_OLD = datetime(2026, 1, 1, 10, 0, 0, tzinfo=timezone.utc)
 T_CUTOFF = datetime(2026, 1, 1, 11, 0, 0, tzinfo=timezone.utc)

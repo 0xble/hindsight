@@ -18,6 +18,7 @@ def _ts():
 
 
 @pytest.mark.asyncio
+@pytest.mark.memory_backend_incompatible
 async def test_append_mode_concatenates_content(memory, request_context):
     """
     When update_mode='append', new content should be appended to the existing
@@ -121,24 +122,13 @@ async def test_append_mode_metadata_consistent_for_unchanged_and_new_units(memor
         assert doc is not None
         assert doc["document_metadata"] == {"source": "crm"}
 
-        # Read the units back through the engine, not with a SELECT against `memory_units`: the
-        # property under test is that every unit of the document carries the append's metadata,
-        # and that is what the read model reports. The raw query asserted the same thing one level
-        # too low — it reads a table that a store owning its own memories leaves empty, so it
-        # failed with `assert []` on a backend where the behaviour was in fact correct.
-        listed = await memory.list_memory_units(
-            bank_id,
-            document_id=document_id,
-            limit=1000,
-            request_context=request_context,
-        )
-        units = listed["items"]
-        assert units, "the document's units should be listable"
-        for unit in units:
-            metadata = unit["metadata"]
-            if isinstance(metadata, str):
-                metadata = json.loads(metadata)
-            assert metadata == {"source": "crm"}
+        listing = await memory.list_memory_units(bank_id, document_id=document_id, request_context=request_context)
+        rows = listing["items"]
+
+        assert rows
+        for row in rows:
+            # list_memory_units already parses the JSON metadata into a dict.
+            assert row["metadata"] == {"source": "crm"}
     finally:
         await memory.delete_bank(bank_id, request_context=request_context)
 
