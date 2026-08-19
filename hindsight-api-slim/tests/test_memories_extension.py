@@ -85,7 +85,41 @@ class InMemoryMemories(MemoriesExtension):
             await self.index_facts(bank_id, unit_ids, facts, document_id)
         return unit_ids
 
-    async def index_facts(self, bank_id, unit_ids, facts, document_id=None, unit_entity_ids=None):
+    # The interface's newer members, implemented so the seam stays a COMPLETE store — the
+    # structural test asserts every method is answered rather than inheriting the
+    # NotImplementedError default, which is what stops a capability being added to the interface
+    # and silently never exercised.
+    async def set_document_tags(self, *, bank_id, document_id, tags):
+        doc = self.documents.get(str(document_id))
+        if doc is not None:
+            doc["tags"] = list(tags)
+
+    async def count_documents(self, *, bank_id):
+        return len(self.documents)
+
+    async def get_entity_graph(self, *, bank_id, limit=1000, min_count=1):
+        return {"nodes": [], "edges": []}
+
+    async def list_documents(
+        self, *, bank_id, search_query=None, tags=None, tags_match="any_strict", limit=100, offset=0
+    ):
+        items = [{"id": doc_id, **doc} for doc_id, doc in self.documents.items()]
+        return {"items": items[offset : offset + limit], "total": len(items), "limit": limit, "offset": offset}
+
+    async def retain(
+        self,
+        bank_id,
+        unit_ids,
+        facts,
+        document_id=None,
+        unit_entity_names=None,
+        replace_document_id="",
+        resolve_threshold=0.0,
+    ):
+        self.calls.append("retain")
+        return None
+
+    async def index_facts(self, bank_id, unit_ids, facts, document_id=None, unit_entity_ids=None, txn=None):
         self.calls.append("index_facts")
         for unit_id, fact in zip(unit_ids, facts):
             self.rows[unit_id] = StoredMemory(
@@ -452,6 +486,7 @@ class InMemoryMemories(MemoriesExtension):
         event_date,
         mentioned_at,
         entity_ids,
+        entity_names=None,
         txn=None,
     ):
         self.calls.append("apply_edit")
@@ -497,6 +532,7 @@ class InMemoryMemories(MemoriesExtension):
         file_content_type="",
         file_original_name="",
         txn=None,
+        expect_watermark=None,
     ):
         self.calls.append("put_document")
         self.documents[str(document_id)] = {
@@ -1075,7 +1111,15 @@ async def test_recall_include_chunks_hydrates_body_from_store(memory, request_co
         assert result.chunks[chunk_id].chunk_text == body, (
             "chunk text must be overlaid from the store's body, not the empty SQL chunks row"
         )
-        assert "list_chunk_texts" in store.calls  # the overlay went through the interface
+        # The overlay went through the interface. The METHOD is deliberately not pinned: hydration
+        # moved from `list_chunk_texts` (which downloads a document's whole packed chunk blob) to
+        # the addressed reads, because a many-chunk recall was paying that blob per document. What
+        # matters is that the body came from the store rather than the empty SQL chunks row, which
+        # the assertion above already proves; this checks it did not arrive by some path outside
+        # the seam.
+        assert {"list_chunk_texts", "get_chunk_texts", "get_chunk_text"} & set(store.calls), (
+            f"no chunk read went through the interface: {store.calls}"
+        )
     finally:
         async with pool.acquire() as conn:
             await conn.execute("DELETE FROM chunks WHERE bank_id = $1", bank_id)

@@ -85,12 +85,15 @@ def __dir__() -> "list[str]":
 
 
 if TYPE_CHECKING:  # pragma: no cover - for type checkers and IDEs, never at runtime
-    from .config import HindsightConfig, get_config
-    from .engine.cross_encoder import CrossEncoderModel, LocalSTCrossEncoder, RemoteTEICrossEncoder
-    from .engine.embeddings import Embeddings, LocalSTEmbeddings, RemoteTEIEmbeddings
-    from .engine.llm_wrapper import LLMConfig
-    from .engine.memory_engine import MemoryEngine
-    from .engine.search.trace import (
+    # `noqa: F401` throughout: these are re-exports, and `__all__` is COMPUTED from
+    # `_LAZY_EXPORTS` above so the resolver and the export list cannot drift. A linter cannot
+    # see a computed `__all__`, so it reads every one of these as unused.
+    from .config import HindsightConfig, get_config  # noqa: F401
+    from .engine.cross_encoder import CrossEncoderModel, LocalSTCrossEncoder, RemoteTEICrossEncoder  # noqa: F401
+    from .engine.embeddings import Embeddings, LocalSTEmbeddings, RemoteTEIEmbeddings  # noqa: F401
+    from .engine.llm_wrapper import LLMConfig  # noqa: F401
+    from .engine.memory_engine import MemoryEngine  # noqa: F401
+    from .engine.search.trace import (  # noqa: F401
         EntryPoint,
         LinkInfo,
         NodeVisit,
@@ -101,5 +104,5 @@ if TYPE_CHECKING:  # pragma: no cover - for type checkers and IDEs, never at run
         SearchTrace,
         WeightComponents,
     )
-    from .engine.search.tracer import SearchTracer
-    from .models import RequestContext
+    from .engine.search.tracer import SearchTracer  # noqa: F401
+    from .models import RequestContext  # noqa: F401
