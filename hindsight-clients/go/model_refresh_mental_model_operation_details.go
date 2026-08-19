@@ -23,7 +23,7 @@ var _ MappedNullable = &RefreshMentalModelOperationDetails{}
 type RefreshMentalModelOperationDetails struct {
 	// Discriminator: which operation type this detail describes.
 	OperationType *string `json:"operation_type,omitempty"`
-	// What the refresh did with the document: rewrote it (`content_written`), ran and found nothing to change (`content_preserved_no_new_facts`), or refused to write (the `refresh_failed_*` values).
+	// What the refresh did with the document: rewrote it (`content_written`), produced a document identical to the stored one (`content_unchanged`), had no new facts to read at all (`content_preserved_no_new_facts`), or refused to write (the `refresh_failed_*` values).
 	Outcome string `json:"outcome"`
 	FailureReason NullableString `json:"failure_reason,omitempty"`
 }

@@ -27,7 +27,7 @@ class RefreshMentalModelOperationDetails(BaseModel):
     What a refresh_mental_model operation did, on the operation record itself.  Reported under an async operation's ``details``, which is keyed by ``operation_type``: each type that has a typed outcome to report contributes its own shape there, rather than every type's fields being flattened onto the operation. Today refresh is the only one.  This exists because ``result_metadata`` — the only per-refresh record kept indefinitely — could not say what a refresh did (#3274), and is documented as debug-only and unstable, so it is not something a caller can build on.
     """ # noqa: E501
     operation_type: Optional[StrictStr] = Field(default='refresh_mental_model', description="Discriminator: which operation type this detail describes.")
-    outcome: StrictStr = Field(description="What the refresh did with the document: rewrote it (`content_written`), ran and found nothing to change (`content_preserved_no_new_facts`), or refused to write (the `refresh_failed_*` values).")
+    outcome: StrictStr = Field(description="What the refresh did with the document: rewrote it (`content_written`), produced a document identical to the stored one (`content_unchanged`), had no new facts to read at all (`content_preserved_no_new_facts`), or refused to write (the `refresh_failed_*` values).")
     failure_reason: Optional[StrictStr] = None
     __properties: ClassVar[List[str]] = ["operation_type", "outcome", "failure_reason"]
 
@@ -44,8 +44,8 @@ class RefreshMentalModelOperationDetails(BaseModel):
     @field_validator('outcome')
     def outcome_validate_enum(cls, value):
         """Validates the enum"""
-        if value not in set(['content_written', 'content_preserved_no_new_facts', 'refresh_failed_empty_candidate', 'refresh_failed_delta_not_applied', 'refresh_failed_structured_output']):
-            raise ValueError("must be one of enum values ('content_written', 'content_preserved_no_new_facts', 'refresh_failed_empty_candidate', 'refresh_failed_delta_not_applied', 'refresh_failed_structured_output')")
+        if value not in set(['content_written', 'content_unchanged', 'content_preserved_no_new_facts', 'refresh_failed_empty_candidate', 'refresh_failed_delta_not_applied', 'refresh_failed_structured_output']):
+            raise ValueError("must be one of enum values ('content_written', 'content_unchanged', 'content_preserved_no_new_facts', 'refresh_failed_empty_candidate', 'refresh_failed_delta_not_applied', 'refresh_failed_structured_output')")
         return value
 
     @field_validator('failure_reason')

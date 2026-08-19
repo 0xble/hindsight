@@ -228,6 +228,11 @@ async def test_preserved_and_rewritten_differ_only_by_outcome(memory: MemoryEngi
     separates "nothing changed" from "the whole document was rewritten".
     """
     document = "# Team\n\nAlice is the lead.\n"
+    # A genuine rewrite of the same length, so content_len cannot tell the two
+    # apart either — same-length-but-different is the point, since identical text
+    # would (correctly) report content_unchanged instead.
+    rewrite = "# Team\n\nAlice is the boss.\n"
+    assert len(rewrite) == len(document)
     metadata: dict[str, dict] = {}
 
     for mode in ("delta", "full"):
@@ -242,8 +247,8 @@ async def test_preserved_and_rewritten_differ_only_by_outcome(memory: MemoryEngi
             request_context=request_context,
         )
         # No facts: delta short-circuits to "nothing to change", while full mode
-        # writes the candidate regardless. Same length, so content_len matches.
-        _patch_reflect(monkeypatch, memory, text=document, facts=[])
+        # writes its candidate regardless. Same length, so content_len matches.
+        _patch_reflect(monkeypatch, memory, text=rewrite, facts=[])
         _patch_delta_llm(monkeypatch, memory, returns=[])
 
         await memory.submit_async_refresh_mental_model(
@@ -511,3 +516,43 @@ def test_non_refresh_operations_report_no_refresh_details():
     assert _operation_details("batch_retain", {"outcome": "content_written"}) is None
     # A refresh that has not finished has nothing to report yet.
     assert _operation_details("refresh_mental_model", {"mental_model_id": "mm-1"}) is None
+
+
+@pytest.mark.asyncio
+async def test_delta_emitting_no_ops_reads_as_unchanged(delta_bank, request_context, monkeypatch):
+    """A delta that changes nothing must not report itself as a rewrite.
+
+    The model is shown the new facts and emits zero operations — it read them and
+    concluded the document already covers them. That lands in the *applied* path
+    (there are no rejected ops), so the document is re-rendered and persisted
+    byte-identically, and the outcome used to read `content_written` — the same
+    value a genuine rewrite produces.
+
+    `content_preserved_no_new_facts` does not cover this: that fires only when the
+    delta window was empty, and here retrieval returned facts.
+    """
+    memory, bank_id, mm = delta_bank
+    stored = (
+        await memory.get_mental_model(bank_id=bank_id, mental_model_id=mm["id"], request_context=request_context)
+    )["content"]
+
+    _patch_reflect(
+        monkeypatch,
+        memory,
+        text="# Team\n\nA candidate the model decides adds nothing.\n",
+        facts=[{"id": "obs-new", "text": "Bob joined", "type": "observation", "context": None}],
+    )
+    _patch_delta_llm(monkeypatch, memory, returns=[])
+
+    await memory.submit_async_refresh_mental_model(
+        bank_id=bank_id, mental_model_id=mm["id"], request_context=request_context
+    )
+    await asyncio.sleep(0.1)
+
+    views = await _refresh_operation_views(memory, bank_id, request_context)
+    assert views.status_model.details is not None
+    assert views.status_model.details.outcome == "content_unchanged"
+
+    # …and the claim is true: the stored document really is byte-identical.
+    after = await memory.get_mental_model(bank_id=bank_id, mental_model_id=mm["id"], request_context=request_context)
+    assert after["content"] == stored

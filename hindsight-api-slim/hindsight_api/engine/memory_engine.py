@@ -13638,13 +13638,21 @@ class MemoryEngine(MemoryEngineInterface):
                     f"for {mental_model_id} ({exc}); leaving structured_content unchanged"
                 )
 
+        # Report by observable effect, not by which branch got here. A delta run
+        # whose model emitted *zero* operations lands in the applied path — the
+        # document is re-rendered and persisted byte-identically — and used to
+        # report ``content_written`` even though nothing about the document
+        # changed. So does a full regeneration that reproduces the stored text.
+        # ``content_preserved_no_new_facts`` does not cover either: it fires only
+        # when the delta window was empty, whereas these runs read facts and
+        # concluded there was nothing to change.
         return _finish(
             effective_mode=effective_mode,
             mode_fallback_reason=mode_fallback_reason,
             final_content=final_content,
             final_structured=final_structured,
             delta_operations=delta_operations,
-            outcome="content_written",
+            outcome="content_written" if final_content.strip() != current_content else "content_unchanged",
         )
 
     async def refresh_mental_model(
@@ -13883,7 +13891,11 @@ class MemoryEngine(MemoryEngineInterface):
         if run is None:
             return None
 
-        preview_content = run.final_content if run.outcome == "content_written" else run.current_content
+        # Both writing outcomes persist the candidate — ``content_unchanged`` just
+        # happens to persist text identical to the stored document, so the preview
+        # and the diff come out the same either way.
+        writes_content = run.outcome in ("content_written", "content_unchanged")
+        preview_content = run.final_content if writes_content else run.current_content
         diff = "\n".join(
             difflib.unified_diff(
                 run.current_content.splitlines(),
@@ -13901,7 +13913,7 @@ class MemoryEngine(MemoryEngineInterface):
             effective_mode=run.effective_mode,
             mode_fallback_reason=run.mode_fallback_reason,
             outcome=run.outcome,
-            would_persist=run.outcome == "content_written",
+            would_persist=writes_content,
             scope=run.scope,
             window=run.window,
             facts=run.facts,

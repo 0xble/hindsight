@@ -3159,6 +3159,7 @@ export type MentalModelDryRunRefreshResult = {
    */
   outcome:
     | "content_written"
+    | "content_unchanged"
     | "content_preserved_no_new_facts"
     | "refresh_failed_empty_candidate"
     | "refresh_failed_delta_not_applied";
@@ -3391,6 +3392,7 @@ export type MentalModelRefreshTrace = {
    */
   outcome:
     | "content_written"
+    | "content_unchanged"
     | "content_preserved_no_new_facts"
     | "refresh_failed_empty_candidate"
     | "refresh_failed_delta_not_applied";
@@ -4641,10 +4643,11 @@ export type RefreshMentalModelOperationDetails = {
   /**
    * Outcome
    *
-   * What the refresh did with the document: rewrote it (`content_written`), ran and found nothing to change (`content_preserved_no_new_facts`), or refused to write (the `refresh_failed_*` values).
+   * What the refresh did with the document: rewrote it (`content_written`), produced a document identical to the stored one (`content_unchanged`), had no new facts to read at all (`content_preserved_no_new_facts`), or refused to write (the `refresh_failed_*` values).
    */
   outcome:
     | "content_written"
+    | "content_unchanged"
     | "content_preserved_no_new_facts"
     | "refresh_failed_empty_candidate"
     | "refresh_failed_delta_not_applied"
