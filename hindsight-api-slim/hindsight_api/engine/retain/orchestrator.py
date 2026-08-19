@@ -1739,7 +1739,24 @@ async def retain_batch(
             return [[] for _ in contents], TokenUsage(), 0
 
     # --- Delta retain: check if we can skip unchanged chunks ---
-    if is_first_batch:
+    #
+    # An APPEND is the one shape where `document_body_override` is not the body being written: the
+    # splitter fills it with the incoming item's own text, and the append above then PREPENDS the
+    # stored body onto slice 1 — so the body actually being written is `existing + override`, and
+    # the override alone is only the new tail. Diffing the whole stored document against that tail
+    # classifies every pre-existing chunk as REMOVED and drops it; measured on an oversized append,
+    # chunks ended up covering 4,348 of 18,538 chars. `contents` already carries the prepend, so an
+    # append keeps diffing against that and only slice 1 (the slice holding the prepend) may delta,
+    # exactly as before. `update_mode` is readable on every slice because the splitter copies it
+    # onto each one, so slices 2..N opt out here too rather than re-deleting the body slice 1 wrote.
+    _delta_full_body = document_body_override if update_mode != "append" else None
+
+    # Every slice of an OVERSIZED replacement gets to try, not just the first. Each one diffs the
+    # same complete body against what is stored, so the first slice does the real work and the rest
+    # find nothing left to change and fall through to the metadata-only path. Gating on the first
+    # slice alone left slices 2..N doing a full extraction of their own content regardless, which is
+    # what made an oversized replacement re-extract a document it had just diffed correctly.
+    if is_first_batch or _delta_full_body is not None:
         delta_result = await _try_delta_retain(
             pool,
             embeddings_model,
@@ -1761,6 +1778,7 @@ async def retain_batch(
             outbox_callback,
             db_semaphore,
             document_body_override=document_body_override,
+            delta_full_body=_delta_full_body,
             append_base_hash=append_base_hash,
         )
         if delta_result is not None:
@@ -3143,6 +3161,9 @@ async def _try_delta_retain(
     db_semaphore: "asyncio.Semaphore | None" = None,
     *,
     document_body_override: str | None = None,
+    # The complete body to diff against, when the caller could establish one. Distinct from
+    # `document_body_override`, which an append fills with only the new tail.
+    delta_full_body: str | None = None,
     append_base_hash: str | None = None,
 ) -> tuple[list[list[str]], TokenUsage, int | None] | None:
     """
@@ -3261,9 +3282,19 @@ async def _try_delta_retain(
         logger.info(f"Delta retain skipped for {effective_doc_id}: existing chunks lack content_hash (pre-migration)")
         return None
 
-    # Chunk new content and classify changes
+    # Chunk new content and classify changes.
+    #
+    # For an OVERSIZED item the retain is split into slices, and `contents` is only this slice while
+    # `existing_chunks` covers the whole stored document. Diffing those two classifies every chunk
+    # merely absent from this slice as REMOVED — measured on a 20-chunk document:
+    # `unchanged=1 changed=0 new=0 removed=19` — so their memories were tombstoned and the later
+    # slices re-added and re-extracted them. `delta_full_body` is the complete body for exactly the
+    # shapes where the caller could establish one, so the diff is taken against that and compares
+    # like with like. It is None for an append, whose complete body is the already-prepended
+    # `contents` — see the gate in `retain_batch`.
     step_start = time.time()
-    new_chunks_with_contents = _chunk_contents_for_delta(contents, config)
+    _diff_contents = [RetainContent(content=delta_full_body)] if delta_full_body is not None else contents
+    new_chunks_with_contents = _chunk_contents_for_delta(_diff_contents, config)
     log_buffer.append(
         f"[delta] Chunked new content: {len(new_chunks_with_contents)} chunks in {time.time() - step_start:.3f}s"
     )
