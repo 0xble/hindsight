@@ -1042,6 +1042,8 @@ def build_structured_delta_prompt(
     source_query: str,
     max_output_tokens: int | None = None,
     max_input_tokens: int | None = None,
+    document_tokens: int | None = None,
+    document_budget: int | None = None,
 ) -> str:
     """Build the user prompt for a structured-delta mental model refresh.
 
@@ -1071,6 +1073,34 @@ def build_structured_delta_prompt(
             "leverage edits first and drop the rest — a truncated response parses as "
             "nothing and loses every change, while a short one keeps the ones you sent."
         )
+
+    # The *document's* budget, which is a different thing from the response budget
+    # above and was previously not mentioned to this call at all. A delta refresh
+    # only ever adds, so a long-lived page grows a little on every round and
+    # crosses its configured budget after a few hundred of them with nothing in
+    # the pipeline noticing. Enforcing it by truncation would delete knowledge
+    # nobody asked to delete, so it is stated as a constraint the model satisfies
+    # the same way it does everything else here — with operations, on the content
+    # that has actually gone stale.
+    document_hint = ""
+    if document_budget is not None and document_tokens is not None:
+        if document_tokens >= document_budget:
+            document_hint = (
+                f"\n\n## Document budget (EXCEEDED)\n"
+                f"The document is ~{document_tokens} tokens against a budget of {document_budget}. "
+                "As well as integrating the new facts, make room: remove or merge blocks that are "
+                "superseded, duplicated, or no longer help answer the TOPIC, using remove_block, "
+                "replace_block or replace_section_blocks. Reclaim space from stale content — never "
+                "by dropping the facts you are integrating, and never by summarising a section that "
+                "is still current into a sentence."
+            )
+        elif document_tokens >= int(document_budget * 0.8):
+            document_hint = (
+                f"\n\n## Document budget\n"
+                f"The document is ~{document_tokens} tokens against a budget of {document_budget}. "
+                "It is close to the limit, so prefer replacing stale blocks over appending new ones "
+                "where the new facts update something the document already covers."
+            )
 
     task_footer = (
         "## Task\n"
@@ -1102,7 +1132,7 @@ def build_structured_delta_prompt(
         f"## NEW INFORMATION SYNTHESIS (context for how new facts relate to the topic)\n"
         f"```markdown\n{candidate}\n```\n\n"
         f"## SUPPORTING FACTS (new since last refresh — integrate these)\n{facts_body}"
-        f"{budget_hint}{truncation_note}\n\n"
+        f"{document_hint}{budget_hint}{truncation_note}\n\n"
         f"{task_footer}"
     )
 

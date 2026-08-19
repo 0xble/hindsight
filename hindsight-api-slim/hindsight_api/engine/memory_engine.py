@@ -14275,12 +14275,23 @@ class MemoryEngine(MemoryEngineInterface):
                 # transport cap — see the call below.
                 doc_max_tokens = stored_max_tokens or 2048
                 delta_max_tokens = max(2048, int(doc_max_tokens * 1.5))
+                # The document's own budget. Nothing else measures it on this leg:
+                # a delta refresh only adds, so a page grows every round and drifts
+                # past its configured size with no signal (~20 tokens/round measured,
+                # which crosses the 4096 default after a couple of hundred refreshes).
+                # The model is told where it stands so it can reclaim space from
+                # stale content; truncating here would delete knowledge instead.
+                from .reflect.tokenization import count_cl100k_tokens
+
+                document_tokens = count_cl100k_tokens(current_content)
                 user_prompt = build_structured_delta_prompt(
                     current_document_json=current_doc.model_dump_json(),
                     candidate_markdown=reflect_result.text,
                     supporting_facts=supporting_facts,
                     source_query=source_query,
                     max_output_tokens=delta_max_tokens,
+                    document_tokens=document_tokens,
+                    document_budget=doc_max_tokens,
                 )
                 # Trace the delta call. Unlike the synthesis, this runs on the raw
                 # ``_reflect_llm_config`` outside ``reflect_async``'s trace context,
@@ -14336,6 +14347,18 @@ class MemoryEngine(MemoryEngineInterface):
                         final_structured = apply_outcome.document
                         final_content = render_document(apply_outcome.document)
                         delta_applied = True
+                        # Surfaced rather than enforced: a page that keeps growing past
+                        # its budget is a page whose content needs a decision, and that
+                        # is visible here instead of only in the byte count.
+                        final_tokens = count_cl100k_tokens(final_content)
+                        reflect_response_payload["document_tokens"] = final_tokens
+                        reflect_response_payload["document_budget"] = doc_max_tokens
+                        if final_tokens > doc_max_tokens:
+                            warnings.append(
+                                f"The document is ~{final_tokens} tokens, over its {doc_max_tokens}-token "
+                                "budget. Delta refreshes were asked to reclaim space from superseded "
+                                "content; if it keeps growing, raise max_tokens or narrow the source query."
+                            )
                         logger.info(
                             f"[MENTAL_MODELS] Delta refresh for {mental_model_id}: "
                             f"applied {len(apply_outcome.applied)} op(s), "

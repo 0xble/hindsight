@@ -117,3 +117,49 @@ class TestDocumentFromSections:
     def test_empty_payload_is_an_empty_document(self):
         assert document_from_sections({}).sections == []
         assert render_document(document_from_sections({"sections": []})) == ""
+
+
+class TestOverBudgetRewrite:
+    """A document too long for its budget is trimmed as a document, not as prose.
+
+    The trim is the one place a long answer gets regenerated, so asking for prose
+    there would put the model back in charge of the markdown that gets stored —
+    on exactly the documents whose structure matters most.
+    """
+
+    def test_a_json_rewrite_is_read_back_as_a_document(self):
+        from hindsight_api.engine.reflect.agent import _document_from_rewrite
+
+        rewritten = (
+            '{"sections": [{"heading": "Ops", "level": 2, "blocks": ["| a | b |\\n| --- | --- |\\n| 1 | 2 |"]}]}'
+        )
+        trimmed = _document_from_rewrite(rewritten, "previous")
+        assert [s.heading for s in trimmed.structure.sections] == ["Ops"]
+        assert trimmed.markdown == "## Ops\n\n| a | b |\n| --- | --- |\n| 1 | 2 |"
+
+    def test_markdown_rewrite_falls_back_to_a_lossless_split(self):
+        """A model that ignores the format must not cost us the whole reflect."""
+        from hindsight_api.engine.reflect.agent import _document_from_rewrite
+
+        trimmed = _document_from_rewrite("## Ops\n\n| a | b |\n| --- | --- |\n| 1 | 2 |\n", "previous")
+        assert [s.heading for s in trimmed.structure.sections] == ["Ops"]
+        assert "| 1 | 2 |" in trimmed.markdown.splitlines()
+
+    def test_empty_rewrite_keeps_the_previous_answer(self):
+        from hindsight_api.engine.reflect.agent import _document_from_rewrite
+
+        trimmed = _document_from_rewrite("   ", "## Kept\n\nbody\n")
+        assert trimmed.markdown == "## Kept\n\nbody\n"
+        assert [s.heading for s in trimmed.structure.sections] == ["Kept"]
+
+    def test_the_render_always_matches_the_structure(self):
+        from hindsight_api.engine.reflect.agent import _document_from_rewrite
+        from hindsight_api.engine.reflect.structured_doc import render_document
+
+        for rewritten in (
+            '{"sections": [{"heading": "A", "level": 2, "blocks": ["one", "two"]}]}',
+            "## A\n\none\n\ntwo\n",
+            "",
+        ):
+            trimmed = _document_from_rewrite(rewritten, "## Kept\n\nbody\n")
+            assert trimmed.markdown.strip() == render_document(trimmed.structure).strip()

@@ -2223,3 +2223,169 @@ class TestDeltaRefreshGeminiEval:
             )
 
         await gemini_memory.delete_bank(bank_id, request_context=request_context)
+
+    async def test_an_over_budget_document_reclaims_space(
+        self, gemini_memory: MemoryEngine, request_context: RequestContext
+    ):
+        """A real model, told the document is over budget, makes room.
+
+        The mechanical half (the budget reaches the prompt, the outcome is
+        recorded) is covered without an LLM. What cannot be mocked is whether a
+        model asked to reclaim space actually removes superseded content instead
+        of appending anyway — which is the whole reason the budget is stated
+        rather than enforced by truncation.
+        """
+        from hindsight_api.engine.reflect.tokenization import count_cl100k_tokens
+
+        bank_id = f"eval-budget-{uuid.uuid4().hex[:8]}"
+        # A document padded with obsolete history: there is plenty here that a
+        # model can drop without losing anything the topic needs.
+        stale_sections = "\n\n".join(
+            f"## Archived note {i}\n\nDuring the {2019 + i} season the team used the legacy pipeline, "
+            f"which was retired years ago and no longer affects how anything works today."
+            for i in range(12)
+        )
+        # Two things that must survive, because "get under budget" must not become
+        # "delete the document": the current cadence, and a checklist that is
+        # nowhere near stale. Space has to come from the archive.
+        current = (
+            "## Current process\n\nReleases are cut on Tuesdays.\n\n"
+            "## Checklist\n\n- Migrations applied\n- Smoke tests green\n- On-call engineer signed off\n"
+        )
+        seeded = await self._seed(
+            gemini_memory,
+            request_context,
+            bank_id,
+            existing_markdown=f"{current}\n{stale_sections}\n",
+            memories=["Releases are cut on Tuesdays and go to staging before production."],
+        )
+        mental_model_id = seeded["mm"]["id"]
+        budget = 200
+        await gemini_memory.update_mental_model(
+            bank_id=bank_id,
+            mental_model_id=mental_model_id,
+            max_tokens=budget,
+            request_context=request_context,
+        )
+        before = count_cl100k_tokens(seeded["first"]["content"])
+        assert before > budget, f"the fixture must start over budget, got {before} <= {budget}"
+
+        await gemini_memory.retain_batch_async(
+            bank_id=bank_id,
+            contents=[{"content": "Releases moved from Tuesdays to Wednesdays."}],
+            request_context=request_context,
+        )
+        await gemini_memory.wait_for_background_tasks()
+
+        refreshed = await gemini_memory.refresh_mental_model(
+            bank_id=bank_id, mental_model_id=mental_model_id, request_context=request_context
+        )
+        after = count_cl100k_tokens(refreshed["content"])
+        rr = refreshed.get("reflect_response") or {}
+        print(f"[budget] {before} -> {after} tokens against a {budget}-token budget")
+
+        assert rr.get("document_budget") == budget
+        assert rr.get("document_tokens") == after
+        # The new fact still lands — reclaiming space must never cost the update.
+        assert "wednesday" in refreshed["content"].lower()
+        # And the document moved toward its budget rather than growing further.
+        assert after < before, (
+            f"an over-budget document grew from {before} to {after} tokens instead of "
+            f"reclaiming space:\n{refreshed['content']}"
+        )
+        # Space came from the archive, not from the document. Getting under budget
+        # by deleting current content would satisfy every check above and be worse
+        # than going over it.
+        content = refreshed["content"].lower()
+        assert "checklist" in content, f"the current checklist was deleted to fit the budget:\n{refreshed['content']}"
+        assert "smoke tests" in content, f"current content was dropped to fit the budget:\n{refreshed['content']}"
+        archived_left = content.count("archived note")
+        assert archived_left < 12, "nothing was reclaimed from the archived sections"
+
+        await gemini_memory.delete_bank(bank_id, request_context=request_context)
+
+
+class TestDocumentBudget:
+    """``max_tokens`` on the delta leg.
+
+    It was enforced in exactly one place — a rewrite of the *synthesis* answer —
+    and in delta mode that answer is only context for the operations call. The
+    document that actually gets stored was never measured against it, and a delta
+    refresh only adds, so a long-lived page drifts past its configured size with
+    nothing noticing. See ``test_mental_model_document_budget.py`` for the prompt
+    that tells the model where it stands.
+    """
+
+    async def test_refresh_records_size_against_budget(
+        self,
+        memory: MemoryEngine,
+        request_context: RequestContext,
+        patch_reflect,
+        patch_llm_call,
+    ):
+        """Every delta refresh reports where the document stands."""
+        bank_id = f"test-mm-budget-{uuid.uuid4().hex[:8]}"
+        await memory.get_bank_profile(bank_id, request_context=request_context)
+        mm = await memory.create_mental_model(
+            bank_id=bank_id,
+            name="API Reference",
+            source_query="Document the API",
+            content="## Ops\n\nOriginal.\n",
+            max_tokens=256,
+            trigger={"mode": "delta"},
+            request_context=request_context,
+        )
+        patch_reflect(
+            memory,
+            text="## Ops\n\nCandidate.\n",
+            facts=[{"id": "o1", "text": "a new fact", "type": "observation", "context": None}],
+        )
+        patch_llm_call(memory, returns=[{"op": "append_block", "section_id": "ops", "text": "New note."}])
+
+        refreshed = await memory.refresh_mental_model(
+            bank_id=bank_id, mental_model_id=mm["id"], request_context=request_context
+        )
+
+        rr = refreshed.get("reflect_response") or {}
+        assert rr["document_budget"] == 256
+        assert rr["document_tokens"] > 0
+
+        await memory.delete_bank(bank_id, request_context=request_context)
+
+    async def test_over_budget_document_is_reported_not_truncated(
+        self,
+        memory: MemoryEngine,
+        request_context: RequestContext,
+        patch_reflect,
+        patch_llm_call,
+    ):
+        """Going over is a warning, never a silent deletion of content."""
+        bank_id = f"test-mm-over-budget-{uuid.uuid4().hex[:8]}"
+        await memory.get_bank_profile(bank_id, request_context=request_context)
+        long_body = " ".join(f"sentence number {i} about the API." for i in range(200))
+        mm = await memory.create_mental_model(
+            bank_id=bank_id,
+            name="API Reference",
+            source_query="Document the API",
+            content=f"## Ops\n\n{long_body}\n",
+            max_tokens=256,
+            trigger={"mode": "delta"},
+            request_context=request_context,
+        )
+        patch_reflect(
+            memory,
+            text="## Ops\n\nCandidate.\n",
+            facts=[{"id": "o1", "text": "a new fact", "type": "observation", "context": None}],
+        )
+        patch_llm_call(memory, returns=[{"op": "append_block", "section_id": "ops", "text": "New note."}])
+
+        refreshed = await memory.refresh_mental_model(
+            bank_id=bank_id, mental_model_id=mm["id"], request_context=request_context
+        )
+
+        assert "sentence number 199" in refreshed["content"], "content must not be truncated"
+        assert "New note." in refreshed["content"]
+        rr = refreshed.get("reflect_response") or {}
+        assert rr["document_tokens"] > rr["document_budget"]
+
+        await memory.delete_bank(bank_id, request_context=request_context)
