@@ -291,6 +291,26 @@ def test_operation_outcome_is_a_superset_of_executor_outcome():
     assert operation - executor == {"refresh_failed_structured_output"}
 
 
+def test_unknown_outcome_reports_no_details_instead_of_raising():
+    """A value this build has no name for must not take the operations list down.
+
+    This runs per row, so a raise would 500 the whole page over one row. The
+    shape that produces it is a rolling upgrade: a worker already writing an
+    outcome the API server predates — exactly what this branch created when it
+    added ``content_unchanged``.
+    """
+    from hindsight_api.engine.memory_engine import _operation_details
+
+    assert _operation_details("refresh_mental_model", {"outcome": "an_outcome_a_newer_build_writes"}) is None
+    assert (
+        _operation_details(
+            "refresh_mental_model",
+            {"outcome": "refresh_failed_delta_not_applied", "failure_reason": "a_reason_a_newer_build_writes"},
+        )
+        is None
+    )
+
+
 def test_non_refresh_operations_report_no_refresh_details():
     """``details`` is keyed by operation type, so another type's row must not carry a refresh shape."""
     from hindsight_api.engine.memory_engine import _operation_details

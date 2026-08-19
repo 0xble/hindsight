@@ -1415,9 +1415,19 @@ def _operation_details(operation_type: str, result_metadata: dict[str, Any]) -> 
     if outcome is None:
         # An unfinished refresh, or one recorded before the outcome was written.
         return None
-    return RefreshMentalModelOperationDetails(
-        outcome=outcome, failure_reason=result_metadata.get("failure_reason")
-    ).model_dump(mode="json")
+    try:
+        return RefreshMentalModelOperationDetails(
+            outcome=outcome, failure_reason=result_metadata.get("failure_reason")
+        ).model_dump(mode="json")
+    except ValidationError:
+        # A value this build has no name for — the shape a rolling upgrade
+        # produces, where a worker already writes an outcome the API server
+        # predates. Report no detail for that one row rather than raising: this
+        # runs per row of the operations list, so letting it propagate would 500
+        # the whole page over a single row nobody can interpret. The raw value
+        # stays readable under result_metadata.
+        logger.warning(f"Unrecognized refresh outcome {outcome!r} on an operation; reporting no details")
+        return None
 
 
 def _delta_failure_reason(fallback: ModeFallbackReason | None) -> RefreshFailureReason:
