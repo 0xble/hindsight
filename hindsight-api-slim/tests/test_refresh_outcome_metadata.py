@@ -9,7 +9,7 @@ refresh_mental_model operation must let a monitoring layer distinguish
 
 import asyncio
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 import pytest
@@ -272,224 +272,6 @@ async def test_preserved_and_rewritten_differ_only_by_outcome(memory: MemoryEngi
     assert "failure_reason" not in rewritten
 
 
-@pytest.mark.asyncio
-async def test_delta_edit_records_content_written(delta_bank, request_context, monkeypatch):
-    """A delta refresh that lands operations is a write, and says so."""
-    memory, bank_id, mm = delta_bank
-
-    _patch_reflect(
-        monkeypatch,
-        memory,
-        text="# Team\n\nNarrow candidate.\n",
-        facts=[{"id": "obs-new", "text": "Bob joined", "type": "observation", "context": None}],
-    )
-    _patch_delta_llm(
-        monkeypatch,
-        memory,
-        returns=[
-            {
-                "op": "append_block",
-                "section_id": "team",
-                "block": {"type": "paragraph", "text": "Bob joined the team."},
-            }
-        ],
-    )
-
-    await memory.submit_async_refresh_mental_model(
-        bank_id=bank_id, mental_model_id=mm["id"], request_context=request_context
-    )
-    await asyncio.sleep(0.1)
-
-    views = await _refresh_operation_views(memory, bank_id, request_context)
-    assert views.status["result_metadata"]["outcome"] == "content_written"
-    assert views.status["result_metadata"]["delta_ops_applied"] == 1
-    # Typed on the response models, not only inside the untyped result_metadata blob.
-    assert views.status_model.details is not None
-    assert views.status_model.details.operation_type == "refresh_mental_model"
-    assert views.status_model.details.outcome == "content_written"
-    assert views.status_model.details.failure_reason is None
-    assert views.listed_model.details is not None
-    assert views.listed_model.details.outcome == "content_written"
-
-
-@pytest.mark.asyncio
-async def test_all_ops_rejected_records_failure_and_reason(delta_bank, request_context, monkeypatch):
-    """A refresh that refused to write records why, structurally.
-
-    Before this the reason survived only as prose inside ``error_message`` and in
-    the model's ``reflect_response``, which the next refresh overwrites — and the
-    success-path writer never ran at all, because the refresh raised first.
-    """
-    memory, bank_id, mm = delta_bank
-
-    _patch_reflect(
-        monkeypatch,
-        memory,
-        text="# Team\n\nNarrow candidate.\n",
-        facts=[{"id": "obs-new", "text": "Bob joined", "type": "observation", "context": None}],
-    )
-    # Every op targets a section that does not exist, so all are rejected and the
-    # document is left untouched — a failure, not a clean refresh.
-    _patch_delta_llm(
-        monkeypatch,
-        memory,
-        returns=[
-            {
-                "op": "append_block",
-                "section_id": "does-not-exist",
-                "block": {"type": "paragraph", "text": "Bob joined the team."},
-            }
-        ],
-    )
-
-    # A failed refresh is retryable, so the task layer re-raises it as RetryTaskAt.
-    # The metadata below is written before that, on the attempt that failed.
-    with pytest.raises(RetryTaskAt):
-        await memory.submit_async_refresh_mental_model(
-            bank_id=bank_id, mental_model_id=mm["id"], request_context=request_context
-        )
-
-    views = await _refresh_operation_views(memory, bank_id, request_context)
-    meta = views.status["result_metadata"]
-    assert meta["outcome"] == "refresh_failed_delta_not_applied"
-    assert meta["failure_reason"] == "delta_ops_all_skipped"
-    # Submit-time keys survive the merge.
-    assert meta["mental_model_id"] == mm["id"]
-    assert views.status_model.details is not None
-    assert views.status_model.details.outcome == "refresh_failed_delta_not_applied"
-    assert views.status_model.details.failure_reason == "delta_ops_all_skipped"
-    assert views.listed_model.details is not None
-    assert views.listed_model.details.failure_reason == "delta_ops_all_skipped"
-
-
-@pytest.mark.asyncio
-async def test_empty_candidate_records_its_own_failure(delta_bank, request_context, monkeypatch):
-    """An upstream LLM failure is a distinct outcome from a rejected delta."""
-    memory, bank_id, mm = delta_bank
-
-    _patch_reflect(
-        monkeypatch,
-        memory,
-        text="",
-        facts=[{"id": "obs-new", "text": "Bob joined", "type": "observation", "context": None}],
-    )
-    _patch_delta_llm(monkeypatch, memory, returns=RuntimeError("simulated invalid JSON from provider"))
-
-    # A failed refresh is retryable, so the task layer re-raises it as RetryTaskAt.
-    # The metadata below is written before that, on the attempt that failed.
-    with pytest.raises(RetryTaskAt):
-        await memory.submit_async_refresh_mental_model(
-            bank_id=bank_id, mental_model_id=mm["id"], request_context=request_context
-        )
-
-    meta = (await _refresh_operation_views(memory, bank_id, request_context)).status["result_metadata"]
-    assert meta["outcome"] == "refresh_failed_empty_candidate"
-    assert meta["failure_reason"] == "empty_candidate"
-
-
-@pytest.mark.asyncio
-async def test_delta_op_call_failure_is_distinct_from_rejected_ops(delta_bank, request_context, monkeypatch):
-    """An op call that never returned usable JSON is a different reason from ops that were rejected."""
-    memory, bank_id, mm = delta_bank
-
-    _patch_reflect(
-        monkeypatch,
-        memory,
-        # Non-empty, so the empty-candidate guard does not fire first and this
-        # reaches the delta-not-applied branch instead.
-        text="# Team\n\nNarrow candidate.\n",
-        facts=[{"id": "obs-new", "text": "Bob joined", "type": "observation", "context": None}],
-    )
-    _patch_delta_llm(monkeypatch, memory, returns=RuntimeError("simulated invalid JSON from provider"))
-
-    with pytest.raises(RetryTaskAt):
-        await memory.submit_async_refresh_mental_model(
-            bank_id=bank_id, mental_model_id=mm["id"], request_context=request_context
-        )
-
-    views = await _refresh_operation_views(memory, bank_id, request_context)
-    assert views.status_model.details is not None
-    assert views.status_model.details.outcome == "refresh_failed_delta_not_applied"
-    assert views.status_model.details.failure_reason == "delta_ops_failed"
-
-
-@pytest.mark.asyncio
-async def test_unreadable_baseline_records_its_own_reason(delta_bank, request_context, monkeypatch):
-    """Delta with no readable baseline fails for a reason of its own, not the generic one."""
-    memory, bank_id, mm = delta_bank
-
-    from hindsight_api.engine.reflect import structured_doc
-
-    def unparseable(_markdown: str):
-        raise ValueError("simulated unparseable markdown")
-
-    monkeypatch.setattr(structured_doc, "parse_markdown", unparseable)
-    _patch_reflect(
-        monkeypatch,
-        memory,
-        text="# Team\n\nNarrow candidate.\n",
-        facts=[{"id": "obs-new", "text": "Bob joined", "type": "observation", "context": None}],
-    )
-    _patch_delta_llm(monkeypatch, memory, returns=[])
-
-    with pytest.raises(RetryTaskAt):
-        await memory.submit_async_refresh_mental_model(
-            bank_id=bank_id, mental_model_id=mm["id"], request_context=request_context
-        )
-
-    views = await _refresh_operation_views(memory, bank_id, request_context)
-    assert views.status_model.details is not None
-    assert views.status_model.details.outcome == "refresh_failed_delta_not_applied"
-    assert views.status_model.details.failure_reason == "structured_doc_unreadable"
-
-
-@pytest.mark.asyncio
-async def test_structured_output_failure_records_the_persist_path_outcome(
-    memory: MemoryEngine, request_context, monkeypatch
-):
-    """The one outcome the executor cannot produce still reaches the operation.
-
-    Structured-output extraction runs in the persist path, after the executor has
-    already settled on ``content_written`` — which is why the operation vocabulary
-    is a superset of the executor's.
-    """
-    import types
-
-    from hindsight_api.engine.reflect import agent as reflect_agent
-
-    bank_id = f"test-refresh-outcome-so-{uuid.uuid4().hex[:8]}"
-    await memory.get_bank_profile(bank_id, request_context=request_context)
-    mm = await memory.create_mental_model(
-        bank_id=bank_id,
-        name="Doc",
-        source_query="doc?",
-        content="# Doc\n\nOriginal.",
-        trigger={"mode": "full", "response_schema": {"type": "object", "properties": {"summary": {"type": "string"}}}},
-        request_context=request_context,
-    )
-
-    _patch_reflect(monkeypatch, memory, text="# Doc\n\nBrand new content.")
-
-    async def extraction_yields_nothing(answer, response_schema, llm_config, reflect_id, max_tokens=None):
-        return types.SimpleNamespace(
-            structured_output=None, input_tokens=0, output_tokens=0, cached_tokens=0, thoughts_tokens=0
-        )
-
-    monkeypatch.setattr(reflect_agent, "_generate_structured_output", extraction_yields_nothing)
-
-    with pytest.raises(RetryTaskAt):
-        await memory.submit_async_refresh_mental_model(
-            bank_id=bank_id, mental_model_id=mm["id"], request_context=request_context
-        )
-
-    views = await _refresh_operation_views(memory, bank_id, request_context)
-    assert views.status_model.details is not None
-    assert views.status_model.details.outcome == "refresh_failed_structured_output"
-    assert views.status_model.details.failure_reason == "structured_output_failed"
-
-    await memory.delete_bank(bank_id, request_context=request_context)
-
-
 def test_operation_outcome_is_a_superset_of_executor_outcome():
     """The two outcome vocabularies must not drift apart.
 
@@ -518,41 +300,269 @@ def test_non_refresh_operations_report_no_refresh_details():
     assert _operation_details("refresh_mental_model", {"mental_model_id": "mm-1"}) is None
 
 
-@pytest.mark.asyncio
-async def test_delta_emitting_no_ops_reads_as_unchanged(delta_bank, request_context, monkeypatch):
-    """A delta that changes nothing must not report itself as a rewrite.
+def test_delta_failure_reason_narrows_the_fallback_vocabulary():
+    """Only reasons a delta can hit *after* being chosen become failure reasons.
 
-    The model is shown the new facts and emits zero operations — it read them and
-    concluded the document already covers them. That lands in the *applied* path
-    (there are no rejected ops), so the document is re-rendered and persisted
-    byte-identically, and the outcome used to read `content_written` — the same
-    value a genuine rewrite produces.
-
-    `content_preserved_no_new_facts` does not cover this: that fires only when the
-    delta window was empty, and here retrieval returned facts.
+    ``no_baseline_content`` / ``source_query_changed`` turn delta off before it
+    runs, so a refresh carrying them is a legitimate full regeneration, not a
+    failure — they must degrade to the generic value rather than widen the
+    failure enum with values it can never mean. The ``None`` case is defensive:
+    every branch reaching the delta-not-applied guard sets a reason today.
     """
-    memory, bank_id, mm = delta_bank
-    stored = (
+    from hindsight_api.engine.memory_engine import _delta_failure_reason
+
+    assert _delta_failure_reason("structured_doc_unreadable") == "structured_doc_unreadable"
+    assert _delta_failure_reason("delta_ops_failed") == "delta_ops_failed"
+    assert _delta_failure_reason("delta_ops_all_skipped") == "delta_ops_all_skipped"
+    assert _delta_failure_reason("no_baseline_content") == "delta_not_applied"
+    assert _delta_failure_reason("source_query_changed") == "delta_not_applied"
+    assert _delta_failure_reason(None) == "delta_not_applied"
+
+
+# ---------------------------------------------------------------------------
+# Every outcome × failure reason, driven off mocked LLM behaviour
+# ---------------------------------------------------------------------------
+
+# The document each scenario starts from. It round-trips through
+# parse_markdown -> render_document unchanged, which is what lets the zero-op
+# delta case below be byte-identical rather than merely equivalent.
+_BASELINE = "# Team\n\nAlice is the lead.\n"
+
+_VALID_OP = {
+    "op": "append_block",
+    "section_id": "team",
+    "block": {"type": "paragraph", "text": "Bob joined the team."},
+}
+_UNKNOWN_SECTION_OP = {
+    "op": "append_block",
+    "section_id": "does-not-exist",
+    "block": {"type": "paragraph", "text": "Bob joined the team."},
+}
+_FACTS = [{"id": "obs-new", "text": "Bob joined", "type": "observation", "context": None}]
+_SCHEMA = {"type": "object", "properties": {"summary": {"type": "string"}}}
+
+
+@dataclass
+class _OutcomeCase:
+    """One refresh, described by what the LLMs do and what it must be called.
+
+    The point of the table is that the outcome is decided by observable effect,
+    not by which branch produced it — several rows reach the same branch and are
+    named differently, and two rows reach different branches and share a name.
+    """
+
+    id: str
+    mode: str
+    reflect_text: str
+    expect_outcome: str
+    why: str
+    facts: list[dict] = field(default_factory=lambda: list(_FACTS))
+    delta_returns: Any = field(default_factory=list)
+    unparseable_baseline: bool = False
+    response_schema: dict | None = None
+    structured_output_fails: bool = False
+    expect_failure_reason: str | None = None
+    expect_ops_applied: int = 0
+    expect_ops_skipped: int = 0
+
+
+_OUTCOME_CASES = [
+    _OutcomeCase(
+        id="full_rewrite",
+        mode="full",
+        reflect_text="# Team\n\nAlice leads; Bob joined.\n",
+        expect_outcome="content_written",
+        why="full mode writes its candidate, and this one differs from the stored document",
+    ),
+    _OutcomeCase(
+        id="full_regenerates_identical_text",
+        mode="full",
+        reflect_text=_BASELINE,
+        expect_outcome="content_unchanged",
+        why="a regeneration that reproduces the stored text changed nothing, however it got there",
+    ),
+    _OutcomeCase(
+        id="delta_applies_ops",
+        mode="delta",
+        reflect_text="# Team\n\nNarrow candidate.\n",
+        delta_returns=[_VALID_OP],
+        expect_outcome="content_written",
+        expect_ops_applied=1,
+        why="an op landed, so the document really is different",
+    ),
+    _OutcomeCase(
+        id="delta_emits_no_ops",
+        mode="delta",
+        reflect_text="# Team\n\nA candidate the model decides adds nothing.\n",
+        delta_returns=[],
+        expect_outcome="content_unchanged",
+        why=(
+            "zero ops is not a rejection, so this lands in the *applied* path and re-renders the "
+            "document byte-identically — it used to report content_written, indistinguishable "
+            "from a real rewrite"
+        ),
+    ),
+    _OutcomeCase(
+        id="delta_applies_some_and_rejects_others",
+        mode="delta",
+        reflect_text="# Team\n\nNarrow candidate.\n",
+        delta_returns=[_VALID_OP, _UNKNOWN_SECTION_OP],
+        expect_outcome="content_written",
+        expect_ops_applied=1,
+        expect_ops_skipped=1,
+        why="a partial apply still changes the document; the rejected op is recorded, not fatal",
+    ),
+    _OutcomeCase(
+        id="delta_window_empty",
+        mode="delta",
+        reflect_text="# Team\n\nUnused candidate.\n",
+        facts=[],
+        expect_outcome="content_preserved_no_new_facts",
+        why="no facts at all means the delta LLM is never called — distinct from reading facts and changing nothing",
+    ),
+    _OutcomeCase(
+        id="empty_candidate",
+        mode="delta",
+        reflect_text="",
+        delta_returns=RuntimeError("simulated invalid JSON from provider"),
+        expect_outcome="refresh_failed_empty_candidate",
+        expect_failure_reason="empty_candidate",
+        why="an empty synthesis is an upstream failure; the guard fires before the delta reason is considered",
+    ),
+    _OutcomeCase(
+        id="delta_op_call_failed",
+        mode="delta",
+        reflect_text="# Team\n\nNarrow candidate.\n",
+        delta_returns=RuntimeError("simulated invalid JSON from provider"),
+        expect_outcome="refresh_failed_delta_not_applied",
+        expect_failure_reason="delta_ops_failed",
+        why="the op call never returned usable JSON — distinct from ops that returned and were rejected",
+    ),
+    _OutcomeCase(
+        id="delta_ops_all_rejected",
+        mode="delta",
+        reflect_text="# Team\n\nNarrow candidate.\n",
+        delta_returns=[_UNKNOWN_SECTION_OP],
+        expect_outcome="refresh_failed_delta_not_applied",
+        expect_failure_reason="delta_ops_all_skipped",
+        why="every op was rejected, so persisting would advance the watermark past facts that never landed",
+    ),
+    _OutcomeCase(
+        id="delta_baseline_unreadable",
+        mode="delta",
+        reflect_text="# Team\n\nNarrow candidate.\n",
+        unparseable_baseline=True,
+        expect_outcome="refresh_failed_delta_not_applied",
+        expect_failure_reason="structured_doc_unreadable",
+        why="delta had no baseline to edit, and the candidate covers only the delta window",
+    ),
+    _OutcomeCase(
+        id="structured_output_extraction_failed",
+        mode="full",
+        reflect_text="# Team\n\nAlice leads; Bob joined.\n",
+        response_schema=_SCHEMA,
+        structured_output_fails=True,
+        expect_outcome="refresh_failed_structured_output",
+        expect_failure_reason="structured_output_failed",
+        why="the persist path refuses a document the executor already accepted — the one outcome a dry run cannot reach",
+    ),
+]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("case", _OUTCOME_CASES, ids=lambda c: c.id)
+async def test_refresh_outcome_matrix(case: _OutcomeCase, memory: MemoryEngine, request_context, monkeypatch):
+    """Each way a refresh can end reaches the operation record under its own name."""
+    bank_id = f"test-outcome-{case.id.replace('_', '-')}-{uuid.uuid4().hex[:8]}"
+    await memory.get_bank_profile(bank_id, request_context=request_context)
+    trigger: dict[str, Any] = {"mode": case.mode}
+    if case.response_schema:
+        trigger["response_schema"] = case.response_schema
+    mm = await memory.create_mental_model(
+        bank_id=bank_id,
+        name="Team Info",
+        source_query="Tell me about the team",
+        content=_BASELINE,
+        trigger=trigger,
+        request_context=request_context,
+    )
+
+    _patch_reflect(monkeypatch, memory, text=case.reflect_text, facts=case.facts)
+    _patch_delta_llm(monkeypatch, memory, returns=case.delta_returns)
+    if case.unparseable_baseline:
+        from hindsight_api.engine.reflect import structured_doc
+
+        def unparseable(_markdown: str):
+            raise ValueError("simulated unparseable markdown")
+
+        monkeypatch.setattr(structured_doc, "parse_markdown", unparseable)
+    if case.structured_output_fails:
+        import types
+
+        from hindsight_api.engine.reflect import agent as reflect_agent
+
+        async def extraction_yields_nothing(answer, response_schema, llm_config, reflect_id, max_tokens=None):
+            return types.SimpleNamespace(
+                structured_output=None, input_tokens=0, output_tokens=0, cached_tokens=0, thoughts_tokens=0
+            )
+
+        monkeypatch.setattr(reflect_agent, "_generate_structured_output", extraction_yields_nothing)
+
+    stored_before = (
         await memory.get_mental_model(bank_id=bank_id, mental_model_id=mm["id"], request_context=request_context)
     )["content"]
 
-    _patch_reflect(
-        monkeypatch,
-        memory,
-        text="# Team\n\nA candidate the model decides adds nothing.\n",
-        facts=[{"id": "obs-new", "text": "Bob joined", "type": "observation", "context": None}],
-    )
-    _patch_delta_llm(monkeypatch, memory, returns=[])
-
-    await memory.submit_async_refresh_mental_model(
+    submit = memory.submit_async_refresh_mental_model(
         bank_id=bank_id, mental_model_id=mm["id"], request_context=request_context
     )
-    await asyncio.sleep(0.1)
+    if case.expect_outcome.startswith("refresh_failed"):
+        # A failed refresh is retryable, so the task layer re-raises it as
+        # RetryTaskAt. The metadata is written before that, on the attempt that
+        # failed — which is the whole point of recording it there.
+        with pytest.raises(RetryTaskAt):
+            await submit
+    else:
+        await submit
+        await asyncio.sleep(0.1)
 
     views = await _refresh_operation_views(memory, bank_id, request_context)
-    assert views.status_model.details is not None
-    assert views.status_model.details.outcome == "content_unchanged"
+    details = views.status_model.details
+    assert details is not None, f"{case.id}: no details recorded ({case.why})"
+    assert details.outcome == case.expect_outcome, f"{case.id}: {case.why}"
+    assert details.failure_reason == case.expect_failure_reason, f"{case.id}: {case.why}"
 
-    # …and the claim is true: the stored document really is byte-identical.
-    after = await memory.get_mental_model(bank_id=bank_id, mental_model_id=mm["id"], request_context=request_context)
-    assert after["content"] == stored
+    meta = views.status["result_metadata"]
+    assert meta.get("delta_ops_applied", 0) == case.expect_ops_applied, case.id
+    assert meta.get("delta_ops_skipped", 0) == case.expect_ops_skipped, case.id
+
+    # The outcome is a claim about the document, so check the document against it.
+    stored_after = (
+        await memory.get_mental_model(bank_id=bank_id, mental_model_id=mm["id"], request_context=request_context)
+    )["content"]
+    if case.expect_outcome == "content_written":
+        assert stored_after != stored_before, f"{case.id}: reported a write but the document is unchanged"
+    else:
+        assert stored_after == stored_before, f"{case.id}: reported no write but the document changed"
+
+    await memory.delete_bank(bank_id, request_context=request_context)
+
+
+def test_outcome_matrix_covers_every_outcome_and_reason():
+    """The table above must stay exhaustive as the vocabularies grow.
+
+    A new outcome or failure reason added without a row is a value nothing
+    proves the writer ever produces — the failure mode is silence, so it needs
+    its own assertion rather than trusting the table to be kept up to date.
+    """
+    from typing import get_args
+
+    from hindsight_api.engine.mental_model_refresh import RefreshFailureReason, RefreshOperationOutcome
+
+    assert {c.expect_outcome for c in _OUTCOME_CASES} == set(get_args(RefreshOperationOutcome))
+
+    covered_reasons = {c.expect_failure_reason for c in _OUTCOME_CASES} - {None}
+    # ``delta_not_applied`` is the defensive default of _delta_failure_reason and
+    # is unreachable through the pipeline today — every branch that reaches the
+    # delta-not-applied guard sets a more specific reason. It is covered by
+    # test_delta_failure_reason_narrows_the_fallback_vocabulary instead.
+    assert covered_reasons == set(get_args(RefreshFailureReason)) - {"delta_not_applied"}
