@@ -26,6 +26,19 @@ logger = logging.getLogger(__name__)
 _unsupported_settings: set[str] = set()
 
 
+def setting_rejected_by_server(name: str) -> bool:
+    """Whether this server has already rejected ``name`` as an unknown GUC.
+
+    For callers that apply a setting outside this helper — notably retain's link
+    probing, which uses SET LOCAL inside its own transaction so the value cannot leak
+    onto a pooled backend. Such a caller cannot simply let the statement fail: an error
+    inside a transaction poisons it, so an unknown GUC would abort its work rather than
+    merely fail to apply. The pool's setup runs on acquire and names the same GUCs, so
+    by the time one of those callers runs, an unknown one is already recorded here.
+    """
+    return name in _unsupported_settings
+
+
 async def apply_session_settings(conn: asyncpg.Connection, settings: list[tuple[str, str]]) -> None:
     """Apply session-scoped GUCs to ``conn`` in a single round trip.
 

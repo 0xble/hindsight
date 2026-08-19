@@ -160,19 +160,28 @@ async def test_no_seed_threshold_means_no_seed_floor(search_path):
 # ---------------------------------------------------------------------------
 
 EMBED_DIM = 384
-_ROWS = 2_000
+# Enough to exceed the 200-row candidate list at a budget of 400, and no more: this
+# runs alongside timing-sensitive tests, and a bulk load large enough to saturate the
+# database starves them.
+_ROWS = 600
 
 
 def _near_query_vector(seed: int) -> str:
-    """A distinct unit vector; cosine to any other clears a 0.0 floor."""
+    """A distinct vector from one tight cluster.
+
+    Clustered rather than uniformly random on purpose: an HNSW graph over scattered
+    vectors is sparsely connected, so a resumed scan exhausts the reachable set before
+    it reaches the requested budget and the test measures graph connectivity instead of
+    the setting under test.
+    """
     rng = random.Random(seed)
-    values = [rng.gauss(0, 1) for _ in range(EMBED_DIM)]
+    values = [1.0] + [rng.uniform(-0.05, 0.05) for _ in range(EMBED_DIM - 1)]
     norm = sum(v * v for v in values) ** 0.5
     return "[" + ",".join(f"{v / norm:.5f}" for v in values) + "]"
 
 
 @pytest.mark.asyncio
-async def test_the_kill_switch_flips_real_retrieval_depth(memory, request_context, env_flag):
+async def test_the_kill_switch_flips_real_retrieval_depth(memory, request_context, ann_config):
     """End to end, through the pool: on, the budget reaches the index; off, it does not.
 
     Both halves matter. On is the fix — with iterative scans off the ground-layer search
@@ -206,8 +215,8 @@ async def test_the_kill_switch_flips_real_retrieval_depth(memory, request_contex
             )
             await conn.execute(f"ANALYZE {table}")
 
-        async def semantic_rows(iterative: str) -> int:
-            env_flag("HINDSIGHT_API_ANN_ITERATIVE_SCAN", iterative)
+        async def semantic_rows(iterative: bool) -> int:
+            ann_config("ann_iterative_scan", iterative)
             # The pool re-applies its session settings on every acquire, so a fresh
             # connection resolves the flag again rather than inheriting the value the
             # process started with.
@@ -237,8 +246,8 @@ async def test_the_kill_switch_flips_real_retrieval_depth(memory, request_contex
                 )
                 return len(result["world"].semantic)
 
-        with_resume = await semantic_rows("true")
-        without_resume = await semantic_rows("false")
+        with_resume = await semantic_rows(True)
+        without_resume = await semantic_rows(False)
 
         # On: the budget reaches the index.
         assert with_resume == budget, f"expected the full budget, got {with_resume}"
@@ -255,38 +264,38 @@ async def test_the_kill_switch_flips_real_retrieval_depth(memory, request_contex
 
 
 @pytest.fixture
-def env_flag(monkeypatch):
-    """Set one of the ANN env vars and rebuild the cached config from it.
+def ann_config(monkeypatch):
+    """Override an ANN config field for one test, without disturbing anything else.
 
-    The values are resolved through HindsightConfig, which is built from the
-    environment once and cached, so a bare setenv would not be seen.
+    Set on the cached config instance rather than by setting the env var and clearing
+    the cache: clearing it is process-wide, so every engine built earlier in the
+    session would silently start resolving a config rebuilt from the current
+    environment. monkeypatch restores the attribute at teardown.
     """
-    from hindsight_api.config import clear_config_cache
+    from hindsight_api.config import _get_raw_config
 
-    def _set(name: str, value: str) -> None:
-        monkeypatch.setenv(name, value)
-        clear_config_cache()
+    def _set(field: str, value) -> None:
+        monkeypatch.setattr(_get_raw_config(), field, value)
 
-    yield _set
-    clear_config_cache()
+    return _set
 
 
-def test_the_kill_switch_removes_the_resume_settings(env_flag):
+def test_the_kill_switch_removes_the_resume_settings(ann_config):
     """Turning it off must leave a connection exactly as it was before the feature.
 
     Dropping the GUCs rather than sending iterative_scan=off matters for two reasons:
     a pgvector older than 0.8 rejects them outright (it reserves the "hnsw." prefix),
     and an operator who pinned values server-side keeps them.
     """
-    env_flag("HINDSIGHT_API_ANN_ITERATIVE_SCAN", "false")
+    ann_config("ann_iterative_scan", False)
     settings = ann_search_tuning_settings("pgvector", kind="high_recall")
 
     assert settings == (("hnsw.ef_search", "200"),)
 
 
-def test_the_scan_ceiling_is_tunable(env_flag):
+def test_the_scan_ceiling_is_tunable(ann_config):
     """The dial between the previous behaviour and full budget depth."""
-    env_flag("HINDSIGHT_API_ANN_MAX_SCAN_TUPLES", "1500")
+    ann_config("ann_max_scan_tuples", 1500)
     settings = dict(ann_search_tuning_settings("pgvector", kind="high_recall"))
 
     assert settings["hnsw.max_scan_tuples"] == "1500"
@@ -295,20 +304,16 @@ def test_the_scan_ceiling_is_tunable(env_flag):
 
 def test_an_unreadable_ceiling_is_rejected_at_config_load(monkeypatch):
     """Parsing and validation belong to HindsightConfig, not to this module."""
-    from hindsight_api.config import HindsightConfig, clear_config_cache
+    from hindsight_api.config import HindsightConfig
 
     monkeypatch.setenv("HINDSIGHT_API_ANN_MAX_SCAN_TUPLES", "not-a-number")
-    clear_config_cache()
-    try:
-        with pytest.raises(ValueError):
-            HindsightConfig.from_env()
-    finally:
-        clear_config_cache()
+    with pytest.raises(ValueError):
+        HindsightConfig.from_env()
 
 
-def test_retain_probing_is_unaffected_by_the_switch(env_flag):
+def test_retain_probing_is_unaffected_by_the_switch(ann_config):
     """Link probing never resumed; the switch has nothing to take from it."""
-    env_flag("HINDSIGHT_API_ANN_ITERATIVE_SCAN", "false")
+    ann_config("ann_iterative_scan", False)
     settings = dict(ann_search_tuning_settings("pgvector", kind="low_latency"))
 
     assert settings == {"hnsw.ef_search": "60"}
