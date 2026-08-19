@@ -261,40 +261,66 @@ def main():
 
         logging.info(f"Loaded tenant extension: {tenant_extension.__class__.__name__}")
 
-    # Create MemoryEngine (reads configuration from environment)
-    _memory = MemoryEngine(
-        operation_validator=operation_validator,
-        tenant_extension=tenant_extension,
-        run_migrations=config.run_migrations_on_startup,
-    )
-
-    # Set extension context on tenant extension (needed for schema provisioning)
-    if tenant_extension:
-        extension_context = DefaultExtensionContext(
-            database_url=config.database_url,
-            memory_engine=_memory,
-        )
-        tenant_extension.set_context(extension_context)
-        logging.info("Extension context set on tenant extension")
-
-    # Create FastAPI app
-    app = create_app(
-        memory=_memory,
-        http_api_enabled=True,
-        mcp_api_enabled=config.mcp_enabled,
-        mcp_mount_path="/mcp",
-        initialize_memory=True,
-    )
-
-    # Wrap with idle timeout middleware in daemon mode
-    idle_middleware = None
-    if is_daemon:
-        idle_middleware = IdleTimeoutMiddleware(app, idle_timeout=args.idle_timeout)
-        app = idle_middleware
-
-    # Prepare uvicorn config
     # When using workers or reload, we must use import string so each worker can import the app
     use_import_string = args.workers > 1 or args.reload
+
+    # ...and in THAT mode the parent must NOT build the application itself.
+    #
+    # It used to, unconditionally, and then hand uvicorn the import string anyway — so the object
+    # it built was thrown away and every worker re-imported `hindsight_api.server:app` for itself.
+    # Wasteful, and worse than wasteful: uvicorn's multiprocess supervisor forks, so each child
+    # inherited a parent that had already constructed a MemoryEngine and a whole FastAPI app —
+    # connection pools, HTTP clients, background threads. Threads do not survive fork; the locks
+    # they held do. The children hung before they could log a line, the supervisor's healthcheck
+    # SIGKILLed them at 5 s, and it respawned them forever, ~one per 5.6 s. Silently: no traceback
+    # (SIGKILL), and `Ready=true` with `restartCount=0` throughout, because the supervisor holds
+    # the port while the workers behind it die. Half the fleet served nothing and nothing said so.
+    #
+    # Measured in a live pod, same image and same uvicorn options either way:
+    #   parent pre-builds the app (this function, before)  -> 16 child deaths / 90 s, 1 startup
+    #   clean parent (`python -m uvicorn`, the equivalent) ->  0 child deaths / 80 s, 2 startups
+    _memory = None
+    app = None
+    idle_middleware = None
+
+    if not use_import_string:
+        # Create MemoryEngine (reads configuration from environment)
+        _memory = MemoryEngine(
+            operation_validator=operation_validator,
+            tenant_extension=tenant_extension,
+            run_migrations=config.run_migrations_on_startup,
+        )
+
+        # Set extension context on tenant extension (needed for schema provisioning)
+        if tenant_extension:
+            extension_context = DefaultExtensionContext(
+                database_url=config.database_url,
+                memory_engine=_memory,
+            )
+            tenant_extension.set_context(extension_context)
+            logging.info("Extension context set on tenant extension")
+
+        # Create FastAPI app
+        app = create_app(
+            memory=_memory,
+            http_api_enabled=True,
+            mcp_api_enabled=config.mcp_enabled,
+            mcp_mount_path="/mcp",
+            initialize_memory=True,
+        )
+
+        # Wrap with idle timeout middleware in daemon mode
+        if is_daemon:
+            idle_middleware = IdleTimeoutMiddleware(app, idle_timeout=args.idle_timeout)
+            app = idle_middleware
+    elif is_daemon:
+        # The idle-timeout middleware wraps an app OBJECT, and this mode serves an import string,
+        # so there is nothing to wrap. That was already true and already silent; say it out loud
+        # rather than let a daemon quietly never time out.
+        logging.warning(
+            "--daemon idle timeout is not applied with --workers > 1 or --reload: "
+            "those modes serve an import string, which the middleware cannot wrap."
+        )
     # Check for uvloop/winloop availability
     loop_impl = "asyncio"
     if sys.platform == "win32":
