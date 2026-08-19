@@ -112,6 +112,42 @@ describe("optInOnly", () => {
     expect(deriveBankId(byMap, worktree, "claude-code")).toBe("client-x");
   });
 
+  // The session root reaches the removed worktree for EVERY harness; CLAUDE_PROJECT_DIR only
+  // rescues Claude Code. The bank name has always resolved through it — the mapping used to drop
+  // it, so a Codex session in a removed worktree fell off its mapped bank while the same session
+  // under Claude Code kept it.
+  it("resolves a removed worktree's mapping from the session root, with no harness env var", () => {
+    const worktree = join(root, "external-worktrees", "session-rooted");
+    execFileSync(
+      "git",
+      [
+        "-c",
+        "user.name=Test",
+        "-c",
+        "user.email=test@example.invalid",
+        "commit",
+        "--allow-empty",
+        "-qm",
+        "seed",
+      ],
+      { cwd: approved }
+    );
+    mkdirSync(join(root, "external-worktrees"), { recursive: true });
+    execFileSync("git", ["worktree", "add", "-q", "-b", "session-rooted", worktree], {
+      cwd: approved,
+    });
+    execFileSync("git", ["worktree", "remove", "--force", worktree], { cwd: approved });
+
+    const cfg = resolveConfig({
+      optInOnly: true,
+      mapPathToBank: { [join(realpathSync(root), "work")]: "client-x" },
+    });
+    expect(process.env.CLAUDE_PROJECT_DIR).toBeUndefined();
+    expect(deriveBankId(cfg, worktree, "codex", approved)).toBe("client-x");
+    // Without the session root there is nothing left to resolve the vanished path by.
+    expect(deriveBankId(cfg, worktree, "codex")).not.toBe("client-x");
+  });
+
   it("keeps a linked worktree denied when its checkout is outside every approved path", () => {
     const worktree = join(root, "external-worktrees", "throwaway");
     execFileSync(
