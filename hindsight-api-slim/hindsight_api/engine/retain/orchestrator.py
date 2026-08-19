@@ -1493,8 +1493,14 @@ async def retain_batch(
     # single batch. This eliminates the maintenance burden of two separate
     # retain code paths.
     chunk_batch_size = getattr(config, "retain_chunk_batch_size", 100)
-    chunk_size = getattr(config, "retain_chunk_size", 3000)
-    structured_chunk_size = getattr(config, "retain_structured_chunk_size", None)
+    # Direct attribute access, never getattr-with-default: these two decide chunk
+    # boundaries, and the delta path must derive them from the very same resolved
+    # config object. A getattr default silently substitutes the global value when
+    # handed the wrong config (StaticConfigProxy raises ConfigFieldAccessError,
+    # an AttributeError subclass, for bank-configurable fields) — which re-chunks
+    # at different boundaries and makes every stored chunk look changed. Fail loud.
+    chunk_size = config.retain_chunk_size
+    structured_chunk_size = config.retain_structured_chunk_size
     all_pre_chunks: list[str] = []
     chunk_to_content: list[int] = []  # maps chunk index -> index into contents
     for content_idx, content in enumerate(contents):
@@ -3402,14 +3408,17 @@ def _chunk_contents_for_delta(contents: list[RetainContent], config) -> dict[int
     Chunk contents the same way the streaming path does, returning a map of
     global_chunk_index -> chunk_text.
 
-    Must use the same chunk_size as the streaming path (default 3000) so that
-    chunk boundaries match and delta can detect unchanged chunks.
-    Previously defaulted to 120000, causing all chunks to appear changed on retry.
+    Must read chunk_size/structured_chunk_size off the same resolved ``config``
+    the streaming path uses, so chunk boundaries match and delta can detect
+    unchanged chunks. Two earlier incidents came from this drifting: a 120000
+    default made all chunks appear changed on retry, and a getattr default
+    silently swapped a bank's resolved size for the global one.
     """
     result = {}
     global_chunk_idx = 0
-    chunk_size = getattr(config, "retain_chunk_size", 3000)
-    structured_chunk_size = getattr(config, "retain_structured_chunk_size", None)
+    # Same resolved-config invariant as the streaming path — see the note there.
+    chunk_size = config.retain_chunk_size
+    structured_chunk_size = config.retain_structured_chunk_size
     for content in contents:
         chunks = fact_extraction.chunk_text(
             content.content,
