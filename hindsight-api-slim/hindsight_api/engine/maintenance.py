@@ -454,7 +454,15 @@ class MaintenanceLoop:
         store = get_memories()
         if store.writes_memory_rows_in_sql:
             return
-        backend = self._engine._backend
+        # Best-effort includes not having an engine to ask: the loop can be constructed without one,
+        # and this reap is explicitly allowed to be skipped (the docstring above). The SQL stores
+        # never get here — they return on the line above — so a store-owned deployment was the only
+        # one that could lose an entire maintenance tick to an AttributeError over a reap that is
+        # permitted to wait for the next one.
+        engine = self._engine
+        if engine is None:
+            return
+        backend = engine._backend
         try:
             async with acquire_with_retry(backend, max_retries=1) as conn:
                 bank_ids = [r[0] for r in await conn.fetch(f"SELECT bank_id FROM {fq_table('banks')}")]
