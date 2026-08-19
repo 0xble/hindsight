@@ -321,6 +321,34 @@ def split_markdown(markdown: str) -> StructuredDocument:
     return StructuredDocument(sections=sections)
 
 
+class CanonicalDocument(BaseModel):
+    """A document and the structure it renders from — the pair that must be stored together.
+
+    ``markdown`` and ``structure`` are two views of one document, and every write
+    of ``mental_models.content`` has to persist both. Storing markdown alone
+    leaves the next delta refresh to reconstruct a structure nobody reviewed;
+    storing a structure that does not render to the stored markdown is the
+    divergence that let a degraded document reach users one refresh after it was
+    created (#3361). Returning them as one value makes it hard to write one and
+    forget the other.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+    markdown: str
+    structure: StructuredDocument
+
+
+def canonical_document(markdown: str) -> CanonicalDocument:
+    """Split authored markdown into a structure, and render it back.
+
+    The render is what gets stored, so ``content`` is a view of ``structure``
+    from the first byte rather than from the first refresh. The split is
+    lossless, so this only normalises whitespace *between* blocks.
+    """
+    structure = split_markdown(markdown)
+    return CanonicalDocument(markdown=render_document(structure), structure=structure)
+
+
 def structured_document_from_stored(
     stored: dict | None,
     markdown: str,

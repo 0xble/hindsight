@@ -89,7 +89,12 @@ def migrated_db_url():
         loop.close()
 
     cfg = _alembic_cfg(url)
-    command.upgrade(cfg, _PRE_REVISION)
+    # Bring the schema up first, then seed, then step the *stamp* back over this
+    # revision and re-apply it. A pg0 instance survives between runs, and alembic
+    # will not replay a migration on a DB already stamped past it — seeding into
+    # a stamped DB would leave the rows untouched and the test asserting nothing.
+    # This migration's downgrade is a no-op, so stepping back costs nothing.
+    command.upgrade(cfg, _REVISION)
 
     engine = create_engine(url)
     try:
@@ -98,6 +103,8 @@ def migrated_db_url():
                 text("INSERT INTO banks (bank_id) VALUES (:b) ON CONFLICT DO NOTHING"),
                 {"b": _BANK_ID},
             )
+            # Idempotent seed: the instance persists across runs.
+            conn.execute(text("DELETE FROM mental_models WHERE bank_id = :b"), {"b": _BANK_ID})
             for mm_id, blob in (
                 ("mm-v1", _V1_BLOB),
                 ("mm-v2", _V2_BLOB),
@@ -122,6 +129,7 @@ def migrated_db_url():
     finally:
         engine.dispose()
 
+    command.downgrade(cfg, _PRE_REVISION)
     command.upgrade(cfg, _REVISION)
     return url
 

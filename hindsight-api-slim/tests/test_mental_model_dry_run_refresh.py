@@ -689,7 +689,7 @@ class TestKeepTrace:
             )
 
         stored = await memory.get_mental_model(bank_id, mm["id"], request_context=request_context)
-        assert stored["content"] == "# Team\n\nStill here."
+        assert stored["content"] == "# Team\n\nStill here.\n"
         trace = (stored.get("reflect_response") or {}).get("trace")
         assert trace is not None
         assert trace["outcome"] == "refresh_failed_empty_candidate"
@@ -742,7 +742,7 @@ class TestDryRunRefreshEndpoint:
         assert "trace" in body
 
         stored = await memory.get_mental_model(bank_id, mm["id"], request_context=request_context)
-        assert stored["content"] == "# Team\n\nOriginal.", "the endpoint must not persist"
+        assert stored["content"] == "# Team\n\nOriginal.\n", "the endpoint must not persist"
 
         await memory.delete_bank(bank_id, request_context=request_context)
 

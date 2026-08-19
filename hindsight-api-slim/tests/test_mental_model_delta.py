@@ -195,6 +195,93 @@ class TestDeltaRefreshPlumbing:
 
         await memory.delete_bank(bank_id, request_context=request_context)
 
+    async def test_creating_a_model_with_markdown_stores_its_structure(
+        self,
+        memory: MemoryEngine,
+        request_context: RequestContext,
+    ):
+        """A model authored as markdown is on the structured schema immediately.
+
+        Leaving ``structured_content`` NULL until the first delta refresh would
+        mean that refresh silently reshapes a document nobody asked it to touch —
+        and there would be a window where the two columns describe different
+        documents, which is what #3361 was.
+        """
+        from hindsight_api.engine.reflect.structured_doc import (
+            StructuredDocument,
+            render_document,
+        )
+
+        bank_id = f"test-mm-create-structure-{uuid.uuid4().hex[:8]}"
+        await memory.get_bank_profile(bank_id, request_context=request_context)
+        authored = "## Ops\n\n| Name | Role |\n|---|---|\n| Alice | Lead\n\n- top\n  - nested\n"
+        mm = await memory.create_mental_model(
+            bank_id=bank_id,
+            name="Team Info",
+            source_query="Tell me about the team",
+            content=authored,
+            request_context=request_context,
+        )
+
+        stored = await memory.get_mental_model(
+            bank_id=bank_id, mental_model_id=mm["id"], request_context=request_context
+        )
+        assert stored is not None
+        assert stored["structured_content"] is not None, "a created model must carry its structure"
+        doc = StructuredDocument.model_validate(stored["structured_content"])
+        assert stored["content"] == render_document(doc)
+        # The authored markdown survives the split: v1 flattened all three of these.
+        lines = stored["content"].splitlines()
+        assert "| Alice | Lead" in lines
+        assert "  - nested" in lines
+        assert [s.id for s in doc.sections] == ["ops"]
+
+        await memory.delete_bank(bank_id, request_context=request_context)
+
+    async def test_updating_content_alone_still_stores_a_matching_structure(
+        self,
+        memory: MemoryEngine,
+        request_context: RequestContext,
+    ):
+        """``content`` and ``structured_content`` can never be written out of step.
+
+        A caller handing over markdown alone must not leave the previous
+        document's structure behind it — a delta refresh would then edit a
+        document that is no longer what the column says.
+        """
+        from hindsight_api.engine.reflect.structured_doc import (
+            StructuredDocument,
+            render_document,
+        )
+
+        bank_id = f"test-mm-update-structure-{uuid.uuid4().hex[:8]}"
+        await memory.get_bank_profile(bank_id, request_context=request_context)
+        mm = await memory.create_mental_model(
+            bank_id=bank_id,
+            name="Team Info",
+            source_query="Tell me about the team",
+            content="## Old\n\nOriginal.\n",
+            request_context=request_context,
+        )
+
+        await memory.update_mental_model(
+            bank_id=bank_id,
+            mental_model_id=mm["id"],
+            content="## New\n\n| a | b |\n| --- | --- |\n| 1 | 2 |\n",
+            request_context=request_context,
+        )
+
+        stored = await memory.get_mental_model(
+            bank_id=bank_id, mental_model_id=mm["id"], request_context=request_context
+        )
+        assert stored is not None
+        doc = StructuredDocument.model_validate(stored["structured_content"])
+        assert stored["content"] == render_document(doc)
+        assert [s.id for s in doc.sections] == ["new"], "the stale structure must not survive"
+        assert "| 1 | 2 |" in stored["content"].splitlines()
+
+        await memory.delete_bank(bank_id, request_context=request_context)
+
     async def test_stored_content_is_the_render_of_the_stored_structure(
         self,
         memory: MemoryEngine,

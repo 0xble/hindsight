@@ -13550,7 +13550,17 @@ class MemoryEngine(MemoryEngineInterface):
         max_tokens: int | None,
         trigger: dict[str, Any] | None,
     ) -> ResultRow:
-        """Insert a pinned model using the caller's transaction."""
+        """Insert a pinned model using the caller's transaction.
+
+        ``content`` is stored as the render of its own structure: a mental model
+        created from authored markdown is on the structured schema from the
+        first byte, not from its first delta refresh. Leaving the column NULL
+        here would mean the first refresh silently reshapes a document nobody
+        asked it to touch.
+        """
+        from .reflect.structured_doc import canonical_document
+
+        document = canonical_document(content)
         # VectorChord needs mental_models.search_vector tokenized on write; every
         # other backend either generates it or indexes the source columns.
         #
@@ -13570,8 +13580,10 @@ class MemoryEngine(MemoryEngineInterface):
         row = await conn.fetchrow(
             f"""
             INSERT INTO {fq_table("mental_models")}
-            (id, bank_id, subtype, name, description, source_query, content, embedding, tags, max_tokens, trigger{sv_col})
-            VALUES ($1, $2, 'pinned', $3::text, ' ', $4, $5, $6, $7, COALESCE($8, 2048), COALESCE($9, '{{"refresh_after_consolidation": false}}'::jsonb){sv_val})
+            (id, bank_id, subtype, name, description, source_query, content, embedding, tags, max_tokens,
+             trigger, structured_content{sv_col})
+            VALUES ($1, $2, 'pinned', $3::text, ' ', $4, $5, $6, $7, COALESCE($8, 2048),
+                    COALESCE($9, '{{"refresh_after_consolidation": false}}'::jsonb), $10{sv_val})
             RETURNING id, bank_id, name, source_query, content, tags,
                       last_refreshed_at, last_memory_seen_at, created_at, reflect_response,
                       max_tokens, trigger, structured_content
@@ -13580,11 +13592,12 @@ class MemoryEngine(MemoryEngineInterface):
             bank_id,
             name,
             source_query,
-            content,
+            document.markdown,
             embedding,
             tags or [],
             max_tokens,
             json.dumps(trigger) if trigger else None,
+            json.dumps(document.structure.model_dump()),
         )
         assert row is not None
         return row
@@ -14795,6 +14808,20 @@ class MemoryEngine(MemoryEngineInterface):
                 )
                 await self._validate_operation(self._operation_validator.validate_bank_write(ctx))
         backend = await self._get_backend()
+
+        # A caller that hands over markdown alone (an import, a hand-authored
+        # document) gets its structure derived here, so the two columns can never
+        # be written out of step — the divergence that let a degraded document
+        # reach users one refresh after it was written (#3361). A refresh passes
+        # both (the structure is authoritative there and the markdown is already
+        # its render) and is left exactly as it supplied them. Derived up front so
+        # the embedding, the history snapshot and the UPDATE all see one text.
+        if content is not None and structured_content is None:
+            from .reflect.structured_doc import canonical_document
+
+            document = canonical_document(content)
+            content = document.markdown
+            structured_content = document.structure.model_dump()
 
         # Compute the new embedding BEFORE acquiring a pooled connection: a slow
         # embedder must never pin a DB connection. The embedding text depends only
