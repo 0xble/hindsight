@@ -1636,7 +1636,7 @@ async def _run_consolidation_job(
                 # batch's fate is decided and an abort here would discard durable writes.
                 # Store-owned batches hold no write-group (writes were plain and are already
                 # durable/visible); there is nothing to abort — consolidation is idempotent on retry.
-                if _batch_txn is not None:
+                if not _store_owned:
                     try:
                         await _txn_provider.decide_txn(_batch_txn, commit=False)
                     except Exception:
@@ -1649,7 +1649,13 @@ async def _run_consolidation_job(
             # Postgres committed the witness: publish the batch's write-group. On a crash before
             # here the writes stay invisible and the recovery sweep resolves them (spec §5). No-op for
             # a store-owned batch (no write-group; its writes were already visible).
-            if _batch_txn is not None:
+            #
+            # Guarded on `_store_owned`, NOT on `_batch_txn is not None`: a store whose `mint_txn`
+            # legitimately returns None (Postgres does) still has its decide called, exactly as
+            # before this skip existed. Guarding on the handle silently dropped that call for every
+            # SQL bank — behaviourally a no-op, but it is the one observable the write-group tests
+            # assert on, and it made two of them fail.
+            if not _store_owned:
                 await _txn_provider.decide_txn(_batch_txn, commit=True)
 
             cancelled_local = False

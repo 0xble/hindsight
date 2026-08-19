@@ -692,6 +692,7 @@ class MemoriesExtension(Extension, ABC):
         facts: list,
         document_id: str | None = None,
         unit_entity_ids: dict[str, list[str]] | None = None,
+        txn: "MemoryTxn | None" = None,
     ) -> None:
         """Index facts whose ids came from a deferred :meth:`insert_facts`.
 
