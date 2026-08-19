@@ -7623,13 +7623,26 @@ class MemoryEngine(MemoryEngineInterface):
                     """,
                     *params,
                 )
+                from .memories import MemoryPatch, get_memories
+
+                _store = get_memories()
                 if not doc_id_found:
-                    return False
-
-                if tags is not None:
-                    from .memories import MemoryPatch, get_memories
-
-                    _store = get_memories()
+                    # A store-owned bank writes NO Postgres documents row, so the UPDATE above
+                    # matched nothing and `doc_id_found` is None for a document that plainly
+                    # exists. Returning False here made `update_document` a silent no-op for
+                    # exactly the store whose branch below was written to serve it — the retag
+                    # never ran, and the caller got "not found" for a document it had just read.
+                    # Drive existence off the STORE instead, the same way document DELETE had to.
+                    if not _store.owns_document_store_for(bank_id):
+                        return False
+                    if await _store.get_document_record(bank_id=bank_id, document_id=document_id) is None:
+                        return False
+                    if tags is not None:
+                        # The document's OWN tags live on the store's record; the memories are
+                        # retagged separately below. Both, or the browser shows one of them stale.
+                        await _store.set_document_tags(
+                            bank_id=bank_id, document_id=document_id, tags=list(tags)
+                        )
                 if tags is not None and not _store.writes_memory_rows_in_sql_for(bank_id):
                     # A store that keeps memories outside SQL: retag the document's memories, then
                     # invalidate the observations built on them and requeue their sources so the

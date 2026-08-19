@@ -864,6 +864,19 @@ class MemoriesExtension(Extension, ABC):
         """How many chunks a document has (0 if it does not exist)."""
         raise NotImplementedError
 
+    async def set_document_tags(self, *, bank_id: str, document_id: str, tags: "list[str]") -> None:
+        """Replace a document RECORD's tags, leaving its bodies alone.
+
+        Only an ``owns_document_store`` store implements this; a Postgres store updates its own
+        ``documents`` row instead, so the engine calls it only for a store-owned bank. It exists
+        because re-tagging must not mean re-uploading: the record already carries every body's
+        content hash, so a store can rewrite the record with new tags and move no bytes.
+
+        Without it, `update_document(tags=...)` changed the memories' tags and left the document
+        itself showing the old ones, which is the sort of half-applied edit that only surfaces in
+        the browser a week later."""
+        raise NotImplementedError
+
     async def delete_document_record(self, *, bank_id: str, document_id: str, txn: "MemoryTxn | None" = None) -> None:
         """Delete a document's RECORD and bodies from the document store — an EXPLICIT document
         deletion, distinct from :meth:`delete_document` (which drops only the document's facts on
