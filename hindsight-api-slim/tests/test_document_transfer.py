@@ -1855,31 +1855,102 @@ class _StoreOwnedMemories:
         return False
 
 
+class _FakeStoreOwned(_StoreOwnedMemories):
+    """A minimal store-owned bank: one document, two chunks, two causally-linked facts.
+
+    Hand-built rather than driven through a real store so the export's assembly is what is under
+    test — ordering, ordinals, entity resolution — without a server in the loop.
+    """
+
+    _DOC_ID = "doc-1"
+
+    def __init__(self):
+        from datetime import datetime, timezone
+
+        from hindsight_api.engine.memories.base import CausalEdgeRecord, ScanPage, StoredMemory
+
+        t0 = datetime(2026, 1, 1, tzinfo=timezone.utc)
+        self._cause = StoredMemory(
+            unit_id="unit-cause",
+            text="the cause",
+            fact_type="world",
+            document_id=self._DOC_ID,
+            created_at=t0,
+            entity_ids=["e-ada"],
+        )
+        self._effect = StoredMemory(
+            unit_id="unit-effect",
+            text="the effect",
+            fact_type="world",
+            document_id=self._DOC_ID,
+            created_at=datetime(2026, 1, 2, tzinfo=timezone.utc),
+            causal_edges=[CausalEdgeRecord(target_unit_id="unit-cause", relation_type="caused_by")],
+        )
+        self._page = ScanPage
+        self._t0 = t0
+
+    async def list_documents(self, *, bank_id, limit=100, offset=0, **_kw):
+        if offset:
+            return {"items": [], "total": 1}
+        return {
+            "items": [{"id": self._DOC_ID, "tags": ["t"], "created_at": self._t0, "retain_params": None}],
+            "total": 1,
+        }
+
+    async def get_document_record(self, *, bank_id, document_id, include_text=False):
+        return {"id": document_id, "original_text": "the source text"}
+
+    async def list_chunk_texts(self, *, bank_id, document_id):
+        return ["chunk one", "chunk two"]
+
+    async def scan_memories(self, *, bank_id, fact_types=None, page_token="", **_kw):
+        if page_token:
+            return self._page(memories=[], next_page_token="")
+        if fact_types and "observation" in fact_types:
+            return self._page(memories=[], next_page_token="")
+        return self._page(memories=[self._effect, self._cause], next_page_token="")
+
+    async def resolve_entity_names(self, *, conn, fq_table, bank_id, entity_ids):
+        return {"e-ada": "Ada Lovelace"}
+
+
 class _SqlMemories:
     def writes_memory_rows_in_sql_for(self, bank_id: str) -> bool:
         return True
 
 
 @pytest.mark.asyncio
-async def test_export_refuses_a_store_owned_bank_instead_of_returning_an_empty_archive():
-    """The export must fail loudly rather than succeed with nothing in it.
+async def test_export_of_a_store_owned_bank_contains_its_memories():
+    """The archive must carry the bank's facts, entities and causal edges — not be empty.
 
-    Every loader reads `memory_units` and friends directly, so for a bank whose memories live
-    outside SQL those tables are empty: the export walked them, found nothing, and returned a
-    well-formed archive with a 200. An operator taking a backup only finds out at restore time,
-    which is the worst possible moment. Asserted on the refusal rather than on archive contents
-    because an empty archive is exactly what a passing-but-wrong implementation produces.
+    This is the shape of the original defect: the loaders read `memory_units`, `unit_entities` and
+    `memory_links`, which for a store-owned bank are empty, so the export produced a well-formed
+    archive with nothing in it and returned 200. Asserting on archive CONTENTS rather than on a
+    status code is the point — an empty archive is exactly what the broken version returned
+    successfully.
     """
-    from hindsight_api.engine.transfer.export import export_bank, export_documents
-    from hindsight_api.extensions.operation_validator import OperationValidationError
+    from hindsight_api.engine.transfer.export import export_documents
 
-    with pytest.raises(OperationValidationError) as ei:
-        await export_documents(None, "bank-x", None, memories=_StoreOwnedMemories())
-    assert ei.value.status_code == 501
-    assert "bank-x" in ei.value.reason
+    archive = await export_documents(None, "bank-x", None, memories=_FakeStoreOwned())
 
-    with pytest.raises(OperationValidationError):
-        await export_bank(None, "bank-x", memories=_StoreOwnedMemories())
+    with zipfile.ZipFile(io.BytesIO(archive)) as zf:
+        names = zf.namelist()
+        doc_names = [n for n in names if n.startswith("documents/")]
+        assert doc_names, names
+        doc = json.loads(zf.read(doc_names[0]))
+        manifest = json.loads(zf.read("manifest.json"))
+
+    assert manifest["fact_count"] == 2, manifest
+    assert manifest["document_count"] == 1, manifest
+    assert doc["original_text"] == "the source text"
+    assert [c["chunk_text"] for c in doc["chunks"]] == ["chunk one", "chunk two"]
+
+    texts = [f["text"] for f in doc["facts"]]
+    assert texts == ["the cause", "the effect"], texts
+    # The entity name has to come back through the store's registry, not a SQL join.
+    assert doc["facts"][0]["entities"] == ["Ada Lovelace"], doc["facts"][0]
+    # And the causal edge has to survive as an ordinal into this document's fact list.
+    assert doc["facts"][1]["causal_relations"] == [{"relation_type": "caused_by", "target_fact_index": 0}]
 
 
 @pytest.mark.asyncio

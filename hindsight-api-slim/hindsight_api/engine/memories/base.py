@@ -201,6 +201,11 @@ class StoredMemory:
     # Derived kNN edges `(target_unit_id, weight)`, populated only when the read
     # asked for them — the ranking path never does.
     semantic_edges: list[tuple[str, float]] = field(default_factory=list)
+    # Intrinsic causal edges the memory was written with, same shape the write model
+    # carries. Populated only when the read asked for edges. A store that keeps memories
+    # outside SQL has no `memory_links` table to reconstruct these from, so without them
+    # on the read model an export of such a bank silently loses every causal relation.
+    causal_edges: list[CausalEdgeRecord] = field(default_factory=list)
 
 
 @dataclass
