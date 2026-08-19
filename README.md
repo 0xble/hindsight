@@ -2,7 +2,7 @@
 
 ![Hindsight Banner](./hindsight-docs/static/img/hindsight-github-banner.png)
 
-[Documentation](https://hindsight.vectorize.io) • [Integrations](https://hindsight.vectorize.io/integrations) • [Cookbook](https://hindsight.vectorize.io/cookbook) • [Benchmarks](https://benchmarks.hindsight.vectorize.io/) • [Paper](https://arxiv.org/abs/2512.12818) • [Hindsight Cloud](https://ui.hindsight.vectorize.io/signup)
+[Documentation](https://hindsight.vectorize.io) • [Integrations](https://hindsight.vectorize.io/integrations) • [Cookbook](https://hindsight.vectorize.io/cookbook) • [Benchmarks](https://benchmarks.hindsight.vectorize.io/) • [Paper](https://arxiv.org/abs/2512.12818) • [Pricing](https://vectorize.io/pricing) • [Hindsight Cloud](https://ui.hindsight.vectorize.io/signup)
 
 [![Release](https://github.com/vectorize-io/hindsight/actions/workflows/release.yml/badge.svg)](https://github.com/vectorize-io/hindsight/actions/workflows/release.yml)
 [![Version](https://img.shields.io/pypi/v/hindsight-api?logo=python&logoColor=white&label=version&color=blue)](https://pypi.org/project/hindsight-api/)
@@ -110,7 +110,9 @@ helm install hindsight oci://ghcr.io/vectorize-io/charts/hindsight \
 
 #### Managed (no server)
 
-[Hindsight Cloud](https://ui.hindsight.vectorize.io/signup) is the hosted option — point any client at `https://api.hindsight.vectorize.io` with your API key and skip the deployment entirely.
+[Hindsight Cloud](https://vectorize.io/pricing) is the hosted option: managed infrastructure that scales automatically, plus a dashboard, backups, team collaboration and a 99.9% uptime SLA. Billing is usage-based with free credits to start — no fixed monthly or per-seat fee. Point any client at `https://api.hindsight.vectorize.io` with your API key and skip the deployment entirely.
+
+[Compare self-hosted, Cloud and Enterprise →](https://vectorize.io/pricing) · [Sign up →](https://ui.hindsight.vectorize.io/signup)
 
 All options, including Windows and air-gapped setups, are covered in the [installation guide](https://hindsight.vectorize.io/developer/installation).
 
@@ -398,7 +400,7 @@ More patterns in the [Cookbook](https://hindsight.vectorize.io/cookbook) and [Be
 | **Operations** | Admin CLI for migrations, bank repair and stuck operations — [admin CLI](https://hindsight.vectorize.io/developer/admin-cli) |
 | **Events** | Webhooks for retain, consolidation and refresh lifecycle events — [webhooks](https://hindsight.vectorize.io/developer/api/webhooks) |
 | **Extensibility** | Tenant, auth and storage extension points — [extensions](https://hindsight.vectorize.io/developer/extensions) |
-| **Managed** | Skip all of it with [Hindsight Cloud](https://ui.hindsight.vectorize.io/signup) |
+| **Managed** | Skip all of it with [Hindsight Cloud](https://vectorize.io/pricing) — managed, usage-based, 99.9% uptime SLA |
 
 ---
 
