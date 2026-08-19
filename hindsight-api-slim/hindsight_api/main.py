@@ -264,21 +264,18 @@ def main():
     # When using workers or reload, we must use import string so each worker can import the app
     use_import_string = args.workers > 1 or args.reload
 
-    # ...and in THAT mode the parent must NOT build the application itself.
+    # ...and in THAT mode the parent does not need to build the application at all: it hands
+    # uvicorn an import string, and every worker imports `hindsight_api.server:app` for itself, so
+    # the object built here was constructed and then thrown away — about ten seconds of work, a
+    # MemoryEngine and a whole FastAPI app, for nothing.
     #
-    # It used to, unconditionally, and then hand uvicorn the import string anyway — so the object
-    # it built was thrown away and every worker re-imported `hindsight_api.server:app` for itself.
-    # Wasteful, and worse than wasteful: uvicorn's multiprocess supervisor forks, so each child
-    # inherited a parent that had already constructed a MemoryEngine and a whole FastAPI app —
-    # connection pools, HTTP clients, background threads. Threads do not survive fork; the locks
-    # they held do. The children hung before they could log a line, the supervisor's healthcheck
-    # SIGKILLed them at 5 s, and it respawned them forever, ~one per 5.6 s. Silently: no traceback
-    # (SIGKILL), and `Ready=true` with `restartCount=0` throughout, because the supervisor holds
-    # the port while the workers behind it die. Half the fleet served nothing and nothing said so.
-    #
-    # Measured in a live pod, same image and same uvicorn options either way:
-    #   parent pre-builds the app (this function, before)  -> 16 child deaths / 90 s, 1 startup
-    #   clean parent (`python -m uvicorn`, the equivalent) ->  0 child deaths / 80 s, 2 startups
+    # This is a cleanup, NOT a fix for the worker respawn loop. It was first committed as that fix,
+    # on the theory that children inherited the parent's pools and locks across fork; uvicorn's
+    # multiprocess uses spawn, not fork, so nothing is inherited, and deploying this to dev left
+    # the loop exactly as it was. The real cause is that a spawn child rebuilds `__main__` by
+    # re-running `sys.argv[0]` — pip's console-script wrapper — whose top-level
+    # `from hindsight_api.main import main` pulls this package's `__init__` and the entire engine
+    # with it, before uvicorn's child bootstrap even starts. See docs/plans/recall-latency.md.
     _memory = None
     app = None
     idle_middleware = None
