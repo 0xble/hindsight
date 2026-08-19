@@ -27,6 +27,13 @@ from hindsight_api.engine.graph_maintenance import (
 )
 from hindsight_api.engine.memory_engine import MemoryEngine
 
+# This module seeds `memory_units`, `memory_links`, `entities` and `unit_entities` directly, as its own module docstring says, to get exact control of the graph. A MEMORIES extension owns those rows in its own store and leaves the Postgres
+# tables empty, so the seed lands nowhere the code under test can see it and every assertion here
+# measures the storage layout rather than the behaviour. Deselected when the suite runs against an
+# alternative store; unchanged, and still required, on Postgres.
+pytestmark = pytest.mark.memory_backend_incompatible
+
+
 
 async def _ensure_bank(memory: MemoryEngine, bank_id: str, request_context: RequestContext) -> None:
     await memory.get_bank_profile(bank_id=bank_id, request_context=request_context)

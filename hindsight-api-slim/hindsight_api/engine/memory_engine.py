@@ -9851,8 +9851,17 @@ class MemoryEngine(MemoryEngineInterface):
 
         _docs_store = get_memories()
         if _docs_store.owns_document_store_for(bank_id):
+            # `tags`/`tags_match` go WITH the call: dropping them here silently returned the
+            # unfiltered page — every document, including the untagged ones a strict mode excludes
+            # — with a `total` that ignored the filter. The store applies them and counts what
+            # matches, the same way the SQL branch below does.
             return await _docs_store.list_documents(
-                bank_id=bank_id, search_query=search_query, limit=limit, offset=offset
+                bank_id=bank_id,
+                search_query=search_query,
+                tags=tags,
+                tags_match=tags_match,
+                limit=limit,
+                offset=offset,
             )
         backend = await self._get_backend()
         async with acquire_with_retry(backend) as conn:

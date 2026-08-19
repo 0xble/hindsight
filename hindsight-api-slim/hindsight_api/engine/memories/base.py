@@ -759,6 +759,8 @@ class MemoriesExtension(Extension, ABC):
         *,
         bank_id: str,
         search_query: "str | None" = None,
+        tags: "list[str] | None" = None,
+        tags_match: str = "any_strict",
         limit: int = 100,
         offset: int = 0,
     ) -> dict:
@@ -766,7 +768,11 @@ class MemoriesExtension(Extension, ABC):
         offset}`` shape the documents browser expects. Only a store that owns its document metadata
         overrides this (a Postgres-backed store lists from the SQL ``documents`` table instead, so
         the engine only calls this for an ``owns_document_store`` store). Default raises so a
-        mis-routed call is loud rather than silently empty."""
+        mis-routed call is loud rather than silently empty.
+
+        ``tags``/``tags_match`` filter by the documents' tags with the same modes and meanings as
+        anywhere else, and ``total`` must count what MATCHES — a page filtered after the fact would
+        report the unfiltered total and drop every match past the window."""
         raise NotImplementedError
 
     async def count_documents(self, *, bank_id: str) -> int:

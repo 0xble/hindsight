@@ -22,6 +22,13 @@ import pytest_asyncio
 from hindsight_api import MemoryEngine, RequestContext
 from hindsight_api.engine.retain import embedding_utils
 
+# This module seeds `memory_units` + `unit_entities` rows directly to stand up the observation graph. A MEMORIES extension owns those rows in its own store and leaves the Postgres
+# tables empty, so the seed lands nowhere the code under test can see it and every assertion here
+# measures the storage layout rather than the behaviour. Deselected when the suite runs against an
+# alternative store; unchanged, and still required, on Postgres.
+pytestmark = pytest.mark.memory_backend_incompatible
+
+
 # Tests in this file insert memory_units with shared hardcoded UUIDs and
 # memory_units.id is a global PK; share an xdist group so parallel workers
 # don't collide on the same row IDs.

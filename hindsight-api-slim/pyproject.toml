@@ -189,6 +189,7 @@ markers = [
     "hs_llm_core: Core pipeline tests that need a real LLM but only one provider",
     "integration: Live external-API integration tests (require provider credentials; skipped without)",
     "slow: Slow tests (minutes); not run in fast CI",
+    "memory_backend_incompatible: Asserts or SEEDS Postgres-internal state for memories (raw memory_units / memory_links / unit_entities rows, or columns only that store has). A MEMORIES extension owns those rows itself and leaves the tables empty, so such a test measures the storage layout rather than the behaviour and cannot pass against one. Deselect when running the suite against an alternative store; it still runs, and must, on Postgres.",
 ]
 asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "function"

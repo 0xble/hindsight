@@ -949,8 +949,14 @@ async def _streaming_store_owned_retain(
     if unit_ids:
         # Reconstruct each fact's raw entity NAMES (LLM-extracted ∪ user-supplied), the exact merge
         # the Postgres resolver did — but without touching Postgres. The server resolves/mints.
+        # Same shape the Postgres resolver builds (`UserEntities`, not a bare list): the entity
+        # merge reads `.entities` and `.resolve` off it, and `resolve` is what distinguishes a
+        # caller correcting a name from the extractor guessing one (#3479). Passing the raw list
+        # here made every store-owned retain that carried user entities fail on `.entities`.
         user_entities_per_content = {
-            idx: content.entities for idx, content in enumerate(batch_contents) if getattr(content, "entities", None)
+            idx: UserEntities(entities=content.entities, resolve=getattr(content, "resolve_entities", True))
+            for idx, content in enumerate(batch_contents)
+            if getattr(content, "entities", None)
         }
         _texts, _dates, entities_per_fact = entity_processing._prepare_facts_for_entity_processing(
             batch_processed, user_entities_per_content
