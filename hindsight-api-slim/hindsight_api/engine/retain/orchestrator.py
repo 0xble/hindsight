@@ -751,9 +751,7 @@ async def _streaming_batch_write_ext(
         # second store write and keep ONLY the co-occurrence accumulation the entity graph needs.
         # No txn to enrol: with `store_write=False` this touches only the Postgres co-occurrence
         # accumulation, and the store write it would otherwise do already rode `ext_txn` above.
-        await entity_resolver.record_unit_entity_postings(
-            unit_entity_pairs, bank_id=bank_id, store_write=False
-        )
+        await entity_resolver.record_unit_entity_postings(unit_entity_pairs, bank_id=bank_id, store_write=False)
 
     # ---- CONNECTION PHASE (short transaction: local metadata + commit witness) ----
     # [PG-PROFILE] sub-step timing to find where retain wall-time goes (Phase 0 of PG-free retain).
@@ -1600,9 +1598,7 @@ async def retain_batch(
 
         _store = get_memories()
         if not existing_text and _store.owns_document_store_for(bank_id):
-            _record = await _store.get_document_record(
-                bank_id=bank_id, document_id=effective_doc_id, include_text=True
-            )
+            _record = await _store.get_document_record(bank_id=bank_id, document_id=effective_doc_id, include_text=True)
             if _record:
                 existing_text = _record.get("original_text")
                 # Read WITH the base, not later: a watermark taken after the read would already
@@ -1958,9 +1954,7 @@ async def _store_document_bodies(
     # Sub-batches run sequentially, so [0, offset) is complete by the time this runs.
     chunk_texts = list(chunk_texts)
     if chunk_index_offset > 0:
-        prior = await store.get_chunk_texts(
-            bank_id=bank_id, refs=[(document_id, i) for i in range(chunk_index_offset)]
-        )
+        prior = await store.get_chunk_texts(bank_id=bank_id, refs=[(document_id, i) for i in range(chunk_index_offset)])
         # A missing prior chunk becomes "" rather than being dropped: the list is positional, and
         # shortening it would shift every following chunk's index — silent corruption in place of
         # one absent chunk.
@@ -2423,7 +2417,9 @@ async def _streaming_retain_batch(
                     )
                     doc_tracking_done[0] = True
                     combined_content = ""
-                    log_buffer.append(f"[streaming] Document {effective_doc_id} tracked (0 facts, store-owned, PG-free)")
+                    log_buffer.append(
+                        f"[streaming] Document {effective_doc_id} tracked (0 facts, store-owned, PG-free)"
+                    )
                     log_buffer.append(
                         f"[streaming] Consumer batch {consumer_batch_idx + 1}: "
                         f"0 facts extracted from {len(batch)} chunks, skipping"

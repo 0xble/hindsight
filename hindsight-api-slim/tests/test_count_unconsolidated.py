@@ -22,7 +22,6 @@ from hindsight_api.engine.schema import fq_table
 pytestmark = pytest.mark.memory_backend_incompatible
 
 
-
 async def _seed(conn, bank_id: str, *, tags: list[str], consolidated: bool = False) -> str:
     mem_id = uuid.uuid4()
     await conn.execute(

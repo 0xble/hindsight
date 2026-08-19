@@ -26,7 +26,6 @@ from hindsight_api.engine.retain import embedding_processing
 pytestmark = pytest.mark.memory_backend_incompatible
 
 
-
 @pytest_asyncio.fixture
 async def api_client(memory):
     app = create_app(memory, initialize_memory=False)

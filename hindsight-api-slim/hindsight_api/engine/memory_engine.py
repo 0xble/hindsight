@@ -6849,7 +6849,7 @@ class MemoryEngine(MemoryEngineInterface):
                         for _cid in chunk_ids_ordered:
                             if not _cid.startswith(_pfx):
                                 continue
-                            _doc, _, _idx_s = _cid[len(_pfx):].rpartition("_")
+                            _doc, _, _idx_s = _cid[len(_pfx) :].rpartition("_")
                             if not _doc:
                                 continue
                             try:
@@ -6892,9 +6892,7 @@ class MemoryEngine(MemoryEngineInterface):
                             _refs = [(r["document_id"], r["chunk_index"]) for r in _rows]
                             if _refs:
                                 try:
-                                    _texts = await _chunk_store.get_chunk_texts(
-                                        bank_id=bank_id, refs=_refs
-                                    )
+                                    _texts = await _chunk_store.get_chunk_texts(bank_id=bank_id, refs=_refs)
                                     for _row, _text in zip(_rows, _texts):
                                         if _text is not None:
                                             _row["chunk_text"] = _text
@@ -7533,9 +7531,7 @@ class MemoryEngine(MemoryEngineInterface):
                 # document that the LIST route just returned. `list_documents` already branches on
                 # this; the addressed read has to branch the same way or the two disagree.
                 if _store.owns_document_store_for(bank_id):
-                    _rec = await _store.get_document_record(
-                        bank_id=bank_id, document_id=document_id, include_text=True
-                    )
+                    _rec = await _store.get_document_record(bank_id=bank_id, document_id=document_id, include_text=True)
                     if _rec is None:
                         doc = None
                     else:
@@ -7729,7 +7725,9 @@ class MemoryEngine(MemoryEngineInterface):
                             if _store.owns_document_store_for(bank_id)
                             else False
                         )
-                        await _store.delete_document(conn=conn, fq_table=fq_table, bank_id=bank_id, document_id=document_id)
+                        await _store.delete_document(
+                            conn=conn, fq_table=fq_table, bank_id=bank_id, document_id=document_id
+                        )
                         if _store.owns_document_store_for(bank_id):
                             await _store.delete_document_record(bank_id=bank_id, document_id=document_id)
                         # Report the deletion off the store's own state (SQL `deleted` is None here).
@@ -7890,9 +7888,7 @@ class MemoryEngine(MemoryEngineInterface):
                     if tags is not None:
                         # The document's OWN tags live on the store's record; the memories are
                         # retagged separately below. Both, or the browser shows one of them stale.
-                        await _store.set_document_tags(
-                            bank_id=bank_id, document_id=document_id, tags=list(tags)
-                        )
+                        await _store.set_document_tags(bank_id=bank_id, document_id=document_id, tags=list(tags))
                 if tags is not None and not _store.writes_memory_rows_in_sql_for(bank_id):
                     # A store that keeps memories outside SQL: retag the document's memories, then
                     # invalidate the observations built on them and requeue their sources so the
@@ -8125,7 +8121,9 @@ class MemoryEngine(MemoryEngineInterface):
                             await _store.delete_facts(bank_id, [unit_id])
                         else:
                             # Tag the store tombstone so it commits atomically with this transaction.
-                            _del_txn = await _store.begin_txn(conn=conn, fq_table=fq_table, bank_id=bank_id, mutating=True)
+                            _del_txn = await _store.begin_txn(
+                                conn=conn, fq_table=fq_table, bank_id=bank_id, mutating=True
+                            )
                             await _store.delete_facts(bank_id, [unit_id], txn=_del_txn)
                             # Re-record the witness now that the group's write has happened, so the
                             # row carries what it actually wrote. `begin_txn` recorded it before any
@@ -8524,9 +8522,7 @@ class MemoryEngine(MemoryEngineInterface):
                                 f"SELECT COUNT(*) FROM {fq_table('documents')} WHERE bank_id = $1", bank_id
                             )
                         else:
-                            _counts = await _del_store.count_memories(
-                                conn=conn, fq_table=fq_table, bank_id=bank_id
-                            )
+                            _counts = await _del_store.count_memories(conn=conn, fq_table=fq_table, bank_id=bank_id)
                             units_count = sum(_counts.values())
                             documents_count = (
                                 await _del_store.count_documents(bank_id=bank_id)
@@ -9173,12 +9169,7 @@ class MemoryEngine(MemoryEngineInterface):
                             [new_text],
                             new_context or "",
                             [entity_date],
-                            [
-                                [
-                                    {"text": name, "type": "CONCEPT", "resolve": resolve_entities}
-                                    for name in new_entities
-                                ]
-                            ],
+                            [[{"text": name, "type": "CONCEPT", "resolve": resolve_entities} for name in new_entities]],
                             entity_labels=entity_labels,
                         )
                         resolved_for_unit = entity_resolution.unit_to_entity_ids.get(str(memory_uuid), [])
@@ -10453,9 +10444,7 @@ class MemoryEngine(MemoryEngineInterface):
                         bank_id=_cbank, operation=BankReadOperation.GET_CHUNK, request_context=request_context
                     )
                     await self._validate_operation(self._operation_validator.validate_bank_read(ctx))
-                _text = await _chunk_store.get_chunk_text(
-                    bank_id=_cbank, document_id=_cdoc, chunk_index=_cidx
-                )
+                _text = await _chunk_store.get_chunk_text(bank_id=_cbank, document_id=_cdoc, chunk_index=_cidx)
                 if _text is None:
                     return None
                 return {
@@ -13084,14 +13073,10 @@ class MemoryEngine(MemoryEngineInterface):
             # returned. Resolve the one id against the store's registry instead — an ADDRESSED
             # lookup, not a page-and-scan, so this stays O(1) in the registry size.
             _id = str(entity_uuid)
-            names = await _store.resolve_entity_names(
-                conn=None, fq_table=None, bank_id=bank_id, entity_ids=[_id]
-            )
+            names = await _store.resolve_entity_names(conn=None, fq_table=None, bank_id=bank_id, entity_ids=[_id])
             if _id not in names:
                 return None
-            counts = await _store.entity_memory_counts(
-                conn=None, fq_table=None, bank_id=bank_id, entity_ids=[_id]
-            )
+            counts = await _store.entity_memory_counts(conn=None, fq_table=None, bank_id=bank_id, entity_ids=[_id])
             return {
                 "id": _id,
                 "canonical_name": names[_id],

@@ -834,9 +834,7 @@ class MemoriesExtension(Extension, ABC):
         """
         return None
 
-    async def count_memories_many(
-        self, *, bank_ids: "list[str]", strong: bool = False
-    ) -> "dict[str, dict[str, int]]":
+    async def count_memories_many(self, *, bank_ids: "list[str]", strong: bool = False) -> "dict[str, dict[str, int]]":
         """Per-bank fact counts for MANY banks — ``{bank_id: {fact_type: count}}``.
 
         A bank absent from the result has nothing to count, so one unknown bank cannot fail a page.
@@ -857,9 +855,7 @@ class MemoriesExtension(Extension, ABC):
                 out[bank_id] = counts
         return out
 
-    async def get_chunk_texts(
-        self, *, bank_id: str, refs: "list[tuple[str, int]]"
-    ) -> "list[str | None]":
+    async def get_chunk_texts(self, *, bank_id: str, refs: "list[tuple[str, int]]") -> "list[str | None]":
         """Many chunks' text at once — ``refs`` is ``(document_id, chunk_index)``.
 
         Returns one entry per ref, in the SAME order, ``None`` where the chunk does not exist.
@@ -875,10 +871,7 @@ class MemoriesExtension(Extension, ABC):
         in exactly the deployment it was written for. That has now happened twice; see
         ``store_owned_retain_for``.
         """
-        return [
-            await self.get_chunk_text(bank_id=bank_id, document_id=doc_id, chunk_index=idx)
-            for doc_id, idx in refs
-        ]
+        return [await self.get_chunk_text(bank_id=bank_id, document_id=doc_id, chunk_index=idx) for doc_id, idx in refs]
 
     async def list_chunk_texts(self, *, bank_id: str, document_id: str) -> "list[str] | None":
         """Every chunk's text in order, or ``None`` if the document does not exist."""

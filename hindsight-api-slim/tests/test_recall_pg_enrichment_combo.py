@@ -30,7 +30,6 @@ from hindsight_api.engine.retain import embedding_utils
 pytestmark = pytest.mark.memory_backend_incompatible
 
 
-
 def _to_str(emb: list[float]) -> str:
     return "[" + ",".join(str(v) for v in emb) + "]"
 

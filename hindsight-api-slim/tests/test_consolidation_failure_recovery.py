@@ -25,7 +25,6 @@ from hindsight_api.engine.task_backend import SyncTaskBackend
 pytestmark = pytest.mark.memory_backend_incompatible
 
 
-
 @pytest_asyncio.fixture(scope="function")
 async def memory_no_llm_verify(pg0_db_url, embeddings, cross_encoder, query_analyzer):
     """MemoryEngine with mock LLM.
