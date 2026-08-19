@@ -21,14 +21,13 @@ from hindsight_api.engine.retain import embedding_utils
 # nothing, and the ones that still pass do so vacuously (an assertion that a result set is EMPTY
 # holds trivially when nothing was ever seeded). Deselected when the suite runs against an
 # alternative store; unchanged, and still required, on Postgres.
-pytestmark = pytest.mark.memory_backend_incompatible
 
 
 # Tests in this file insert memory_units with shared hardcoded UUIDs and
 # memory_units.id is a global PK, so parallel xdist workers running these
 # tests simultaneously hit pk_memory_units conflicts. Share an xdist group
 # so the eight tests serialize on the same worker.
-pytestmark = pytest.mark.xdist_group("recall_time_range")
+pytestmark = [pytest.mark.memory_backend_incompatible, pytest.mark.xdist_group("recall_time_range")]
 
 # Three points in time, each 1 hour apart
 T1 = datetime(2026, 1, 1, 10, 0, 0, tzinfo=timezone.utc)

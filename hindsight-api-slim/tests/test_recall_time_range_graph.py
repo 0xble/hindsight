@@ -28,10 +28,9 @@ from hindsight_api.engine.retain import embedding_utils
 # nothing, and the ones that still pass do so vacuously (an assertion that a result set is EMPTY
 # holds trivially when nothing was ever seeded). Deselected when the suite runs against an
 # alternative store; unchanged, and still required, on Postgres.
-pytestmark = pytest.mark.memory_backend_incompatible
 
 
-pytestmark = pytest.mark.xdist_group("recall_time_range_graph")
+pytestmark = [pytest.mark.memory_backend_incompatible, pytest.mark.xdist_group("recall_time_range_graph")]
 
 T_OLD = datetime(2026, 1, 1, 10, 0, 0, tzinfo=timezone.utc)
 T_CUTOFF = datetime(2026, 1, 1, 11, 0, 0, tzinfo=timezone.utc)
