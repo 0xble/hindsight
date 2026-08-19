@@ -2447,9 +2447,10 @@ async def _streaming_retain_batch(
                 if _edge_provider.store_owned_retain_for(bank_id):
                     # Store-owned 0-fact (re-)ingest: the document's bodies are already in the store
                     # (via _store_document_bodies) and there are no new memories. A re-ingest that now
-                    # yields 0 facts must drop the document's PRIOR memories — ONE plain memlake
-                    # delete-by-document. No Postgres documents row, no lock, no write-group
-                    # (memlake-only), so nothing is left undecided to stall the store's indexer. This
+                    # yields 0 facts must drop the document's PRIOR memories — ONE plain store-side
+                    # delete-by-document. No Postgres documents row, no lock, no write-group (there is
+                    # no SQL witness to decide), so nothing is left undecided to stall the store's
+                    # indexer. This
                     # is the 0-fact analogue of the fact-bearing PG-free path's replace-tombstone.
                     await _edge_provider.delete_document(
                         conn=None, fq_table=fq_table, bank_id=bank_id, document_id=effective_doc_id

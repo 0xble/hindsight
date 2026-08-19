@@ -636,7 +636,7 @@ async def _load_observations_from_store(
 
     Same rule as the SQL loader: an observation referencing a fact outside the export would import
     as a dangling reference, so it is skipped rather than emitted. Sources come off the memory's own
-    `source_memory_ids` here instead of a column, which is also how the memlake path already
+    `source_memory_ids` here instead of a column, which is also how a store-owned path already
     resolves them — an observation's sources are denormalised onto it at write time.
     """
     stored = await _scan_all_memories(memories, bank_id, ["observation"])
