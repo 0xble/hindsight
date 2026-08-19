@@ -12,7 +12,7 @@ if TYPE_CHECKING:
     # Type-only: importing it for real is a cycle. This module is pulled in very
     # early by memory_engine, while mental_model_refresh reaches the search
     # package, which imports back from memory_engine.
-    from .mental_model_refresh import RefreshFailureReason, RefreshOutcome
+    from .mental_model_refresh import RefreshFailureReason, RefreshOperationOutcome
 
 MAX_EXTRACTION_ERROR_SAMPLES = 5
 
@@ -188,7 +188,7 @@ class RefreshMentalModelOutcomeMetadata:
     # it preserved, so ``content_len``/``populated_content`` read identically.
     # Absent (rather than null) on rows written by a build predating the field,
     # so "not recorded" stays distinguishable from any recorded value.
-    outcome: "RefreshOutcome | None" = None
+    outcome: "RefreshOperationOutcome | None" = None
     # Why the refresh refused to write, on the failing outcomes only. Finer than
     # ``outcome``: it is the same value persisted as ``reflect_response.refresh_skipped``.
     failure_reason: "RefreshFailureReason | None" = None
@@ -219,7 +219,7 @@ class RefreshMentalModelFailureMetadata:
     refresh overwrites (#3274).
     """
 
-    outcome: "RefreshOutcome"
+    outcome: "RefreshOperationOutcome"
     failure_reason: "RefreshFailureReason"
 
     def to_dict(self) -> dict[str, Any]:

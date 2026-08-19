@@ -175,8 +175,7 @@ from hindsight_api.engine.memory_engine import (
 )
 from hindsight_api.engine.mental_model_refresh import (
     MentalModelDryRunRefreshResult,
-    RefreshFailureReason,
-    RefreshOutcome,
+    RefreshMentalModelOperationDetails,
 )
 from hindsight_api.engine.providers.none_llm import LLMNotAvailableError
 from hindsight_api.engine.reflect import ReflectToolCallError
@@ -3281,20 +3280,15 @@ class OperationResponse(BaseModel):
             "same value under `result_metadata`."
         ),
     )
-    refresh_outcome: RefreshOutcome | None = Field(
+    details: RefreshMentalModelOperationDetails | None = Field(
         default=None,
         description=(
-            "What a refresh_mental_model operation did with the document: rewrote it "
-            "(`content_written`), ran and found nothing to change (`content_preserved_no_new_facts`), "
-            "or refused to write (the `refresh_failed_*` values). Null for other task types, for "
-            "operations that have not finished, and for refreshes recorded before this field existed."
-        ),
-    )
-    refresh_failure_reason: RefreshFailureReason | None = Field(
-        default=None,
-        description=(
-            "Why a failed refresh refused to write, finer-grained than the outcome. Null unless "
-            "`refresh_outcome` is one of the `refresh_failed_*` values."
+            "Typed, per-operation-type outcome detail, discriminated by its own `operation_type`. "
+            "Populated for `refresh_mental_model` operations that have finished; null for operation "
+            "types that report no typed detail, for operations still in flight, and for operations "
+            "recorded before this field existed. Unlike `result_metadata` this is a supported field — "
+            "new operation types add their own shape here rather than flattening fields onto the "
+            "operation."
         ),
     )
     created_at: str
@@ -3484,21 +3478,15 @@ class OperationStatusResponse(BaseModel):
         default=None,
         description="Internal metadata for debugging. Structure may change without notice. Not for production use.",
     )
-    refresh_outcome: RefreshOutcome | None = Field(
+    details: RefreshMentalModelOperationDetails | None = Field(
         default=None,
         description=(
-            "What a refresh_mental_model operation did with the document: rewrote it "
-            "(`content_written`), ran and found nothing to change (`content_preserved_no_new_facts`), "
-            "or refused to write (the `refresh_failed_*` values). Null for other task types, for "
-            "operations that have not finished, and for refreshes recorded before this field existed. "
-            "Unlike `result_metadata` this is a supported, typed field."
-        ),
-    )
-    refresh_failure_reason: RefreshFailureReason | None = Field(
-        default=None,
-        description=(
-            "Why a failed refresh refused to write, finer-grained than the outcome. Null unless "
-            "`refresh_outcome` is one of the `refresh_failed_*` values."
+            "Typed, per-operation-type outcome detail, discriminated by its own `operation_type`. "
+            "Populated for `refresh_mental_model` operations that have finished; null for operation "
+            "types that report no typed detail, for operations still in flight, and for operations "
+            "recorded before this field existed. Unlike `result_metadata` this is a supported field — "
+            "new operation types add their own shape here rather than flattening fields onto the "
+            "operation."
         ),
     )
     child_operations: list[ChildOperationStatus] | None = Field(

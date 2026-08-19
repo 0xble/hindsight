@@ -32,8 +32,7 @@ type OperationStatusResponse struct {
 	NextRetryAt NullableString `json:"next_retry_at,omitempty"`
 	Progress NullableOperationProgress `json:"progress,omitempty"`
 	ResultMetadata map[string]interface{} `json:"result_metadata,omitempty"`
-	RefreshOutcome NullableString `json:"refresh_outcome,omitempty"`
-	RefreshFailureReason NullableString `json:"refresh_failure_reason,omitempty"`
+	Details NullableRefreshMentalModelOperationDetails `json:"details,omitempty"`
 	ChildOperations []ChildOperationStatus `json:"child_operations,omitempty"`
 	TaskPayload map[string]interface{} `json:"task_payload,omitempty"`
 }
@@ -476,88 +475,46 @@ func (o *OperationStatusResponse) SetResultMetadata(v map[string]interface{}) {
 	o.ResultMetadata = v
 }
 
-// GetRefreshOutcome returns the RefreshOutcome field value if set, zero value otherwise (both if not set or set to explicit null).
-func (o *OperationStatusResponse) GetRefreshOutcome() string {
-	if o == nil || IsNil(o.RefreshOutcome.Get()) {
-		var ret string
+// GetDetails returns the Details field value if set, zero value otherwise (both if not set or set to explicit null).
+func (o *OperationStatusResponse) GetDetails() RefreshMentalModelOperationDetails {
+	if o == nil || IsNil(o.Details.Get()) {
+		var ret RefreshMentalModelOperationDetails
 		return ret
 	}
-	return *o.RefreshOutcome.Get()
+	return *o.Details.Get()
 }
 
-// GetRefreshOutcomeOk returns a tuple with the RefreshOutcome field value if set, nil otherwise
+// GetDetailsOk returns a tuple with the Details field value if set, nil otherwise
 // and a boolean to check if the value has been set.
 // NOTE: If the value is an explicit nil, `nil, true` will be returned
-func (o *OperationStatusResponse) GetRefreshOutcomeOk() (*string, bool) {
+func (o *OperationStatusResponse) GetDetailsOk() (*RefreshMentalModelOperationDetails, bool) {
 	if o == nil {
 		return nil, false
 	}
-	return o.RefreshOutcome.Get(), o.RefreshOutcome.IsSet()
+	return o.Details.Get(), o.Details.IsSet()
 }
 
-// HasRefreshOutcome returns a boolean if a field has been set.
-func (o *OperationStatusResponse) HasRefreshOutcome() bool {
-	if o != nil && o.RefreshOutcome.IsSet() {
+// HasDetails returns a boolean if a field has been set.
+func (o *OperationStatusResponse) HasDetails() bool {
+	if o != nil && o.Details.IsSet() {
 		return true
 	}
 
 	return false
 }
 
-// SetRefreshOutcome gets a reference to the given NullableString and assigns it to the RefreshOutcome field.
-func (o *OperationStatusResponse) SetRefreshOutcome(v string) {
-	o.RefreshOutcome.Set(&v)
+// SetDetails gets a reference to the given NullableRefreshMentalModelOperationDetails and assigns it to the Details field.
+func (o *OperationStatusResponse) SetDetails(v RefreshMentalModelOperationDetails) {
+	o.Details.Set(&v)
 }
-// SetRefreshOutcomeNil sets the value for RefreshOutcome to be an explicit nil
-func (o *OperationStatusResponse) SetRefreshOutcomeNil() {
-	o.RefreshOutcome.Set(nil)
-}
-
-// UnsetRefreshOutcome ensures that no value is present for RefreshOutcome, not even an explicit nil
-func (o *OperationStatusResponse) UnsetRefreshOutcome() {
-	o.RefreshOutcome.Unset()
+// SetDetailsNil sets the value for Details to be an explicit nil
+func (o *OperationStatusResponse) SetDetailsNil() {
+	o.Details.Set(nil)
 }
 
-// GetRefreshFailureReason returns the RefreshFailureReason field value if set, zero value otherwise (both if not set or set to explicit null).
-func (o *OperationStatusResponse) GetRefreshFailureReason() string {
-	if o == nil || IsNil(o.RefreshFailureReason.Get()) {
-		var ret string
-		return ret
-	}
-	return *o.RefreshFailureReason.Get()
-}
-
-// GetRefreshFailureReasonOk returns a tuple with the RefreshFailureReason field value if set, nil otherwise
-// and a boolean to check if the value has been set.
-// NOTE: If the value is an explicit nil, `nil, true` will be returned
-func (o *OperationStatusResponse) GetRefreshFailureReasonOk() (*string, bool) {
-	if o == nil {
-		return nil, false
-	}
-	return o.RefreshFailureReason.Get(), o.RefreshFailureReason.IsSet()
-}
-
-// HasRefreshFailureReason returns a boolean if a field has been set.
-func (o *OperationStatusResponse) HasRefreshFailureReason() bool {
-	if o != nil && o.RefreshFailureReason.IsSet() {
-		return true
-	}
-
-	return false
-}
-
-// SetRefreshFailureReason gets a reference to the given NullableString and assigns it to the RefreshFailureReason field.
-func (o *OperationStatusResponse) SetRefreshFailureReason(v string) {
-	o.RefreshFailureReason.Set(&v)
-}
-// SetRefreshFailureReasonNil sets the value for RefreshFailureReason to be an explicit nil
-func (o *OperationStatusResponse) SetRefreshFailureReasonNil() {
-	o.RefreshFailureReason.Set(nil)
-}
-
-// UnsetRefreshFailureReason ensures that no value is present for RefreshFailureReason, not even an explicit nil
-func (o *OperationStatusResponse) UnsetRefreshFailureReason() {
-	o.RefreshFailureReason.Unset()
+// UnsetDetails ensures that no value is present for Details, not even an explicit nil
+func (o *OperationStatusResponse) UnsetDetails() {
+	o.Details.Unset()
 }
 
 // GetChildOperations returns the ChildOperations field value if set, zero value otherwise (both if not set or set to explicit null).
@@ -665,11 +622,8 @@ func (o OperationStatusResponse) ToMap() (map[string]interface{}, error) {
 	if o.ResultMetadata != nil {
 		toSerialize["result_metadata"] = o.ResultMetadata
 	}
-	if o.RefreshOutcome.IsSet() {
-		toSerialize["refresh_outcome"] = o.RefreshOutcome.Get()
-	}
-	if o.RefreshFailureReason.IsSet() {
-		toSerialize["refresh_failure_reason"] = o.RefreshFailureReason.Get()
+	if o.Details.IsSet() {
+		toSerialize["details"] = o.Details.Get()
 	}
 	if o.ChildOperations != nil {
 		toSerialize["child_operations"] = o.ChildOperations

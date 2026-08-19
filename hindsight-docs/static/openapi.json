@@ -11939,8 +11939,7 @@
               "content_written",
               "content_preserved_no_new_facts",
               "refresh_failed_empty_candidate",
-              "refresh_failed_delta_not_applied",
-              "refresh_failed_structured_output"
+              "refresh_failed_delta_not_applied"
             ],
             "title": "Outcome",
             "description": "What a real refresh would do with the document."
@@ -12267,8 +12266,7 @@
               "content_written",
               "content_preserved_no_new_facts",
               "refresh_failed_empty_candidate",
-              "refresh_failed_delta_not_applied",
-              "refresh_failed_structured_output"
+              "refresh_failed_delta_not_applied"
             ],
             "title": "Outcome",
             "description": "What the refresh did with the document."
@@ -13178,44 +13176,16 @@
             "title": "Mental Model Id",
             "description": "Mental model this operation acted on (refresh_mental_model); null for other task types. Without it the list cannot say which model an operation refreshed \u2014 `document_id` is null for these, and the list carries no result_metadata. The single-operation read exposes the same value under `result_metadata`."
           },
-          "refresh_outcome": {
+          "details": {
             "anyOf": [
               {
-                "type": "string",
-                "enum": [
-                  "content_written",
-                  "content_preserved_no_new_facts",
-                  "refresh_failed_empty_candidate",
-                  "refresh_failed_delta_not_applied",
-                  "refresh_failed_structured_output"
-                ]
+                "$ref": "#/components/schemas/RefreshMentalModelOperationDetails"
               },
               {
                 "type": "null"
               }
             ],
-            "title": "Refresh Outcome",
-            "description": "What a refresh_mental_model operation did with the document: rewrote it (`content_written`), ran and found nothing to change (`content_preserved_no_new_facts`), or refused to write (the `refresh_failed_*` values). Null for other task types, for operations that have not finished, and for refreshes recorded before this field existed."
-          },
-          "refresh_failure_reason": {
-            "anyOf": [
-              {
-                "type": "string",
-                "enum": [
-                  "empty_candidate",
-                  "structured_doc_unreadable",
-                  "delta_ops_failed",
-                  "delta_ops_all_skipped",
-                  "delta_not_applied",
-                  "structured_output_failed"
-                ]
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Refresh Failure Reason",
-            "description": "Why a failed refresh refused to write, finer-grained than the outcome. Null unless `refresh_outcome` is one of the `refresh_failed_*` values."
+            "description": "Typed, per-operation-type outcome detail, discriminated by its own `operation_type`. Populated for `refresh_mental_model` operations that have finished; null for operation types that report no typed detail, for operations still in flight, and for operations recorded before this field existed. Unlike `result_metadata` this is a supported field \u2014 new operation types add their own shape here rather than flattening fields onto the operation."
           },
           "created_at": {
             "type": "string",
@@ -13425,44 +13395,16 @@
             "title": "Result Metadata",
             "description": "Internal metadata for debugging. Structure may change without notice. Not for production use."
           },
-          "refresh_outcome": {
+          "details": {
             "anyOf": [
               {
-                "type": "string",
-                "enum": [
-                  "content_written",
-                  "content_preserved_no_new_facts",
-                  "refresh_failed_empty_candidate",
-                  "refresh_failed_delta_not_applied",
-                  "refresh_failed_structured_output"
-                ]
+                "$ref": "#/components/schemas/RefreshMentalModelOperationDetails"
               },
               {
                 "type": "null"
               }
             ],
-            "title": "Refresh Outcome",
-            "description": "What a refresh_mental_model operation did with the document: rewrote it (`content_written`), ran and found nothing to change (`content_preserved_no_new_facts`), or refused to write (the `refresh_failed_*` values). Null for other task types, for operations that have not finished, and for refreshes recorded before this field existed. Unlike `result_metadata` this is a supported, typed field."
-          },
-          "refresh_failure_reason": {
-            "anyOf": [
-              {
-                "type": "string",
-                "enum": [
-                  "empty_candidate",
-                  "structured_doc_unreadable",
-                  "delta_ops_failed",
-                  "delta_ops_all_skipped",
-                  "delta_not_applied",
-                  "structured_output_failed"
-                ]
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Refresh Failure Reason",
-            "description": "Why a failed refresh refused to write, finer-grained than the outcome. Null unless `refresh_outcome` is one of the `refresh_failed_*` values."
+            "description": "Typed, per-operation-type outcome detail, discriminated by its own `operation_type`. Populated for `refresh_mental_model` operations that have finished; null for operation types that report no typed detail, for operations still in flight, and for operations recorded before this field existed. Unlike `result_metadata` this is a supported field \u2014 new operation types add their own shape here rather than flattening fields onto the operation."
           },
           "child_operations": {
             "anyOf": [
@@ -14688,6 +14630,55 @@
         "type": "object",
         "title": "ReflectTrace",
         "description": "Execution trace of LLM and tool calls during reflection."
+      },
+      "RefreshMentalModelOperationDetails": {
+        "properties": {
+          "operation_type": {
+            "type": "string",
+            "const": "refresh_mental_model",
+            "title": "Operation Type",
+            "description": "Discriminator: which operation type this detail describes.",
+            "default": "refresh_mental_model"
+          },
+          "outcome": {
+            "type": "string",
+            "enum": [
+              "content_written",
+              "content_preserved_no_new_facts",
+              "refresh_failed_empty_candidate",
+              "refresh_failed_delta_not_applied",
+              "refresh_failed_structured_output"
+            ],
+            "title": "Outcome",
+            "description": "What the refresh did with the document: rewrote it (`content_written`), ran and found nothing to change (`content_preserved_no_new_facts`), or refused to write (the `refresh_failed_*` values)."
+          },
+          "failure_reason": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "empty_candidate",
+                  "structured_doc_unreadable",
+                  "delta_ops_failed",
+                  "delta_ops_all_skipped",
+                  "delta_not_applied",
+                  "structured_output_failed"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Failure Reason",
+            "description": "Why the refresh refused to write, finer-grained than the outcome \u2014 it distinguishes an op call that failed from one whose operations were all rejected, and from a baseline document that could not be read. Null unless `outcome` is one of the `refresh_failed_*` values."
+          }
+        },
+        "type": "object",
+        "required": [
+          "outcome"
+        ],
+        "title": "RefreshMentalModelOperationDetails",
+        "description": "What a refresh_mental_model operation did, on the operation record itself.\n\nReported under an async operation's ``details``, which is keyed by\n``operation_type``: each type that has a typed outcome to report contributes\nits own shape there, rather than every type's fields being flattened onto the\noperation. Today refresh is the only one.\n\nThis exists because ``result_metadata`` \u2014 the only per-refresh record kept\nindefinitely \u2014 could not say what a refresh did (#3274), and is documented as\ndebug-only and unstable, so it is not something a caller can build on."
       },
       "ReprocessDocumentResponse": {
         "properties": {

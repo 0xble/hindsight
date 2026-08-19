@@ -17,9 +17,10 @@ import pprint
 import re  # noqa: F401
 import json
 
-from pydantic import BaseModel, ConfigDict, StrictInt, StrictStr, field_validator
+from pydantic import BaseModel, ConfigDict, StrictInt, StrictStr
 from typing import Any, ClassVar, Dict, List, Optional
 from hindsight_client_api.models.operation_progress import OperationProgress
+from hindsight_client_api.models.refresh_mental_model_operation_details import RefreshMentalModelOperationDetails
 from typing import Optional, Set
 from typing_extensions import Self
 
@@ -33,8 +34,7 @@ class OperationResponse(BaseModel):
     document_id: Optional[StrictStr] = None
     filename: Optional[StrictStr] = None
     mental_model_id: Optional[StrictStr] = None
-    refresh_outcome: Optional[StrictStr] = None
-    refresh_failure_reason: Optional[StrictStr] = None
+    details: Optional[RefreshMentalModelOperationDetails] = None
     created_at: StrictStr
     updated_at: Optional[StrictStr] = None
     status: StrictStr
@@ -42,27 +42,7 @@ class OperationResponse(BaseModel):
     retry_count: Optional[StrictInt] = None
     next_retry_at: Optional[StrictStr] = None
     progress: Optional[OperationProgress] = None
-    __properties: ClassVar[List[str]] = ["id", "task_type", "items_count", "document_id", "filename", "mental_model_id", "refresh_outcome", "refresh_failure_reason", "created_at", "updated_at", "status", "error_message", "retry_count", "next_retry_at", "progress"]
-
-    @field_validator('refresh_outcome')
-    def refresh_outcome_validate_enum(cls, value):
-        """Validates the enum"""
-        if value is None:
-            return value
-
-        if value not in set(['content_written', 'content_preserved_no_new_facts', 'refresh_failed_empty_candidate', 'refresh_failed_delta_not_applied', 'refresh_failed_structured_output']):
-            raise ValueError("must be one of enum values ('content_written', 'content_preserved_no_new_facts', 'refresh_failed_empty_candidate', 'refresh_failed_delta_not_applied', 'refresh_failed_structured_output')")
-        return value
-
-    @field_validator('refresh_failure_reason')
-    def refresh_failure_reason_validate_enum(cls, value):
-        """Validates the enum"""
-        if value is None:
-            return value
-
-        if value not in set(['empty_candidate', 'structured_doc_unreadable', 'delta_ops_failed', 'delta_ops_all_skipped', 'delta_not_applied', 'structured_output_failed']):
-            raise ValueError("must be one of enum values ('empty_candidate', 'structured_doc_unreadable', 'delta_ops_failed', 'delta_ops_all_skipped', 'delta_not_applied', 'structured_output_failed')")
-        return value
+    __properties: ClassVar[List[str]] = ["id", "task_type", "items_count", "document_id", "filename", "mental_model_id", "details", "created_at", "updated_at", "status", "error_message", "retry_count", "next_retry_at", "progress"]
 
     model_config = ConfigDict(
         populate_by_name=True,
@@ -103,6 +83,9 @@ class OperationResponse(BaseModel):
             exclude=excluded_fields,
             exclude_none=True,
         )
+        # override the default output from pydantic by calling `to_dict()` of details
+        if self.details:
+            _dict['details'] = self.details.to_dict()
         # override the default output from pydantic by calling `to_dict()` of progress
         if self.progress:
             _dict['progress'] = self.progress.to_dict()
@@ -121,15 +104,10 @@ class OperationResponse(BaseModel):
         if self.mental_model_id is None and "mental_model_id" in self.model_fields_set:
             _dict['mental_model_id'] = None
 
-        # set to None if refresh_outcome (nullable) is None
+        # set to None if details (nullable) is None
         # and model_fields_set contains the field
-        if self.refresh_outcome is None and "refresh_outcome" in self.model_fields_set:
-            _dict['refresh_outcome'] = None
-
-        # set to None if refresh_failure_reason (nullable) is None
-        # and model_fields_set contains the field
-        if self.refresh_failure_reason is None and "refresh_failure_reason" in self.model_fields_set:
-            _dict['refresh_failure_reason'] = None
+        if self.details is None and "details" in self.model_fields_set:
+            _dict['details'] = None
 
         # set to None if updated_at (nullable) is None
         # and model_fields_set contains the field
@@ -174,8 +152,7 @@ class OperationResponse(BaseModel):
             "document_id": obj.get("document_id"),
             "filename": obj.get("filename"),
             "mental_model_id": obj.get("mental_model_id"),
-            "refresh_outcome": obj.get("refresh_outcome"),
-            "refresh_failure_reason": obj.get("refresh_failure_reason"),
+            "details": RefreshMentalModelOperationDetails.from_dict(obj["details"]) if obj.get("details") is not None else None,
             "created_at": obj.get("created_at"),
             "updated_at": obj.get("updated_at"),
             "status": obj.get("status"),

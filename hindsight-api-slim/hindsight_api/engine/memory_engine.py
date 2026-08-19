@@ -368,9 +368,9 @@ class MentalModelRefreshError(Exception):
     failed without anyone parsing prose (#3274).
     """
 
-    def __init__(self, message: str, *, outcome: "RefreshOutcome", reason: "RefreshFailureReason") -> None:
+    def __init__(self, message: str, *, outcome: "RefreshOperationOutcome", reason: "RefreshFailureReason") -> None:
         super().__init__(message)
-        self.outcome: RefreshOutcome = outcome
+        self.outcome: RefreshOperationOutcome = outcome
         self.reason: RefreshFailureReason = reason
 
 
@@ -460,7 +460,9 @@ from .mental_model_refresh import (
     MentalModelTraceToolCall,
     ModeFallbackReason,
     RefreshFailureReason,
+    RefreshMentalModelOperationDetails,
     RefreshMode,
+    RefreshOperationOutcome,
     RefreshOutcome,
 )
 from .multi_llm import MultiLLMProvider
@@ -1391,6 +1393,31 @@ def _summarize_refresh_tool_calls(
             )
         )
     return summaries
+
+
+def _operation_details(operation_type: str, result_metadata: dict[str, Any]) -> dict[str, Any] | None:
+    """Typed per-operation-type outcome detail, projected out of result_metadata.
+
+    The operations list carries no result_metadata of its own, and the single
+    read's copy is documented as debug-only and unstable — so the values a caller
+    is meant to build on are surfaced here instead (#3274). Keyed by
+    ``operation_type`` so each type contributes its own shape rather than every
+    type's fields being flattened onto the operation.
+
+    Built as a model (so the field names and enum values are validated here, not
+    at the API boundary) but returned dumped: this method's callers include the
+    MCP tool, which ``json.dumps`` the whole result, so everything in it has to be
+    JSON-able primitives.
+    """
+    if operation_type != "refresh_mental_model":
+        return None
+    outcome = result_metadata.get("outcome")
+    if outcome is None:
+        # An unfinished refresh, or one recorded before the outcome was written.
+        return None
+    return RefreshMentalModelOperationDetails(
+        outcome=outcome, failure_reason=result_metadata.get("failure_reason")
+    ).model_dump(mode="json")
 
 
 def _delta_failure_reason(fallback: ModeFallbackReason | None) -> RefreshFailureReason:
@@ -13720,7 +13747,7 @@ class MemoryEngine(MemoryEngineInterface):
                 )
 
             async def _preserve_and_fail(
-                *, reason: RefreshFailureReason, outcome: RefreshOutcome, detail: str
+                *, reason: RefreshFailureReason, outcome: RefreshOperationOutcome, detail: str
             ) -> NoReturn:
                 """Fail the refresh without touching the document.
 
@@ -15659,8 +15686,7 @@ class MemoryEngine(MemoryEngineInterface):
                         # mental_model_id: the list is where a monitoring layer reads
                         # the outcome distribution over a window, and it carries no
                         # result_metadata of its own (#3274).
-                        "refresh_outcome": result_metadata.get("outcome"),
-                        "refresh_failure_reason": result_metadata.get("failure_reason"),
+                        "details": _operation_details(row["operation_type"], result_metadata),
                         "created_at": row["created_at"].isoformat(),
                         "updated_at": row["updated_at"].isoformat() if row["updated_at"] else None,
                         "status": row["status"],
@@ -15796,8 +15822,7 @@ class MemoryEngine(MemoryEngineInterface):
                         "retry_count": row["retry_count"] or 0,
                         "next_retry_at": row["next_retry_at"].isoformat() if row["next_retry_at"] else None,
                         "progress": result_metadata.get("progress"),
-                        "refresh_outcome": result_metadata.get("outcome"),
-                        "refresh_failure_reason": result_metadata.get("failure_reason"),
+                        "details": _operation_details(row["operation_type"], result_metadata),
                         "result_metadata": result_metadata,
                         "child_operations": child_statuses,
                         "task_payload": task_payload,
@@ -15815,8 +15840,7 @@ class MemoryEngine(MemoryEngineInterface):
                         "retry_count": row["retry_count"] or 0,
                         "next_retry_at": row["next_retry_at"].isoformat() if row["next_retry_at"] else None,
                         "progress": result_metadata.get("progress"),
-                        "refresh_outcome": result_metadata.get("outcome"),
-                        "refresh_failure_reason": result_metadata.get("failure_reason"),
+                        "details": _operation_details(row["operation_type"], result_metadata),
                         "result_metadata": result_metadata,
                         "task_payload": task_payload,
                     }
