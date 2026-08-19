@@ -131,7 +131,7 @@ class TestDryRunPersistsNothing:
         result = await memory.dry_run_refresh_mental_model(bank_id, mm["id"], request_context=request_context)
 
         assert result is not None
-        assert result.preview_content == "# Team\n\nCompletely rewritten."
+        assert result.preview_content == "# Team\n\nCompletely rewritten.\n"
         assert result.would_persist is True
 
         after = await memory.get_mental_model(bank_id, mm["id"], request_context=request_context)
@@ -736,7 +736,7 @@ class TestDryRunRefreshEndpoint:
 
         assert response.status_code == 200, response.text
         body = response.json()
-        assert body["preview_content"] == "# Team\n\nRewritten."
+        assert body["preview_content"] == "# Team\n\nRewritten.\n"
         assert body["effective_mode"] == "full"
         assert body["would_persist"] is True
         assert "trace" in body

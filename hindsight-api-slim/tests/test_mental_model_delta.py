@@ -21,6 +21,7 @@ This file contains two kinds of tests:
 """
 
 import os
+import re
 import uuid
 from typing import Any
 
@@ -189,8 +190,90 @@ class TestDeltaRefreshPlumbing:
         )
 
         assert refreshed is not None
-        assert refreshed["content"] == "# Team\n\nRegenerated from scratch."
+        assert refreshed["content"] == "# Team\n\nRegenerated from scratch.\n"
         assert len(llm_calls) == 0, "Delta merge LLM call must not happen in full mode"
+
+        await memory.delete_bank(bank_id, request_context=request_context)
+
+    async def test_stored_content_is_the_render_of_the_stored_structure(
+        self,
+        memory: MemoryEngine,
+        request_context: RequestContext,
+        patch_reflect,
+        patch_llm_call,
+    ):
+        """``content`` is a derived view of ``structured_content``, on both legs.
+
+        Under the v1 schema the full leg stored the LLM candidate verbatim while
+        deriving the structure from it with a lossy parser, so the two columns
+        disagreed by construction and the next delta refresh silently published
+        the degraded one (#3361). They must now agree after every write.
+        """
+        from hindsight_api.engine.reflect.structured_doc import (
+            StructuredDocument,
+            render_document,
+        )
+
+        bank_id = f"test-delta-render-{uuid.uuid4().hex[:8]}"
+        await memory.get_bank_profile(bank_id, request_context=request_context)
+        mm = await memory.create_mental_model(
+            bank_id=bank_id,
+            name="Team Info",
+            source_query="Tell me about the team",
+            content="# Team\n\nOriginal content.\n",
+            trigger={"mode": "full"},
+            request_context=request_context,
+        )
+
+        # A candidate whose markdown v1's parser could not model: a table with a
+        # row missing its outer pipe, a nested list, and a hard line break.
+        candidate = (
+            "# Team\n\n| Name | Role |\n|---|---|\n| Alice | Lead\n\n- top\n  - nested\n\nline one  \nline two\n"
+        )
+        patch_reflect(
+            memory,
+            text=candidate,
+            facts=[{"id": "obs-1", "text": "Alice leads the team", "type": "observation", "context": None}],
+        )
+        llm_calls = patch_llm_call(memory, returns=[{"op": "append_block", "section_id": "team", "text": "New note."}])
+
+        async def _assert_invariant(where: str) -> dict:
+            stored = await memory.get_mental_model(
+                bank_id=bank_id, mental_model_id=mm["id"], request_context=request_context
+            )
+            assert stored is not None
+            doc = StructuredDocument.model_validate(stored["structured_content"])
+            assert stored["content"] == render_document(doc), f"{where}: content is not the render"
+            # ...and the constructs v1 flattened are still on their own lines.
+            lines = stored["content"].splitlines()
+            assert "| Alice | Lead" in lines, where
+            assert "  - nested" in lines, where
+            assert "line one  " in lines, where
+            return stored
+
+        # Full leg: the candidate is what gets written.
+        await memory.refresh_mental_model(bank_id=bank_id, mental_model_id=mm["id"], request_context=request_context)
+        await _assert_invariant("full refresh")
+        assert len(llm_calls) == 0, "full mode must not call the delta LLM"
+
+        # Delta leg: the same invariant must hold after an operation is applied
+        # on top of that structure, and the fragile blocks it never named must
+        # come through untouched.
+        await memory.update_mental_model(
+            bank_id=bank_id,
+            mental_model_id=mm["id"],
+            trigger={"mode": "delta"},
+            request_context=request_context,
+        )
+        patch_reflect(
+            memory,
+            text="# Team\n\nBob joined.\n",
+            facts=[{"id": "obs-2", "text": "Bob joined the team", "type": "observation", "context": None}],
+        )
+        await memory.refresh_mental_model(bank_id=bank_id, mental_model_id=mm["id"], request_context=request_context)
+        stored = await _assert_invariant("delta refresh")
+        assert len(llm_calls) == 1
+        assert "New note." in stored["content"]
 
         await memory.delete_bank(bank_id, request_context=request_context)
 
@@ -224,7 +307,7 @@ class TestDeltaRefreshPlumbing:
             bank_id=bank_id, mental_model_id=mm["id"], request_context=request_context
         )
 
-        assert refreshed["content"] == "# Team\n\nFull fresh synthesis."
+        assert refreshed["content"] == "# Team\n\nFull fresh synthesis.\n"
         assert len(llm_calls) == 0  # delta path skipped entirely
         rr = refreshed.get("reflect_response") or {}
         assert rr.get("delta_applied") is not True
@@ -262,7 +345,7 @@ class TestDeltaRefreshPlumbing:
             bank_id=bank_id, mental_model_id=mm["id"], request_context=request_context
         )
 
-        assert refreshed["content"] == "# Backend\n\nFull fresh synthesis."
+        assert refreshed["content"] == "# Backend\n\nFull fresh synthesis.\n"
         assert len(llm_calls) == 0
         assert "created_after" not in reflect_calls[0]
         rr = refreshed.get("reflect_response") or {}
@@ -312,7 +395,7 @@ class TestDeltaRefreshPlumbing:
             bank_id=bank_id, mental_model_id=mm["id"], request_context=request_context
         )
 
-        assert refreshed["content"] == "# Customers\n\nBrand new topic."
+        assert refreshed["content"] == "# Customers\n\nBrand new topic.\n"
         assert len(llm_calls) == 0, "Source-query change must bypass the delta merge"
 
         await memory.delete_bank(bank_id, request_context=request_context)
@@ -627,10 +710,7 @@ class TestDeltaRefreshPlumbing:
             {
                 "op": "append_block",
                 "section_id": "members",
-                "block": {
-                    "type": "bullet_list",
-                    "items": ["Bob — junior engineer"],
-                },
+                "text": "- Bob — junior engineer",
             }
         ]
         llm_calls = patch_llm_call(memory, returns=ops)
@@ -811,7 +891,7 @@ class TestDeltaRefreshPlumbing:
             {
                 "op": "append_block",
                 "section_id": "members",
-                "block": {"type": "bullet_list", "items": ["Bob — junior engineer"]},
+                "text": "- Bob — junior engineer",
             }
         ]
         llm_calls = patch_llm_call(memory, returns=ops)
@@ -1010,12 +1090,12 @@ class TestDeltaRefreshPlumbing:
                 {
                     "op": "append_block",
                     "section_id": "does-not-exist",
-                    "block": {"type": "paragraph", "text": "Bob joined the team."},
+                    "text": "Bob joined the team.",
                 },
                 {
                     "op": "append_block",
                     "section_id": "also-missing",
-                    "block": {"type": "paragraph", "text": "Bob sits with Alice."},
+                    "text": "Bob sits with Alice.",
                 },
             ],
         )
@@ -1094,12 +1174,12 @@ class TestDeltaRefreshPlumbing:
                 {
                     "op": "append_block",
                     "section_id": section_id,
-                    "block": {"type": "paragraph", "text": "Bob joined the team."},
+                    "text": "Bob joined the team.",
                 },
                 {
                     "op": "append_block",
                     "section_id": "does-not-exist",
-                    "block": {"type": "paragraph", "text": "Dropped on the floor."},
+                    "text": "Dropped on the floor.",
                 },
             ],
         )
@@ -1204,10 +1284,10 @@ class TestDeltaRefreshPlumbing:
 
         from hindsight_api.engine.reflect import structured_doc
 
-        def unparseable(_markdown: str):
-            raise ValueError("simulated unparseable markdown")
+        def unreadable(_stored, _markdown: str):
+            raise ValueError("simulated unreadable structured document")
 
-        monkeypatch.setattr(structured_doc, "parse_markdown", unparseable)
+        monkeypatch.setattr(structured_doc, "structured_document_from_stored", unreadable)
 
         patch_reflect(
             memory,
@@ -1379,7 +1459,9 @@ async def gemini_memory(memory_no_llm_verify: MemoryEngine):
     """
     if _GEMINI_API_KEY:
         provider = "gemini"
-        model = os.getenv("HINDSIGHT_GEMINI_EVAL_MODEL", "gemini-2.0-flash")
+        # gemini-2.0-flash was retired by the provider (404 NOT_FOUND); this is the
+        # model the repo's own .env and the other Gemini tests use.
+        model = os.getenv("HINDSIGHT_GEMINI_EVAL_MODEL", "gemini-3.1-flash-lite")
         cfg = LLMConfig(provider=provider, api_key=_GEMINI_API_KEY, base_url="", model=model)
     else:
         provider = "openai"
@@ -1561,8 +1643,8 @@ class TestDeltaRefreshGeminiEval:
         appear somewhere in the output.
         """
         from hindsight_api.engine.reflect.structured_doc import (
-            StructuredDocument,
             render_section,
+            split_markdown,
         )
 
         bank_id = f"eval-delta-add-{uuid.uuid4().hex[:8]}"
@@ -1578,17 +1660,10 @@ class TestDeltaRefreshGeminiEval:
             ],
         )
         first_content = seeded["first"]["content"]
-        first_struct = StructuredDocument.model_validate(
-            seeded["first"]["reflect_response"]["delta_operations_applied"]
-            and seeded["first"].get("structured_content")
-            or {"version": 1, "sections": []}
-        )
-        # The first refresh's structured snapshot is what the second refresh
-        # will operate on. Re-fetch via get_mental_model would also work.
-        # For preservation comparison we re-parse first_content.
-        from hindsight_api.engine.reflect.structured_doc import parse_markdown
-
-        before = parse_markdown(first_content)
+        # The stored structure is what the second refresh operates on, and the
+        # stored markdown is its render — so splitting the markdown back gives
+        # the same sections, which is what the preservation check compares.
+        before = split_markdown(first_content)
 
         # Introduce a brand-new fact that fits into "Inputs and Context" or
         # similar — but the model may pick any reasonable section.
@@ -1622,7 +1697,7 @@ class TestDeltaRefreshGeminiEval:
         )
 
         # Every untouched section must render byte-identical to its pre-refresh form.
-        after = parse_markdown(content)
+        after = split_markdown(content)
         before_by_id = {s.id: s for s in before.sections}
         for section in after.sections:
             if section.id in touched_section_ids:
@@ -1726,5 +1801,211 @@ class TestDeltaRefreshGeminiEval:
         )
         # delta_applied should be absent/False because we took the full path.
         assert (refreshed.get("reflect_response") or {}).get("delta_applied") is not True
+
+        await gemini_memory.delete_bank(bank_id, request_context=request_context)
+
+    async def test_document_survives_many_delta_rounds_intact(
+        self, gemini_memory: MemoryEngine, request_context: RequestContext
+    ):
+        """Repeated real-LLM delta refreshes must not erode the document.
+
+        This is the failure mode #3361 reported: no single refresh looks wrong,
+        but the markdown degrades a little on each one until a table is one line
+        and the damage is a fixed point. A single-round test cannot see it, so
+        this one runs several rounds against a real model, feeding a genuinely
+        new fact each time, and checks the invariants after every round:
+
+        1. ``content`` is exactly the render of the stored structure.
+        2. Fragile constructs the model never named — a table, a nested list, a
+           fenced code block, a hard line break — survive byte-for-byte.
+        3. Sections no applied operation named are byte-identical to the round
+           before.
+        4. No line ever welds a table separator to other cells (the detector
+           the issue used against production pages).
+        5. The document keeps growing knowledge rather than collapsing.
+        """
+        from hindsight_api.engine.reflect.structured_doc import (
+            StructuredDocument,
+            render_document,
+            render_section,
+            split_markdown,
+        )
+
+        # A separator cell that is not the whole line == a table welded onto one
+        # physical line. Verbatim from the #3361 report.
+        collapsed_table_rx = re.compile(r"\|\s*:?-{2,}:?\s*\|")
+
+        canaries = {
+            "table row": "| `retain` | Store a memory | 12ms |",
+            "table separator": "| --- | --- | --- |",
+            "nested bullet": "  - Nested under retries",
+            "deep bullet": "    - Deeper still, three levels",
+            "code fence line": '    return {"ok": True}',
+            "hard line break": "Latency budget is 200ms  ",
+            "blockquote": "> Never block the request path on consolidation.",
+            "ordered from five": "5. Fifth step, numbering starts at five on purpose",
+        }
+
+        existing_markdown = (
+            "## Purpose\n\n"
+            "Document the API surface, its performance budget, and the delivery rules.\n\n"
+            "## Operations\n\n"
+            "| Operation | Description | Budget |\n"
+            "| --- | --- | --- |\n"
+            "| `retain` | Store a memory | 12ms |\n"
+            "| `recall` | Retrieve memories | 40ms |\n\n"
+            "## Failure Handling\n\n"
+            "- Retry transient errors\n"
+            "  - Nested under retries\n"
+            "    - Deeper still, three levels\n"
+            "- Fail loudly on schema errors\n\n"
+            "## Example\n\n"
+            "```python\n"
+            "def handler(request):\n"
+            "\n"
+            '    return {"ok": True}\n'
+            "```\n\n"
+            "## Constraints\n\n"
+            "Latency budget is 200ms  \n"
+            "measured at the p95.\n\n"
+            "> Never block the request path on consolidation.\n\n"
+            "## Procedure\n\n"
+            "5. Fifth step, numbering starts at five on purpose\n"
+            "6. Sixth step\n"
+        )
+
+        rounds = [
+            "The recall endpoint gained a rerank stage that adds about 15ms.",
+            "Schema errors are now reported with the offending field name.",
+            "A new operation, reflect, answers questions over stored memories.",
+            "The p95 latency budget was raised from 200ms to 250ms.",
+            "Consolidation runs on a background worker every five minutes.",
+        ]
+
+        bank_id = f"eval-delta-stability-{uuid.uuid4().hex[:8]}"
+        seeded = await self._seed(
+            gemini_memory,
+            request_context,
+            bank_id,
+            existing_markdown=existing_markdown,
+            memories=["The API exposes retain and recall operations."],
+        )
+        mental_model_id = seeded["mm"]["id"]
+        previous_content = seeded["first"]["content"]
+
+        def touched_sections(refresh: dict[str, Any]) -> set[str]:
+            applied = (refresh.get("reflect_response") or {}).get("delta_operations_applied") or []
+            ids = {op.get("section_id") for op in applied}
+            ids |= {op.get("assigned_id") for op in applied}
+            return {i for i in ids if i}
+
+        def owning_section(markdown: str, line: str) -> str | None:
+            return next((s.id for s in split_markdown(markdown).sections if line in render_section(s)), None)
+
+        # The seeding refresh is a real delta refresh: the model may deliberately
+        # rewrite sections there too, so the contract is the same as every later
+        # round — a construct in a section no operation named must survive.
+        first_touched = touched_sections(seeded["first"])
+        for name, canary in canaries.items():
+            if owning_section(existing_markdown, canary) in first_touched:
+                continue
+            assert canary in previous_content.splitlines(), (
+                f"{name} was lost by the first refresh, which never named its section "
+                f"(touched: {sorted(first_touched)}):\n{previous_content}"
+            )
+        # Constructs the seed refresh edited away are no longer part of the contract.
+        canaries = {n: c for n, c in canaries.items() if c in previous_content.splitlines()}
+
+        previous_sections = {s.id: render_section(s) for s in split_markdown(previous_content).sections}
+        # Sections no operation has *ever* named must still be byte-identical at
+        # the end of the run, not just between consecutive rounds.
+        never_touched = dict(previous_sections)
+        for section_id in first_touched:
+            never_touched.pop(section_id, None)
+
+        for round_index, new_fact in enumerate(rounds, start=1):
+            await gemini_memory.retain_batch_async(
+                bank_id=bank_id,
+                contents=[{"content": new_fact}],
+                request_context=request_context,
+            )
+            await gemini_memory.wait_for_background_tasks()
+
+            refreshed = await gemini_memory.refresh_mental_model(
+                bank_id=bank_id,
+                mental_model_id=mental_model_id,
+                request_context=request_context,
+            )
+            content = refreshed["content"]
+            where = f"round {round_index} (fact: {new_fact!r})"
+
+            stored = await gemini_memory.get_mental_model(
+                bank_id=bank_id, mental_model_id=mental_model_id, request_context=request_context
+            )
+            assert stored is not None
+            structured = stored.get("structured_content")
+            assert structured is not None, f"{where}: no structure was persisted"
+            doc = StructuredDocument.model_validate(structured)
+            assert content == render_document(doc), (
+                f"{where}: stored markdown is not the render of the stored structure"
+            )
+
+            for line in content.splitlines():
+                if collapsed_table_rx.search(line):
+                    assert line.strip().startswith("|") and set(line.replace("|", "").strip()) <= set("-: "), (
+                        f"{where}: a table was welded onto one line (#3361):\n{line}"
+                    )
+
+            rr = refreshed.get("reflect_response") or {}
+            applied = rr.get("delta_operations_applied") or []
+            touched = touched_sections(refreshed)
+            for section_id in touched:
+                never_touched.pop(section_id, None)
+            print(
+                f"[delta-stability] {where}: applied={len(applied)} "
+                f"skipped={len(rr.get('delta_operations_skipped') or [])} "
+                f"touched={sorted(i for i in touched if i)} bytes={len(content)}"
+            )
+
+            current = split_markdown(content)
+            for section in current.sections:
+                if section.id in touched:
+                    continue
+                before = previous_sections.get(section.id)
+                if before is None:
+                    continue  # a section added this round has no prior form
+                assert render_section(section) == before, (
+                    f"{where}: untouched section {section.id!r} drifted.\n"
+                    f"BEFORE:\n{before}\n\nAFTER:\n{render_section(section)}"
+                )
+
+            previous_lines = previous_content.splitlines()
+            for name, canary in canaries.items():
+                if canary not in previous_lines:
+                    continue  # an earlier round deliberately edited it away
+                if owning_section(previous_content, canary) in touched:
+                    continue  # the model deliberately edited that section
+                assert canary in content.splitlines(), (
+                    f"{where}: {name} disappeared from a section the model never touched.\n{content}"
+                )
+
+            previous_content = content
+            previous_sections = {s.id: render_section(s) for s in current.sections}
+
+        print(f"[delta-stability] final document after {len(rounds)} rounds:\n{previous_content}")
+
+        # The end-to-end contract: a section no operation ever named survives all
+        # five rounds byte-for-byte. Consecutive-round checks alone would miss a
+        # slow erosion that moves a section a little at a time.
+        assert never_touched, (
+            "Every section was edited at least once, so this run proves nothing about "
+            "preservation — the fixture's facts have drifted too close to the seed document."
+        )
+        final_by_id = {s.id: render_section(s) for s in split_markdown(previous_content).sections}
+        for section_id, original in never_touched.items():
+            assert final_by_id.get(section_id) == original, (
+                f"Section {section_id!r} eroded across {len(rounds)} rounds without any "
+                f"operation ever naming it.\nBEFORE:\n{original}\n\nAFTER:\n{final_by_id.get(section_id)}"
+            )
 
         await gemini_memory.delete_bank(bank_id, request_context=request_context)

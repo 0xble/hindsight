@@ -93,7 +93,7 @@ class TestMentalModelStructuredOutput:
         # reflect is no longer asked to derive structured_output.
         assert reflect_calls[0].get("response_schema") is None
         # Extraction runs against the final content (== the answer in full mode).
-        assert so_calls == ["# Team\n\nRegenerated answer."]
+        assert so_calls == ["# Team\n\nRegenerated answer.\n"]
         assert refreshed["reflect_response"]["structured_output"] == {"summary": "A team."}
 
     async def test_no_schema_no_structured_output(

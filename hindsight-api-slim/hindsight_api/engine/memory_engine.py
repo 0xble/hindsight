@@ -14098,8 +14098,9 @@ class MemoryEngine(MemoryEngineInterface):
             build_structured_retraction_prompt,
         )
         from .reflect.structured_doc import (
-            parse_markdown,
             render_document,
+            split_markdown,
+            structured_document_from_stored,
         )
 
         final_content = reflect_result.text
@@ -14123,34 +14124,21 @@ class MemoryEngine(MemoryEngineInterface):
             return _op_llm_config
 
         if use_delta:
-            # Use the previously stored structured doc when available; otherwise
-            # parse the existing markdown so the very first delta refresh can
-            # still operate without waiting for a full rebuild.
-            #
-            # A stored doc that fails validation (hand-edited JSON, a shape from an
-            # older schema) is NOT fatal: the markdown in ``content`` is the same
-            # document and ``parse_markdown`` is lenient, so re-deriving the baseline
-            # from it keeps the delta path alive and rebuilds the structured doc as a
-            # side effect. Giving up here would refuse every subsequent refresh
-            # (nothing else repairs the column) over a baseline we can reconstruct.
+            # The stored structure is the baseline. A model that has never been
+            # refreshed in delta mode, or was last written under an older schema,
+            # has its baseline imported once from the stored markdown — a lossless
+            # split on headings and blank lines, not a re-interpretation of the
+            # prose (see ``structured_document_from_stored``). From this refresh on
+            # the structure is authoritative and the markdown is its render.
             current_doc: StructuredDocument | None = None
-            if stored_structured_content is not None:
-                try:
-                    current_doc = StructuredDocument.model_validate(stored_structured_content)
-                except Exception as exc:
-                    logger.warning(
-                        f"[MENTAL_MODELS] Stored structured doc for {mental_model_id} is unusable "
-                        f"({exc}); re-deriving the delta baseline from the stored markdown"
-                    )
-            if current_doc is None:
-                try:
-                    current_doc = parse_markdown(current_content)
-                except Exception as exc:
-                    logger.warning(
-                        f"[MENTAL_MODELS] Could not load structured doc for {mental_model_id} "
-                        f"({exc}); delta has no baseline to edit"
-                    )
-                    mode_fallback_reason = "structured_doc_unreadable"
+            try:
+                current_doc = structured_document_from_stored(stored_structured_content, current_content)
+            except Exception as exc:
+                logger.warning(
+                    f"[MENTAL_MODELS] Could not load structured doc for {mental_model_id} "
+                    f"({exc}); delta has no baseline to edit"
+                )
+                mode_fallback_reason = "structured_doc_unreadable"
 
             if current_doc is not None:
                 supporting_facts = delta_supporting_facts
@@ -14427,17 +14415,31 @@ class MemoryEngine(MemoryEngineInterface):
                 outcome="refresh_failed_delta_not_applied",
             )
 
-        # When delta is not applied (full mode, or delta fallback), parse the
+        # When delta is not applied (full mode, or delta fallback), split the
         # candidate markdown so the next refresh has a structured baseline to
-        # operate against.
+        # operate against, and store the render of that structure as the content.
+        #
+        # Writing the render rather than the raw candidate is what keeps the two
+        # columns in agreement: under v1 the full leg stored the candidate verbatim
+        # while deriving the structure from it lossily, so the first delta refresh
+        # afterwards silently replaced the user-visible markdown with the render of
+        # a degraded structure (#3361). The split is lossless, so this now changes
+        # nothing but whitespace between blocks — and if it ever did more, it would
+        # show up on the refresh that caused it instead of one refresh later.
         if final_structured is None:
             try:
-                final_structured = parse_markdown(final_content)
+                structured = split_markdown(final_content)
+                rendered = render_document(structured)
             except Exception as exc:
+                # Both or neither: a half-applied split would store a structure the
+                # content does not match, which is the very state this replaces.
                 logger.warning(
-                    f"[MENTAL_MODELS] Could not parse final markdown into structured form "
+                    f"[MENTAL_MODELS] Could not split final markdown into structured form "
                     f"for {mental_model_id} ({exc}); leaving structured_content unchanged"
                 )
+            else:
+                final_structured = structured
+                final_content = rendered
 
         # Report by observable effect, not by which branch got here. A delta run
         # whose model emitted *zero* operations lands in the applied path — the
