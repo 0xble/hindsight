@@ -1143,8 +1143,8 @@ You will be given:
 1. TOPIC — the question this document answers.
 2. CURRENT DOCUMENT (JSON) — the existing document. Each section has a stable
    ``id``, a ``heading``, a ``level`` (1..6), and an ordered list of ``blocks``.
-   Blocks are typed: ``paragraph``, ``bullet_list``, ``ordered_list``, ``code``,
-   or ``table``.
+   Each block has a stable ``id`` and a ``text`` field holding one markdown
+   fragment — a paragraph, a list, a table, or a fenced code block.
 3. RETRACTED FACTS — facts this document was built from that have since been
    removed from the memory bank. They are no longer true, no longer supported,
    or were withdrawn. The document may still state them.
@@ -1179,21 +1179,19 @@ RULES
   facts. That is a normal, expected answer.
 
 ALLOWED OPERATIONS (each line shows the JSON shape)
-- ``{"op": "remove_block", "section_id": "...", "index": N}``
+- ``{"op": "remove_block", "section_id": "...", "block_id": "..."}``
 - ``{"op": "remove_section", "section_id": "..."}``
-- ``{"op": "replace_block", "section_id": "...", "index": N, "block": {...}}``
-- ``{"op": "replace_section_blocks", "section_id": "...", "blocks": [...]}``
+- ``{"op": "replace_block", "section_id": "...", "block_id": "...", "text": "..."}``
+- ``{"op": "replace_section_blocks", "section_id": "...", "blocks": ["...", "..."]}``
 
-Block shapes
-- ``{"type": "paragraph", "text": "..."}``
-- ``{"type": "bullet_list", "items": ["...", "..."]}``
-- ``{"type": "ordered_list", "items": ["...", "..."]}``
-- ``{"type": "code", "language": "json", "text": "..."}``
-- ``{"type": "table", "headers": ["col1", "col2"], "rows": [["a", "b"], ["c", "d"]]}``
+Blocks are addressed by ``block_id`` — the ``id`` printed beside each block in
+CURRENT DOCUMENT. Copy it exactly; never invent one, and never use a position.
+An operation naming an id that does not exist is dropped, so a retraction that
+guesses removes nothing.
 
-IMPORTANT: ``remove_block`` operations are applied in the order you emit them, and
-each one shifts the indices of every later block in that section. When removing
-several blocks from the same section, emit them in DESCENDING index order.
+Every ``text`` (and every entry of ``blocks``) is ONE markdown fragment, written
+as it should appear: ``"- one\\n- two"`` for a list,
+``"| col | col |\\n| --- | --- |\\n| a | b |"`` for a table.
 
 OUTPUT FORMAT
 Return ONLY a single JSON object, with no prose before or after, no markdown code
@@ -1202,8 +1200,9 @@ fences, no commentary. The object must have exactly one top-level key,
 nothing changes).
 
 JSON STRING RULES (critical)
-- Every ``text`` and ``items`` string must be valid JSON: escape ``"`` as ``\\"``,
-  backslashes as ``\\\\``, and newlines as ``\\n``.
+- Every string must be valid JSON: escape ``"`` as ``\\"``, backslashes as
+  ``\\\\``, and every line break as ``\\n``. Never put a raw newline inside a
+  JSON string.
 - Do not append extra ``]`` or ``}`` after the closing ``}`` of the root object."""
 
 
