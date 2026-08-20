@@ -1140,6 +1140,11 @@ async def test_document_upsert_behavior(memory, request_context):
 
 
 @pytest.mark.asyncio
+# Reads documents.created_at / updated_at with raw SQL. The fully store-owned retain path keeps
+# no Postgres documents row at all, so the SELECT returns None regardless of behaviour. The
+# property itself — a re-ingest preserves the original created_at — is enforced on the store side
+# in the provider's put_document, which reuses the existing record's created_at.
+@pytest.mark.memory_backend_incompatible
 async def test_document_upsert_preserves_created_at(memory, request_context):
     """Re-ingesting a document keeps the original created_at; updated_at advances."""
     bank_id = f"test_upsert_ts_{datetime.now(timezone.utc).timestamp()}"
@@ -3496,6 +3501,9 @@ async def test_streaming_chunk_batching_recovery(memory_mock_llm, request_contex
 
 
 @pytest.mark.asyncio
+# Asserts the document was tracked by selecting it from the Postgres documents table, which the
+# fully store-owned path does not write; the document lives in the store.
+@pytest.mark.memory_backend_incompatible
 async def test_streaming_disabled_for_small_docs(memory_mock_llm, request_context):
     """
     Retain a small document (2 chunks) with batch_size=500.
