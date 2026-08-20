@@ -76,9 +76,7 @@ async def test_append_keeps_the_units_of_the_chunks_it_did_not_touch(memory, req
         # One more turn, the way a conversation appends.
         await memory.retain_batch_async(
             bank_id=bank_id,
-            contents=[
-                {"content": _turns(24, 1), "document_id": document_id, "update_mode": "append"}
-            ],
+            contents=[{"content": _turns(24, 1), "document_id": document_id, "update_mode": "append"}],
             request_context=request_context,
         )
         after = await _units_by_chunk(memory, bank_id, document_id, request_context)

@@ -27,8 +27,7 @@ async def test_expand_returns_chunk_and_document_for_whichever_store_holds_them(
     document_id = "expand-doc-1"
     metadata = {"source": "expand-store-test"}
     body = "\n".join(
-        f"[role: user] turn {i}: alpha bravo charlie delta echo foxtrot golf hotel india juliet"
-        for i in range(12)
+        f"[role: user] turn {i}: alpha bravo charlie delta echo foxtrot golf hotel india juliet" for i in range(12)
     )
 
     try:
