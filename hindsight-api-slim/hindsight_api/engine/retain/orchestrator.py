@@ -650,6 +650,7 @@ async def _streaming_batch_write_ext(
     is_first_batch: bool,
     is_last: bool,
     doc_tracking_done: list[bool],
+    doc_replace_done: list[bool],
     pipeline_aborted: list[bool],
     append_base_hash,
     new_content_hash,
@@ -705,6 +706,7 @@ async def _streaming_batch_write_ext(
             append_base_hash=append_base_hash,
             ext_txn=ext_txn,
             doc_tracking_done=doc_tracking_done,
+            doc_replace_done=doc_replace_done,
             p2_start=p2_start,
         )
 
@@ -905,6 +907,7 @@ async def _streaming_store_owned_retain(
     append_base_hash,
     ext_txn,
     doc_tracking_done: list[bool],
+    doc_replace_done: list[bool],
     p2_start: float,
 ) -> _ExtStreamingWriteResult:
     """The PG-free retain write for a store that owns entity resolution + atomicity.
@@ -992,7 +995,7 @@ async def _streaming_store_owned_retain(
         # the first batch writes. Without it every batch replaced, tombstoning the siblings the
         # comment above says must survive: measured on a ten-batch document, the retain returned 100
         # unit ids and the bank held 10, the last batch's.
-        replace_id = effective_doc_id if (is_first_batch and not doc_tracking_done[0]) else ""
+        replace_id = effective_doc_id if (is_first_batch and not doc_replace_done[0]) else ""
         # 0.0 → the server's default trigram-Jaccard threshold; a configured value overrides it.
         threshold = float(getattr(config, "entity_similarity_threshold", 0.0) or 0.0)
         resp = await provider.retain(
@@ -1004,6 +1007,10 @@ async def _streaming_store_owned_retain(
             replace_document_id=replace_id,
             resolve_threshold=threshold,
         )
+        # Latched HERE, where the replace was actually issued — not after the write, which also runs
+        # when this batch produced no units and therefore replaced nothing.
+        if replace_id:
+            doc_replace_done[0] = True
         log_buffer.append(
             f"[streaming] pg-free retain doc={effective_doc_id} units={len(unit_ids)} "
             f"seq={resp.seq} new_entities={resp.new_entities}"
@@ -1762,7 +1769,13 @@ async def retain_batch(
     # find nothing left to change and fall through to the metadata-only path. Gating on the first
     # slice alone left slices 2..N doing a full extraction of their own content regardless, which is
     # what made an oversized replacement re-extract a document it had just diffed correctly.
-    if is_first_batch or _delta_full_body is not None:
+    # Delta runs ONLY on the first sub-batch. Widening this to every slice changes the Postgres path
+    # too, and three things downstream assume the narrow gate: the caller keeps one result list per
+    # sub-batch item (`sub_origins` is length 1 for an oversized slice, so a multi-chunk delta's
+    # extra ids are dropped), `chunk_index_offset` advances by the splitter's per-slice count rather
+    # than by what a delta wrote, and a brand-new oversized document would extract its whole tail in
+    # one step — the bound the sub-batch splitting exists to keep.
+    if is_first_batch:
         delta_result = await _try_delta_retain(
             pool,
             embeddings_model,
@@ -2201,6 +2214,12 @@ async def _streaming_retain_batch(
 
     # Track whether document tracking has been done (by the first batch)
     doc_tracking_done = [False]
+    # Whether the document's prior version has actually been REPLACED. Distinct from
+    # `doc_tracking_done`, which records that tracking completed and is set even when a batch wrote
+    # zero units — there `provider.retain` was never called and no replace was issued, so reusing
+    # that latch would let batch 1 replace nothing, latch, and leave the prior version standing
+    # beside the new memories for every batch after it.
+    doc_replace_done = [False]
     # Track whether the transactional-outbox callback has already fired inside a
     # batch write TXN. The in-TXN fire only runs on a final facts-bearing batch
     # (is_last=True); two success paths never reach it — a committed-chunk count
@@ -2633,6 +2652,7 @@ async def _streaming_retain_batch(
                     is_first_batch=is_first_batch,
                     is_last=is_last,
                     doc_tracking_done=doc_tracking_done,
+                    doc_replace_done=doc_replace_done,
                     pipeline_aborted=pipeline_aborted,
                     append_base_hash=append_base_hash,
                     new_content_hash=new_content_hash,
