@@ -3365,6 +3365,56 @@ def _set_chunk_batch_size(memory: MemoryEngine, batch_size: int) -> None:
 
 
 @pytest.mark.asyncio
+async def test_every_streaming_batch_survives_the_next_one(memory_mock_llm, request_context):
+    """A streaming retain must keep every batch's facts, not just the last one's.
+
+    A document large enough to split into several consumer batches is written one batch at a time,
+    and only the FIRST may replace the document's prior version — replacing again tombstones the
+    siblings the earlier batches just wrote.
+
+    Getting that wrong loses data silently: the retain still returns every unit id it created, so
+    the caller sees success while the memories are gone. Measured before the fix, on a ten-batch
+    document: 100 unit ids returned, 10 memories in the bank — the last batch's.
+
+    Asserted through the public read API, not the `documents`/`chunks` tables, so it also runs
+    against a bank whose document store is external — which is the backend the bug lived on.
+    """
+    memory = memory_mock_llm
+    _set_chunk_batch_size(memory, 3)
+    bank_id = f"test_stream_accum_{uuid.uuid4().hex[:8]}"
+    document_id = f"doc_{uuid.uuid4().hex[:8]}"
+
+    mock_llm_call = _make_mock_llm_call()
+
+    try:
+        with patch("hindsight_api.engine.llm_wrapper.LLMProvider.call", new=mock_llm_call):
+            result = await memory.retain_batch_async(
+                bank_id=bank_id,
+                contents=[
+                    {"content": _generate_chunky_content(num_chunks=10, chunk_size=3000), "document_id": document_id}
+                ],
+                request_context=request_context,
+            )
+        returned = result[0] if result else []
+        assert len(returned) > 0, "the retain produced no facts, so the assertion below is vacuous"
+
+        listing = await memory.list_memory_units(bank_id, limit=1000, request_context=request_context)
+        assert listing["total"] == len(returned), (
+            f"the bank holds {listing['total']} memories but the retain returned {len(returned)} "
+            f"unit ids — a later batch replaced what an earlier one wrote, and the loss is silent "
+            f"because the retain still reports every id it created"
+        )
+
+        # The ids themselves, not merely the count: a replace leaving an equal number of DIFFERENT
+        # memories would satisfy a count check.
+        live = {row["id"] for row in listing["items"]}
+        missing = sorted(set(returned) - live)
+        assert not missing, f"{len(missing)} returned unit ids are not in the bank, e.g. {missing[:5]}"
+    finally:
+        await memory.delete_bank(bank_id, request_context=request_context)
+
+
+@pytest.mark.asyncio
 async def test_streaming_chunk_batching_produces_same_facts(memory_mock_llm, request_context):
     """
     Retain a medium document (~10 chunks) with batch_size=3.

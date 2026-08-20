@@ -986,7 +986,13 @@ async def _streaming_store_owned_retain(
         # NULL, so an append's first batch carried the NEW content alone and replacing would have
         # dropped every earlier turn). With the base read from the store that holds it, the first
         # batch is the whole document again and replace is the correct — and the only safe — move.
-        replace_id = effective_doc_id if is_first_batch else ""
+        # `is_first_batch` is a parameter of the whole `retain_batch` call and stays True for every
+        # consumer batch a streaming retain produces, so it cannot express "the first batch of this
+        # document" on its own. `doc_tracking_done` is the latch that can — it is set below, after
+        # the first batch writes. Without it every batch replaced, tombstoning the siblings the
+        # comment above says must survive: measured on a ten-batch document, the retain returned 100
+        # unit ids and the bank held 10, the last batch's.
+        replace_id = effective_doc_id if (is_first_batch and not doc_tracking_done[0]) else ""
         # 0.0 → the server's default trigram-Jaccard threshold; a configured value overrides it.
         threshold = float(getattr(config, "entity_similarity_threshold", 0.0) or 0.0)
         resp = await provider.retain(
