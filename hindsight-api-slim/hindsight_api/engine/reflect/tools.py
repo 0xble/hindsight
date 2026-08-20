@@ -452,15 +452,22 @@ async def tool_expand(
         # `{bank_id}_{document_id}_{index}` by construction — so the index is what remains once
         # that known prefix is removed. Built from the ids in hand rather than by splitting on
         # "_", which a bank or document id containing one would break.
+        # Deduped by chunk_id: co-located memories share one chunk, and the SQL branch collapses
+        # them through `= ANY($1)`. Without this the store is asked for the same chunk once per
+        # memory sitting in it.
         refs: list[tuple[str, int]] = []
         ref_owner: list[dict] = []
+        _seen_chunks: set[str] = set()
         for m in memories:
             cid, did = m["chunk_id"], m["document_id"]
             if not cid or not did:
                 continue
+            if cid in _seen_chunks:
+                continue
             suffix = cid.removeprefix(f"{bank_id}_{did}_")
             if suffix == cid or not suffix.isdigit():
                 continue
+            _seen_chunks.add(cid)
             refs.append((did, int(suffix)))
             ref_owner.append({"chunk_id": cid, "document_id": did, "chunk_index": int(suffix)})
         if refs:

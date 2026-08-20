@@ -81,9 +81,16 @@ async def test_append_keeps_the_units_of_the_chunks_it_did_not_touch(memory, req
         )
         after = await _units_by_chunk(memory, bank_id, document_id, request_context)
 
-        # The last chunk before the append is the only one the new turn can have flowed into, so
-        # it is allowed to change. Every chunk before it must be untouched, ids included.
-        settled = sorted(before)[:-1]
+        # The last chunk before the append is the only one the new turn can have flowed into, so it
+        # is allowed to change. Every chunk before it must be untouched, ids included.
+        #
+        # Ordered by the chunk's INDEX, not by the id as a string: a chunk id is
+        # `{bank}_{document}_{index}`, so a lexicographic sort puts `_10` before `_2` and picks the
+        # wrong "last" chunk the moment a document has ten or more.
+        def _index_of(chunk_id: str) -> int:
+            return int(chunk_id.rsplit("_", 1)[-1])
+
+        settled = sorted(before, key=_index_of)[:-1]
         assert settled, "expected at least one chunk that the append cannot have touched"
 
         dropped = {c: sorted(before[c]) for c in settled if not before[c] <= after.get(c, set())}

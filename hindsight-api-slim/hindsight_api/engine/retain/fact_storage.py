@@ -474,7 +474,7 @@ async def update_memory_units_metadata_and_tags(
             MemoryPatch(
                 unit_id=m.unit_id,
                 tags=list(tags or []),
-                metadata={META_METADATA_JSON: json.dumps(drop_null_values(metadata or {}), sort_keys=True)},
+                metadata={META_METADATA_JSON: json.dumps(drop_null_values(metadata or {}))},
             )
             for m in page.memories
         ]

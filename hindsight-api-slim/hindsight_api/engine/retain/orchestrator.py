@@ -3201,28 +3201,26 @@ async def _try_delta_retain(
     (``0`` if the submission matched prior content exactly and nothing was
     re-extracted).
     """
-    # Delta is DISABLED for a store-owned (PG-free) bank, and the reason is the write path, not the
-    # chunk diff. Two things this path relies on do not exist for such a bank:
+    # Delta RUNS for a store-owned (PG-free) bank. It did not always: the two things this path
+    # relies on are absent for such a bank, and each had to be replaced rather than assumed.
     #
     #   * the concurrency control. `_delta_batch_write_ext` serializes concurrent writers on
     #     `SELECT content_hash FROM documents ... FOR UPDATE`. A store-owned bank has no such row,
-    #     so `current_hash` is NULL, the ownership recheck is skipped, and parallel appends each
-    #     plan against the same base and overwrite each other — turns are lost, silently, with
-    #     every call returning success. The store's own compare-and-set (`put_document`'s
-    #     `expect_watermark`) is what would have to take the row lock's place.
+    #     so parallel appends each planned against the same base and overwrote each other — turns
+    #     lost silently, every call returning success. Its place is taken by the store's own
+    #     compare-and-set: `put_document(expect_watermark=...)`, which must be the batch's FIRST
+    #     store write, because the guard is on the namespace's WAL head and this batch's own fact
+    #     writes move it.
     #   * the document write itself. The delta path updates the document through
-    #     `upsert_document_metadata`, which is SQL — it writes nothing for a store-owned bank, so
-    #     the record would keep its pre-delta body.
+    #     `upsert_document_metadata`, which is SQL and writes nothing for such a bank, so the record
+    #     would keep its pre-delta body. `_store_document_bodies` carries it instead.
     #
-    # Falling through to the full streaming retain is therefore correct, but it is NOT free, and
-    # the cost is not the one previously recorded here ("full retain of an unchanged doc is still
-    # cheap"). Full replace deletes the document's facts and rebuilds them, so re-submitting a
-    # document that changed NOTHING orphans or destroys every observation standing on those facts
-    # and requeues them for consolidation — verified by
-    # test_delta_retain_orphan_observations.py, which fails against a store-owned bank for exactly
-    # that reason. Enabling delta here without first giving the write path a store-side CAS trades
-    # that for silent append loss, which is worse; both are covered by tests, in opposite
-    # directions, so the trade is measurable rather than a matter of opinion.
+    # Leaving delta off was not free, which is why it was worth replacing both. A full replace
+    # deletes the document's facts and rebuilds them, so re-submitting a document that changed
+    # NOTHING orphans or destroys every observation standing on those facts and requeues them for
+    # consolidation — test_delta_retain_orphan_observations.py covers that, and enabling delta
+    # without the store-side CAS would have traded it for silent append loss, which is worse. Both
+    # directions are covered by tests, so the trade was measurable rather than a matter of opinion.
     from ..memories import get_memories as _get_memories_delta
 
     _delta_store = _get_memories_delta()
