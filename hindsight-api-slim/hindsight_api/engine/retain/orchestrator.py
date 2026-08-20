@@ -3787,6 +3787,15 @@ async def _delta_metadata_only(
             tags=merged_tags,
             metadata=retain_params,
         )
+        # The document record now carries the new labels, but the memories do not: the SQL branch
+        # below propagates them onto the units with the same call, and without it a tags-only
+        # re-retain relabelled the document and left every unit on the OLD tags and metadata —
+        # measured, v2 units still read ['team-a'] after a retain carrying ['team-b', 'important'].
+        # This is the whole work of a metadata-only retain for such a bank, not a detail of it.
+        async with acquire_with_retry(pool) as conn:
+            await fact_storage.update_memory_units_metadata_and_tags(
+                conn, bank_id, document_id, merged_tags, retain_params.get("metadata", {})
+            )
         if outbox_callback is not None:
             # The outbox is still SQL for every deployment, so it keeps its own connection.
             async with acquire_with_retry(pool) as conn:
