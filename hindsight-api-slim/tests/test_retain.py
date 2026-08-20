@@ -3415,6 +3415,12 @@ async def test_every_streaming_batch_survives_the_next_one(memory_mock_llm, requ
 
 
 @pytest.mark.asyncio
+# Its remaining assertions read the Postgres `documents` and `chunks` tables, which the fully
+# store-owned retain path does not write. The part that mattered — that a multi-batch streaming
+# retain keeps EVERY batch's facts, not just the last — is asserted through the public read API
+# by test_every_streaming_batch_survives_the_next_one above, which runs on both backends. That
+# assertion is what caught the replace-per-batch data loss; do not fold it back in here.
+@pytest.mark.memory_backend_incompatible
 async def test_streaming_chunk_batching_produces_same_facts(memory_mock_llm, request_context):
     """
     Retain a medium document (~10 chunks) with batch_size=3.
