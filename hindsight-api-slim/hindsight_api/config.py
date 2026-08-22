@@ -1469,10 +1469,13 @@ DEFAULT_DB_ACQUIRE_WARN_THRESHOLD_MS = 1000  # log a warning when a pool acquire
 # acquire fails and the next caller repeats it forever -- and nothing else
 # recovers from that: liveness is deliberately database-free (a DB-touching probe
 # restarts every replica at once when the database is merely slow), so the pod
-# stays up and unready indefinitely. Ten minutes is long enough that a failover,
-# a restart, or a slow-query storm resolves well inside it; a full ten minutes
-# without a single successful acquire is not a slow database. 0 disables it.
-DEFAULT_DB_UNAVAILABLE_EXIT_SECONDS = 600.0
+# stays up and unready indefinitely. Two minutes clears a CNPG failover (tens of
+# seconds) and a database restart with room to spare, so the ordinary causes
+# resolve well inside it; two minutes in which not one acquire succeeded is not a
+# slow database. Was 600s initially, which left a wedged process serving nothing
+# for ten minutes -- far longer than the failures it is meant to ride out.
+# 0 disables it.
+DEFAULT_DB_UNAVAILABLE_EXIT_SECONDS = 120.0
 
 # Audit log defaults
 DEFAULT_AUDIT_LOG_ENABLED = False  # Disabled by default

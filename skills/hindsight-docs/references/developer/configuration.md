@@ -2195,7 +2195,7 @@ you with an opaque restart.
 | `HINDSIGHT_API_LOOP_WATCHDOG_STALL_THRESHOLD_MS` | Log a stall once the loop is unresponsive for at least this long. | `1000` |
 | `HINDSIGHT_API_LOOP_WATCHDOG_POLL_INTERVAL_MS` | How often the watchdog thread pings the loop. | `250` |
 | `HINDSIGHT_API_DB_ACQUIRE_WARN_THRESHOLD_MS` | Log a warning (with pool stats) when acquiring a pooled connection waits at least this long. | `1000` |
-| `HINDSIGHT_API_DB_UNAVAILABLE_EXIT_SECONDS` | Exit the process when no pooled connection has been acquired for this long, so the supervisor can replace it. `0` disables. | `600` |
+| `HINDSIGHT_API_DB_UNAVAILABLE_EXIT_SECONDS` | Exit the process when no pooled connection has been acquired for this long, so the supervisor can replace it. `0` disables. | `120` |
 
 The DB-pool acquire path also exposes `hindsight_db_pool_waiting` (callers currently
 queued for a connection) and the `hindsight_db_pool_acquire_wait` histogram. A slow
