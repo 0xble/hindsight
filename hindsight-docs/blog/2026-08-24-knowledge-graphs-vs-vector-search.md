@@ -37,6 +37,10 @@ That same fuzziness is the problem. **Semantic similarity is not the same thing 
 
 None of these are edge cases. In an agent memory system, they are the bread and butter.
 
+A fair objection: you do not need a graph to fix the first one. Most vector databases now run BM25 or full-text keyword search right next to their embeddings — [Vectorize](https://vectorize.io) included — and pairing semantic with keyword closes the exact-match gap cleanly. `HTTP 502` becomes a lexical hit instead of a fuzzy neighbor, and a proper name matches itself. That is the correct first move, and it is worth doing before reaching for anything heavier.
+
+But keyword search is still *lexical*. It matches tokens, not meaning and not structure. BM25 can find the memory that says "502," yet it has no more idea than the vector index that "Alice," "Alice Chen," and "she" are one person, and it cannot trace why she left or who else was on her team. Adding keyword search fixes exact match and nothing else. Entities, multi-hop, contradictions, and time are still open, and those are the failure modes that actually call for a different data model.
+
 ## What a knowledge graph is actually good at
 
 A knowledge graph stores memory as **entities and relationships**: Alice is a node, Google is a node, `works_at` is the edge between them. Instead of a bag of chunks, you get a structure you can traverse.
@@ -54,7 +58,7 @@ The catch is that a graph is not free. Something has to *build* it: extract enti
 | | Vector search | Knowledge graph |
 |---|---|---|
 | **Best at** | Meaning, paraphrase, synonyms, fuzzy conceptual recall | Entities, relationships, multi-hop "who / why," change over time |
-| **Struggles with** | Exact names and codes, multi-hop chains, contradictions, time | Cold start, extraction cost, entity-resolution errors, free-form fuzz |
+| **Struggles with** | Multi-hop chains, entity relationships, contradictions, time (exact terms are keyword/BM25's job) | Cold start, extraction cost, entity-resolution errors, free-form fuzz |
 | **Setup cost** | Embed on write — cheap and immediate | Extract, resolve entities, and maintain edges |
 | **Example it wins** | "Where does Alice work?" | "Why did Alice leave, and who else was on her team?" |
 
