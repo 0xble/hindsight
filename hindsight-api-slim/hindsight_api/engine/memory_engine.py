@@ -788,6 +788,20 @@ class _RetainChunkingConfig:
     structured_chunk_size: int | None
 
 
+def sub_batch_token_budget(retain_extraction_mode: str, *, default_tokens: int, chunks_mode_tokens: int) -> int:
+    """How many tokens one retain sub-batch may hold, for this extraction mode.
+
+    ``default_tokens`` (``retain_batch_tokens``) is sized to keep a fact-extraction
+    prompt inside a context window. ``chunks`` mode issues no such prompt — it stores
+    each chunk as-is — so that ceiling bounds nothing real there and instead caps the
+    streaming pipeline at the couple of dozen chunks that fit in it, serialising a
+    fan-out built to run wide and leaving ``retain_chunk_batch_size`` unreachable
+    (issue #3784). What still has to be bounded in that mode is memory, which
+    ``chunks_mode_tokens`` is sized for.
+    """
+    return chunks_mode_tokens if retain_extraction_mode == "chunks" else default_tokens
+
+
 def _pack_native_chunks(chunks: Iterable[str], tokens_per_batch: int) -> Iterator[list[str]]:
     """Group consecutive native chunks into runs of at most ``tokens_per_batch``.
 
@@ -5179,12 +5193,18 @@ class MemoryEngine(MemoryEngineInterface):
 
         Mirrors what ``_retain_batch_async_internal`` resolves before handing
         config to the orchestrator, so anything the splitting caller derives
-        from it (chunk boundaries, Memory Defense screening) matches what the
-        orchestrator then does with each sub-batch.
+        from it (chunk boundaries, extraction mode, Memory Defense screening)
+        matches what the orchestrator then does with each sub-batch. The
+        ``provider == "none"`` override belongs to that mirror: without it a
+        server with no LLM reports whatever mode the bank has on paper, while
+        every sub-batch actually runs in ``chunks`` mode.
         """
         from hindsight_api.config_resolver import apply_strategy
 
         resolved_config = await self._config_resolver.resolve_full_config(bank_id, request_context)
+        if self._llm_config.provider == "none":
+            resolved_config.retain_extraction_mode = "chunks"
+            resolved_config.enable_observations = False
         effective_strategy = strategy or resolved_config.retain_default_strategy
         if effective_strategy:
             resolved_config = apply_strategy(resolved_config, effective_strategy)
@@ -5242,17 +5262,29 @@ class MemoryEngine(MemoryEngineInterface):
         config = get_config()
         tokens_per_batch = config.retain_batch_tokens
 
+        # Slices are cut on the bank's own chunk boundaries, so resolve the retain config
+        # before splitting — the splitter and the orchestrator must chunk identically for
+        # the slices to line up with what gets stored (see _split_contents_into_sub_batches).
+        # Resolved behind the size check so an ordinary small retain still pays no extra
+        # bank-config read; a batch big enough to reach here resolved it anyway.
+        retain_config: HindsightConfig | None = None
         if total_tokens > tokens_per_batch:
+            retain_config = await self._resolve_retain_config(bank_id, request_context, strategy)
+            # Re-test against the mode's own budget: a chunks-mode document that only
+            # overflowed the context-shaped default now goes through as a single
+            # streaming pass, where its chunks are embedded and written concurrently.
+            tokens_per_batch = sub_batch_token_budget(
+                retain_config.retain_extraction_mode,
+                default_tokens=config.retain_batch_tokens,
+                chunks_mode_tokens=config.retain_chunks_mode_batch_tokens,
+            )
+
+        if retain_config is not None and total_tokens > tokens_per_batch:
             # Split into smaller batches based on token count
             logger.info(
                 f"Large batch detected ({total_tokens:,} tokens from {len(contents)} items). Splitting into sub-batches of ~{tokens_per_batch:,} tokens each..."
             )
 
-            # Slices are cut on the bank's own chunk boundaries, so resolve the
-            # retain config before splitting — the splitter and the orchestrator
-            # must chunk identically for the slices to line up with what gets
-            # stored (see _split_contents_into_sub_batches).
-            retain_config = await self._resolve_retain_config(bank_id, request_context, strategy)
             chunking_config = self._retain_chunking_config(retain_config)
 
             # Streamed, not collected: the slices are the document cut up, and holding

@@ -622,6 +622,7 @@ ENV_RETAIN_MISSION = "HINDSIGHT_API_RETAIN_MISSION"
 ENV_RETAIN_CUSTOM_INSTRUCTIONS = "HINDSIGHT_API_RETAIN_CUSTOM_INSTRUCTIONS"
 ENV_RETAIN_DEFAULT_STRATEGY = "HINDSIGHT_API_RETAIN_DEFAULT_STRATEGY"
 ENV_RETAIN_BATCH_TOKENS = "HINDSIGHT_API_RETAIN_BATCH_TOKENS"
+ENV_RETAIN_CHUNKS_MODE_BATCH_TOKENS = "HINDSIGHT_API_RETAIN_CHUNKS_MODE_BATCH_TOKENS"
 ENV_RETAIN_ENTITY_LOOKUP = "HINDSIGHT_API_RETAIN_ENTITY_LOOKUP"
 ENV_RETAIN_ENTITY_RESOLUTION_BATCH_SIZE = "HINDSIGHT_API_RETAIN_ENTITY_RESOLUTION_BATCH_SIZE"
 ENV_RETAIN_ENTITY_RESOLUTION_MAX_CANDIDATES = "HINDSIGHT_API_RETAIN_ENTITY_RESOLUTION_MAX_CANDIDATES"
@@ -1259,6 +1260,12 @@ DEFAULT_RETAIN_CHUNK_BATCH_SIZE = (
 # count-only bound.
 DEFAULT_RETAIN_MEMORY_BUDGET_MB = 128
 DEFAULT_RETAIN_BATCH_TOKENS = 10_000  # ~40KB of text  # Max chars per sub-batch for async retain auto-splitting
+# Same budget for retain_extraction_mode='chunks'. That mode makes no LLM call at all, so the
+# 10k ceiling above — which exists to keep an extraction prompt inside a context window — buys
+# nothing there and only caps how many chunks the streaming pipeline can have in flight
+# (~13-29 at the default chunk size), leaving retain_chunk_batch_size unreachable. The bound
+# that still matters in chunks mode is memory: this is ~2MB of text per sequential pass.
+DEFAULT_RETAIN_CHUNKS_MODE_BATCH_TOKENS = 500_000
 DEFAULT_RETAIN_ENTITY_LOOKUP = "trigram"  # "full" or "trigram"
 DEFAULT_RETAIN_ENTITY_RESOLUTION_BATCH_SIZE = 100  # Unique entity names per pg_trgm candidate lookup query
 # Candidates scored per entity mention. The fuzzy probe pre-ranks by real similarity
@@ -2578,6 +2585,7 @@ class HindsightConfig:
     retain_default_strategy: str | None
     retain_strategies: dict | None
     retain_batch_tokens: int
+    retain_chunks_mode_batch_tokens: int  # Sub-batch budget when retain_extraction_mode='chunks'
     retain_batch_enabled: bool
     retain_batch_poll_interval_seconds: int
     retain_entity_lookup: str  # "full" or "trigram"
@@ -3829,6 +3837,9 @@ class HindsightConfig:
             retain_default_strategy=os.getenv(ENV_RETAIN_DEFAULT_STRATEGY) or DEFAULT_RETAIN_DEFAULT_STRATEGY,
             retain_strategies=DEFAULT_RETAIN_STRATEGIES,
             retain_batch_tokens=int(os.getenv(ENV_RETAIN_BATCH_TOKENS, str(DEFAULT_RETAIN_BATCH_TOKENS))),
+            retain_chunks_mode_batch_tokens=int(
+                os.getenv(ENV_RETAIN_CHUNKS_MODE_BATCH_TOKENS, str(DEFAULT_RETAIN_CHUNKS_MODE_BATCH_TOKENS))
+            ),
             retain_entity_lookup=os.getenv(ENV_RETAIN_ENTITY_LOOKUP, DEFAULT_RETAIN_ENTITY_LOOKUP),
             retain_entity_resolution_batch_size=_parse_positive_int(
                 ENV_RETAIN_ENTITY_RESOLUTION_BATCH_SIZE,
