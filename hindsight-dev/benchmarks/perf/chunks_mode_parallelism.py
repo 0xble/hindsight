@@ -175,6 +175,21 @@ async def main() -> None:
     span = (max(e for _, e, _ in calls) - min(s for s, _, _ in calls)) if calls else 0.0
     busy = sum(e - s for s, e, _ in calls)
 
+    # The two instrumentation points are monkeypatches onto module attributes. If either
+    # function is renamed or a caller stops going through it, the patch stops firing and the
+    # run would report a flattering zero instead of failing — so refuse to publish numbers
+    # that were never measured.
+    if not calls:
+        raise RuntimeError(
+            "no embedding batches recorded — embedding_utils.generate_embeddings_batch is no "
+            "longer the path the retain producer embeds through; re-point the instrumentation"
+        )
+    if not commits:
+        raise RuntimeError(
+            "no chunk commits recorded — chunk_storage.store_chunks_batch is no longer the "
+            "path the streaming consumer writes through; re-point the instrumentation"
+        )
+
     report = {
         "label": args.label,
         "doc_chars": len(text),

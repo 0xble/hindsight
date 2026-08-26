@@ -75,3 +75,53 @@ def test_chunks_mode_budget_reaches_the_streaming_batch_size() -> None:
     assert max(under_llm_budget.chunk_counts) < DEFAULT_RETAIN_CHUNK_BATCH_SIZE
     assert max(under_chunks_budget.chunk_counts) >= DEFAULT_RETAIN_CHUNK_BATCH_SIZE
     assert len(under_chunks_budget.sub_batches) < len(under_llm_budget.sub_batches)
+
+
+class _StubConfigResolver:
+    """Returns one prepared config, so the test isolates what the method itself does."""
+
+    def __init__(self, config) -> None:
+        self._config = config
+
+    async def resolve_full_config(self, bank_id: str, context):  # noqa: ARG002 - signature match
+        return self._config
+
+
+class _StubLLMConfig:
+    def __init__(self, provider: str) -> None:
+        self.provider = provider
+
+
+async def _resolved_mode(*, provider: str, bank_mode: str) -> str:
+    """Run _resolve_retain_config against stubs — no engine, no database."""
+    import dataclasses
+
+    from hindsight_api.config import _get_raw_config
+    from hindsight_api.engine.memory_engine import MemoryEngine
+
+    bank_config = dataclasses.replace(_get_raw_config(), retain_extraction_mode=bank_mode, retain_default_strategy=None)
+    stub = type(
+        "_Engine",
+        (),
+        {"_config_resolver": _StubConfigResolver(bank_config), "_llm_config": _StubLLMConfig(provider)},
+    )()
+    resolved = await MemoryEngine._resolve_retain_config(stub, "bank-1", None, None)
+    return resolved.retain_extraction_mode
+
+
+@pytest.mark.asyncio
+async def test_resolve_retain_config_reports_chunks_mode_when_there_is_no_llm() -> None:
+    """A server with provider='none' runs every sub-batch in chunks mode — say so here too.
+
+    ``_retain_batch_async_internal`` forces the mode down to the orchestrator, so the
+    splitting caller that reads this config has to see the same value. It did not, which
+    made the chunks-mode budget above look inapplicable on exactly the deployment it was
+    written for: the mode check read the bank's paper value ('concise') and the split ran
+    at the LLM budget anyway.
+    """
+    assert await _resolved_mode(provider="none", bank_mode="concise") == "chunks"
+
+
+@pytest.mark.asyncio
+async def test_resolve_retain_config_leaves_the_mode_alone_when_an_llm_is_configured() -> None:
+    assert await _resolved_mode(provider="openai", bank_mode="concise") == "concise"
