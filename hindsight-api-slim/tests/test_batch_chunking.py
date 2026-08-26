@@ -8,6 +8,8 @@ import pytest
 
 from hindsight_api import MemoryEngine
 from hindsight_api.engine.memory_engine import (
+    _iter_located_chunks,
+    _iter_run_slices,
     _split_contents_into_async_children,
     count_tokens,
 )
@@ -117,6 +119,25 @@ def _jsonl_payload(lines: int = 200) -> str:
     return "\n".join(json.dumps({"i": i, "text": "line " + "x " * 80}) for i in range(lines))
 
 
+def _mixed_separator_payload(sections: int = 6) -> str:
+    """A body whose chunk boundaries land on single newlines AND on blank lines.
+
+    An ordinary markdown shape: a link list long enough to fill a chunk and spill, then a
+    blank line, then a short paragraph. Nothing about it is exotic — it is the shape that
+    used to defeat every rejoin candidate (issue #3790).
+    """
+    section = (
+        "\n".join(
+            f"- [Service {i} Documentation](https://docs.example.com/compute/docs/instances/guide-{i})"
+            for i in range(18)
+        )
+        + "\n\n- [Service 99 Documentation](https://docs.example.com/compute/docs/instances/guide-99)"
+        + "\n[Turn 322] User: "
+        + "word322 " * 4
+    )
+    return "\n\n".join(section for _ in range(sections))
+
+
 @pytest.mark.parametrize(
     "body",
     [
@@ -125,6 +146,7 @@ def _jsonl_payload(lines: int = 200) -> str:
         ),
         pytest.param(_conversation_payload(), id="json-conversation"),
         pytest.param(_jsonl_payload(), id="jsonl"),
+        pytest.param(_mixed_separator_payload(), id="mixed-separators"),
     ],
 )
 def test_split_slices_are_whole_native_chunks(body):
@@ -191,6 +213,59 @@ def test_split_falls_back_to_one_chunk_per_slice_when_no_faithful_join_exists(mo
 
     assert [b[0]["content"] for b in split.sub_batches] == chunks
     assert split.chunk_counts == [1, 1, 1]
+
+
+def test_split_packs_a_run_whose_chunks_sit_on_mixed_separators():
+    """A body separated by both blank lines and single newlines still packs into runs.
+
+    The rejoin used to guess the separator between two chunks. On a body that uses both,
+    every guess rewrote some boundary, the joined text re-chunked differently, and the run
+    degraded to one sub-batch per chunk. Each retain carries a fixed cost that dwarfs the
+    work in a single chunk, so that turned an ordinary document into ~30x the retains it
+    needed (issue #3790).
+    """
+    chunk_size = 1500
+    body = _mixed_separator_payload()
+    native_chunks = chunk_text(body, chunk_size)
+    assert len(native_chunks) > 10, "test payload must span many native chunks"
+
+    split = collect_sub_batches(
+        [{"content": body, "document_id": "doc-mixed-separators"}],
+        tokens_per_batch=2_000,
+        chunk_size=chunk_size,
+    )
+
+    assert min(split.chunk_counts) > 1, "every sub-batch should carry a run, not a lone chunk"
+    assert sum(split.chunk_counts) == len(native_chunks)
+
+
+def test_run_slices_regroup_after_a_boundary_that_cannot_be_rejoined():
+    """One unjoinable boundary costs one chunk, not the whole run.
+
+    Chunk packing restarts its greedy buffer after a piece it had to split recursively, so
+    the short tail it leaves never merges with the next paragraph in the document — but it
+    does when the run is re-chunked on its own. A run starting on such a tail therefore has
+    no faithful join, and shipping every one of its chunks alone was the expensive part of
+    issue #3790. The tail travels alone; the rest of the run stays whole.
+    """
+    chunk_size = 1500
+    paragraph = "\n".join(f"- entry {i} " + "x" * 60 for i in range(21))
+    body = "\n\n".join(
+        [paragraph, "short paragraph. " * 55] + [f"Paragraph {k}. " + "filler word here. " * 55 for k in range(8)]
+    )
+    native_chunks = chunk_text(body, chunk_size)
+    located = list(_iter_located_chunks(body, iter(native_chunks)))
+    # Drop the first chunk so the run begins on the recursion tail the paragraph left behind.
+    run = located[1:]
+
+    slices = list(_iter_run_slices(run, body, chunk_size, None))
+
+    assert [run_slice.chunk_count for run_slice in slices] == [1, len(run) - 1]
+    consumed = 0
+    for run_slice in slices:
+        expected = [chunk.text for chunk in run[consumed : consumed + run_slice.chunk_count]]
+        assert chunk_text(run_slice.text, chunk_size) == expected, "a slice must re-chunk to exactly its own chunks"
+        consumed += run_slice.chunk_count
 
 
 def test_split_slice_never_cuts_a_native_chunk_under_a_tiny_budget():

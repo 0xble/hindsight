@@ -788,7 +788,64 @@ class _RetainChunkingConfig:
     structured_chunk_size: int | None
 
 
-def _pack_native_chunks(chunks: Iterable[str], tokens_per_batch: int) -> Iterator[list[str]]:
+@dataclass(frozen=True)
+class _ChunkSpan:
+    """Where a native chunk sits in the body it was cut from — ``body[start:end]``."""
+
+    start: int
+    end: int
+
+
+@dataclass(frozen=True)
+class _NativeChunk:
+    """A native chunk together with where it sits in the body it was cut from.
+
+    ``span`` is ``None`` when the chunk is not a verbatim slice of that body — the
+    JSON-conversation path re-serializes every chunk, so its chunks appear nowhere in the
+    original text.
+
+    Rejoining a run needs the exact text that sat between its chunks. Guessing that text
+    is what fragmented retain: a body mixing paragraph breaks and line breaks has chunk
+    boundaries on both, so no single join reproduces it and the run degraded to one
+    sub-batch per chunk (#3790). The span makes the join exact instead of probabilistic,
+    without the chunker having to hand its separators back.
+    """
+
+    text: str
+    span: _ChunkSpan | None
+
+
+def _iter_located_chunks(text: str, chunks: Iterable[str]) -> Iterator[_NativeChunk]:
+    """Pair each streamed chunk with its span in ``text``.
+
+    Chunking cuts ``text`` into contiguous pieces and strips the whitespace off each, so a
+    chunk begins at the first non-whitespace character after the previous one ended.
+    Locating is therefore a whitespace skip and a ``startswith``, never a search of the
+    body — this runs over every chunk of a document that may be tens of MB.
+
+    The first chunk that is not where it should be stops the tracking for the rest of the
+    document: chunks that are not slices of this text at all (a re-serialized conversation
+    array) would otherwise cost a full-body search each, and the run-level joins below
+    still cover that shape.
+    """
+    cursor = 0
+    located = True
+    for chunk in chunks:
+        if not located:
+            yield _NativeChunk(chunk, None)
+            continue
+        start = cursor
+        while start < len(text) and text[start].isspace():
+            start += 1
+        if not text.startswith(chunk, start):
+            located = False
+            yield _NativeChunk(chunk, None)
+            continue
+        cursor = start + len(chunk)
+        yield _NativeChunk(chunk, _ChunkSpan(start, cursor))
+
+
+def _pack_native_chunks(chunks: Iterable[_NativeChunk], tokens_per_batch: int) -> Iterator[list[_NativeChunk]]:
     """Group consecutive native chunks into runs of at most ``tokens_per_batch``.
 
     A single chunk over the budget becomes a run of its own: the native chunk is
@@ -800,10 +857,10 @@ def _pack_native_chunks(chunks: Iterable[str], tokens_per_batch: int) -> Iterato
     document rather than with a working set (#3756); a run is bounded by
     ``tokens_per_batch``, so this holds one sub-batch's worth at a time instead.
     """
-    current: list[str] = []
+    current: list[_NativeChunk] = []
     current_tokens = 0
     for chunk in chunks:
-        chunk_tokens = count_tokens(chunk)
+        chunk_tokens = count_tokens(chunk.text)
         if current and current_tokens + chunk_tokens > tokens_per_batch:
             yield current
             current, current_tokens = [], 0
@@ -813,27 +870,20 @@ def _pack_native_chunks(chunks: Iterable[str], tokens_per_batch: int) -> Iterato
         yield current
 
 
-def _rejoin_native_chunks(
-    chunks: list[str],
-    chunk_size: int,
-    structured_chunk_size: int | None,
-) -> str | None:
-    """Rebuild the sub-batch text for a run of consecutive native chunks.
+def _run_join_candidates(run: list[_NativeChunk], body: str) -> Iterator[str]:
+    """Texts that might rebuild ``run``'s sub-batch, most faithful first.
 
-    Returns the joined text only when re-chunking it reproduces ``chunks``
-    exactly — the alignment the whole split depends on. ``None`` means no
-    faithful join exists for this run and the caller must fall back to one
-    sub-batch per chunk, which ``chunk_text``'s idempotency guarantees.
+    The span slice comes first because it is the original text, separators and all, rather
+    than a guess at them. The joins after it stay because a chunk is not always a slice of
+    the body: a JSON conversation array is re-serialized per chunk, so its pieces have to
+    be merged back into one array — concatenating them as text yields "[...]\\n[...]",
+    which is not valid JSON and re-chunks as prose (#2409).
     """
-    from .retain import fact_extraction
+    first, last = run[0].span, run[-1].span
+    if first is not None and last is not None:
+        yield body[first.start : last.end]
 
-    if len(chunks) == 1:
-        return chunks[0]
-
-    candidates: list[str] = []
-    # A JSON conversation array is re-serialized per chunk, so its pieces have
-    # to be merged back into one array — concatenating them as text yields
-    # "[...]\n[...]", which is not valid JSON and re-chunks as prose (#2409).
+    chunks = [chunk.text for chunk in run]
     try:
         merged: list[Any] = []
         for chunk in chunks:
@@ -841,16 +891,83 @@ def _rejoin_native_chunks(
             if not isinstance(parsed, list):
                 raise ValueError("not a conversation array")
             merged.extend(parsed)
-        candidates.append(json.dumps(merged, ensure_ascii=False))
+        yield json.dumps(merged, ensure_ascii=False)
     except (json.JSONDecodeError, ValueError, TypeError):
         pass
-    candidates.append("\n\n".join(chunks))
-    candidates.append("\n".join(chunks))
+    yield "\n\n".join(chunks)
+    yield "\n".join(chunks)
 
-    for text in candidates:
-        if fact_extraction.chunk_text(text, chunk_size, structured_chunk_size=structured_chunk_size) == chunks:
-            return text
+
+@dataclass(frozen=True)
+class _RunSlice:
+    """One sub-batch's worth of a run: the text to retain and the native chunks it holds."""
+
+    text: str
+    chunk_count: int
+
+
+def _cut_run(
+    run: list[_NativeChunk],
+    body: str,
+    chunk_size: int,
+    structured_chunk_size: int | None,
+) -> _RunSlice | None:
+    """The longest faithful slice at the head of ``run``.
+
+    A slice is faithful only when re-chunking its text reproduces exactly the chunks it
+    stands for — the alignment the whole split depends on (#3282). ``None`` means not even
+    the first two chunks can travel together, and the caller ships the head chunk alone,
+    which ``chunk_text``'s per-chunk idempotency makes trivially safe.
+
+    When no candidate rebuilds the whole run, the leading chunks that the best candidate
+    did reproduce are retried as a run of their own rather than abandoning the lot. Chunk
+    packing restarts its greedy buffer after a piece it had to split recursively, so a run
+    beginning just after one of those has a head chunk that merges with its neighbour when
+    re-chunked in isolation — one bad boundary that used to cost the entire run (#3790).
+    """
+    from .retain import fact_extraction
+
+    head = run
+    while len(head) >= 2:
+        chunks = [chunk.text for chunk in head]
+        longest_prefix = 0
+        for candidate in _run_join_candidates(head, body):
+            produced = fact_extraction.chunk_text(candidate, chunk_size, structured_chunk_size=structured_chunk_size)
+            if produced == chunks:
+                return _RunSlice(candidate, len(chunks))
+            matched = 0
+            for stored, rebuilt in zip(chunks, produced):
+                if stored != rebuilt:
+                    break
+                matched += 1
+            longest_prefix = max(longest_prefix, matched)
+        # Clamped below what was tried: a candidate can reproduce every chunk and still
+        # trail extra ones, and retrying the same head would not terminate.
+        head = head[: min(longest_prefix, len(head) - 1)]
     return None
+
+
+def _iter_run_slices(
+    run: list[_NativeChunk],
+    body: str,
+    chunk_size: int,
+    structured_chunk_size: int | None,
+) -> Iterator[_RunSlice]:
+    """Cut ``run`` into as few sub-batch texts as alignment allows.
+
+    Yields slices covering the run in order, each holding a whole number of native chunks. Every retain carries a fixed cost that dwarfs the work in a
+    single chunk, so how coarsely a run can be cut is what decides whether a document
+    costs a dozen retains or hundreds of them (#3790).
+    """
+    index = 0
+    while index < len(run):
+        cut = _cut_run(run[index:], body, chunk_size, structured_chunk_size)
+        if cut is None:
+            yield _RunSlice(run[index].text, 1)
+            index += 1
+            continue
+        yield cut
+        index += cut.chunk_count
 
 
 @dataclass(frozen=True)
@@ -984,16 +1101,15 @@ def _iter_raw_sub_batches(
             pending = _flush()
             if pending is not None:
                 yield pending
-            for run in _pack_native_chunks(_chunks_of(content_str), tokens_per_batch):
-                joined = _rejoin_native_chunks(run, chunk_size, structured_chunk_size)
-                slices = [(joined, len(run))] if joined is not None else [(chunk, 1) for chunk in run]
-                for slice_text, slice_chunk_count in slices:
-                    chunk_item = cast(RetainContentDict, {**item, "content": slice_text})
+            located = _iter_located_chunks(content_str, _chunks_of(content_str))
+            for run in _pack_native_chunks(located, tokens_per_batch):
+                for run_slice in _iter_run_slices(run, content_str, chunk_size, structured_chunk_size):
+                    chunk_item = cast(RetainContentDict, {**item, "content": run_slice.text})
                     yield _RawSubBatch(
                         contents=[chunk_item],
                         origins=[original_idx],
                         body_override=content_str,
-                        chunk_count=slice_chunk_count,
+                        chunk_count=run_slice.chunk_count,
                     )
             continue
 
