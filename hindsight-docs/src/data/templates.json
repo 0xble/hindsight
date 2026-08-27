@@ -54,7 +54,6 @@
       "category": "business",
       "integrations": [
         "hermes",
-        "hermes-desktop",
         "langgraph",
         "crewai",
         "pydantic-ai",
