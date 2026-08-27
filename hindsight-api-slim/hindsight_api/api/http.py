@@ -1442,6 +1442,15 @@ class CreateBankRequest(BaseModel):
             "directly, which is faster but less precise."
         ),
     )
+    store_full_recall: bool | None = Field(
+        default=None,
+        description=(
+            "Let the store answer the whole recall — fusion, reranking, the token budget and the "
+            "entity/chunk enrichment — instead of the API running that pipeline over several "
+            "round-trips to it. A store that does not implement it declines and the API's own "
+            "pipeline answers, so this changes which side does the work, never the answer."
+        ),
+    )
 
     def get_config_updates(self) -> dict[str, Any]:
         """Return only the config fields that were explicitly set.
@@ -1479,6 +1488,7 @@ class CreateBankRequest(BaseModel):
             "enable_temporal_retrieval",
             "enable_graph_retrieval",
             "enable_reranking",
+            "store_full_recall",
         ):
             value = getattr(self, field_name)
             if value is not None:
@@ -2739,6 +2749,10 @@ class BankTemplateConfig(BaseModel):
         default=None, description="Toggle the entity/link graph arm during recall"
     )
     enable_reranking: bool | None = Field(default=None, description="Toggle cross-encoder reranking during recall")
+    store_full_recall: bool | None = Field(
+        default=None,
+        description="Let the store answer the whole recall instead of the API running the pipeline over it",
+    )
     disposition_skepticism: int | None = Field(default=None, ge=1, le=5, description="Skepticism trait (1-5)")
     disposition_literalism: int | None = Field(default=None, ge=1, le=5, description="Literalism trait (1-5)")
     disposition_empathy: int | None = Field(default=None, ge=1, le=5, description="Empathy trait (1-5)")

@@ -2673,6 +2673,13 @@ class HindsightConfig:
     enable_temporal_retrieval: bool
     enable_graph_retrieval: bool
     enable_reranking: bool
+    # Let the STORE answer the whole recall when it can (`MemoriesExtension.full_recall`), instead
+    # of the engine running fusion, reranking, the budget and the enrichment over four round-trips
+    # to it. Per bank rather than global because that is what makes two banks on one pod
+    # comparable: same build, same traffic, one difference. A store that does not implement it
+    # declines and the engine's own pipeline answers, so turning this on is never a correctness
+    # change -- only a change in which side does the work.
+    store_full_recall: bool
 
     # Recall settings (used by internal recall, e.g. during mental model refresh)
     recall_include_chunks: bool
@@ -2942,6 +2949,7 @@ class HindsightConfig:
         "enable_temporal_retrieval",
         "enable_graph_retrieval",
         "enable_reranking",
+        "store_full_recall",
         # Consolidation settings
         "enable_observations",
         "enable_auto_consolidation",
@@ -4102,6 +4110,9 @@ class HindsightConfig:
             in ("true", "1", "yes"),
             enable_reranking=os.getenv(ENV_ENABLE_RERANKING, str(DEFAULT_ENABLE_RERANKING)).lower()
             in ("true", "1", "yes"),
+            # Off by default, and deliberately not given an env override: this selects which SIDE
+            # answers a recall, which is a per-bank experiment rather than a deployment setting.
+            store_full_recall=False,
             recall_include_chunks=os.getenv(ENV_RECALL_INCLUDE_CHUNKS, str(DEFAULT_RECALL_INCLUDE_CHUNKS)).lower()
             in ("true", "1", "yes"),
             recall_max_tokens=int(os.getenv(ENV_RECALL_MAX_TOKENS, str(DEFAULT_RECALL_MAX_TOKENS))),
