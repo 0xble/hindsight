@@ -54,6 +54,7 @@
       "category": "business",
       "integrations": [
         "hermes",
+        "openclaw",
         "langgraph",
         "crewai",
         "pydantic-ai",
