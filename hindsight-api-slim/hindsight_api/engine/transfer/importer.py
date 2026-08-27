@@ -1088,13 +1088,18 @@ def _remap_mental_model_evidence(rows: list[dict], unit_id_map: dict[str, str]) 
 
 
 def _decode_json_object(value: Any) -> Any:
-    """Accept either decoded JSONB values or serialized JSON objects."""
-    if not isinstance(value, str):
-        return value
-    try:
-        return json.loads(value)
-    except json.JSONDecodeError:
-        return value
+    """Accept decoded JSONB values and one or more serialized JSON layers."""
+    for _ in range(3):
+        if not isinstance(value, str):
+            return value
+        try:
+            decoded = json.loads(value)
+        except json.JSONDecodeError:
+            return value
+        if decoded == value:
+            return value
+        value = decoded
+    return value
 
 
 async def _link_observation_sources(
