@@ -6311,6 +6311,11 @@ class MemoryEngine(MemoryEngineInterface):
         enable_temporal_retrieval = bool(budget_config_dict.get("enable_temporal_retrieval", True))
         enable_graph_retrieval = bool(budget_config_dict.get("enable_graph_retrieval", True))
         reranking = _resolve_reranking(budget_config_dict, reranking)
+        # Let the STORE answer the whole recall when it can (`MemoriesExtension.full_recall`).
+        # Per bank rather than global on purpose: it is what makes two banks on the same pod
+        # comparable — same build, same traffic, one difference. A store that does not implement
+        # it declines and this pipeline runs exactly as it always has.
+        store_full_recall = bool(budget_config_dict.get("store_full_recall", False))
 
         # Log recall start with tags if present (skip if quiet mode for internal operations)
         if not _quiet:
@@ -6373,6 +6378,7 @@ class MemoryEngine(MemoryEngineInterface):
                             enable_text_search=enable_text_search,
                             enable_temporal_retrieval=enable_temporal_retrieval,
                             enable_graph_retrieval=enable_graph_retrieval,
+                            store_full_recall=store_full_recall,
                         )
                         break  # Success - exit retry loop
                     except OperationCancelledError:
@@ -6516,6 +6522,7 @@ class MemoryEngine(MemoryEngineInterface):
         enable_text_search: bool = True,
         enable_temporal_retrieval: bool = True,
         enable_graph_retrieval: bool = True,
+        store_full_recall: bool = False,
     ) -> RecallResultModel:
         """
         Search implementation with modular retrieval and reranking.
@@ -6607,6 +6614,89 @@ class MemoryEngine(MemoryEngineInterface):
             # if the client has gone away (issue #2122).
             if request_context is not None:
                 request_context.raise_if_cancelled()
+
+            # Step 1.5: let the store answer the whole recall, if it can and the bank asked it to.
+            #
+            # Everything below — fusion, the reranker, the boosts, the token budget, the entity and
+            # chunk enrichment — is work done on candidates that have to be moved out of the store
+            # first. A store that owns its own index can do all of it where the data already is,
+            # and on a networked store that is the difference between four round-trips and one.
+            #
+            # The store DECLINES by returning None, and then this pipeline runs unchanged. That is
+            # the whole safety property: nothing has been read yet, so falling through costs a
+            # branch, and a request shape the store does not implement is answered by the path that
+            # has always answered it rather than approximated.
+            if store_full_recall:
+                from .memories import FullRecallRequest
+                from .memories import get_memories as _get_memories_for_full_recall
+
+                _full_start = time.time()
+                _store_result = await _get_memories_for_full_recall().full_recall(
+                    FullRecallRequest(
+                        bank_id=bank_id,
+                        fact_types=list(fact_type),
+                        query_embedding=str(query_embedding),
+                        query_text=query,
+                        limit=thinking_budget,
+                        temporal_window=temporal_window,
+                        tags=tags,
+                        tags_match=tags_match,
+                        tag_groups=tag_groups,
+                        created_after=created_after,
+                        created_before=created_before,
+                        min_semantic=min_scores.semantic if min_scores else None,
+                        min_keyword=min_scores.keyword if min_scores else None,
+                        enable_text_search=enable_text_search,
+                        enable_graph=enable_graph_retrieval,
+                        reranking=reranking,
+                        reranker_max_candidates=(
+                            reranker_max_candidates
+                            if reranker_max_candidates is not None
+                            else get_config().reranker_max_candidates
+                        ),
+                        per_source_cap=get_config().recall_max_candidates_per_source,
+                        strategy_boosts=get_config().recall_strategy_boosts,
+                        recency_decay_function=get_config().recency_decay_function,
+                        recency_decay_linear_window_days=get_config().recency_decay_linear_window_days,
+                        recency_decay_halflife_days=get_config().recency_decay_halflife_days,
+                        # Resolved here, not in the store: `question_date` overrides "now", and two
+                        # clocks would make an identical request score differently on the two paths.
+                        now=_recall_scoring_now(question_date),
+                        min_reranker=min_scores.reranker if min_scores else None,
+                        min_final=min_scores.final if min_scores else None,
+                        truncate_to=thinking_budget * 2,
+                        max_tokens=max_tokens,
+                        tokenizer_encoding=get_config().tokenizer_encoding,
+                        include_entities=include_entities,
+                        include_chunks=include_chunks,
+                        max_chunk_tokens=max_chunk_tokens,
+                        # Declared so the store can decline rather than answer a different
+                        # question. Neither stage exists on the store side.
+                        prefer_observations=prefer_observations,
+                        include_source_facts=include_source_facts,
+                    )
+                )
+                if _store_result is not None:
+                    _full_elapsed = time.time() - _full_start
+                    log_buffer.append(
+                        f"  [1.5] Store-answered recall: {len(_store_result.results)} results in {_full_elapsed:.3f}s"
+                    )
+                    if not quiet:
+                        logger.info("\n" + "\n".join(log_buffer))
+                    # The store's own per-stage timings become this recall's phase breakdown.
+                    # Without this the trace goes dark exactly where the work moved to, and the
+                    # only thing left to compare between the two paths is a total.
+                    if enable_trace and tracer:
+                        for _name, _micros in (_store_result.store_stages or {}).items():
+                            tracer.add_phase_metric(f"store_{_name}", _micros / 1_000_000)
+                        tracer.add_phase_metric(
+                            "full_recall",
+                            _full_elapsed,
+                            {"results": len(_store_result.results)},
+                        )
+                        _trace = tracer.finalize([r.model_dump() for r in _store_result.results])
+                        _store_result.trace = _trace.to_dict() if _trace else None
+                    return _store_result
 
             # Step 2: Optimized parallel retrieval using batched queries
             # - Semantic + BM25 combined in 1 CTE query for ALL fact types
