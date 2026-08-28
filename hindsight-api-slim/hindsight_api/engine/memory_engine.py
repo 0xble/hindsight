@@ -11911,6 +11911,64 @@ class MemoryEngine(MemoryEngineInterface):
         state.bank_write_remaining[write] = remaining - 1
         return True
 
+    async def _gate_mental_model_read(
+        self, bank_id: str, mental_model_id: str, *, request_context: "RequestContext"
+    ) -> None:
+        """Run the pre-read validation for one mental model.
+
+        Shared by every endpoint that hands a model's content to a caller, so
+        "which reads are gated" is a property of this method rather than
+        something each call site has to remember. A knowledge page is a second
+        view over a mental model and reaches this by the same route.
+        """
+        if not self._operation_validator:
+            return
+        from hindsight_api.extensions.operation_validator import MentalModelGetContext
+
+        if self._consume_preauthorized_mental_model_operation(
+            bank_id, mental_model_id, refresh=False, request_context=request_context
+        ):
+            return
+        await self._validate_operation(
+            self._operation_validator.validate_mental_model_get(
+                MentalModelGetContext(
+                    bank_id=bank_id,
+                    mental_model_id=mental_model_id,
+                    request_context=request_context,
+                )
+            )
+        )
+
+    async def _record_mental_model_read(
+        self,
+        bank_id: str,
+        mental_model_id: str,
+        content: str | None,
+        *,
+        request_context: "RequestContext",
+    ) -> None:
+        """Report a completed model read, sized by the content actually returned.
+
+        Best-effort by design: the caller already has the content, so a failure
+        here must not turn a served read into an error.
+        """
+        if not self._operation_validator:
+            return
+        from hindsight_api.extensions.operation_validator import MentalModelGetResult
+
+        try:
+            await self._operation_validator.on_mental_model_get_complete(
+                MentalModelGetResult(
+                    bank_id=bank_id,
+                    mental_model_id=mental_model_id,
+                    request_context=request_context,
+                    output_tokens=len(content) // 4 if content else 0,
+                    success=True,
+                )
+            )
+        except Exception as hook_err:
+            logger.warning(f"Post-mental-model-get hook error (non-fatal): {hook_err}")
+
     def _consume_preauthorized_mental_model_operation(
         self,
         bank_id: str,
@@ -13692,21 +13750,7 @@ class MemoryEngine(MemoryEngineInterface):
         await self._authenticate_tenant(request_context)
 
         # Pre-operation validation (credit check / usage metering)
-        if self._operation_validator:
-            from hindsight_api.extensions.operation_validator import MentalModelGetContext
-
-            if not self._consume_preauthorized_mental_model_operation(
-                bank_id,
-                mental_model_id,
-                refresh=False,
-                request_context=request_context,
-            ):
-                ctx = MentalModelGetContext(
-                    bank_id=bank_id,
-                    mental_model_id=mental_model_id,
-                    request_context=request_context,
-                )
-                await self._validate_operation(self._operation_validator.validate_mental_model_get(ctx))
+        await self._gate_mental_model_read(bank_id, mental_model_id, request_context=request_context)
 
         backend = await self._get_backend()
 
@@ -13728,23 +13772,10 @@ class MemoryEngine(MemoryEngineInterface):
                 result["is_stale"] = await self.compute_mental_model_is_stale(conn, bank_id, row)
 
         # Post-operation hook (usage recording)
-        if result and self._operation_validator:
-            from hindsight_api.extensions.operation_validator import MentalModelGetResult
-
-            content = result.get("content", "")
-            output_tokens = len(content) // 4 if content else 0
-
-            result_ctx = MentalModelGetResult(
-                bank_id=bank_id,
-                mental_model_id=mental_model_id,
-                request_context=request_context,
-                output_tokens=output_tokens,
-                success=True,
+        if result:
+            await self._record_mental_model_read(
+                bank_id, mental_model_id, result.get("content"), request_context=request_context
             )
-            try:
-                await self._operation_validator.on_mental_model_get_complete(result_ctx)
-            except Exception as hook_err:
-                logger.warning(f"Post-mental-model-get hook error (non-fatal): {hook_err}")
 
         return result
 
@@ -15873,8 +15904,31 @@ class MemoryEngine(MemoryEngineInterface):
             )
         if row is None:
             return None
+
+        # A page read IS a mental model read: the join above returns
+        # ``mm.content`` as the page body, so this delivers exactly what
+        # ``get_mental_model`` delivers, off the same row. Run the same
+        # validator pair so the two doors onto that object are treated alike
+        # rather than differing by which URL the caller happened to use.
+        #
+        # Ordered after the fetch, unlike ``get_mental_model``, because the
+        # model's id is a property of the page rather than something the
+        # caller supplies — it is not known until the row is read. The gate
+        # still runs before any content is returned, so a rejected read
+        # yields no page; the only cost of the reordering is one indexed
+        # SELECT performed for a request that is then refused.
+        mental_model_id = row["mental_model_id"]
+        meter = bool(mental_model_id) and not _nested_operation_authorized.get()
+        if meter:
+            await self._gate_mental_model_read(bank_id, mental_model_id, request_context=request_context)
+
         node = self._row_to_knowledge_node(row)
         node["content"] = row["mm_content"]
+
+        if meter:
+            await self._record_mental_model_read(
+                bank_id, mental_model_id, node.get("content"), request_context=request_context
+            )
         return node
 
     async def search_knowledge_pages(

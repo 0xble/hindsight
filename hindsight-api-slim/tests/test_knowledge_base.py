@@ -116,6 +116,12 @@ class _RecordingValidator(OperationValidatorExtension):
         self._reason = reason
         self.read_ops: list[BankReadOperation] = []
         self.write_ops: list[BankWriteOperation] = []
+        # A page read is a mental model read, so it runs the metering pair
+        # too. Recorded here so tests can assert the meter fires rather than
+        # only that access was checked.
+        self.model_gets: list[str] = []
+        self.model_get_tokens: list[int] = []
+        self.reject_model_get = False
 
     async def validate_retain(self, ctx) -> ValidationResult:
         return ValidationResult.accept()
@@ -125,6 +131,15 @@ class _RecordingValidator(OperationValidatorExtension):
 
     async def validate_reflect(self, ctx) -> ValidationResult:
         return ValidationResult.accept()
+
+    async def validate_mental_model_get(self, ctx) -> ValidationResult:
+        self.model_gets.append(ctx.mental_model_id)
+        if self.reject_model_get:
+            return ValidationResult.reject("insufficient credits")
+        return ValidationResult.accept()
+
+    async def on_mental_model_get_complete(self, result) -> None:
+        self.model_get_tokens.append(result.output_tokens)
 
     async def validate_bank_read(self, ctx: BankReadContext) -> ValidationResult:
         self.read_ops.append(ctx.operation)
@@ -1081,6 +1096,72 @@ class TestMoveRenameDelete:
         # the backing mental model is gone too
         mm = await memory.get_mental_model(bank_id, ids.orders_mm, request_context=request_context)
         assert mm is None
+
+
+class TestPageReadIsAModelRead:
+    """Reading a page runs the same validator pair as reading its mental model.
+
+    get_knowledge_page joins mental_models and returns mm.content as
+    the page body, so a page read delivers exactly what get_mental_model
+    delivers off the same row. The two endpoints are doors onto one object, and
+    a deployment that meters model reads must see both — otherwise the price of
+    the same content depends on which URL the caller picked.
+    """
+
+    async def test_reading_a_page_runs_the_model_get_validator(self, api_client, kb_bank, memory, monkeypatch):
+        bank_id, ids = kb_bank
+        validator = _kb_validator()
+        monkeypatch.setattr(memory, "_operation_validator", validator)
+
+        resp = await api_client.get(f"/v1/default/banks/{_enc(bank_id)}/knowledge-base/pages/{ids.orders}")
+
+        assert resp.status_code == 200, resp.text
+        # Gated on the page's backing model, not on the page id.
+        assert validator.model_gets == [ids.orders_mm]
+
+    async def test_reading_a_page_reports_completion_with_the_content_size(
+        self, api_client, kb_bank, memory, monkeypatch
+    ):
+        # The post-hook is what records usage; without it a deployment could
+        # gate a read it then never bills for.
+        bank_id, ids = kb_bank
+        validator = _kb_validator()
+        monkeypatch.setattr(memory, "_operation_validator", validator)
+
+        resp = await api_client.get(f"/v1/default/banks/{_enc(bank_id)}/knowledge-base/pages/{ids.orders}")
+        body = resp.json()
+
+        # The response renames the model's content to body; the hook is
+        # given the same string, so the recorded size must track it.
+        assert len(validator.model_get_tokens) == 1
+        assert validator.model_get_tokens[0] == len(body.get("body") or "") // 4
+        assert validator.model_get_tokens[0] > 0
+
+    async def test_a_refused_model_get_returns_no_page_content(self, api_client, kb_bank, memory, monkeypatch):
+        # The gate has to run before the body is handed back, or it is
+        # decoration: the caller would get the content and the refusal.
+        bank_id, ids = kb_bank
+        validator = _kb_validator()
+        validator.reject_model_get = True
+        monkeypatch.setattr(memory, "_operation_validator", validator)
+
+        resp = await api_client.get(f"/v1/default/banks/{_enc(bank_id)}/knowledge-base/pages/{ids.orders}")
+
+        assert resp.status_code != 200
+        assert "Orders" not in resp.text
+        # Refused before delivery means nothing to record.
+        assert validator.model_get_tokens == []
+
+    async def test_bank_read_access_check_still_runs(self, api_client, kb_bank, memory, monkeypatch):
+        # Metering is added alongside the access check, not in place of it.
+        bank_id, ids = kb_bank
+        validator = _kb_validator()
+        monkeypatch.setattr(memory, "_operation_validator", validator)
+
+        validator.read_ops.clear()
+        await api_client.get(f"/v1/default/banks/{_enc(bank_id)}/knowledge-base/pages/{ids.orders}")
+
+        assert _read_ops(validator) == [BankReadOperation.GET_KNOWLEDGE_PAGE]
 
 
 class TestAuthorizationReadDenied:
