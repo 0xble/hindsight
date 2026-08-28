@@ -14,6 +14,7 @@ from pydantic import BaseModel, Field
 
 from ..._vector_index import index_using_clause, per_bank_indexes_are_eager, uses_per_bank_vector_indexes
 from ...config import get_config
+from .. import bank_info_cache
 from ..db_utils import acquire_with_retry, retry_with_backoff
 from ..memory_engine import fq_table, get_current_schema
 from ..response_models import DispositionTraits
@@ -219,6 +220,47 @@ async def get_or_create_bank_profile(pool, bank_id: str) -> BankProfileResult:
     # a concurrent writer touching the same bank row. The body is idempotent
     # (INSERT ... ON CONFLICT DO NOTHING + CREATE INDEX IF NOT EXISTS), so
     # retrying the whole tx stays correct and cheap.
+    # Read first, WITHOUT a transaction. The bank exists on essentially every call after the
+    # first -- this runs once per retain -- and wrapping a single SELECT in BEGIN/COMMIT costs
+    # two extra statements and a round trip apiece for a read that has nothing to make atomic.
+    # The transaction below is for the CREATE, which does need one: the INSERT and the per-bank
+    # index DDL must commit together, and that is also what the deadlock retry is for.
+    #
+    # Cached per process (see bank_info_cache): on a hit this takes no pooled connection at all,
+    # which is what lets a store-owned retain -- which writes nothing to Postgres -- run without
+    # touching it. A miss reads exactly as before. Writers invalidate.
+    async def _read_profile_row() -> dict:
+        async with acquire_with_retry(pool) as conn:
+            found = await conn.fetchrow(
+                f"""
+                SELECT name, disposition, mission
+                FROM {fq_table("banks")} WHERE bank_id = $1
+                """,
+                bank_id,
+            )
+        # A dict either way: the cache stores dicts, and "the bank does not exist" has to be
+        # representable or every call for a missing bank would be a miss that re-queries.
+        return dict(found) if found else {}
+
+    row = await bank_info_cache.get_or_load(bank_id, "profile", _read_profile_row)
+    if row:
+        disposition_data = row["disposition"]
+        if isinstance(disposition_data, str):
+            disposition_data = json.loads(disposition_data)
+        return BankProfileResult(
+            profile=BankProfile(
+                name=row["name"],
+                disposition=DispositionTraits(**disposition_data),
+                mission=row["mission"] or "",
+            ),
+            created=False,
+        )
+
+    # Miss: fall through to the create path, which re-reads inside its transaction. Re-reading is
+    # deliberate -- another writer may have created the bank between the read above and this
+    # transaction, and `get_or_create_bank_profile_on_conn` already handles that with
+    # INSERT ... ON CONFLICT DO NOTHING. The extra read costs one round trip on the once-per-bank
+    # path and keeps the create branch's semantics exactly as they were.
     async def _create() -> BankProfileResult:
         async with acquire_with_retry(pool) as conn:
             async with conn.transaction():
