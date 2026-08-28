@@ -3075,7 +3075,9 @@ async def apply_bank_template_manifest(
     # ones past the first page, and the import would create duplicates.
     existing_by_id: dict[str, dict[str, Any]] = {}
     if bank_exists and manifest.mental_models:
-        existing = await memory.list_mental_models(bank_id=bank_id, limit=None, request_context=request_context)
+        existing = await memory.list_mental_models(
+            bank_id=bank_id, limit=None, detail="metadata", request_context=request_context
+        )
         existing_by_id = {m["id"]: m for m in existing.items}
 
     existing_by_name: dict[str, dict[str, Any]] = {}
@@ -3128,6 +3130,7 @@ async def apply_bank_template_manifest(
             provisioned = await memory.list_mental_models(
                 bank_id=bank_id,
                 limit=None,
+                detail="metadata",
                 request_context=request_context,
             )
             provisioned_by_id = {item["id"]: item for item in provisioned.items}
@@ -3173,7 +3176,9 @@ async def apply_default_bank_template_resources(
     """Apply only the resources from a server-owned default template."""
     existing_by_id: dict[str, dict[str, Any]] = {}
     if manifest.mental_models:
-        existing = await memory.list_mental_models(bank_id=bank_id, limit=None, request_context=request_context)
+        existing = await memory.list_mental_models(
+            bank_id=bank_id, limit=None, detail="metadata", request_context=request_context
+        )
         existing_by_id = {model["id"]: model for model in existing.items}
 
     existing_by_name: dict[str, dict[str, Any]] = {}

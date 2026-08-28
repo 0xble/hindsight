@@ -120,6 +120,7 @@ class _RecordingValidator(OperationValidatorExtension):
         # too. Recorded here so tests can assert the meter fires rather than
         # only that access was checked.
         self.model_gets: list[str] = []
+        self.model_reads: list[str] = []
         self.model_get_tokens: list[int] = []
         self.reject_model_get = False
 
@@ -139,6 +140,10 @@ class _RecordingValidator(OperationValidatorExtension):
         return ValidationResult.accept()
 
     async def on_mental_model_get_complete(self, result) -> None:
+        # Recorded separately from : the gate and the completion
+        # hook do not always both fire. A single read runs both; a list reports
+        # completion for each model it delivered without gating each one.
+        self.model_reads.append(result.mental_model_id)
         self.model_get_tokens.append(result.output_tokens)
 
     async def validate_bank_read(self, ctx: BankReadContext) -> ValidationResult:
@@ -1096,6 +1101,61 @@ class TestMoveRenameDelete:
         # the backing mental model is gone too
         mm = await memory.get_mental_model(bank_id, ids.orders_mm, request_context=request_context)
         assert mm is None
+
+
+class TestListReportsTheContentItDelivers:
+    """A list that carries content is a bulk read of that content.
+
+    A knowledge page is a mental_models row and is not excluded from
+    list_mental_models, so a list that returns content hands back every
+    page in the bank. Reporting the single-page read while leaving that
+    unreported would watch the narrow door and leave the wide one open — a
+    caller could enumerate a bank's synthesized knowledge by asking for it in
+    one page instead of one at a time.
+    """
+
+    async def test_listing_with_content_reports_each_model(self, memory, kb_bank, request_context, monkeypatch):
+        bank_id, ids = kb_bank
+        validator = _kb_validator()
+        monkeypatch.setattr(memory, "_operation_validator", validator)
+
+        page = await memory.list_mental_models(bank_id=bank_id, detail="content", request_context=request_context)
+
+        with_content = [m for m in page.items if m.get("content")]
+        assert with_content, "fixture should have at least one model with content"
+        assert sorted(validator.model_reads) == sorted(str(m["id"]) for m in with_content)
+
+    async def test_the_page_backing_model_is_among_them(self, memory, kb_bank, request_context, monkeypatch):
+        # The specific hole: pages ride in on this list.
+        bank_id, ids = kb_bank
+        validator = _kb_validator()
+        monkeypatch.setattr(memory, "_operation_validator", validator)
+
+        await memory.list_mental_models(bank_id=bank_id, detail="content", request_context=request_context)
+
+        assert ids.orders_mm in validator.model_reads
+
+    async def test_listing_metadata_reports_nothing(self, memory, kb_bank, request_context, monkeypatch):
+        # No content delivered, nothing to report — and this is the detail
+        # level the internal template-provisioning callers now ask for.
+        bank_id, ids = kb_bank
+        validator = _kb_validator()
+        monkeypatch.setattr(memory, "_operation_validator", validator)
+
+        page = await memory.list_mental_models(bank_id=bank_id, detail="metadata", request_context=request_context)
+
+        assert page.items, "metadata listing should still return the models"
+        assert validator.model_reads == []
+
+    async def test_reported_size_tracks_the_content_returned(self, memory, kb_bank, request_context, monkeypatch):
+        bank_id, ids = kb_bank
+        validator = _kb_validator()
+        monkeypatch.setattr(memory, "_operation_validator", validator)
+
+        page = await memory.list_mental_models(bank_id=bank_id, detail="content", request_context=request_context)
+
+        expected = sorted(len(m["content"]) // 4 for m in page.items if m.get("content"))
+        assert sorted(validator.model_get_tokens) == expected
 
 
 class TestPageReadIsAModelRead:

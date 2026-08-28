@@ -11939,6 +11939,29 @@ class MemoryEngine(MemoryEngineInterface):
             )
         )
 
+    async def _record_mental_model_list_read(
+        self,
+        bank_id: str,
+        items: list[dict[str, Any]],
+        *,
+        request_context: "RequestContext",
+    ) -> None:
+        """Report the content a list handed back, one entry per model.
+
+        Reported per model rather than as a single aggregate so a deployment
+        sees the same shape whether a caller fetched ten models one at a time
+        or asked for them in one page — the unit is a model's content, and the
+        route it arrived by is not something pricing should have to know about.
+
+        Items carrying no content (a model that has never been refreshed) are
+        skipped: nothing was delivered, so there is nothing to report.
+        """
+        for item in items:
+            content = item.get("content")
+            if not content:
+                continue
+            await self._record_mental_model_read(bank_id, str(item["id"]), content, request_context=request_context)
+
     async def _record_mental_model_read(
         self,
         bank_id: str,
@@ -13726,6 +13749,20 @@ class MemoryEngine(MemoryEngineInterface):
                 )
                 for item in items:
                     item["is_stale"] = stale[item["id"]]
+
+            # A list that carries content delivers the same synthesized text a
+            # per-model read delivers, in bulk. Report it the same way, so what
+            # a caller pays tracks the content it receives rather than which
+            # endpoint it happened to call.  returns no
+            # content and so reports nothing.
+            #
+            # This matters most for knowledge pages: a page is a mental_models
+            # row and is not excluded from this query, so an unreported list
+            # hands back every page in a bank while a single-page read is
+            # reported. The narrow door should not be the only one watched.
+            if detail != "metadata" and not _nested_operation_authorized.get():
+                await self._record_mental_model_list_read(bank_id, items, request_context=request_context)
+
             return MentalModelPage(items=items, total=int(total or 0))
 
     async def get_mental_model(
