@@ -5,6 +5,7 @@ without requiring a live database connection.
 """
 
 import asyncio
+import uuid
 from datetime import datetime
 from unittest.mock import AsyncMock, patch
 
@@ -933,6 +934,33 @@ def test_expansion_ctes_omit_window_when_unbounded(ops_module: str, ops_class: s
     assert "updated_at" not in entity_cte
     assert "updated_at" not in sem_causal_cte
     assert "$4" not in entity_cte + sem_causal_cte
+
+
+@pytest.mark.asyncio
+async def test_postgresql_observation_expansion_materializes_candidate_sources() -> None:
+    """The scoring join must not let PostgreSQL rescan every candidate per connected source."""
+    from hindsight_api.engine.db.ops_postgresql import PostgreSQLOps
+
+    conn = AsyncMock(spec=DatabaseConnection)
+    conn.fetch = AsyncMock(side_effect=[[], []])
+
+    await PostgreSQLOps().expand_observations(
+        conn=conn,
+        mu_table="memory_units",
+        ue_table="unit_entities",
+        ml_table="memory_links",
+        seed_ids=[uuid.uuid4()],
+        budget=100,
+        per_entity_limit=200,
+        window=_UNBOUNDED_WINDOW,
+    )
+
+    entity_query = conn.fetch.call_args_list[0].args[0]
+    scored_query = entity_query[entity_query.index("scored AS (") :]
+
+    assert "candidate_sources AS MATERIALIZED" in entity_query
+    assert "FROM candidate_sources candidate_source" in scored_query
+    assert "CROSS JOIN LATERAL unnest(c.source_memory_ids)" not in scored_query
 
 
 # ---------------------------------------------------------------------------
