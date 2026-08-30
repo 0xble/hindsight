@@ -12,11 +12,31 @@ _UNCLEAR_PATTERN = re.compile(r"\[\s*unclear\s*\]", re.IGNORECASE)
 _TOKEN_PATTERN = re.compile(r"[^\W_]+(?:['’.-][^\W_]+)*", re.UNICODE)
 _TIMESTAMP_PATTERN = re.compile(r"(?:[01]?\d|2[0-3]):[0-5]\d(?:\s*[ap]m)?", re.IGNORECASE)
 _FENCED_BLOCK_PATTERN = re.compile(r"\A```(?P<language>[\w+-]*)\s*\n?(?P<body>.*?)\n?```\Z", re.DOTALL)
-_NO_TEXT_PATTERN = re.compile(
-    r"\bno (?:visible |readable |legible )?text\b"
-    r"|\b(?:does|did) not (?:contain|include|have|find)\b.{0,40}\b(?:visible |readable |legible )?text\b"
+_REFUSAL_PATTERNS = (
+    re.compile(
+        r"(?:based on the image provided )?(?:there is )?no (?:visible |readable |legible )?text"
+        r"(?: (?:(?:is|was) (?:visible|present|found|detected)|visible|present|found|detected))?"
+        r"(?: in (?:the (?:provided )?|this |provided )?image(?: provided)?)?"
+        r"(?: to transcribe)?"
+    ),
+    re.compile(
+        r"(?:based on the image provided )?(?:there is )?no (?:visible |readable |legible )?text"
+        r" to transcribe in (?:the (?:provided )?|this |provided )?image(?: provided)?"
+    ),
+    re.compile(
+        r"(?:the (?:provided )?|this )image (?:contains no|does not contain any) "
+        r"(?:visible |readable |legible )?text(?: to transcribe)?"
+    ),
+    re.compile(
+        r"i did not find any (?:visible |readable |legible )text"
+        r"(?: in (?:the (?:provided )?|this |provided )?image)?"
+    ),
+    re.compile(
+        r"i (?:cannot|can't) fulfill this request because there is no (?:visible |readable |legible )?text"
+        r"(?: to transcribe)? in (?:the )?image provided"
+    ),
+    re.compile(r"i (?:cannot|can't) fulfill this request i am not able to transcribe text from images(?: of people)?"),
 )
-_OCR_INABILITY_PATTERN = re.compile(r"\b(?:cannot|can't|unable|not able)\b.{0,80}\b(?:read|extract|transcribe)\b")
 _REFUSAL_PREFIXES = (
     "i'm sorry but ",
     "i am sorry but ",
@@ -164,12 +184,16 @@ def evaluate_ocr_quality(content: str) -> OcrQualityResult:
     # high-confidence failure signal applies. UI chrome rejects only when every
     # nonempty line is a known control or timestamp, preserving substantive lines.
     reason: OcrQualityReason | None = None
-    if _is_refusal(normalized_content, normalized_refusal):
+    if _is_refusal(normalized_refusal):
         reason = OcrQualityReason.REFUSAL
     elif (
         uncertainty_character_count
         and uncertainty_ratio >= 0.5
-        and (unique_token_count <= 1 or (token_count >= 6 and repetition_ratio >= 0.3))
+        and (
+            unique_token_count <= 1
+            or (uncertainty_ratio >= 0.8 and normalized_character_count < 4)
+            or (token_count >= 6 and repetition_ratio >= 0.3)
+        )
     ):
         reason = OcrQualityReason.EXCESSIVE_UNCERTAINTY
     elif normalized_character_count <= 1:
@@ -202,14 +226,13 @@ def _strip_ocr_wrappers(content: str) -> str:
     return body
 
 
-def _is_refusal(content: str, normalized_phrase: str) -> bool:
+def _is_refusal(normalized_phrase: str) -> bool:
     """Recognize short, standalone OCR refusals without rejecting mixed content."""
     if normalized_phrase in _REFUSALS:
         return True
-    nonempty_lines = [line for line in content.splitlines() if line.strip()]
-    if len(nonempty_lines) != 1 or len(normalized_phrase) > 240:
+    if len(normalized_phrase) > 240:
         return False
-    return bool(_NO_TEXT_PATTERN.search(normalized_phrase) or _OCR_INABILITY_PATTERN.search(normalized_phrase))
+    return any(pattern.fullmatch(normalized_phrase) for pattern in _REFUSAL_PATTERNS)
 
 
 def _normalize_phrase(content: str) -> str:
