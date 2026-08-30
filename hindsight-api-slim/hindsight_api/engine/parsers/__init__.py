@@ -7,6 +7,7 @@ from .base import FileParser, UnsupportedFileTypeError
 from .iris import IrisParser
 from .llama_parse import LlamaParseParser
 from .markitdown import MarkitdownParser
+from .ocr_quality import LowQualityOcrError, evaluate_ocr_quality, is_image_input
 
 __all__ = [
     "FileParser",
@@ -14,6 +15,7 @@ __all__ = [
     "IrisParser",
     "LlamaParseParser",
     "MarkitdownParser",
+    "LowQualityOcrError",
     "FileParserRegistry",
     "ConvertResult",
 ]
@@ -88,11 +90,12 @@ class FileParserRegistry:
         content_type: str | None = None,
     ) -> ConvertResult:
         """
-        Try each parser in order, falling back on failure or empty content.
+        Try each parser in order, falling back on failure, empty content, or rejected OCR.
 
-        Moves to the next parser if the current one raises UnsupportedFileTypeError
-        or returns empty content. Any other exception (RuntimeError, network error,
-        etc.) also triggers a fallback so the chain is exhausted before failing.
+        Moves to the next parser if the current one raises UnsupportedFileTypeError,
+        returns empty content, or returns image OCR that fails deterministic quality checks.
+        Any other exception (RuntimeError, network error, etc.) also triggers a fallback
+        so the chain is exhausted before failing.
 
         Args:
             parsers: Ordered list of parser names to try
@@ -113,9 +116,31 @@ class FileParserRegistry:
             try:
                 content = await parser.convert(file_data, filename)
                 if content and content.strip():
+                    if is_image_input(filename, content_type):
+                        quality = evaluate_ocr_quality(content)
+                        if not quality.accepted:
+                            raise LowQualityOcrError(name, filename, quality)
                     return ConvertResult(content=content, parser_name=name)
                 logger.warning(f"Parser '{name}' returned empty content for '{filename}', trying next")
                 last_error = RuntimeError(f"Parser '{name}' returned no content for '{filename}'")
+            except LowQualityOcrError as e:
+                features = e.features
+                logger.warning(
+                    "Parser '%s' rejected low-quality OCR for '%s', trying next: "
+                    "reason=%s chars=%d words=%d unique_words=%d alphabetic_ratio=%.3f "
+                    "uncertainty_ratio=%.3f repetition_ratio=%.3f ui_chrome_ratio=%.3f",
+                    name,
+                    filename,
+                    e.reason.value,
+                    features.normalized_character_count,
+                    features.word_count,
+                    features.unique_word_count,
+                    features.alphabetic_ratio,
+                    features.uncertainty_ratio,
+                    features.repetition_ratio,
+                    features.ui_chrome_ratio,
+                )
+                last_error = e
             except UnsupportedFileTypeError as e:
                 logger.warning(f"Parser '{name}' does not support '{filename}', trying next: {e}")
                 last_error = e
