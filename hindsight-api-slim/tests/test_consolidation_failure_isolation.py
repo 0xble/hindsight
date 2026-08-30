@@ -37,7 +37,11 @@ from hindsight_api.engine.consolidation.consolidator import (
     _gather_or_cancel,
     run_consolidation_job,
 )
-from hindsight_api.engine.memory_engine import MemoryEngine, _is_non_retryable_task_error
+from hindsight_api.engine.memory_engine import (
+    MemoryEngine,
+    MentalModelRefreshError,
+    _is_non_retryable_task_error,
+)
 from hindsight_api.engine.providers.mock_llm import MockLLM
 from hindsight_api.engine.response_models import RecallResult
 
@@ -109,6 +113,16 @@ async def test_gather_or_cancel_reraises_original_exception_unwrapped():
 
     assert not isinstance(exc_info.value, BaseExceptionGroup)
     assert _is_non_retryable_task_error(exc_info.value) is True
+
+
+def test_mental_model_refresh_failure_is_not_retried():
+    """A guarded refresh failure preserves content and must not occupy a retry slot."""
+    error = MentalModelRefreshError(
+        "delta operations did not reach the document",
+        outcome="refresh_failed_delta_not_applied",
+        reason="delta_not_applied",
+    )
+    assert _is_non_retryable_task_error(error) is True
 
 
 # ---------------------------------------------------------------------------
