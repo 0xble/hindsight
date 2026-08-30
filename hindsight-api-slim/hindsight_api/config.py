@@ -672,6 +672,7 @@ ENV_CONSOLIDATION_LLM_BATCH_SIZE = "HINDSIGHT_API_CONSOLIDATION_LLM_BATCH_SIZE"
 ENV_CONSOLIDATION_DEDUP_THRESHOLD = "HINDSIGHT_API_CONSOLIDATION_DEDUP_THRESHOLD"
 ENV_CONSOLIDATION_LLM_PARALLELISM = "HINDSIGHT_API_CONSOLIDATION_LLM_PARALLELISM"
 ENV_CONSOLIDATION_MAX_TOKENS = "HINDSIGHT_API_CONSOLIDATION_MAX_TOKENS"
+ENV_CONSOLIDATION_MAX_CONTEXT_TOKENS = "HINDSIGHT_API_CONSOLIDATION_MAX_CONTEXT_TOKENS"
 ENV_CONSOLIDATION_MAX_COMPLETION_TOKENS = "HINDSIGHT_API_CONSOLIDATION_MAX_COMPLETION_TOKENS"
 ENV_CONSOLIDATION_SOURCE_FACTS_MAX_TOKENS = "HINDSIGHT_API_CONSOLIDATION_SOURCE_FACTS_MAX_TOKENS"
 ENV_CONSOLIDATION_SOURCE_FACTS_MAX_TOKENS_PER_OBSERVATION = (
@@ -1328,6 +1329,10 @@ DEFAULT_CONSOLIDATION_LLM_PARALLELISM = (
     # scopes degrade to sequential automatically; matches retain_max_concurrent.
 )
 DEFAULT_CONSOLIDATION_MAX_TOKENS = 512  # Max tokens for recall when finding related observations
+# Hard input budget for one consolidation LLM call. Keep this below common provider
+# context limits so a provider rejection becomes local adaptive splitting, not a
+# non-progressing retry loop. tiktoken is an approximation, so leave headroom.
+DEFAULT_CONSOLIDATION_MAX_CONTEXT_TOKENS = 100_000
 # Unset by default: the key is omitted from the LLM call so every provider keeps its current implicit output
 # budget — 100% backwards compatible. Operators on providers with a low hidden default (notably Bedrock imported
 # models, which cap at 4096 and truncate structured consolidation JSON) set this explicitly to fix #1939.
@@ -2635,6 +2640,7 @@ class HindsightConfig:
     consolidation_llm_batch_size: int
     consolidation_llm_parallelism: int
     consolidation_max_tokens: int
+    consolidation_max_context_tokens: int
     consolidation_max_completion_tokens: int | None
     consolidation_recall_budget: str
     consolidation_source_facts_max_tokens: int
@@ -2941,6 +2947,7 @@ class HindsightConfig:
         "consolidation_llm_batch_size",
         "consolidation_llm_parallelism",
         "consolidation_max_memories_per_round",
+        "consolidation_max_context_tokens",
         "consolidation_source_facts_max_tokens",
         "consolidation_source_facts_max_tokens_per_observation",
         "observations_mission",
@@ -3977,6 +3984,12 @@ class HindsightConfig:
             ),
             consolidation_max_tokens=int(
                 os.getenv(ENV_CONSOLIDATION_MAX_TOKENS, str(DEFAULT_CONSOLIDATION_MAX_TOKENS))
+            ),
+            consolidation_max_context_tokens=int(
+                os.getenv(
+                    ENV_CONSOLIDATION_MAX_CONTEXT_TOKENS,
+                    str(DEFAULT_CONSOLIDATION_MAX_CONTEXT_TOKENS),
+                )
             ),
             consolidation_max_completion_tokens=(
                 int(os.getenv(ENV_CONSOLIDATION_MAX_COMPLETION_TOKENS))

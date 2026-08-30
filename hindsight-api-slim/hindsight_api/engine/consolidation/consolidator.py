@@ -48,6 +48,7 @@ from ..llm_wrapper import sanitize_llm_output
 from ..memories import FactRecord, get_memories
 from ..memory_engine import Budget, fq_table
 from ..retain import embedding_utils
+from ..token_encoding import count_tokens
 from .prompts import (
     build_consolidation_input,
     build_consolidation_system_prompt,
@@ -2877,6 +2878,14 @@ def _dedupe_updates(updates: list[_UpdateAction], *, batch_label: str) -> list[_
 # bisection is the real recovery path for anything longer-lived.
 _OUTER_RETRY_INITIAL_BACKOFF = 1.0
 _OUTER_RETRY_MAX_BACKOFF = 8.0
+_CONTEXT_LIMIT_MARKERS = (
+    "context_length_exceeded",
+    "context length exceeded",
+    "maximum context length",
+    "prompt is too long",
+    "too many tokens",
+    "input token limit",
+)
 
 
 class _BatchFailureClass(StrEnum):
@@ -2927,6 +2936,8 @@ def _classify_batch_failure(exc: Exception) -> _BatchFailureClass:
     # front (openai, anthropic) exposes the HTTP status this way.
     if getattr(exc, "status_code", None) in (401, 403):
         return _BatchFailureClass.PROPAGATE
+    if any(marker in str(exc).casefold() for marker in _CONTEXT_LIMIT_MARKERS):
+        return _BatchFailureClass.FAIL_FAST
     if isinstance(exc, json.JSONDecodeError | ValidationError | OutputTooLongError):
         return _BatchFailureClass.FAIL_FAST
     # Providers that surface an empty/unusable body flag their own retryability.
@@ -2999,6 +3010,26 @@ async def _consolidate_batch_with_llm(
         observations_mission=config.observations_mission,
         observation_capacity_note=observation_capacity_note,
     )
+
+    # Providers commonly reject an oversized input before returning a structured
+    # response. Detect it locally so the caller's adaptive splitter can reduce the
+    # batch immediately. Retrying the same oversized prompt is non-progressing and
+    # was the root cause of the historical 46/69064 consolidation wedge.
+    prompt_tokens = count_tokens(system_prompt) + count_tokens(user_content)
+    max_context_tokens = max(
+        1,
+        int(getattr(config, "consolidation_max_context_tokens", 100_000)),
+    )
+    if prompt_tokens > max_context_tokens:
+        logger.warning(
+            f"[CONSOLIDATION] Skipping oversized LLM call for {len(memories)} memories: "
+            f"prompt_tokens={prompt_tokens} limit={max_context_tokens}; adaptive splitting will retry smaller input"
+        )
+        return _BatchLLMResult(
+            obs_count=len(union_observations),
+            prompt_chars=len(system_prompt) + len(user_content),
+            failed=True,
+        )
 
     # Opt into context caching of the stable system prefix when the provider
     # supports it (gemini/vertexai with the flag on). response_schema is NOT

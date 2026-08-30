@@ -41,6 +41,10 @@ class TestValidateResponseSchema:
             ({"properties": {}}, "non-empty 'properties'"),
             ({"properties": {"a": "not-an-object"}}, "property 'a' must be an object"),
             ({"properties": {"a": {"type": "banana"}}}, "unsupported type 'banana'"),
+            # A JSON Schema type union is unhashable; it must be rejected as a
+            # client error, not crash the membership test with a TypeError.
+            ({"properties": {"a": {"type": ["string", "null"]}}}, "unsupported type"),
+            ({"properties": {"a": {"type": 5}}}, "unsupported type"),
             ({"properties": {"a": {"type": "string"}}, "required": "summary"}, "must be a list"),
             ({"properties": {"a": {"type": "string"}}, "required": ["b"]}, "unknown properties"),
         ],
