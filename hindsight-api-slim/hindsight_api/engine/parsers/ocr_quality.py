@@ -1,5 +1,6 @@
 """Deterministic admission checks for OCR text before semantic extraction."""
 
+import json
 import re
 from collections import Counter
 from dataclasses import dataclass
@@ -10,6 +11,12 @@ _IMAGE_EXTENSIONS = {".bmp", ".gif", ".heic", ".heif", ".jpeg", ".jpg", ".png", 
 _UNCLEAR_PATTERN = re.compile(r"\[\s*unclear\s*\]", re.IGNORECASE)
 _TOKEN_PATTERN = re.compile(r"[^\W_]+(?:['’.-][^\W_]+)*", re.UNICODE)
 _TIMESTAMP_PATTERN = re.compile(r"(?:[01]?\d|2[0-3]):[0-5]\d(?:\s*[ap]m)?", re.IGNORECASE)
+_FENCED_BLOCK_PATTERN = re.compile(r"\A```(?P<language>[\w+-]*)\s*\n?(?P<body>.*?)\n?```\Z", re.DOTALL)
+_NO_TEXT_PATTERN = re.compile(
+    r"\bno (?:visible |readable |legible )?text\b"
+    r"|\b(?:does|did) not (?:contain|include|have|find)\b.{0,40}\b(?:visible |readable |legible )?text\b"
+)
+_OCR_INABILITY_PATTERN = re.compile(r"\b(?:cannot|can't|unable|not able)\b.{0,80}\b(?:read|extract|transcribe)\b")
 _REFUSAL_PREFIXES = (
     "i'm sorry but ",
     "i am sorry but ",
@@ -31,9 +38,11 @@ _REFUSALS = {
     "i cannot read this image",
     "no legible text",
     "no readable text",
+    "no text",
     "no text detected",
     "no text found",
     "no text is visible in the image",
+    "no text is visible in the provided image",
     "no text is visible in this image",
     "no text visible",
     "no visible text",
@@ -41,6 +50,7 @@ _REFUSALS = {
     "no visible text in this image",
     "there is no visible text",
     "there is no visible text in the image",
+    "there is no visible text in the image to transcribe",
     "there is no visible text in this image",
     "unable to read the image",
     "unable to read this image",
@@ -121,10 +131,11 @@ def is_image_input(filename: str, content_type: str | None = None) -> bool:
 
 def evaluate_ocr_quality(content: str) -> OcrQualityResult:
     """Reject only deterministic high-confidence OCR failure modes."""
-    normalized_refusal = _normalize_phrase(content)
-    unclear_spans = _UNCLEAR_PATTERN.findall(content)
-    uncertainty_character_count = sum(len(span) for span in unclear_spans) + content.count("\ufffd")
-    measurable_text = _UNCLEAR_PATTERN.sub(" ", content).replace("\ufffd", " ")
+    normalized_content = _strip_ocr_wrappers(content)
+    normalized_refusal = _normalize_phrase(normalized_content)
+    unclear_spans = _UNCLEAR_PATTERN.findall(normalized_content)
+    uncertainty_character_count = sum(len(span) for span in unclear_spans) + normalized_content.count("\ufffd")
+    measurable_text = _UNCLEAR_PATTERN.sub(" ", normalized_content).replace("\ufffd", " ")
     tokens = [token.casefold() for token in _TOKEN_PATTERN.findall(measurable_text)]
     normalized_character_count = sum(character.isalnum() for character in measurable_text)
     alphabetic_count = sum(character.isalpha() for character in measurable_text)
@@ -136,7 +147,7 @@ def evaluate_ocr_quality(content: str) -> OcrQualityResult:
         else 0.0
     )
     repetition_ratio = max(Counter(tokens).values()) / token_count if tokens else 0.0
-    ui_chrome_ratio = _ui_chrome_ratio(content)
+    ui_chrome_ratio = _ui_chrome_ratio(normalized_content)
 
     features = OcrQualityFeatures(
         normalized_character_count=normalized_character_count,
@@ -149,15 +160,19 @@ def evaluate_ocr_quality(content: str) -> OcrQualityResult:
     )
 
     # Sparse OCR can be legitimate (for example, a one-time code or an error code),
-    # so length never rejects by itself. Each threshold below requires a dominant,
-    # high-confidence failure signal; UI chrome rejects only when every nonempty line
-    # is a known control or timestamp, preserving any substantive line.
+    # so two or more alphanumeric characters are preserved unless another dominant,
+    # high-confidence failure signal applies. UI chrome rejects only when every
+    # nonempty line is a known control or timestamp, preserving substantive lines.
     reason: OcrQualityReason | None = None
-    if normalized_refusal in _REFUSALS:
+    if _is_refusal(normalized_content, normalized_refusal):
         reason = OcrQualityReason.REFUSAL
-    elif uncertainty_character_count and uncertainty_ratio >= 0.5:
+    elif (
+        uncertainty_character_count
+        and uncertainty_ratio >= 0.5
+        and (unique_token_count <= 1 or (token_count >= 6 and repetition_ratio >= 0.3))
+    ):
         reason = OcrQualityReason.EXCESSIVE_UNCERTAINTY
-    elif normalized_character_count == 0:
+    elif normalized_character_count <= 1:
         reason = OcrQualityReason.NO_MEANINGFUL_TEXT
     elif token_count >= 8 and repetition_ratio >= 0.8:
         reason = OcrQualityReason.REPETITION
@@ -165,6 +180,36 @@ def evaluate_ocr_quality(content: str) -> OcrQualityResult:
         reason = OcrQualityReason.UI_CHROME
 
     return OcrQualityResult(accepted=reason is None, reason=reason, features=features)
+
+
+def _strip_ocr_wrappers(content: str) -> str:
+    """Remove inert wrappers emitted by older OCR prompts before evaluation."""
+    normalized = re.sub(r"^\s*#{1,6}\s*description\s*:\s*", "", content, count=1, flags=re.IGNORECASE).strip()
+    fenced = _FENCED_BLOCK_PATTERN.fullmatch(normalized)
+    if not fenced:
+        return normalized
+
+    body = fenced.group("body").strip()
+    if fenced.group("language").casefold() != "json":
+        return body
+
+    try:
+        payload = json.loads(body)
+    except json.JSONDecodeError:
+        return body
+    if isinstance(payload, dict) and isinstance(payload.get("text"), str):
+        return payload["text"].strip()
+    return body
+
+
+def _is_refusal(content: str, normalized_phrase: str) -> bool:
+    """Recognize short, standalone OCR refusals without rejecting mixed content."""
+    if normalized_phrase in _REFUSALS:
+        return True
+    nonempty_lines = [line for line in content.splitlines() if line.strip()]
+    if len(nonempty_lines) != 1 or len(normalized_phrase) > 240:
+        return False
+    return bool(_NO_TEXT_PATTERN.search(normalized_phrase) or _OCR_INABILITY_PATTERN.search(normalized_phrase))
 
 
 def _normalize_phrase(content: str) -> str:
