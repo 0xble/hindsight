@@ -179,9 +179,14 @@ def validate_response_schema(schema: Any) -> None:
         if not isinstance(prop, dict):
             raise ValueError(f"response_schema property '{name}' must be an object")
         prop_type = prop.get("type")
-        if prop_type is not None and prop_type not in _RESPONSE_SCHEMA_PROPERTY_TYPES:
+        # A non-string ``type`` (e.g. the JSON Schema union ``["string", "null"]``)
+        # is unsupported by the flat-model builder, and unhashable values would
+        # crash the set membership test — reject both shapes as client errors.
+        if prop_type is not None and (
+            not isinstance(prop_type, str) or prop_type not in _RESPONSE_SCHEMA_PROPERTY_TYPES
+        ):
             raise ValueError(
-                f"response_schema property '{name}' has unsupported type '{prop_type}'; "
+                f"response_schema property '{name}' has unsupported type {prop_type!r}; "
                 f"expected one of {sorted(_RESPONSE_SCHEMA_PROPERTY_TYPES)}"
             )
 
