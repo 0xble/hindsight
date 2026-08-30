@@ -6,6 +6,7 @@ from collections import Counter
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
+from typing import TypedDict, TypeGuard
 
 _IMAGE_EXTENSIONS = {".bmp", ".gif", ".heic", ".heif", ".jpeg", ".jpg", ".png", ".tif", ".tiff", ".webp"}
 _UNCLEAR_PATTERN = re.compile(r"\[\s*unclear\s*\]", re.IGNORECASE)
@@ -142,6 +143,10 @@ class LowQualityOcrError(RuntimeError):
         super().__init__(f"Parser '{parser_name}' returned low-quality OCR for '{filename}' ({result.reason.value})")
 
 
+class _OcrJsonPayload(TypedDict):
+    text: str
+
+
 def is_image_input(filename: str, content_type: str | None = None) -> bool:
     """Return whether a conversion result came from an image input."""
     if content_type and content_type.casefold().split(";", 1)[0].strip().startswith("image/"):
@@ -179,10 +184,10 @@ def evaluate_ocr_quality(content: str) -> OcrQualityResult:
         ui_chrome_ratio=ui_chrome_ratio,
     )
 
-    # Sparse OCR can be legitimate (for example, a one-time code or an error code),
-    # so two or more alphanumeric characters are preserved unless another dominant,
-    # high-confidence failure signal applies. UI chrome rejects only when every
-    # nonempty line is a known control or timestamp, preserving substantive lines.
+    # Sparse OCR can be legitimate (for example, an elevator floor, grade, one-time
+    # code, or error code), so alphanumeric content is preserved unless another
+    # dominant, high-confidence failure signal applies. UI chrome rejects only when
+    # every nonempty line is a known control or timestamp, preserving substantive lines.
     reason: OcrQualityReason | None = None
     if _is_refusal(normalized_refusal):
         reason = OcrQualityReason.REFUSAL
@@ -196,7 +201,7 @@ def evaluate_ocr_quality(content: str) -> OcrQualityResult:
         )
     ):
         reason = OcrQualityReason.EXCESSIVE_UNCERTAINTY
-    elif normalized_character_count <= 1:
+    elif normalized_character_count == 0:
         reason = OcrQualityReason.NO_MEANINGFUL_TEXT
     elif token_count >= 8 and repetition_ratio >= 0.8:
         reason = OcrQualityReason.REPETITION
@@ -218,12 +223,17 @@ def _strip_ocr_wrappers(content: str) -> str:
         return body
 
     try:
-        payload = json.loads(body)
+        payload: object = json.loads(body)
     except json.JSONDecodeError:
         return body
-    if isinstance(payload, dict) and isinstance(payload.get("text"), str):
+    if _is_ocr_json_payload(payload):
         return payload["text"].strip()
     return body
+
+
+def _is_ocr_json_payload(payload: object) -> TypeGuard[_OcrJsonPayload]:
+    """Validate the known JSON wrapper before treating it as typed OCR."""
+    return isinstance(payload, dict) and isinstance(payload.get("text"), str)
 
 
 def _is_refusal(normalized_phrase: str) -> bool:
