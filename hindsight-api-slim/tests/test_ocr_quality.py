@@ -42,6 +42,7 @@ class StaticParser(FileParser):
             "# Description: The provided image does not contain any readable text to transcribe.",
             OcrQualityReason.REFUSAL,
         ),
+        ("This image does not contain any\nvisible text to transcribe.", OcrQualityReason.REFUSAL),
         ("# Description: [no text]", OcrQualityReason.REFUSAL),
         ("# Description: ```markdown\n[No visible text]\n```", OcrQualityReason.REFUSAL),
         (
@@ -64,15 +65,13 @@ class StaticParser(FileParser):
             OcrQualityReason.EXCESSIVE_UNCERTAINTY,
         ),
         (
-            "A B [unclear] [unclear] [unclear] [unclear] [unclear] [unclear]",
+            "A B " + " ".join(["[unclear]"] * 20),
             OcrQualityReason.EXCESSIVE_UNCERTAINTY,
         ),
         ("# Description: [unclear]", OcrQualityReason.EXCESSIVE_UNCERTAINTY),
         ("# Description: ```markdown\n\n```", OcrQualityReason.NO_MEANINGFUL_TEXT),
         ('# Description: ```json\n{"text": ""}\n```', OcrQualityReason.NO_MEANINGFUL_TEXT),
         ("---", OcrQualityReason.NO_MEANINGFUL_TEXT),
-        ("G", OcrQualityReason.NO_MEANINGFUL_TEXT),
-        ("# Description: 9", OcrQualityReason.NO_MEANINGFUL_TEXT),
         ("9:26\nBack\nNew Chat\nMessage", OcrQualityReason.UI_CHROME),
         ("word word word word word word word word word word", OcrQualityReason.REPETITION),
     ],
@@ -89,6 +88,8 @@ def test_rejects_unusable_ocr(content: str, reason: OcrQualityReason):
     [
         "829104",
         "03",
+        "G",
+        "# Description: 9",
         "Description: X",
         "No text messages while driving",
         "Employees cannot read confidential files.",
@@ -135,6 +136,27 @@ async def test_low_quality_image_output_falls_back_to_next_parser():
     )
 
     assert result.content == "Account balance: $100.00"
+    assert result.parser_name == "useful"
+    assert weak.calls == 1
+    assert useful.calls == 1
+
+
+@pytest.mark.asyncio
+async def test_uncertainty_dominated_image_output_falls_back_to_next_parser():
+    weak = StaticParser("weak", "A B " + " ".join(["[unclear]"] * 20))
+    useful = StaticParser("useful", "EXIT")
+    registry = FileParserRegistry()
+    registry.register(weak)
+    registry.register(useful)
+
+    result = await registry.convert_with_fallback(
+        ["weak", "useful"],
+        b"image bytes",
+        "upload.png",
+        "image/png",
+    )
+
+    assert result.content == "EXIT"
     assert result.parser_name == "useful"
     assert weak.calls == 1
     assert useful.calls == 1
