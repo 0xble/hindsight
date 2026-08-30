@@ -19,18 +19,30 @@ _REFUSAL_PREFIXES = (
     "sorry ",
 )
 _REFUSALS = {
+    "i am unable to read the image",
     "i am unable to read this image",
+    "i can't extract text from the image",
     "i can't extract text from this image",
+    "i can't read the image",
     "i can't read this image",
+    "i cannot extract text from the image",
     "i cannot extract text from this image",
+    "i cannot read the image",
     "i cannot read this image",
     "no legible text",
     "no readable text",
     "no text detected",
     "no text found",
     "no text is visible in the image",
+    "no text is visible in this image",
+    "no text visible",
     "no visible text",
     "no visible text in the image",
+    "no visible text in this image",
+    "there is no visible text",
+    "there is no visible text in the image",
+    "there is no visible text in this image",
+    "unable to read the image",
     "unable to read this image",
 }
 _UI_CHROME_LINES = {
@@ -138,7 +150,8 @@ def evaluate_ocr_quality(content: str) -> OcrQualityResult:
 
     # Sparse OCR can be legitimate (for example, a one-time code or an error code),
     # so length never rejects by itself. Each threshold below requires a dominant,
-    # high-confidence failure signal; UI chrome additionally requires short output.
+    # high-confidence failure signal; UI chrome rejects only when every nonempty line
+    # is a known control or timestamp, preserving any substantive line.
     reason: OcrQualityReason | None = None
     if normalized_refusal in _REFUSALS:
         reason = OcrQualityReason.REFUSAL
@@ -148,7 +161,7 @@ def evaluate_ocr_quality(content: str) -> OcrQualityResult:
         reason = OcrQualityReason.NO_MEANINGFUL_TEXT
     elif token_count >= 8 and repetition_ratio >= 0.8:
         reason = OcrQualityReason.REPETITION
-    elif token_count <= 10 and ui_chrome_ratio > 0.5:
+    elif ui_chrome_ratio == 1.0:
         reason = OcrQualityReason.UI_CHROME
 
     return OcrQualityResult(accepted=reason is None, reason=reason, features=features)
