@@ -282,6 +282,56 @@ hindsight_db_pool_size - hindsight_db_pool_idle
 rate(hindsight_process_cpu_seconds{type="user"}[1m])
 ```
 
+## Recovery and Queue Alerts
+
+The backlog gauges are disabled by default because they run periodic per-schema count
+queries. Enable `HINDSIGHT_API_METRICS_BACKLOG_ENABLED=true` when operators need
+queue visibility. These PromQL examples are intentionally bank-agnostic because the
+standard gauge set does not include `bank_id`.
+
+Alert when any async work is stuck or failed:
+
+```promql
+hindsight_async_operations{status=~"pending|processing"} > 0
+hindsight_async_operations{status="failed"} > 0
+```
+
+Alert when consolidation has accumulated an actionable backlog:
+
+```promql
+hindsight_consolidation_backlog > 0
+hindsight_consolidation_failed > 0
+```
+
+Alert on worker completion failures and failed LLM calls:
+
+```promql
+sum(rate(hindsight_operation_total{source="worker",success="false"}[15m])) > 0
+sum(rate(hindsight_llm_calls_total{success="false"}[15m])) > 0
+```
+
+Alert when consolidation or refresh latency threatens queue capacity:
+
+```promql
+histogram_quantile(
+  0.95,
+  sum by (le) (rate(hindsight_llm_duration_seconds_bucket{scope="consolidation"}[15m]))
+) > 120
+
+histogram_quantile(
+  0.95,
+  sum by (le) (rate(hindsight_operation_duration_seconds_bucket{
+    operation="refresh_mental_model"
+  }[15m]))
+) > 300
+```
+
+Use `/health/live` for process liveness and `/health/ready` for database readiness.
+Do not restart a worker solely because the backlog is nonzero. A backlog is expected
+while work is flowing. Combine it with a rising `processing` age, failed-operation
+count, stalled `seconds_since_last_poll`, or exhausted worker capacity before taking
+recovery action.
+
 ---
 
 ## Distributed Tracing

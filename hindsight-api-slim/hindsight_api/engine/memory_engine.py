@@ -428,7 +428,8 @@ class MentalModelRefreshError(Exception):
     The previous content (if any) is preserved in the DB and the reflect_response
     audit trail is persisted before this is raised, so the failure is recoverable
     and auditable. Callers (worker queue, integration tests) should treat this
-    as a retryable condition.
+    as a deterministic task failure: repeating the same guarded refresh consumes
+    a retry slot without changing the protected input or preserved document.
 
     Carries the outcome and reason as typed values, not only inside the message:
     the worker records them on the operation so a failed refresh says why it
@@ -1259,7 +1260,8 @@ def _entity_map_from_results(
 def _is_non_retryable_task_error(e: Exception) -> bool:
     """Classify deterministic task failures that should skip worker retry."""
     return (
-        isinstance(e, asyncpg.exceptions.IntegrityConstraintViolationError)
+        isinstance(e, MentalModelRefreshError)
+        or isinstance(e, asyncpg.exceptions.IntegrityConstraintViolationError)
         or _is_oracledb_integrity_error(e)
         or _is_invalid_embedding_dimension_error(e)
         # A provider content-policy refusal is a function of the content, not of
