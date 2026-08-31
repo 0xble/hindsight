@@ -1,0 +1,54 @@
+name: Fork CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: fork-ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  core-quality:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v6
+      - uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+      - uses: actions/setup-python@v6
+        with:
+          python-version-file: .python-version
+      - name: Install locked development dependencies
+        working-directory: hindsight-api-slim
+        run: uv sync --frozen --group dev --extra all
+      - name: Run maintained-patch regressions
+        working-directory: hindsight-api-slim
+        run: >-
+          uv run --frozen --extra all pytest
+          tests/test_ocr_quality.py
+          tests/test_consolidation_failure_isolation.py
+          tests/test_consolidation_prompt_budget.py
+          tests/test_db_abstraction.py
+          tests/test_response_schema_validation.py
+      - name: Lint and format check
+        working-directory: hindsight-api-slim
+        run: |
+          uv run --frozen ruff check .
+          uv run --frozen ruff format --check .
+      - name: Type check
+        working-directory: hindsight-api-slim
+        run: uv run --frozen ty check hindsight_api
+      - name: Build and import smoke test
+        working-directory: hindsight-api-slim
+        run: |
+          uv build
+          uv run --frozen python -m compileall -q hindsight_api
+          uv run --frozen python -c "import hindsight_api, hindsight_api.config, hindsight_api.main"
