@@ -72,9 +72,9 @@ uv run perf-test --suite stats --scale huge
 
 ### CI
 
-The `perf-test.yml` workflow runs daily and on manual dispatch. Scale is
-configurable via workflow input (defaults to `small`). Results are uploaded as
-artifacts with 90-day retention.
+The `perf-test.yml` workflow runs only on manual dispatch. Scale is configurable
+via workflow input (defaults to `tiny`). Results are uploaded as artifacts with
+14-day retention.
 
 ## Standalone Benchmarks
 
