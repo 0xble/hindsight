@@ -21,7 +21,7 @@ from pydantic import BaseModel, ConfigDict, StrictInt, StrictStr, field_validato
 from typing import Any, ClassVar, Dict, List, Optional
 from hindsight_client_api.models.child_operation_status import ChildOperationStatus
 from hindsight_client_api.models.operation_progress import OperationProgress
-from hindsight_client_api.models.refresh_mental_model_operation_details import RefreshMentalModelOperationDetails
+from hindsight_client_api.models.operation_response_details import OperationResponseDetails
 from typing import Optional, Set
 from typing_extensions import Self
 
@@ -40,7 +40,7 @@ class OperationStatusResponse(BaseModel):
     next_retry_at: Optional[StrictStr] = None
     progress: Optional[OperationProgress] = None
     result_metadata: Optional[Dict[str, Any]] = None
-    details: Optional[RefreshMentalModelOperationDetails] = None
+    details: Optional[OperationResponseDetails] = None
     child_operations: Optional[List[ChildOperationStatus]] = None
     task_payload: Optional[Dict[str, Any]] = None
     __properties: ClassVar[List[str]] = ["operation_id", "status", "operation_type", "created_at", "updated_at", "completed_at", "error_message", "retry_count", "next_retry_at", "progress", "result_metadata", "details", "child_operations", "task_payload"]
@@ -187,7 +187,7 @@ class OperationStatusResponse(BaseModel):
             "next_retry_at": obj.get("next_retry_at"),
             "progress": OperationProgress.from_dict(obj["progress"]) if obj.get("progress") is not None else None,
             "result_metadata": obj.get("result_metadata"),
-            "details": RefreshMentalModelOperationDetails.from_dict(obj["details"]) if obj.get("details") is not None else None,
+            "details": OperationResponseDetails.from_dict(obj["details"]) if obj.get("details") is not None else None,
             "child_operations": [ChildOperationStatus.from_dict(_item) for _item in obj["child_operations"]] if obj.get("child_operations") is not None else None,
             "task_payload": obj.get("task_payload")
         })
