@@ -4,7 +4,7 @@
 
 Maintained fork: `0xble/hindsight` of `vectorize-io/hindsight`, branch `main`.
 Canonical checkout: `/Users/brianle/Repos/hindsight`. Accepted upstream baseline:
-`d2e8fa7286b37012b7e45de8f1b10dc333274918`. Publish only to `origin`; never
+`24cb8446b3c5c91e8a3abc571bb83a2982c391c4`. Publish only to `origin`; never
 push to `upstream`. Source synchronization, publication, installation, and
 runtime activation are separate stages.
 
@@ -56,6 +56,23 @@ runtime activation are separate stages.
 - **Regression:** `uv run --directory hindsight-api-slim --frozen python ../tests/ci/test_validate_fork_workflows.py && uv run --directory hindsight-api-slim --frozen python ../scripts/ci/validate_fork_workflows.py`
 - **Retire when:** This repository is no longer a maintained fork or assumes
   explicit ownership of deployment and publication infrastructure.
+
+### HINDSIGHT-004: Structured OCR terminal failures
+
+- **Status:** Active
+- **Commit:** `cc6842c`
+- **Surfaces:** `engine/{memory_engine,operation_details}.py`,
+  `api/http.py`, `tests/test_operation_status.py`
+- **Behavior:** Failed `file_convert_retain` operations expose a stable typed
+  `low_quality_ocr` detail with the OCR quality reason, so callers can settle
+  deterministic evidence exclusions without parsing error prose.
+- **Upstream issue:** None after checked 2026-09-01
+- **Upstream PR:** None after checked 2026-09-01
+- **Regression:** `uv run --frozen pytest tests/test_operation_status.py`
+- **Rollback:** Revert the HINDSIGHT-004 commit and restore callers to treating
+  all file-conversion failures as non-terminal.
+- **Retire when:** A released upstream build exposes an equivalent stable typed
+  terminal failure contract for low-quality OCR.
 
 ## Update and verify
 
