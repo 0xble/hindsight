@@ -10309,6 +10309,34 @@
         "title": "FeaturesInfo",
         "description": "Feature flags indicating which capabilities are enabled."
       },
+      "FileConvertRetainOperationDetails": {
+        "properties": {
+          "operation_type": {
+            "type": "string",
+            "const": "file_convert_retain",
+            "title": "Operation Type",
+            "description": "Discriminator: which operation type this detail describes.",
+            "default": "file_convert_retain"
+          },
+          "failure_class": {
+            "type": "string",
+            "const": "low_quality_ocr",
+            "title": "Failure Class",
+            "description": "Stable failure class callers may use to decide whether the source artifact is retryable."
+          },
+          "failure_reason": {
+            "$ref": "#/components/schemas/OcrQualityReason",
+            "description": "The OCR quality gate that rejected the converted image text."
+          }
+        },
+        "type": "object",
+        "required": [
+          "failure_class",
+          "failure_reason"
+        ],
+        "title": "FileConvertRetainOperationDetails",
+        "description": "A deterministic terminal outcome from a file conversion operation."
+      },
       "FileRetainResponse": {
         "properties": {
           "operation_ids": {
@@ -13214,6 +13242,18 @@
           ]
         }
       },
+      "OcrQualityReason": {
+        "type": "string",
+        "enum": [
+          "refusal_or_no_text_response",
+          "no_meaningful_text",
+          "excessive_uncertainty",
+          "excessive_repetition",
+          "ui_chrome_only"
+        ],
+        "title": "OcrQualityReason",
+        "description": "Stable reason codes for rejected OCR."
+      },
       "OperationProgress": {
         "properties": {
           "stage": {
@@ -13326,13 +13366,28 @@
           "details": {
             "anyOf": [
               {
-                "$ref": "#/components/schemas/RefreshMentalModelOperationDetails"
+                "oneOf": [
+                  {
+                    "$ref": "#/components/schemas/RefreshMentalModelOperationDetails"
+                  },
+                  {
+                    "$ref": "#/components/schemas/FileConvertRetainOperationDetails"
+                  }
+                ],
+                "discriminator": {
+                  "propertyName": "operation_type",
+                  "mapping": {
+                    "file_convert_retain": "#/components/schemas/FileConvertRetainOperationDetails",
+                    "refresh_mental_model": "#/components/schemas/RefreshMentalModelOperationDetails"
+                  }
+                }
               },
               {
                 "type": "null"
               }
             ],
-            "description": "Typed, per-operation-type outcome detail, discriminated by its own `operation_type`. Populated for `refresh_mental_model` operations that have finished; null for operation types that report no typed detail, for operations still in flight, and for operations recorded before this field existed. Unlike `result_metadata` this is a supported field \u2014 new operation types add their own shape here rather than flattening fields onto the operation."
+            "title": "Details",
+            "description": "Typed, per-operation-type outcome detail, discriminated by its own `operation_type`. Populated for finished operations with typed details, including refresh outcomes and deterministic file-conversion failures; null for operation types that report no typed detail, for operations still in flight, and for operations recorded before this field existed. Unlike `result_metadata` this is a supported field \u2014 new operation types add their own shape here rather than flattening fields onto the operation."
           },
           "created_at": {
             "type": "string",
@@ -13545,13 +13600,28 @@
           "details": {
             "anyOf": [
               {
-                "$ref": "#/components/schemas/RefreshMentalModelOperationDetails"
+                "oneOf": [
+                  {
+                    "$ref": "#/components/schemas/RefreshMentalModelOperationDetails"
+                  },
+                  {
+                    "$ref": "#/components/schemas/FileConvertRetainOperationDetails"
+                  }
+                ],
+                "discriminator": {
+                  "propertyName": "operation_type",
+                  "mapping": {
+                    "file_convert_retain": "#/components/schemas/FileConvertRetainOperationDetails",
+                    "refresh_mental_model": "#/components/schemas/RefreshMentalModelOperationDetails"
+                  }
+                }
               },
               {
                 "type": "null"
               }
             ],
-            "description": "Typed, per-operation-type outcome detail, discriminated by its own `operation_type`. Populated for `refresh_mental_model` operations that have finished; null for operation types that report no typed detail, for operations still in flight, and for operations recorded before this field existed. Unlike `result_metadata` this is a supported field \u2014 new operation types add their own shape here rather than flattening fields onto the operation."
+            "title": "Details",
+            "description": "Typed, per-operation-type outcome detail, discriminated by its own `operation_type`. Populated for finished operations with typed details, including refresh outcomes and deterministic file-conversion failures; null for operation types that report no typed detail, for operations still in flight, and for operations recorded before this field existed. Unlike `result_metadata` this is a supported field \u2014 new operation types add their own shape here rather than flattening fields onto the operation."
           },
           "child_operations": {
             "anyOf": [

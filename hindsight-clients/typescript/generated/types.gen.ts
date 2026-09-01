@@ -2145,6 +2145,30 @@ export type FeaturesInfo = {
 };
 
 /**
+ * FileConvertRetainOperationDetails
+ *
+ * A deterministic terminal outcome from a file conversion operation.
+ */
+export type FileConvertRetainOperationDetails = {
+  /**
+   * Operation Type
+   *
+   * Discriminator: which operation type this detail describes.
+   */
+  operation_type?: "file_convert_retain";
+  /**
+   * Failure Class
+   *
+   * Stable failure class callers may use to decide whether the source artifact is retryable.
+   */
+  failure_class: "low_quality_ocr";
+  /**
+   * The OCR quality gate that rejected the converted image text.
+   */
+  failure_reason: OcrQualityReason;
+};
+
+/**
  * FileRetainResponse
  *
  * Response model for file upload endpoint.
@@ -3938,6 +3962,18 @@ export type ObservationScopesResponse = {
 };
 
 /**
+ * OcrQualityReason
+ *
+ * Stable reason codes for rejected OCR.
+ */
+export type OcrQualityReason =
+  | "refusal_or_no_text_response"
+  | "no_meaningful_text"
+  | "excessive_uncertainty"
+  | "excessive_repetition"
+  | "ui_chrome_only";
+
+/**
  * OperationProgress
  *
  * Last-known progress snapshot for a long-running async operation.
@@ -4018,9 +4054,18 @@ export type OperationResponse = {
    */
   mental_model_id?: string | null;
   /**
-   * Typed, per-operation-type outcome detail, discriminated by its own `operation_type`. Populated for `refresh_mental_model` operations that have finished; null for operation types that report no typed detail, for operations still in flight, and for operations recorded before this field existed. Unlike `result_metadata` this is a supported field — new operation types add their own shape here rather than flattening fields onto the operation.
+   * Details
+   *
+   * Typed, per-operation-type outcome detail, discriminated by its own `operation_type`. Populated for finished operations with typed details, including refresh outcomes and deterministic file-conversion failures; null for operation types that report no typed detail, for operations still in flight, and for operations recorded before this field existed. Unlike `result_metadata` this is a supported field — new operation types add their own shape here rather than flattening fields onto the operation.
    */
-  details?: RefreshMentalModelOperationDetails | null;
+  details?:
+    | ({
+        operation_type: "refresh_mental_model";
+      } & RefreshMentalModelOperationDetails)
+    | ({
+        operation_type: "file_convert_retain";
+      } & FileConvertRetainOperationDetails)
+    | null;
   /**
    * Created At
    */
@@ -4116,9 +4161,18 @@ export type OperationStatusResponse = {
     [key: string]: unknown;
   } | null;
   /**
-   * Typed, per-operation-type outcome detail, discriminated by its own `operation_type`. Populated for `refresh_mental_model` operations that have finished; null for operation types that report no typed detail, for operations still in flight, and for operations recorded before this field existed. Unlike `result_metadata` this is a supported field — new operation types add their own shape here rather than flattening fields onto the operation.
+   * Details
+   *
+   * Typed, per-operation-type outcome detail, discriminated by its own `operation_type`. Populated for finished operations with typed details, including refresh outcomes and deterministic file-conversion failures; null for operation types that report no typed detail, for operations still in flight, and for operations recorded before this field existed. Unlike `result_metadata` this is a supported field — new operation types add their own shape here rather than flattening fields onto the operation.
    */
-  details?: RefreshMentalModelOperationDetails | null;
+  details?:
+    | ({
+        operation_type: "refresh_mental_model";
+      } & RefreshMentalModelOperationDetails)
+    | ({
+        operation_type: "file_convert_retain";
+      } & FileConvertRetainOperationDetails)
+    | null;
   /**
    * Child Operations
    *

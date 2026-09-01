@@ -6822,6 +6822,29 @@ components:
       - store_document_text
       - worker
       title: FeaturesInfo
+    FileConvertRetainOperationDetails:
+      description: A deterministic terminal outcome from a file conversion operation.
+      properties:
+        operation_type:
+          default: file_convert_retain
+          description: "Discriminator: which operation type this detail describes."
+          enum:
+          - file_convert_retain
+          title: Operation Type
+          type: string
+        failure_class:
+          description: Stable failure class callers may use to decide whether the
+            source artifact is retryable.
+          enum:
+          - low_quality_ocr
+          title: Failure Class
+          type: string
+        failure_reason:
+          $ref: '#/components/schemas/OcrQualityReason'
+      required:
+      - failure_class
+      - failure_reason
+      title: FileConvertRetainOperationDetails
     FileRetainResponse:
       description: Response model for file upload endpoint.
       example:
@@ -9051,6 +9074,16 @@ components:
       required:
       - scopes
       title: ObservationScopesResponse
+    OcrQualityReason:
+      description: Stable reason codes for rejected OCR.
+      enum:
+      - refusal_or_no_text_response
+      - no_meaningful_text
+      - excessive_uncertainty
+      - excessive_repetition
+      - ui_chrome_only
+      title: OcrQualityReason
+      type: string
     OperationProgress:
       description: |-
         Last-known progress snapshot for a long-running async operation.
@@ -9112,7 +9145,7 @@ components:
           nullable: true
           type: string
         details:
-          $ref: '#/components/schemas/RefreshMentalModelOperationDetails'
+          $ref: '#/components/schemas/OperationResponse_details'
         created_at:
           title: Created At
           type: string
@@ -9191,7 +9224,7 @@ components:
           additionalProperties: {}
           nullable: true
         details:
-          $ref: '#/components/schemas/RefreshMentalModelOperationDetails'
+          $ref: '#/components/schemas/OperationResponse_details'
         child_operations:
           items:
             $ref: '#/components/schemas/ChildOperationStatus'
@@ -10784,6 +10817,16 @@ components:
       - $ref: '#/components/schemas/TagGroupAnd-Input'
       - $ref: '#/components/schemas/TagGroupOr-Input'
       - $ref: '#/components/schemas/TagGroupNot-Input'
+    OperationResponse_details:
+      discriminator:
+        mapping:
+          file_convert_retain: '#/components/schemas/FileConvertRetainOperationDetails'
+          refresh_mental_model: '#/components/schemas/RefreshMentalModelOperationDetails'
+        propertyName: operation_type
+      nullable: true
+      oneOf:
+      - $ref: '#/components/schemas/RefreshMentalModelOperationDetails'
+      - $ref: '#/components/schemas/FileConvertRetainOperationDetails'
     Not:
       anyOf:
       - $ref: '#/components/schemas/TagGroupLeaf'

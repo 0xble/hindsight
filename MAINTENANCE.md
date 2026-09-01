@@ -61,14 +61,17 @@ runtime activation are separate stages.
 
 - **Status:** Active
 - **Commit:** `cc6842c`
-- **Surfaces:** `engine/{memory_engine,operation_details}.py`,
-  `api/http.py`, `tests/test_operation_status.py`
-- **Behavior:** Failed `file_convert_retain` operations expose a stable typed
+- **Surfaces:** API operation-detail models/status persistence, checked-in OpenAPI
+  contracts, generated Python/TypeScript/Go clients, and `scripts/generate-clients.sh`
+- **Behavior:** Failed `file_convert_retain` operations expose a stable, discriminated
   `low_quality_ocr` detail with the OCR quality reason, so callers can settle
-  deterministic evidence exclusions without parsing error prose.
+  deterministic evidence exclusions without parsing error prose. Retries clear
+  stale terminal details, and generated clients accept both supported detail types.
 - **Upstream issue:** None after checked 2026-09-01
 - **Upstream PR:** None after checked 2026-09-01
-- **Regression:** `uv run --frozen pytest tests/test_operation_status.py`
+- **Regression:** `uv run --frozen pytest tests/test_operation_status.py`; generated
+  client discriminator tests in `hindsight-clients/{python,go}`; and a successful
+  `./scripts/generate-openapi.sh && ./scripts/generate-clients.sh` run.
 - **Rollback:** Revert the HINDSIGHT-004 commit and restore callers to treating
   all file-conversion failures as non-terminal.
 - **Retire when:** A released upstream build exposes an equivalent stable typed
