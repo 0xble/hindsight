@@ -1671,6 +1671,12 @@ def _file_convert_failure_metadata(error: BaseException) -> dict[str, str]:
     return {}
 
 
+_CLEARED_FILE_CONVERT_FAILURE_METADATA: dict[str, None] = {
+    "failure_class": None,
+    "failure_reason": None,
+}
+
+
 def _operation_details(operation_type: str, result_metadata: dict[str, Any]) -> dict[str, Any] | None:
     """Typed per-operation-type outcome detail, projected out of result_metadata.
 
@@ -3792,13 +3798,17 @@ class MemoryEngine(MemoryEngineInterface):
                         f"""
                         UPDATE {fq_table("async_operations")}
                         SET status = 'failed', error_message = $2,
-                            result_metadata = COALESCE(result_metadata, '{{}}'::jsonb) || $3::jsonb,
+                            result_metadata = COALESCE(result_metadata, '{{}}'::jsonb)
+                                || CASE WHEN operation_type = 'file_convert_retain'
+                                    THEN $3::jsonb ELSE '{{}}'::jsonb END
+                                || $4::jsonb,
                             updated_at = NOW(), completed_at = NOW()
                         WHERE operation_id = $1 AND status NOT IN ('completed', 'failed', 'cancelled')
                         RETURNING operation_id
                         """,
                         uuid.UUID(operation_id),
                         truncated_error,
+                        json.dumps(_CLEARED_FILE_CONVERT_FAILURE_METADATA),
                         json.dumps(result_metadata or {}),
                     )
                     if row is None:
@@ -18174,6 +18184,9 @@ class MemoryEngine(MemoryEngineInterface):
                     worker_id = NULL,
                     claimed_at = NULL,
                     retry_count = 0,
+                    result_metadata = COALESCE(result_metadata, '{{}}'::jsonb)
+                        || CASE WHEN operation_type = 'file_convert_retain'
+                            THEN $3::jsonb ELSE '{{}}'::jsonb END,
                     updated_at = NOW()
                 WHERE operation_id = $1
                   AND bank_id = $2
@@ -18183,6 +18196,7 @@ class MemoryEngine(MemoryEngineInterface):
                 """,
                 op_uuid,
                 bank_id,
+                json.dumps(_CLEARED_FILE_CONVERT_FAILURE_METADATA),
             )
 
             if updated is None:
