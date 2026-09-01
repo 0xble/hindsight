@@ -9,6 +9,7 @@ Regression tests:
 """
 
 import asyncio
+import json
 import uuid
 from datetime import datetime
 
@@ -97,6 +98,50 @@ async def test_low_quality_ocr_failure_exposes_stable_terminal_details(api_clien
         "failure_class": "low_quality_ocr",
         "failure_reason": "refusal_or_no_text_response",
     }
+
+
+@pytest.mark.asyncio
+async def test_retry_clears_stale_file_conversion_failure_details(api_client, memory, test_bank_id):
+    """A retry must not keep reporting the deterministic failure from its previous attempt."""
+    pool = memory._pool
+    await _ensure_bank(pool, test_bank_id)
+
+    op_id = uuid.uuid4()
+    await pool.execute(
+        """
+        INSERT INTO async_operations (
+            operation_id, bank_id, operation_type, status, task_payload, result_metadata
+        )
+        VALUES (
+            $1, $2, 'file_convert_retain', 'failed', '{"test": true}'::jsonb,
+            '{"source":"fixture","failure_class":"low_quality_ocr",'
+            '"failure_reason":"refusal_or_no_text_response"}'::jsonb
+        )
+        """,
+        op_id,
+        test_bank_id,
+    )
+
+    response = await api_client.post(f"/v1/default/banks/{test_bank_id}/operations/{op_id}/retry")
+    assert response.status_code == 200
+
+    response = await api_client.get(f"/v1/default/banks/{test_bank_id}/operations/{op_id}")
+    operation = response.json()
+    assert operation["status"] == "pending"
+    assert operation.get("details") is None
+
+    raw = await pool.fetchrow(
+        "SELECT result_metadata FROM async_operations WHERE operation_id = $1",
+        op_id,
+    )
+    assert json.loads(raw["result_metadata"])["source"] == "fixture"
+
+    await memory._mark_operation_failed(str(op_id), "parser crashed", "traceback")
+
+    response = await api_client.get(f"/v1/default/banks/{test_bank_id}/operations/{op_id}")
+    operation = response.json()
+    assert operation["status"] == "failed"
+    assert operation.get("details") is None
 
 
 def test_unclassified_file_failure_has_no_structured_metadata():
