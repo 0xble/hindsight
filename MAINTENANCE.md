@@ -4,7 +4,7 @@
 
 Maintained fork: `0xble/hindsight` of `vectorize-io/hindsight`, branch `main`.
 Canonical checkout: `/Users/brianle/Repos/hindsight`. Accepted upstream baseline:
-`d2e8fa7286b37012b7e45de8f1b10dc333274918`. Publish only to `origin`; never
+`24cb8446b99ab2453169ef9c0779891629313ae6`. Publish only to `origin`; never
 push to `upstream`. Source synchronization, publication, installation, and
 runtime activation are separate stages.
 
