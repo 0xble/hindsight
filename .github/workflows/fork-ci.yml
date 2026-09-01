@@ -34,6 +34,8 @@ jobs:
         run: >-
           uv run --frozen --extra all pytest
           tests/test_ocr_quality.py
+          tests/test_reprocess_force_reextract.py
+          tests/test_retain_params_roundtrip.py
           tests/test_consolidation_failure_isolation.py
           tests/test_consolidation_prompt_budget.py
           tests/test_db_abstraction.py
