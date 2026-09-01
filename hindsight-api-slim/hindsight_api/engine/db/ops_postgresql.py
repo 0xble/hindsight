@@ -981,8 +981,12 @@ class PostgreSQLOps(DataAccessOps):
                 SELECT c.id, COUNT(DISTINCT cs.source_id)::float AS score
                 FROM candidates c
                 CROSS JOIN LATERAL unnest(c.source_memory_ids) AS s(source_id)
-                JOIN connected_sources cs ON cs.source_id = s.source_id
-                GROUP BY c.id
+            ),
+            scored AS (
+                SELECT candidate_source.id, COUNT(DISTINCT candidate_source.source_id)::float AS score
+                FROM candidate_sources candidate_source
+                JOIN connected_sources cs ON cs.source_id = candidate_source.source_id
+                GROUP BY candidate_source.id
             ),
             observation_entity_expanded AS (
                 SELECT
