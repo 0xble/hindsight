@@ -26,7 +26,7 @@ _REFUSAL_PATTERNS = (
     ),
     re.compile(
         r"(?:the (?:provided )?|this )image (?:contains no|does not contain any) "
-        r"(?:visible |readable |legible )?text(?: to transcribe)?"
+        r"(?:(?:visible|readable|legible)(?: or (?:visible|readable|legible))* )?text(?: to transcribe)?"
     ),
     re.compile(
         r"i did not find any (?:visible |readable |legible )text"
