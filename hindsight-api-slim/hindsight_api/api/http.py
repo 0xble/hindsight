@@ -182,6 +182,7 @@ from hindsight_api.engine.mental_model_refresh import (
     MentalModelDryRunRefreshResult,
     RefreshMentalModelOperationDetails,
 )
+from hindsight_api.engine.operation_details import FileConvertRetainOperationDetails
 from hindsight_api.engine.providers.none_llm import LLMNotAvailableError
 from hindsight_api.engine.reflect import ReflectNoAnswerError, ReflectToolCallError, ReflectToolExecutionError
 from hindsight_api.engine.response_models import (
@@ -3426,12 +3427,13 @@ class OperationResponse(BaseModel):
             "same value under `result_metadata`."
         ),
     )
-    details: RefreshMentalModelOperationDetails | None = Field(
+    details: RefreshMentalModelOperationDetails | FileConvertRetainOperationDetails | None = Field(
         default=None,
         description=(
             "Typed, per-operation-type outcome detail, discriminated by its own `operation_type`. "
-            "Populated for `refresh_mental_model` operations that have finished; null for operation "
-            "types that report no typed detail, for operations still in flight, and for operations "
+            "Populated for finished operations with typed details, including refresh outcomes and "
+            "deterministic file-conversion failures; null for operation types that report no typed detail, "
+            "for operations still in flight, and for operations "
             "recorded before this field existed. Unlike `result_metadata` this is a supported field — "
             "new operation types add their own shape here rather than flattening fields onto the "
             "operation."
@@ -3626,12 +3628,13 @@ class OperationStatusResponse(BaseModel):
         default=None,
         description="Internal metadata for debugging. Structure may change without notice. Not for production use.",
     )
-    details: RefreshMentalModelOperationDetails | None = Field(
+    details: RefreshMentalModelOperationDetails | FileConvertRetainOperationDetails | None = Field(
         default=None,
         description=(
             "Typed, per-operation-type outcome detail, discriminated by its own `operation_type`. "
-            "Populated for `refresh_mental_model` operations that have finished; null for operation "
-            "types that report no typed detail, for operations still in flight, and for operations "
+            "Populated for finished operations with typed details, including refresh outcomes and "
+            "deterministic file-conversion failures; null for operation types that report no typed detail, "
+            "for operations still in flight, and for operations "
             "recorded before this field existed. Unlike `result_metadata` this is a supported field — "
             "new operation types add their own shape here rather than flattening fields onto the "
             "operation."

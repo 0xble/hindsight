@@ -73,6 +73,7 @@ from .llm_trace import (
     LLMTraceRecorder,
     trace_context_of,
 )
+from .operation_details import FileConvertRetainOperationDetails
 from .operation_metadata import (
     BatchRetainChildMetadata,
     BatchRetainParentMetadata,
@@ -82,6 +83,7 @@ from .operation_metadata import (
     RetainOutcomeAggregate,
     RetainOutcomeMetadata,
 )
+from .parsers.ocr_quality import LowQualityOcrError
 from .sql import SQLDialect, create_sql_dialect
 from .sql.postgresql import knowledge_bm25_arm
 
@@ -1679,6 +1681,25 @@ def _summarize_refresh_tool_calls(
     return summaries
 
 
+def _file_convert_failure_metadata(error: BaseException) -> dict[str, str]:
+    """Return stable metadata for a deterministic file-conversion failure.
+
+    File parsing adds filename context by wrapping the parser exception, so walk
+    the explicit exception chain instead of relying on the human-facing message.
+    """
+    seen: set[int] = set()
+    current: BaseException | None = error
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        if isinstance(current, LowQualityOcrError):
+            return {
+                "failure_class": "low_quality_ocr",
+                "failure_reason": current.reason.value,
+            }
+        current = current.__cause__ or current.__context__
+    return {}
+
+
 def _operation_details(operation_type: str, result_metadata: dict[str, Any]) -> dict[str, Any] | None:
     """Typed per-operation-type outcome detail, projected out of result_metadata.
 
@@ -1693,6 +1714,19 @@ def _operation_details(operation_type: str, result_metadata: dict[str, Any]) -> 
     MCP tool, which ``json.dumps`` the whole result, so everything in it has to be
     JSON-able primitives.
     """
+    if operation_type == "file_convert_retain":
+        failure_class = result_metadata.get("failure_class")
+        failure_reason = result_metadata.get("failure_reason")
+        if failure_class is None or failure_reason is None:
+            return None
+        try:
+            return FileConvertRetainOperationDetails(
+                failure_class=failure_class,
+                failure_reason=failure_reason,
+            ).model_dump(mode="json")
+        except ValidationError:
+            logger.warning("Unrecognized file conversion failure details on an operation; reporting no details")
+            return None
     if operation_type != "refresh_mental_model":
         return None
     outcome = result_metadata.get("outcome")
@@ -3414,11 +3448,17 @@ class MemoryEngine(MemoryEngineInterface):
                 error_traceback = traceback.format_exc()
 
                 if task_type == "file_convert_retain":
-                    # Non-retryable: mark as failed immediately.
-                    # Conversion failures won't improve on retry (missing OCR, corrupted file, etc.)
+                    # Non-retryable: mark as failed immediately. Stable metadata
+                    # lets callers distinguish deterministic evidence exclusions
+                    # from parser or infrastructure failures without parsing prose.
                     logger.error(f"Not retrying task {task_type} (non-retryable), marking as failed")
                     if operation_id:
-                        await self._mark_operation_failed(operation_id, error_message, error_traceback)
+                        await self._mark_operation_failed(
+                            operation_id,
+                            error_message,
+                            error_traceback,
+                            result_metadata=_file_convert_failure_metadata(e),
+                        )
                 elif _is_non_retryable_task_error(e):
                     # Non-retryable: deterministic task failures (integrity violations,
                     # invalid embedding dimensions, etc.) will not succeed by rerunning
@@ -3835,8 +3875,15 @@ class MemoryEngine(MemoryEngineInterface):
         except Exception as e:
             logger.debug(f"Failed to write operation progress for {operation_id}: {e}")
 
-    async def _mark_operation_failed(self, operation_id: str, error_message: str, error_traceback: str):
-        """Helper to mark an operation as failed in the database.
+    async def _mark_operation_failed(
+        self,
+        operation_id: str,
+        error_message: str,
+        error_traceback: str,
+        *,
+        result_metadata: dict[str, Any] | None = None,
+    ):
+        """Mark a live operation failed and merge any stable terminal metadata.
 
         Also checks if this is a child operation and updates the parent if all siblings are done.
         Uses a single transaction to avoid race conditions when multiple children fail simultaneously.
@@ -3849,19 +3896,23 @@ class MemoryEngine(MemoryEngineInterface):
 
             async with acquire_with_retry(backend) as conn:
                 async with conn.transaction():
-                    # Mark this operation as failed
+                    # Mark this operation as failed. Terminal rows are immutable,
+                    # matching the completion path and preventing cancellation loss.
                     row = await conn.fetchrow(
                         f"""
                         UPDATE {fq_table("async_operations")}
-                        SET status = 'failed', error_message = $2, updated_at = NOW()
-                        WHERE operation_id = $1
+                        SET status = 'failed', error_message = $2,
+                            result_metadata = COALESCE(result_metadata, '{{}}'::jsonb) || $3::jsonb,
+                            updated_at = NOW(), completed_at = NOW()
+                        WHERE operation_id = $1 AND status NOT IN ('completed', 'failed', 'cancelled')
                         RETURNING operation_id
                         """,
                         uuid.UUID(operation_id),
                         truncated_error,
+                        json.dumps(result_metadata or {}),
                     )
                     if row is None:
-                        logger.info(f"Operation {operation_id} no longer exists (bank deleted), skipping mark-failed")
+                        logger.info(f"Operation {operation_id} already terminal or deleted, skipping mark-failed")
                         return
                     logger.info(f"Marked async operation as failed: {operation_id}")
 
