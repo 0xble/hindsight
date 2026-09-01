@@ -20,7 +20,7 @@ import json
 from pydantic import BaseModel, ConfigDict, StrictInt, StrictStr
 from typing import Any, ClassVar, Dict, List, Optional
 from hindsight_client_api.models.operation_progress import OperationProgress
-from hindsight_client_api.models.refresh_mental_model_operation_details import RefreshMentalModelOperationDetails
+from hindsight_client_api.models.operation_response_details import OperationResponseDetails
 from typing import Optional, Set
 from typing_extensions import Self
 
@@ -34,7 +34,7 @@ class OperationResponse(BaseModel):
     document_id: Optional[StrictStr] = None
     filename: Optional[StrictStr] = None
     mental_model_id: Optional[StrictStr] = None
-    details: Optional[RefreshMentalModelOperationDetails] = None
+    details: Optional[OperationResponseDetails] = None
     created_at: StrictStr
     updated_at: Optional[StrictStr] = None
     status: StrictStr
@@ -152,7 +152,7 @@ class OperationResponse(BaseModel):
             "document_id": obj.get("document_id"),
             "filename": obj.get("filename"),
             "mental_model_id": obj.get("mental_model_id"),
-            "details": RefreshMentalModelOperationDetails.from_dict(obj["details"]) if obj.get("details") is not None else None,
+            "details": OperationResponseDetails.from_dict(obj["details"]) if obj.get("details") is not None else None,
             "created_at": obj.get("created_at"),
             "updated_at": obj.get("updated_at"),
             "status": obj.get("status"),

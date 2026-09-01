@@ -1,0 +1,3 @@
+# OpenAPI Generator emits an intentional extra newline at EOF.
+hindsight-clients/go/*.go whitespace=-blank-at-eof
+hindsight-clients/python/hindsight_client_api/models/*.py whitespace=-blank-at-eof

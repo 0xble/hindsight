@@ -4,7 +4,7 @@
 
 Maintained fork: `0xble/hindsight` of `vectorize-io/hindsight`, branch `main`.
 Canonical checkout: `/Users/brianle/Repos/hindsight`. Accepted upstream baseline:
-`24cb8446b99ab2453169ef9c0779891629313ae6`. Publish only to `origin`; never
+`9a4be5e05245ebe750246727deaf54218cf2981d`. Publish only to `origin`; never
 push to `upstream`. Source synchronization, publication, installation, and
 runtime activation are separate stages.
 
@@ -72,6 +72,26 @@ runtime activation are separate stages.
 - **Regression:** `uv run --directory hindsight-api-slim --frozen python ../tests/ci/test_validate_fork_workflows.py && uv run --directory hindsight-api-slim --frozen python ../scripts/ci/validate_fork_workflows.py`
 - **Retire when:** This repository is no longer a maintained fork or assumes
   explicit ownership of deployment and publication infrastructure.
+
+### HINDSIGHT-004: Structured OCR terminal failures
+
+- **Status:** Active
+- **Commit:** `cc6842c`
+- **Surfaces:** API operation-detail models/status persistence, checked-in OpenAPI
+  contracts, generated Python/TypeScript/Go clients, and `scripts/generate-clients.sh`
+- **Behavior:** Failed `file_convert_retain` operations expose a stable, discriminated
+  `low_quality_ocr` detail with the OCR quality reason, so callers can settle
+  deterministic evidence exclusions without parsing error prose. Retries clear
+  stale terminal details, and generated clients accept both supported detail types.
+- **Upstream issue:** None after checked 2026-09-01
+- **Upstream PR:** None after checked 2026-09-01
+- **Regression:** `uv run --frozen pytest tests/test_operation_status.py`; generated
+  client discriminator tests in `hindsight-clients/{python,go}`; and a successful
+  `./scripts/generate-openapi.sh && ./scripts/generate-clients.sh` run.
+- **Rollback:** Revert the HINDSIGHT-004 commit and restore callers to treating
+  all file-conversion failures as non-terminal.
+- **Retire when:** A released upstream build exposes an equivalent stable typed
+  terminal failure contract for low-quality OCR.
 
 ## Update and verify
 
