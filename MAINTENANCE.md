@@ -43,6 +43,22 @@ runtime activation are separate stages.
 - **Rollback:** Revert `002902b`; do not alter production data during source rollback.
 - **Retire when:** Released upstream passes the focused regressions without this commit.
 
+### HINDSIGHT-004: Honest document reprocessing
+
+- **Status:** Active pending upstream release
+- **Commit:** upstream `89b6a6ba2` / #3899, carried onto the current upstream baseline
+- **Surfaces:** `engine/memory_engine.py`, `engine/retain/{orchestrator,types}.py`,
+  `tests/test_reprocess_force_reextract.py`, and retain-parameter round-trip tests
+- **Behavior:** Document reprocessing faithfully replays stored retain parameters and
+  forces re-extraction rather than taking unchanged-content or recovery no-op paths.
+  Ordinary unchanged retains remain optimized. The internal force flag is neither
+  client-settable nor persisted.
+- **Upstream PR:** https://github.com/vectorize-io/hindsight/pull/3899
+- **Regression:** `uv run --frozen --extra all pytest tests/test_reprocess_force_reextract.py tests/test_retain_params_roundtrip.py`
+- **Rollback:** Revert the fork commit carrying `89b6a6ba2`; do not use ordinary
+  reprocessing as a substitute because it silently no-ops on identical content.
+- **Retire when:** An accepted upstream baseline contains #3899 and its regressions.
+
 ### HINDSIGHT-003: Fork-owned CI governance
 
 - **Status:** Active
