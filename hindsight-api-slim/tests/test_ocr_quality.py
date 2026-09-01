@@ -32,6 +32,10 @@ class StaticParser(FileParser):
         ("# Description: There is no visible text in the image to transcribe.", OcrQualityReason.REFUSAL),
         ("# Description: No visible text found in the image.", OcrQualityReason.REFUSAL),
         ("# Description: This image does not contain any visible text to transcribe.", OcrQualityReason.REFUSAL),
+        (
+            "# Description: This image does not contain any visible or readable text to transcribe.",
+            OcrQualityReason.REFUSAL,
+        ),
         ("# Description: I did not find any visible text in the image.", OcrQualityReason.REFUSAL),
         ("No visible text is present in the image.", OcrQualityReason.REFUSAL),
         ("The image contains no visible text to transcribe.", OcrQualityReason.REFUSAL),
