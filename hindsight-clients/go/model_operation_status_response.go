@@ -32,7 +32,7 @@ type OperationStatusResponse struct {
 	NextRetryAt NullableString `json:"next_retry_at,omitempty"`
 	Progress NullableOperationProgress `json:"progress,omitempty"`
 	ResultMetadata map[string]interface{} `json:"result_metadata,omitempty"`
-	Details NullableRefreshMentalModelOperationDetails `json:"details,omitempty"`
+	Details NullableOperationResponseDetails `json:"details,omitempty"`
 	ChildOperations []ChildOperationStatus `json:"child_operations,omitempty"`
 	TaskPayload map[string]interface{} `json:"task_payload,omitempty"`
 }
@@ -476,9 +476,9 @@ func (o *OperationStatusResponse) SetResultMetadata(v map[string]interface{}) {
 }
 
 // GetDetails returns the Details field value if set, zero value otherwise (both if not set or set to explicit null).
-func (o *OperationStatusResponse) GetDetails() RefreshMentalModelOperationDetails {
+func (o *OperationStatusResponse) GetDetails() OperationResponseDetails {
 	if o == nil || IsNil(o.Details.Get()) {
-		var ret RefreshMentalModelOperationDetails
+		var ret OperationResponseDetails
 		return ret
 	}
 	return *o.Details.Get()
@@ -487,7 +487,7 @@ func (o *OperationStatusResponse) GetDetails() RefreshMentalModelOperationDetail
 // GetDetailsOk returns a tuple with the Details field value if set, nil otherwise
 // and a boolean to check if the value has been set.
 // NOTE: If the value is an explicit nil, `nil, true` will be returned
-func (o *OperationStatusResponse) GetDetailsOk() (*RefreshMentalModelOperationDetails, bool) {
+func (o *OperationStatusResponse) GetDetailsOk() (*OperationResponseDetails, bool) {
 	if o == nil {
 		return nil, false
 	}
@@ -503,8 +503,8 @@ func (o *OperationStatusResponse) HasDetails() bool {
 	return false
 }
 
-// SetDetails gets a reference to the given NullableRefreshMentalModelOperationDetails and assigns it to the Details field.
-func (o *OperationStatusResponse) SetDetails(v RefreshMentalModelOperationDetails) {
+// SetDetails gets a reference to the given NullableOperationResponseDetails and assigns it to the Details field.
+func (o *OperationStatusResponse) SetDetails(v OperationResponseDetails) {
 	o.Details.Set(&v)
 }
 // SetDetailsNil sets the value for Details to be an explicit nil

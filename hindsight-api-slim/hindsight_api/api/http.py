@@ -4279,6 +4279,12 @@ class OperationProgress(BaseModel):
     )
 
 
+OperationDetails = Annotated[
+    RefreshMentalModelOperationDetails | FileConvertRetainOperationDetails,
+    Field(discriminator="operation_type"),
+]
+
+
 class OperationResponse(BaseModel):
     """Response model for a single async operation."""
 
@@ -4315,7 +4321,7 @@ class OperationResponse(BaseModel):
             "same value under `result_metadata`."
         ),
     )
-    details: RefreshMentalModelOperationDetails | FileConvertRetainOperationDetails | None = Field(
+    details: OperationDetails | None = Field(
         default=None,
         description=(
             "Typed, per-operation-type outcome detail, discriminated by its own `operation_type`. "
@@ -4516,7 +4522,7 @@ class OperationStatusResponse(BaseModel):
         default=None,
         description="Internal metadata for debugging. Structure may change without notice. Not for production use.",
     )
-    details: RefreshMentalModelOperationDetails | FileConvertRetainOperationDetails | None = Field(
+    details: OperationDetails | None = Field(
         default=None,
         description=(
             "Typed, per-operation-type outcome detail, discriminated by its own `operation_type`. "
