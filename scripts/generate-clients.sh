@@ -105,33 +105,43 @@ done
 echo "Generating new client with openapi-generator..."
 cd "$PYTHON_CLIENT_DIR"
 
-# Generate into a fresh tmp dir, then sync the result into place. Mounting
-# $PYTHON_CLIENT_DIR directly worked on Linux CI but failed on macOS Docker
-# Desktop with NoSuchFileException when openapi-generator wrote supporting
-# files (api_client.py, configuration.py, README) — the writes to the bind
-# mount silently dropped under that filesystem driver. Generating into /tmp
-# (which Docker Desktop handles via a separate driver) and rsync'ing avoids
-# the issue without changing what we ship.
+# Generate into a fresh tmp dir, then sync the result into place. Keeping the
+# generator output staged protects maintained client files if generation fails.
 GEN_TMP_DIR="$(mktemp -d -t hindsight-py-gen.XXXXXX)"
-trap 'rm -rf "$GEN_TMP_DIR"' EXIT
+GEN_CONTAINER="hindsight-py-gen-$$"
+GO_GEN_DIR=""
+cleanup_generator() {
+    docker rm -f "$GEN_CONTAINER" >/dev/null 2>&1 || true
+    rm -rf "$GEN_TMP_DIR"
+    if [ -n "$GO_GEN_DIR" ]; then
+        rm -rf "$GO_GEN_DIR"
+    fi
+}
+trap cleanup_generator EXIT
 
-# Run openapi-generator via Docker (pinned version for reproducibility)
-# Use --platform linux/amd64 to ensure identical output on both macOS (arm64) and Linux CI (amd64)
-# Use --user to match current user's UID/GID so generated files are writable
-# Note: the generator may exit non-zero due to a known bug writing
-# README_onlypackage.mustache, but all API/model files are generated
-# before that step, so we allow the failure and verify files below.
-docker run --rm \
+# Run openapi-generator via Docker (pinned version for reproducibility).
+# `docker cp` rather than bind mounts keeps generation working with remote Docker
+# contexts, whose daemon cannot see paths on the client machine.
+docker create \
+    --name "$GEN_CONTAINER" \
     --platform linux/amd64 \
-    --user "$(id -u):$(id -g)" \
-    -v "$OPENAPI_SPEC:/local/openapi.json" \
-    -v "$GEN_TMP_DIR:/local/out" \
-    -v "$PYTHON_CLIENT_DIR/openapi-generator-config.yaml:/local/config.yaml" \
-    "openapitools/openapi-generator-cli:${OPENAPI_GENERATOR_VERSION}" generate \
+    --entrypoint /bin/sh \
+    "openapitools/openapi-generator-cli:${OPENAPI_GENERATOR_VERSION}" \
+    -c 'sleep infinity' >/dev/null
+docker start "$GEN_CONTAINER" >/dev/null
+docker exec "$GEN_CONTAINER" mkdir -p /local/out
+docker cp "$OPENAPI_SPEC" "$GEN_CONTAINER:/local/openapi.json"
+docker cp "$PYTHON_CLIENT_DIR/openapi-generator-config.yaml" "$GEN_CONTAINER:/local/config.yaml"
+
+# The generator may exit non-zero due to a known bug writing
+# README_onlypackage.mustache, but all API/model files are generated before that
+# step, so allow the failure and verify files below.
+docker exec "$GEN_CONTAINER" docker-entrypoint.sh generate \
     -i /local/openapi.json \
     -g python \
     -o /local/out \
     -c /local/config.yaml || true
+docker cp "$GEN_CONTAINER:/local/out/." "$GEN_TMP_DIR/"
 
 # Verify critical generated files exist in the tmp dir
 if [ ! -f "$GEN_TMP_DIR/hindsight_client_api/api_client.py" ]; then
@@ -442,21 +452,23 @@ else
     rm -f api_*.go model_*.go client.go configuration.go response.go utils.go
     rm -rf docs/ .openapi-generator/
 
-    # Generate new client via Docker (--platform linux/amd64 ensures identical output on macOS and Linux CI)
+    # Generate via the same staged container used for the Python client. `docker cp`
+    # supports both local and remote Docker contexts; bind mounts do not.
     echo "Generating client from OpenAPI spec..."
-    docker run --rm \
-        --platform linux/amd64 \
-        --user "$(id -u):$(id -g)" \
-        -v "$OPENAPI_SPEC:/local/openapi.json" \
-        -v "$GO_CLIENT_DIR:/local/out" \
-        "openapitools/openapi-generator-cli:${OPENAPI_GENERATOR_VERSION}" generate \
+    GO_GEN_DIR=$(mktemp -d -t hindsight-go-gen.XXXXXX)
+    docker exec "$GEN_CONTAINER" mkdir -p /local/go-out
+    docker exec "$GEN_CONTAINER" docker-entrypoint.sh generate \
         -i /local/openapi.json \
         -g go \
-        -o /local/out \
+        -o /local/go-out \
         --package-name hindsight \
         --git-user-id vectorize-io \
         --git-repo-id hindsight/hindsight-clients/go \
         --global-property apiDocs=false,apiTests=false,modelDocs=false,modelTests=false
+    docker cp "$GEN_CONTAINER:/local/go-out/." "$GO_GEN_DIR/"
+    rsync -a "$GO_GEN_DIR/" "$GO_CLIENT_DIR/"
+    rm -rf "$GO_GEN_DIR"
+    GO_GEN_DIR=""
 
     # Remove OpenAPI Generator boilerplate files
     echo "Removing boilerplate files..."

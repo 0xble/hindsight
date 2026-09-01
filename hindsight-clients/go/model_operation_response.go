@@ -27,7 +27,7 @@ type OperationResponse struct {
 	DocumentId NullableString `json:"document_id,omitempty"`
 	Filename NullableString `json:"filename,omitempty"`
 	MentalModelId NullableString `json:"mental_model_id,omitempty"`
-	Details NullableRefreshMentalModelOperationDetails `json:"details,omitempty"`
+	Details NullableOperationResponseDetails `json:"details,omitempty"`
 	CreatedAt string `json:"created_at"`
 	UpdatedAt NullableString `json:"updated_at,omitempty"`
 	Status string `json:"status"`
@@ -261,9 +261,9 @@ func (o *OperationResponse) UnsetMentalModelId() {
 }
 
 // GetDetails returns the Details field value if set, zero value otherwise (both if not set or set to explicit null).
-func (o *OperationResponse) GetDetails() RefreshMentalModelOperationDetails {
+func (o *OperationResponse) GetDetails() OperationResponseDetails {
 	if o == nil || IsNil(o.Details.Get()) {
-		var ret RefreshMentalModelOperationDetails
+		var ret OperationResponseDetails
 		return ret
 	}
 	return *o.Details.Get()
@@ -272,7 +272,7 @@ func (o *OperationResponse) GetDetails() RefreshMentalModelOperationDetails {
 // GetDetailsOk returns a tuple with the Details field value if set, nil otherwise
 // and a boolean to check if the value has been set.
 // NOTE: If the value is an explicit nil, `nil, true` will be returned
-func (o *OperationResponse) GetDetailsOk() (*RefreshMentalModelOperationDetails, bool) {
+func (o *OperationResponse) GetDetailsOk() (*OperationResponseDetails, bool) {
 	if o == nil {
 		return nil, false
 	}
@@ -288,8 +288,8 @@ func (o *OperationResponse) HasDetails() bool {
 	return false
 }
 
-// SetDetails gets a reference to the given NullableRefreshMentalModelOperationDetails and assigns it to the Details field.
-func (o *OperationResponse) SetDetails(v RefreshMentalModelOperationDetails) {
+// SetDetails gets a reference to the given NullableOperationResponseDetails and assigns it to the Details field.
+func (o *OperationResponse) SetDetails(v OperationResponseDetails) {
 	o.Details.Set(&v)
 }
 // SetDetailsNil sets the value for Details to be an explicit nil

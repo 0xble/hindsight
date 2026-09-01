@@ -78,6 +78,7 @@ hindsight_client_api/models/entity_observation_response.py
 hindsight_client_api/models/entity_state_response.py
 hindsight_client_api/models/extracted_fact.py
 hindsight_client_api/models/features_info.py
+hindsight_client_api/models/file_convert_retain_operation_details.py
 hindsight_client_api/models/file_retain_response.py
 hindsight_client_api/models/graph_data_response.py
 hindsight_client_api/models/http_validation_error.py
@@ -129,8 +130,10 @@ hindsight_client_api/models/not1.py
 hindsight_client_api/models/observation_scope.py
 hindsight_client_api/models/observation_scopes.py
 hindsight_client_api/models/observation_scopes_response.py
+hindsight_client_api/models/ocr_quality_reason.py
 hindsight_client_api/models/operation_progress.py
 hindsight_client_api/models/operation_response.py
+hindsight_client_api/models/operation_response_details.py
 hindsight_client_api/models/operation_status_response.py
 hindsight_client_api/models/operations_list_response.py
 hindsight_client_api/models/recall_request.py
