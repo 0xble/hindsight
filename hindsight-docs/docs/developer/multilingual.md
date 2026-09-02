@@ -23,6 +23,19 @@ When you retain content or reflect on a query, Hindsight:
 3. **Stores entities in their native script** - 张伟 stays 张伟, not "Zhang Wei"
 4. **Responds in the same language** - queries in Chinese get Chinese answers
 
+For fact extraction and observation consolidation, Hindsight also performs a
+conservative output-integrity check before persistence. A confident language
+mismatch is regenerated once from the original source. If the correction still
+mismatches, the generated fact or observation is rejected. Short, code-heavy,
+language-neutral, and low-confidence text remains indeterminate instead of being
+rejected. If a completed Batch API item mismatches, only that chunk is
+regenerated through the ordinary provider path with the same one-correction
+budget. Other successful batch items are preserved.
+
+If `llm_output_language` is explicitly configured, that language is the expected
+output. Otherwise the applicable source language is expected. Mixed-language
+sources may retain any materially represented source language.
+
 ---
 
 ## Retain with Non-English Content
