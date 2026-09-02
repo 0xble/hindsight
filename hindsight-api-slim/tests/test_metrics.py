@@ -1,7 +1,8 @@
 """Tests for metrics instrumentation."""
 
-import pytest
 from unittest.mock import MagicMock, patch
+
+import pytest
 
 from hindsight_api.metrics import (
     MetricsCollector,
@@ -9,8 +10,6 @@ from hindsight_api.metrics import (
     NoOpMetricsCollector,
     get_metrics_collector,
     get_token_bucket,
-    create_metrics_collector,
-    initialize_metrics,
     normalize_http_endpoint,
 )
 
@@ -246,6 +245,18 @@ class TestMetricsCollector:
         count, attributes = collector.retain_documents_total.add.call_args[0]
         assert count == 1
         assert attributes["outcome"] == "no_facts"
+
+    def test_record_language_validation_uses_bounded_dimensions(self, collector):
+        collector.record_language_validation(
+            stage="retain", outcome="mismatch_retry", provider="openai", model="gpt-test"
+        )
+
+        count, attributes = collector.language_validation_total.add.call_args[0]
+        assert count == 1
+        assert attributes["stage"] == "retain"
+        assert attributes["outcome"] == "mismatch_retry"
+        assert attributes["provider"] == "openai"
+        assert attributes["model"] == "gpt-test"
 
     def test_record_operation_includes_bank_id_when_enabled(self):
         """Test that bank_id is included in attributes when metrics_include_bank_id is enabled."""
