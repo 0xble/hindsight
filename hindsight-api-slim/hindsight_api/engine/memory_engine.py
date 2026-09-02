@@ -63,6 +63,7 @@ from .db.ops_postgresql import pg_search_vector_expr
 from .db.postgresql import PostgreSQLBackend
 from .db.postgresql import apply_session_settings as _apply_session_settings
 from .db_budget import budgeted_operation
+from .language_validation import GeneratedLanguageMismatch
 from .llm_interface import ProviderContentPolicyError, ProviderRateLimitResetError
 from .llm_trace import (
     LLMRequestEntry,
@@ -1270,6 +1271,9 @@ def _is_non_retryable_task_error(e: Exception) -> bool:
         # the moment: re-running the task feeds the same chunk to the same model
         # and earns the same refusal (issue #3690).
         or isinstance(e, ProviderContentPolicyError)
+        # A corrected response that still changes language is deterministic for
+        # this source/model pair. Worker retries would resend the same content.
+        or isinstance(e, GeneratedLanguageMismatch)
     )
 
 

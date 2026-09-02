@@ -15,6 +15,14 @@ from typing import Any, Literal, cast
 
 from pydantic import BaseModel, ConfigDict, Field, create_model, field_validator
 
+from ..language_validation import (
+    GeneratedLanguageMismatch,
+    LanguageValidationOutcome,
+    build_language_retry_instruction,
+    record_language_validation,
+    should_validate_language,
+    validate_output_language,
+)
 from ..llm_interface import ProviderContentPolicyError, ProviderRateLimitResetError
 from ..llm_wrapper import LLMConfig, OutputTooLongError, parse_llm_json, sanitize_llm_output, sanitize_llm_value
 from ..operation_metadata import RetainExtractionErrors
@@ -1566,6 +1574,9 @@ async def _extract_facts_from_chunk(
     config,
     agent_name: str | None = None,
     metadata: dict[str, str] | None = None,
+    language_retry_already_used: bool = False,
+    initial_language_correction: str = "",
+    language_validation_stage: str = "retain",
 ) -> tuple[list[dict[str, str]], TokenUsage]:
     """
     Extract facts from a single chunk (internal helper for parallel processing).
@@ -1629,10 +1640,15 @@ async def _extract_facts_from_chunk(
     # the initial request — so a zero budget still performs one request (#2731). The raw
     # budget is forwarded unchanged to llm_config.call(), which owns transport retries.
     outer_attempts = llm_max_retries + 1
+    # One additional attempt is reserved exclusively for a confident language
+    # mismatch. It is independent of malformed-output and transport retry budgets.
+    max_loop_attempts = outer_attempts + 1
+    language_retry_used = language_retry_already_used
+    language_retry_instruction = initial_language_correction
     last_error: Exception | None = None
 
     usage = TokenUsage()  # Track cumulative usage across retries
-    for attempt in range(outer_attempts):
+    for attempt in range(max_loop_attempts):
         try:
             initial_backoff = (
                 config.retain_llm_initial_backoff
@@ -1644,7 +1660,10 @@ async def _extract_facts_from_chunk(
             )
 
             call_kwargs: dict[str, Any] = dict(
-                messages=[{"role": "system", "content": prompt}, {"role": "user", "content": user_message}],
+                messages=[
+                    {"role": "system", "content": prompt},
+                    {"role": "user", "content": user_message + language_retry_instruction},
+                ],
                 response_format=response_schema,
                 scope="retain_extract_facts",
                 temperature=config.llm_temperature_retain,
@@ -1921,6 +1940,51 @@ async def _extract_facts_from_chunk(
                     f"Model '{llm_config.model}' may not honour the extraction schema — consider enabling "
                     f"HINDSIGHT_API_LLM_STRICT_SCHEMA_RETAIN or using a model with strict schema support."
                 )
+
+            if extraction_mode != "verbatim" and chunk_facts and should_validate_language(llm_config):
+                language_results = [
+                    validate_output_language(
+                        source_text=chunk,
+                        output_text=fact.fact,
+                        output_language=config.llm_output_language,
+                    )
+                    for fact in chunk_facts
+                    if fact.fact
+                ]
+                language_result = next(
+                    (result for result in language_results if result.outcome is LanguageValidationOutcome.MISMATCH),
+                    None,
+                )
+                if language_result is not None:
+                    expected = ",".join(sorted(language_result.expected_languages))
+                    actual = language_result.output_language or "unknown"
+                    if not language_retry_used:
+                        record_language_validation(language_validation_stage, "mismatch_retry", llm_config)
+                        language_retry_used = True
+                        language_retry_instruction = build_language_retry_instruction(
+                            output_language=config.llm_output_language,
+                            expected_languages=[expected],
+                            actual_languages=[actual],
+                        )
+                        logger.warning(
+                            "generated_language_mismatch stage=retain expected=%s actual=%s retry=1",
+                            expected,
+                            actual,
+                        )
+                        continue
+                    record_language_validation(language_validation_stage, "mismatch_terminal", llm_config)
+                    raise GeneratedLanguageMismatch(
+                        "generated_language_mismatch: retain output remained incompatible after corrective retry "
+                        f"(expected={expected}, actual={actual})"
+                    )
+
+                if language_retry_used:
+                    validation_outcome = "retry_recovered"
+                elif any(result.outcome is LanguageValidationOutcome.MATCH for result in language_results):
+                    validation_outcome = LanguageValidationOutcome.MATCH.value
+                else:
+                    validation_outcome = LanguageValidationOutcome.INDETERMINATE.value
+                record_language_validation(language_validation_stage, validation_outcome, llm_config)
 
             return chunk_facts, usage
 
@@ -2729,6 +2793,69 @@ async def extract_facts_from_contents_batch_api(
                 logger.error(message)
                 extraction_errors.add(message)
                 continue
+
+        if chunk_facts and should_validate_language(llm_config):
+            language_results = [
+                validate_output_language(
+                    source_text=chunk_content,
+                    output_text=fact.fact,
+                    output_language=config.llm_output_language,
+                )
+                for fact in chunk_facts
+                if fact.fact
+            ]
+            language_result = next(
+                (result for result in language_results if result.outcome is LanguageValidationOutcome.MISMATCH),
+                None,
+            )
+            if language_result is not None:
+                expected = ",".join(sorted(language_result.expected_languages))
+                actual = language_result.output_language or "unknown"
+                correction = build_language_retry_instruction(
+                    output_language=config.llm_output_language,
+                    expected_languages=[expected],
+                    actual_languages=[actual],
+                )
+                logger.warning(
+                    "generated_language_mismatch stage=retain_batch expected=%s actual=%s retry=1",
+                    expected,
+                    actual,
+                )
+                record_language_validation("retain_batch", "mismatch_retry", llm_config)
+                try:
+                    content = contents[content_index]
+                    total_content_chunks = sum(1 for info in all_chunks_info if info[1] == content_index)
+                    chunk_facts, retry_usage = await _extract_facts_from_chunk(
+                        chunk=chunk_content,
+                        chunk_index=chunk_index_in_content,
+                        total_chunks=total_content_chunks,
+                        event_date=event_date,
+                        context=context,
+                        llm_config=llm_config,
+                        config=config,
+                        metadata=content.metadata or None,
+                        language_retry_already_used=True,
+                        initial_language_correction=correction,
+                        language_validation_stage="retain_batch",
+                    )
+                    total_usage = total_usage + retry_usage
+                except GeneratedLanguageMismatch as e:
+                    message = f"{custom_id}: {e}"
+                    logger.error(message)
+                    extraction_errors.add(message)
+                    chunk_facts = []
+                except Exception as e:
+                    message = f"{custom_id}: corrective language retry failed: {e}"
+                    logger.error(message)
+                    extraction_errors.add(message)
+                    chunk_facts = []
+            else:
+                validation_outcome = (
+                    LanguageValidationOutcome.MATCH.value
+                    if any(result.outcome is LanguageValidationOutcome.MATCH for result in language_results)
+                    else LanguageValidationOutcome.INDETERMINATE.value
+                )
+                record_language_validation("retain_batch", validation_outcome, llm_config)
 
         all_facts_from_llm.extend(chunk_facts)
         chunks_metadata.append(

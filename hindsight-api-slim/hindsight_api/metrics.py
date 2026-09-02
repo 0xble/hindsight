@@ -296,6 +296,10 @@ class MetricsCollectorBase:
         """Record the fact-extraction outcome of one document processed by retain."""
         raise NotImplementedError
 
+    def record_language_validation(self, stage: str, outcome: str, provider: str, model: str):
+        """Record one generated/source language-integrity decision."""
+        raise NotImplementedError
+
     def record_db_acquire_wait(self, wait_seconds: float):
         """Record how long a caller waited to acquire a pooled DB connection."""
         raise NotImplementedError
@@ -375,6 +379,9 @@ class NoOpMetricsCollector(MetricsCollectorBase):
 
     def record_retain_document(self, bank_id: str, memory_unit_count: int):
         """No-op retain document outcome recording."""
+        pass
+
+    def record_language_validation(self, stage: str, outcome: str, provider: str, model: str):
         pass
 
     def record_db_acquire_wait(self, wait_seconds: float):
@@ -470,6 +477,11 @@ class MetricsCollector(MetricsCollectorBase):
             name="hindsight.retain.documents.total",
             description="Documents processed by retain, labelled by extraction outcome (facts/no_facts)",
             unit="documents",
+        )
+        self.language_validation_total = self.meter.create_counter(
+            name="hindsight.language_validation.total",
+            description="Generated/source language integrity checks by stage and outcome",
+            unit="checks",
         )
 
         # HTTP request metrics
@@ -675,6 +687,18 @@ class MetricsCollector(MetricsCollectorBase):
             attributes["bank_id"] = bank_id
 
         self.retain_documents_total.add(1, attributes)
+
+    def record_language_validation(self, stage: str, outcome: str, provider: str, model: str):
+        self.language_validation_total.add(
+            1,
+            {
+                "stage": stage,
+                "outcome": outcome,
+                "provider": provider,
+                "model": model,
+                "tenant": _get_tenant(),
+            },
+        )
 
     def record_llm_call(
         self,
