@@ -3266,9 +3266,7 @@ async def _consolidate_batch_with_llm(
             if validation_enabled and validations:
                 if language_retry_used:
                     validation_outcome = "retry_recovered"
-                elif any(
-                    result.outcome is LanguageValidationOutcome.MATCH for result in validations
-                ):
+                elif any(result.outcome is LanguageValidationOutcome.MATCH for result in validations):
                     validation_outcome = LanguageValidationOutcome.MATCH.value
                 else:
                     validation_outcome = LanguageValidationOutcome.INDETERMINATE.value

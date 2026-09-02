@@ -163,12 +163,7 @@ def _classify(text: str) -> tuple[str | None, float, float]:
 
 
 def _confident(code: str | None, confidence: float, margin: float, chars: int) -> bool:
-    return bool(
-        code
-        and chars >= _MIN_ANALYZABLE_CHARS
-        and confidence >= _MIN_CONFIDENCE
-        and margin >= _MIN_MARGIN
-    )
+    return bool(code and chars >= _MIN_ANALYZABLE_CHARS and confidence >= _MIN_CONFIDENCE and margin >= _MIN_MARGIN)
 
 
 def profile_language(text: str) -> LanguageProfile:
@@ -244,8 +239,7 @@ def build_language_retry_instruction(
     )
     if output_language:
         return (
-            prefix
-            + f"Regenerate the entire structured response in the configured output language: {output_language}. "
+            prefix + f"Regenerate the entire structured response in the configured output language: {output_language}. "
             "Translate source prose when required by that setting, while preserving proper nouns, identifiers, "
             "commands, paths, and quotations exactly."
         )

@@ -1947,11 +1947,7 @@ async def _extract_facts_from_chunk(
                     if fact.fact
                 ]
                 language_result = next(
-                    (
-                        result
-                        for result in language_results
-                        if result.outcome is LanguageValidationOutcome.MISMATCH
-                    ),
+                    (result for result in language_results if result.outcome is LanguageValidationOutcome.MISMATCH),
                     None,
                 )
                 if language_result is not None:
@@ -1979,9 +1975,7 @@ async def _extract_facts_from_chunk(
 
                 if language_retry_used:
                     validation_outcome = "retry_recovered"
-                elif any(
-                    result.outcome is LanguageValidationOutcome.MATCH for result in language_results
-                ):
+                elif any(result.outcome is LanguageValidationOutcome.MATCH for result in language_results):
                     validation_outcome = LanguageValidationOutcome.MATCH.value
                 else:
                     validation_outcome = LanguageValidationOutcome.INDETERMINATE.value
@@ -2806,11 +2800,7 @@ async def extract_facts_from_contents_batch_api(
                 if fact.fact
             ]
             language_result = next(
-                (
-                    result
-                    for result in language_results
-                    if result.outcome is LanguageValidationOutcome.MISMATCH
-                ),
+                (result for result in language_results if result.outcome is LanguageValidationOutcome.MISMATCH),
                 None,
             )
             if language_result is not None:
@@ -2829,9 +2819,7 @@ async def extract_facts_from_contents_batch_api(
                 record_language_validation("retain_batch", "mismatch_retry", llm_config)
                 try:
                     content = contents[content_index]
-                    total_content_chunks = sum(
-                        1 for info in all_chunks_info if info[1] == content_index
-                    )
+                    total_content_chunks = sum(1 for info in all_chunks_info if info[1] == content_index)
                     chunk_facts, retry_usage = await _extract_facts_from_chunk(
                         chunk=chunk_content,
                         chunk_index=chunk_index_in_content,
@@ -2859,10 +2847,7 @@ async def extract_facts_from_contents_batch_api(
             else:
                 validation_outcome = (
                     LanguageValidationOutcome.MATCH.value
-                    if any(
-                        result.outcome is LanguageValidationOutcome.MATCH
-                        for result in language_results
-                    )
+                    if any(result.outcome is LanguageValidationOutcome.MATCH for result in language_results)
                     else LanguageValidationOutcome.INDETERMINATE.value
                 )
                 record_language_validation("retain_batch", validation_outcome, llm_config)

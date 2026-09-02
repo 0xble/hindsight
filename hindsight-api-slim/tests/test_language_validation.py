@@ -42,13 +42,9 @@ def test_one_translated_fact_cannot_hide_inside_an_english_response():
         "La actualización del sistema debe conservar cada identificador original y nunca "
         "traducir los datos antes de almacenarlos en la base de conocimiento."
     )
-    results = [
-        validate_output_language(source_text=ENGLISH, output_text=output)
-        for output in (ENGLISH, translated)
-    ]
+    results = [validate_output_language(source_text=ENGLISH, output_text=output) for output in (ENGLISH, translated)]
     assert results[0].outcome is LanguageValidationOutcome.MATCH
     assert results[1].outcome is LanguageValidationOutcome.MISMATCH
-
 
 
 def test_matching_non_english_output_is_accepted():
