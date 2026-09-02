@@ -17,7 +17,9 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from hindsight_api.config import HindsightConfig
+from hindsight_api.engine.response_models import TokenUsage
 from hindsight_api.engine.retain.fact_extraction import (
+    Fact,
     RetainContent,
     extract_facts_from_contents,
     extract_facts_from_contents_batch_api,
@@ -216,6 +218,84 @@ async def test_batch_api_normal_flow(mock_llm_config, test_contents, hindsight_c
             await memory.delete_bank(bank_id, request_context=request_context)
         except Exception:
             pass
+
+
+@pytest.mark.asyncio
+async def test_batch_api_retries_only_a_mismatching_chunk_synchronously(
+    mock_llm_config, test_contents, hindsight_config
+):
+    """A bad completed batch item gets one corrective call, not a whole new batch."""
+    batch_id = "batch_language_mismatch"
+    mock_llm_config._provider_impl.supports_batch_api = AsyncMock(return_value=True)
+    mock_llm_config._provider_impl.submit_batch = AsyncMock(
+        return_value={
+            "batch_id": batch_id,
+            "status": "validating",
+            "request_counts": {"total": 1, "completed": 0, "failed": 0},
+        }
+    )
+    mock_llm_config._provider_impl.get_batch_status = AsyncMock(
+        return_value={"status": "completed", "request_counts": {"total": 1, "completed": 1, "failed": 0}}
+    )
+    spanish = (
+        "Alicia es una ingeniera principal de software en TechCorp y se especializa "
+        "en sistemas distribuidos para servicios empresariales críticos."
+    )
+    mock_llm_config._provider_impl.retrieve_batch_results = AsyncMock(
+        return_value=[
+            {
+                "custom_id": "chunk_0",
+                "response": {
+                    "body": {
+                        "choices": [
+                            {
+                                "message": {
+                                    "content": json.dumps(
+                                        {
+                                            "facts": [
+                                                {
+                                                    "what": spanish,
+                                                    "fact_type": "world",
+                                                    "fact_kind": "conversation",
+                                                }
+                                            ]
+                                        }
+                                    )
+                                }
+                            }
+                        ],
+                        "usage": {"prompt_tokens": 100, "completion_tokens": 50, "total_tokens": 150},
+                    }
+                },
+            }
+        ]
+    )
+    corrected = Fact(
+        fact="Alice is a senior software engineer at TechCorp specializing in distributed systems.",
+        fact_type="world",
+        where=None,
+    )
+
+    with patch(
+        "hindsight_api.engine.retain.fact_extraction._extract_facts_from_chunk",
+        new=AsyncMock(return_value=([corrected], TokenUsage(input_tokens=20, output_tokens=10, total_tokens=30))),
+    ) as retry:
+        facts, chunks, usage = await extract_facts_from_contents_batch_api(
+            contents=[test_contents[0]],
+            llm_config=mock_llm_config,
+            config=hindsight_config,
+        )
+
+    assert len(facts) == 1
+    assert facts[0].fact_text == corrected.fact
+    assert chunks[0].fact_count == 1
+    assert usage.total_tokens == 180
+    assert retry.await_count == 1
+    assert retry.await_args is not None
+    kwargs = retry.await_args.kwargs
+    assert kwargs["language_retry_already_used"] is True
+    assert "CORRECTION" in kwargs["initial_language_correction"]
+    assert kwargs["language_validation_stage"] == "retain_batch"
 
 
 @pytest.mark.asyncio

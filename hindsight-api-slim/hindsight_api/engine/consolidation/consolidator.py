@@ -36,6 +36,14 @@ from ...config import get_config
 from ...worker.stage import set_stage
 from ..db import DatabaseBackend
 from ..db_utils import acquire_with_retry
+from ..language_validation import (
+    GeneratedLanguageMismatch,
+    LanguageValidationOutcome,
+    build_language_retry_instruction,
+    record_language_validation,
+    should_validate_language,
+    validate_output_language,
+)
 from ..llm_interface import OutputTooLongError, ProviderRateLimitResetError
 from ..llm_trace import (
     record_created_memory_ids,
@@ -3059,7 +3067,7 @@ def _classify_batch_failure(exc: Exception) -> _BatchFailureClass:
     # front (openai, anthropic) exposes the HTTP status this way.
     if getattr(exc, "status_code", None) in (401, 403):
         return _BatchFailureClass.PROPAGATE
-    if isinstance(exc, json.JSONDecodeError | ValidationError | OutputTooLongError):
+    if isinstance(exc, json.JSONDecodeError | ValidationError | OutputTooLongError | GeneratedLanguageMismatch):
         return _BatchFailureClass.FAIL_FAST
     # Providers that surface an empty/unusable body flag their own retryability.
     if getattr(exc, "retryable", None) is False:
@@ -3162,18 +3170,23 @@ async def _consolidate_batch_with_llm(
     # "LLM batch call failed" line gives operators no way to find the offending
     # input until adaptive bisection narrows the batch down to a single memory.
     memory_ids = [str(m.get("id")) for m in memories]
+    source_text_by_id = {str(m.get("id")): str(m.get("text") or "") for m in memories}
     if len(memory_ids) <= 5:
         ids_label = ", ".join(memory_ids)
     else:
         ids_label = f"{', '.join(memory_ids[:3])}, ... +{len(memory_ids) - 3} more"
     batch_label = f"{len(memory_ids)} memories [{ids_label}]"
-    for attempt in range(1, max_attempts + 1):
+    language_retry_used = False
+    language_retry_instruction = ""
+    # The extra slot is reachable only after a language mismatch. Ordinary
+    # transport failures retain the configured max_attempts budget below.
+    for attempt in range(1, max_attempts + 2):
         attempts_made = attempt
         try:
             call_kwargs: dict[str, Any] = {
                 "messages": [
                     {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": user_content},
+                    {"role": "user", "content": user_content + language_retry_instruction},
                 ],
                 "response_format": response_model,
                 "temperature": config.llm_temperature_consolidation,
@@ -3205,6 +3218,61 @@ async def _consolidate_batch_with_llm(
                     )
                     creates = creates[:remaining_observation_slots]
             updates = _dedupe_updates(response.updates, batch_label=batch_label)
+            validations = []
+            mismatches = []
+            validation_enabled = should_validate_language(llm_config)
+            actions_to_validate = (("create", creates), ("update", updates)) if validation_enabled else ()
+            for action_kind, actions in actions_to_validate:
+                for action in actions:
+                    source_text = "\n".join(
+                        source_text_by_id[source_id]
+                        for source_id in action.source_fact_ids
+                        if source_text_by_id.get(source_id)
+                    )
+                    if not source_text:
+                        continue
+                    validation = validate_output_language(
+                        source_text=source_text,
+                        output_text=action.text,
+                        output_language=getattr(config, "llm_output_language", None),
+                    )
+                    validations.append(validation)
+                    if validation.outcome is LanguageValidationOutcome.MISMATCH:
+                        mismatches.append((action_kind, action.source_fact_ids, validation))
+            if mismatches:
+                expected = sorted({code for _, _, result in mismatches for code in result.expected_languages})
+                actual = sorted({result.output_language or "unknown" for _, _, result in mismatches})
+                if not language_retry_used:
+                    record_language_validation("consolidation", "mismatch_retry", llm_config)
+                    language_retry_used = True
+                    language_retry_instruction = build_language_retry_instruction(
+                        output_language=getattr(config, "llm_output_language", None),
+                        expected_languages=expected,
+                        actual_languages=actual,
+                        per_source=True,
+                    )
+                    logger.warning(
+                        "generated_language_mismatch stage=consolidation expected=%s actual=%s retry=1 actions=%s",
+                        ",".join(expected),
+                        ",".join(actual),
+                        len(mismatches),
+                    )
+                    continue
+                record_language_validation("consolidation", "mismatch_terminal", llm_config)
+                raise GeneratedLanguageMismatch(
+                    "generated_language_mismatch: consolidation output remained incompatible after corrective retry "
+                    f"(expected={','.join(expected)}, actual={','.join(actual)})"
+                )
+            if validation_enabled and validations:
+                if language_retry_used:
+                    validation_outcome = "retry_recovered"
+                elif any(
+                    result.outcome is LanguageValidationOutcome.MATCH for result in validations
+                ):
+                    validation_outcome = LanguageValidationOutcome.MATCH.value
+                else:
+                    validation_outcome = LanguageValidationOutcome.INDETERMINATE.value
+                record_language_validation("consolidation", validation_outcome, llm_config)
             return _BatchLLMResult(
                 creates=creates,
                 updates=updates,
@@ -3232,11 +3300,13 @@ async def _consolidate_batch_with_llm(
             logger.warning(
                 f"[CONSOLIDATION] LLM batch call failed (attempt {attempt}/{max_attempts}) for {batch_label}: {exc}"
             )
+            permitted_attempts = max_attempts + int(language_retry_used)
+            if attempt >= permitted_attempts:
+                break
             # Backoff on the outer ladder too. Without it a rate limit or a transient
             # overload was re-sent immediately, three times, defeating the point of the
             # provider's own backoff. Skipped after the final attempt — nothing follows it.
-            if attempt < max_attempts:
-                await asyncio.sleep(min(_OUTER_RETRY_INITIAL_BACKOFF * (2 ** (attempt - 1)), _OUTER_RETRY_MAX_BACKOFF))
+            await asyncio.sleep(min(_OUTER_RETRY_INITIAL_BACKOFF * (2 ** (attempt - 1)), _OUTER_RETRY_MAX_BACKOFF))
 
     logger.error(
         f"[CONSOLIDATION] LLM batch call failed after {attempts_made}/{max_attempts} attempt(s) for "
