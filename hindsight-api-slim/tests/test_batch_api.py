@@ -283,13 +283,15 @@ async def test_batch_api_retries_only_a_mismatching_chunk_synchronously(
         "hindsight_api.engine.retain.fact_extraction._extract_facts_from_chunk",
         new=AsyncMock(return_value=([corrected], TokenUsage(input_tokens=20, output_tokens=10, total_tokens=30))),
     ) as retry:
-        facts, chunks, usage = await extract_facts_from_contents_batch_api(
+        extraction = await extract_facts_from_contents_batch_api(
             contents=[test_contents[0]],
             llm_config=mock_llm_config,
             config=hindsight_config,
-            agent_name="test",
         )
 
+    facts = extraction.facts
+    chunks = extraction.chunks
+    usage = extraction.usage
     assert len(facts) == 1
     assert facts[0].fact_text == corrected.fact
     assert chunks[0].fact_count == 1
