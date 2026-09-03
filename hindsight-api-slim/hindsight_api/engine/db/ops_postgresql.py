@@ -977,8 +977,8 @@ class PostgreSQLOps(DataAccessOps):
                   AND mu.source_memory_ids && ca.source_ids
                   {window.clause("mu")}
             ),
-            scored AS (
-                SELECT c.id, COUNT(DISTINCT cs.source_id)::float AS score
+            candidate_sources AS MATERIALIZED (
+                SELECT c.id, s.source_id
                 FROM candidates c
                 CROSS JOIN LATERAL unnest(c.source_memory_ids) AS s(source_id)
             ),
