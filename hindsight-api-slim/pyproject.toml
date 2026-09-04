@@ -110,6 +110,163 @@ dependencies = [
     "orjson>=3.11.0", # Fast JSON encode/decode on the recall path (audit rows, TEI embedding responses); 3.11 ships 3.14 wheels
     "numpy>=1.26.0", # Core vector/array math for pgvector, embeddings, and link graph operations
 ]
+
+[project.optional-dependencies]
+local-ml = [
+    # Local ML models for embeddings/reranking
+    # 5.0 is the floor: LocalSTEmbeddings calls SentenceTransformer.encode_query()
+    # and .encode_document(), which only exist from 5.0 onwards. On 4.x those are
+    # an AttributeError at first encode (recall/retain), not at startup.
+    "sentence-transformers>=5.0.0",
+    "transformers>=5.5.0", # ReDoS fixes; 5.5.0 clears GHSA-fgcw-684q-jj6r (LightGlue RCE)
+    # transformers enforces tokenizers<=0.23.0 with a runtime check, but has
+    # shipped metadata declaring a wider range than it actually enforces. Keep
+    # this cap: without it an in-place upgrade can pull tokenizers 0.23.1 and
+    # break local embeddings/reranker startup. See issue #2055.
+    "tokenizers>=0.22.0,<=0.23.0",
+    # >=2.6.0 for the remote-code-execution CVE fix. The 2.11.0 floor is for
+    # ARMv8.0 CPUs (e.g. Cortex-A57): torch 2.10.0's aarch64 wheel bundles a
+    # mimalloc whose ELF constructor runs an inline ARMv8.1 LSE atomic
+    # (`ldaddal` in `_mi_options_init`), so `import torch` dies with SIGILL at
+    # dlopen time on any CPU without LSE. 2.11.0+ keeps LSE behind the
+    # runtime-dispatched outline-atomics helpers again. See issue #4142.
+    "torch>=2.11.0",
+    "einops>=0.8.2",
+    "flashrank>=0.2.0",
+    # Apple Silicon local inference. mlx is Apple's Metal/unified-memory
+    # framework: the only provider using it (`jina-mlx` reranker) refuses to
+    # start anywhere else, and mlx's Linux wheels are CPU-only, exist only for
+    # manylinux_2_35 (glibc >= 2.35) and ship no sdist — so on older-glibc Linux
+    # the whole `[all]` extra became unresolvable and pip silently backtracked
+    # to an ancient release with a pre-CVE torch pin. See issue #4499.
+    "mlx>=0.31.0; sys_platform == 'darwin' and platform_machine == 'arm64'",
+    "mlx-lm>=0.31.1; sys_platform == 'darwin' and platform_machine == 'arm64'",
+    "safetensors>=0.6.2",
+]
+local-llm = [
+    # Built-in llama.cpp inference for fully offline operation
+    "llama-cpp-python[server]>=0.3.0",
+    "huggingface-hub>=0.20.0",
+]
+local-onnx = [
+    # In-process ONNX Runtime embeddings without an Ollama/TEI sidecar
+    "onnxruntime>=1.17.0",
+    "transformers>=5.5.0", # 5.5.0 clears GHSA-fgcw-684q-jj6r (LightGlue RCE)
+    "tokenizers>=0.22.0,<=0.23.0", # See issue #2055 (transformers caps tokenizers<=0.23.0)
+    "huggingface-hub>=0.20.0",
+    "numpy>=1.26.0",
+]
+embedded-db = [
+    "pg0-embedded>=0.15.0",
+]
+oracle = [
+    "oracledb>=2.5.0",
+]
+all = [
+    "hindsight-api-slim[local-ml,local-onnx,embedded-db]",
+]
+test = [
+    "pytest>=7.0.0",
+    "pytest-asyncio>=0.21.0",
+    "pytest-timeout>=2.4.0",
+    "pytest-xdist>=3.0.0",
+    "filelock>=3.20.1",  # TOCTOU race condition fix
+    "testcontainers>=4.0.0",
+]
+[project.scripts]
+hindsight-api = "hindsight_api.main:main"
+hindsight-worker = "hindsight_api.worker.main:main"
+hindsight-local-mcp = "hindsight_api.mcp_local:main"
+hindsight-admin = "hindsight_api.admin.cli:main"
+[tool.hatch.build.targets.wheel]
+packages = ["hindsight_api"]
+[tool.hatch.build.targets.wheel.sources]
+"hindsight_api" = "hindsight_api"
+[tool.hatch.build.targets.sdist]
+include = [
+    "hindsight_api/**/*",
+]
+[tool.hatch.build]
+include = [
+    "hindsight_api/**/*.py",
+    "hindsight_api/alembic/**/*",
+]
+[tool.pytest.ini_options]
+log_cli = true
+log_cli_level = "INFO"
+log_cli_format = "%(asctime)s - %(levelname)s - %(name)s - %(message)s"
+log_cli_date_format = "%Y-%m-%d %H:%M:%S"
+addopts = "--timeout 300 -n 8 --dist loadgroup --durations=10 -v"
+markers = [
+    "oracle: Oracle 23ai integration tests (require ORACLE_TEST_DSN env var)",
+    "hs_llm_mat: LLM minimum acceptance tests — run in CI matrix across multiple providers",
+    "hs_llm_core: Core pipeline tests that need a real LLM but only one provider",
+    "integration: Live external-API integration tests (require provider credentials; skipped without)",
+    "slow: Slow tests (minutes); not run in fast CI",
+    "memory_backend_incompatible: Asserts or SEEDS Postgres-internal state for memories — raw memory_units / memory_links / unit_entities / documents / chunks rows, raw memory_links counts (the graph read path dedupes bidirectional edges), or internal columns like embedding / search_vector that are not part of the public read model. A MEMORIES extension owns those rows itself and leaves the tables empty, so such a test measures the storage layout rather than the behaviour and cannot pass against one. Deselect when running against an alternative store with -m 'not memory_backend_incompatible'; it still runs, and must, on Postgres.",
+]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+log_auto_indent = true
+filterwarnings = [
+    "ignore:The @wait_container_is_ready decorator is deprecated:DeprecationWarning",
+    "ignore::RuntimeWarning:asyncio",
+]
+[dependency-groups]
+dev = [
+    "pytest>=9.0.0",
+    "pytest-asyncio>=1.3.0",
+    "pytest-timeout>=2.4.0",
+    "pytest-xdist>=3.8.0",
+    "pytest-rerunfailures>=15.0",
+    "python-dotenv>=1.2.1",
+    "filelock>=3.20.1",  # TOCTOU race condition fix
+    "ruff>=0.8.0",
+    "ty>=0.0.1",
+    "pyyaml>=6.0.2",
+    "testcontainers>=4.0.0",
+]
+[tool.ruff]
+line-length = 120
+target-version = "py311"
+[tool.ruff.lint]
+# Tests are formatted (via `ruff format`) but excluded from lint rules, which
+# are too noisy for test code (unused imports/vars, import ordering).
+exclude = [
+    "tests/**",
+    "**/tests/**",
+]
+select = [
+    "E",      # pycodestyle errors
+    "W",      # pycodestyle warnings
+    "F",      # Pyflakes
+    "I",      # isort
+    "B021",   # flake8-bugbear: f-string used as docstring (leaves __doc__ None)
+    "TID251", # banned imports: sync HTTP clients and httpx (see banned-api below)
+]
+ignore = [
+    "E501",   # line too long (handled by formatter)
+    "E402",   # module import not at top of file
+    "F811",   # redefined while unused
+    "F821",   # undefined name (forward references in type hints)
+]
+[tool.ruff.lint.isort]
+known-third-party = ["alembic"]
+
+# Production HTTP is aiohttp, async only (see .claude/skills/code-review/SKILL.md).
+[tool.ruff.lint.flake8-tidy-imports.banned-api]
+"httpx".msg = "Use aiohttp (async) via hindsight_api.engine.aiohttp_session. httpx is allowed only to configure or classify a third-party SDK built on it, with a `# noqa: TID251` saying so."
+"requests".msg = "Sync HTTP is forbidden in production code; use aiohttp via hindsight_api.engine.aiohttp_session."
+"urllib.request".msg = "Sync HTTP is forbidden in production code; use aiohttp via hindsight_api.engine.aiohttp_session."
+"urllib3".msg = "Sync HTTP is forbidden in production code; use aiohttp via hindsight_api.engine.aiohttp_session."
+"http.client".msg = "Sync HTTP is forbidden in production code; use aiohttp via hindsight_api.engine.aiohttp_session."
+[tool.ruff.lint.per-file-ignores]
+# The container readiness probe runs as its own short-lived process and is
+# stdlib-only by rule (tests/test_http_probe.py), so it is not on the event loop.
+"hindsight_api/http_probe.py" = ["TID251"]
+# Tests may use httpx (FastAPI TestClient / ASGITransport). `exclude` above already
+# skips them on a directory run; this covers ruff invoked on an explicit test path.
+"tests/**" = ["TID251"]
 [project]
 name = "hindsight-api-slim"
 version = "0.9.2"
@@ -212,177 +369,8 @@ dependencies = [
     "boto3>=1.42.74",
     "croniter>=2.0.0", # Cron parsing for scheduled mental model refresh
     "json-repair>=0.63.2", # Structural repair of malformed LLM JSON (last-resort parse fallback); >=0.60.1 also fixes the circular-$ref unbounded-CPU DoS
-    "langdetect>=1.0.9,<2", # Deterministic source/output language-integrity guard
     "numpy>=1.26.0", # Core vector/array math for pgvector, embeddings, and link graph operations
 ]
-
-[project.optional-dependencies]
-local-ml = [
-    # Local ML models for embeddings/reranking
-    # 5.0 is the floor: LocalSTEmbeddings calls SentenceTransformer.encode_query()
-    # and .encode_document(), which only exist from 5.0 onwards. On 4.x those are
-    # an AttributeError at first encode (recall/retain), not at startup.
-    "sentence-transformers>=5.0.0",
-    "transformers>=5.5.0", # ReDoS fixes; 5.5.0 clears GHSA-fgcw-684q-jj6r (LightGlue RCE)
-    # transformers enforces tokenizers<=0.23.0 with a runtime check, but has
-    # shipped metadata declaring a wider range than it actually enforces. Keep
-    # this cap: without it an in-place upgrade can pull tokenizers 0.23.1 and
-    # break local embeddings/reranker startup. See issue #2055.
-    "tokenizers>=0.22.0,<=0.23.0",
-    # >=2.6.0 for the remote-code-execution CVE fix. The 2.11.0 floor is for
-    # ARMv8.0 CPUs (e.g. Cortex-A57): torch 2.10.0's aarch64 wheel bundles a
-    # mimalloc whose ELF constructor runs an inline ARMv8.1 LSE atomic
-    # (`ldaddal` in `_mi_options_init`), so `import torch` dies with SIGILL at
-    # dlopen time on any CPU without LSE. 2.11.0+ keeps LSE behind the
-    # runtime-dispatched outline-atomics helpers again. See issue #4142.
-    "torch>=2.11.0",
-    "einops>=0.8.2",
-    "flashrank>=0.2.0",
-    # Apple Silicon local inference. mlx is Apple's Metal/unified-memory
-    # framework: the only provider using it (`jina-mlx` reranker) refuses to
-    # start anywhere else, and mlx's Linux wheels are CPU-only, exist only for
-    # manylinux_2_35 (glibc >= 2.35) and ship no sdist — so on older-glibc Linux
-    # the whole `[all]` extra became unresolvable and pip silently backtracked
-    # to an ancient release with a pre-CVE torch pin. See issue #4499.
-    "mlx>=0.31.0; sys_platform == 'darwin' and platform_machine == 'arm64'",
-    "mlx-lm>=0.31.1; sys_platform == 'darwin' and platform_machine == 'arm64'",
-    "safetensors>=0.6.2",
-]
-local-llm = [
-    # Built-in llama.cpp inference for fully offline operation
-    "llama-cpp-python[server]>=0.3.0",
-    "huggingface-hub>=0.20.0",
-]
-local-onnx = [
-    # In-process ONNX Runtime embeddings without an Ollama/TEI sidecar
-    "onnxruntime>=1.17.0",
-    "transformers>=5.5.0", # 5.5.0 clears GHSA-fgcw-684q-jj6r (LightGlue RCE)
-    "tokenizers>=0.22.0,<=0.23.0", # See issue #2055 (transformers caps tokenizers<=0.23.0)
-    "huggingface-hub>=0.20.0",
-    "numpy>=1.26.0",
-]
-embedded-db = [
-    "pg0-embedded>=0.15.0",
-]
-oracle = [
-    "oracledb>=2.5.0",
-]
-all = [
-    "hindsight-api-slim[local-ml,local-onnx,embedded-db]",
-]
-test = [
-    "pytest>=7.0.0",
-    "pytest-asyncio>=0.21.0",
-    "pytest-timeout>=2.4.0",
-    "pytest-xdist>=3.0.0",
-    "filelock>=3.20.1",  # TOCTOU race condition fix
-    "testcontainers>=4.0.0",
-]
-
-[project.scripts]
-hindsight-api = "hindsight_api.main:main"
-hindsight-worker = "hindsight_api.worker.main:main"
-hindsight-local-mcp = "hindsight_api.mcp_local:main"
-hindsight-admin = "hindsight_api.admin.cli:main"
-
-[tool.hatch.build.targets.wheel]
-packages = ["hindsight_api"]
-
-[tool.hatch.build.targets.wheel.sources]
-"hindsight_api" = "hindsight_api"
-
-[tool.hatch.build.targets.sdist]
-include = [
-    "hindsight_api/**/*",
-]
-
-[tool.hatch.build]
-include = [
-    "hindsight_api/**/*.py",
-    "hindsight_api/alembic/**/*",
-]
-
-[tool.pytest.ini_options]
-log_cli = true
-log_cli_level = "INFO"
-log_cli_format = "%(asctime)s - %(levelname)s - %(name)s - %(message)s"
-log_cli_date_format = "%Y-%m-%d %H:%M:%S"
-addopts = "--timeout 300 -n 8 --dist loadgroup --durations=10 -v"
-markers = [
-    "oracle: Oracle 23ai integration tests (require ORACLE_TEST_DSN env var)",
-    "hs_llm_mat: LLM minimum acceptance tests — run in CI matrix across multiple providers",
-    "hs_llm_core: Core pipeline tests that need a real LLM but only one provider",
-    "integration: Live external-API integration tests (require provider credentials; skipped without)",
-    "slow: Slow tests (minutes); not run in fast CI",
-    "memory_backend_incompatible: Asserts or SEEDS Postgres-internal state for memories — raw memory_units / memory_links / unit_entities / documents / chunks rows, raw memory_links counts (the graph read path dedupes bidirectional edges), or internal columns like embedding / search_vector that are not part of the public read model. A MEMORIES extension owns those rows itself and leaves the tables empty, so such a test measures the storage layout rather than the behaviour and cannot pass against one. Deselect when running against an alternative store with -m 'not memory_backend_incompatible'; it still runs, and must, on Postgres.",
-]
-asyncio_mode = "auto"
-asyncio_default_fixture_loop_scope = "function"
-log_auto_indent = true
-filterwarnings = [
-    "ignore:The @wait_container_is_ready decorator is deprecated:DeprecationWarning",
-    "ignore::RuntimeWarning:asyncio",
-]
-
-[dependency-groups]
-dev = [
-    "pytest>=9.0.0",
-    "pytest-asyncio>=1.3.0",
-    "pytest-timeout>=2.4.0",
-    "pytest-xdist>=3.8.0",
-    "pytest-rerunfailures>=15.0",
-    "python-dotenv>=1.2.1",
-    "filelock>=3.20.1",  # TOCTOU race condition fix
-    "ruff>=0.8.0",
-    "ty>=0.0.1",
-    "pyyaml>=6.0.2",
-    "testcontainers>=4.0.0",
-]
-
-[tool.ruff]
-line-length = 120
-target-version = "py311"
-
-[tool.ruff.lint]
-# Tests are formatted (via `ruff format`) but excluded from lint rules, which
-# are too noisy for test code (unused imports/vars, import ordering).
-exclude = [
-    "tests/**",
-    "**/tests/**",
-]
-select = [
-    "E",      # pycodestyle errors
-    "W",      # pycodestyle warnings
-    "F",      # Pyflakes
-    "I",      # isort
-    "B021",   # flake8-bugbear: f-string used as docstring (leaves __doc__ None)
-    "TID251", # banned imports: sync HTTP clients and httpx (see banned-api below)
-]
-ignore = [
-    "E501",   # line too long (handled by formatter)
-    "E402",   # module import not at top of file
-    "F811",   # redefined while unused
-    "F821",   # undefined name (forward references in type hints)
-]
-
-[tool.ruff.lint.isort]
-known-third-party = ["alembic"]
-
-# Production HTTP is aiohttp, async only (see .claude/skills/code-review/SKILL.md).
-[tool.ruff.lint.flake8-tidy-imports.banned-api]
-"httpx".msg = "Use aiohttp (async) via hindsight_api.engine.aiohttp_session. httpx is allowed only to configure or classify a third-party SDK built on it, with a `# noqa: TID251` saying so."
-"requests".msg = "Sync HTTP is forbidden in production code; use aiohttp via hindsight_api.engine.aiohttp_session."
-"urllib.request".msg = "Sync HTTP is forbidden in production code; use aiohttp via hindsight_api.engine.aiohttp_session."
-"urllib3".msg = "Sync HTTP is forbidden in production code; use aiohttp via hindsight_api.engine.aiohttp_session."
-"http.client".msg = "Sync HTTP is forbidden in production code; use aiohttp via hindsight_api.engine.aiohttp_session."
-
-[tool.ruff.lint.per-file-ignores]
-# The container readiness probe runs as its own short-lived process and is
-# stdlib-only by rule (tests/test_http_probe.py), so it is not on the event loop.
-"hindsight_api/http_probe.py" = ["TID251"]
-# Tests may use httpx (FastAPI TestClient / ASGITransport). `exclude` above already
-# skips them on a directory run; this covers ruff invoked on an explicit test path.
-"tests/**" = ["TID251"]
 
 [tool.ruff.format]
 quote-style = "double"
