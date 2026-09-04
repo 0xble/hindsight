@@ -155,18 +155,23 @@ class _RetryBudget:
 
 
 def _status_code_of(exc: BaseException) -> int | None:
-    """Best-effort HTTP status extraction across httpx, openai and litellm errors."""
+    """Best-effort HTTP status extraction across httpx, openai, litellm and google.genai errors."""
     candidates = (
         getattr(exc, "status_code", None),
         getattr(getattr(exc, "response", None), "status_code", None),
+        # google.genai.errors.APIError carries the status on `code`, and leaves
+        # `response` as None on the paths that raise from a parsed error body.
+        getattr(exc, "code", None),
     )
     for candidate in candidates:
         if isinstance(candidate, bool):
             continue
-        if isinstance(candidate, int):
-            return candidate
         if isinstance(candidate, str) and candidate.isdigit():
-            return int(candidate)
+            candidate = int(candidate)
+        # Range-checked because `code` is a common attribute name that is not
+        # always an HTTP status (SystemExit.code, OSError subclasses).
+        if isinstance(candidate, int) and 100 <= candidate <= 599:
+            return candidate
     return None
 
 
@@ -1261,6 +1266,7 @@ class CohereEmbeddings(Embeddings):
         batch_size: int = 96,
         timeout: float = 60.0,
         input_type: str = "search_document",
+        retry_policy: EmbeddingRetryPolicy | None = None,
     ):
         """
         Initialize Cohere embeddings client.
@@ -1274,6 +1280,8 @@ class CohereEmbeddings(Embeddings):
             timeout: Request timeout in seconds (default: 60.0)
             input_type: Input type for embeddings (default: search_document).
                        Options: search_document, search_query, classification, clustering
+            retry_policy: Bounded retry policy for transient upstream failures
+                (default: EmbeddingRetryPolicy() built-in defaults)
         """
         self.api_key = api_key
         self.model = model
@@ -1282,6 +1290,7 @@ class CohereEmbeddings(Embeddings):
         self.batch_size = batch_size
         self.timeout = timeout
         self.input_type = input_type
+        self.retry_policy = retry_policy or EmbeddingRetryPolicy()
         self._client = None
         self._dimension: int | None = None
 
@@ -1320,11 +1329,20 @@ class CohereEmbeddings(Embeddings):
         elif self.model in self.MODEL_DIMENSIONS:
             self._dimension = self.MODEL_DIMENSIONS[self.model]
         else:
-            # Do a test embedding to detect dimension
-            response = self._client.embed(
-                texts=["test"],
-                model=self.model,
-                input_type=self.input_type,
+            # Do a test embedding to detect dimension. to_thread + the async retry
+            # helper: initialize() is awaited on the event loop, so a blocking call and
+            # a time.sleep() backoff would stall the model loads running concurrently
+            # with it. Retried so a quota blip at startup does not crash-loop the daemon.
+            response = await _acall_with_retry(
+                lambda: asyncio.to_thread(
+                    self._client.embed,
+                    texts=["test"],
+                    model=self.model,
+                    input_type=self.input_type,
+                ),
+                policy=self.retry_policy,
+                budget=self.retry_policy.new_budget(),
+                provider=self.provider_name,
             )
             if response.embeddings and isinstance(response.embeddings, list):
                 self._dimension = len(response.embeddings[0])
@@ -1347,24 +1365,41 @@ class CohereEmbeddings(Embeddings):
         if not texts:
             return []
 
-        return self._encode_batched(texts, self._embed_batch)
+        # One retry budget for the whole call: batching must not multiply the
+        # worst-case added latency of a single encode(). Shared across the concurrent
+        # batches too, which is why _RetryBudget takes a lock.
+        budget = self.retry_policy.new_budget()
 
-    def _embed_batch(self, batch: list[str]) -> list[list[float]]:
+        return self._encode_batched(texts, lambda batch: self._embed_batch(batch, budget))
+
+    def _embed_batch(self, batch: list[str], budget: "_RetryBudget") -> list[list[float]]:
         """Embed one batch-sized slice. The Cohere sync client is safe to share across threads."""
+        # The Cohere SDK does not retry on its own — its request-level max_retries
+        # defaults to 0 — so a single 429 would otherwise fail the whole operation.
         if self.output_dimensions is not None:
             # Use v2 API which supports output_dimension
-            response = self._client.v2.embed(
+            response = _call_with_retry(
+                lambda: self._client.v2.embed(
+                    texts=batch,
+                    model=self.model,
+                    input_type=self.input_type,
+                    output_dimension=self.output_dimensions,
+                    embedding_types=["float"],
+                ),
+                policy=self.retry_policy,
+                budget=budget,
+                provider=self.provider_name,
+            )
+            return response.embeddings.float_
+        response = _call_with_retry(
+            lambda: self._client.embed(
                 texts=batch,
                 model=self.model,
                 input_type=self.input_type,
-                output_dimension=self.output_dimensions,
-                embedding_types=["float"],
-            )
-            return response.embeddings.float_
-        response = self._client.embed(
-            texts=batch,
-            model=self.model,
-            input_type=self.input_type,
+            ),
+            policy=self.retry_policy,
+            budget=budget,
+            provider=self.provider_name,
         )
         return response.embeddings
 
@@ -1396,6 +1431,7 @@ class ZeroEntropyEmbeddings(Embeddings):
         encoding_format: str = DEFAULT_EMBEDDINGS_ZEROENTROPY_ENCODING_FORMAT,
         latency: str | None = DEFAULT_EMBEDDINGS_ZEROENTROPY_LATENCY,
         timeout: float = 60.0,
+        retry_policy: EmbeddingRetryPolicy | None = None,
     ):
         if dimensions not in self.VALID_DIMENSIONS:
             valid = ", ".join(str(dim) for dim in sorted(self.VALID_DIMENSIONS, reverse=True))
@@ -1420,6 +1456,7 @@ class ZeroEntropyEmbeddings(Embeddings):
         self.encoding_format = cast(ZeroEntropyEncodingFormat, encoding_format)
         self.latency = cast(ZeroEntropyLatency | None, latency)
         self.timeout = timeout
+        self.retry_policy = retry_policy or EmbeddingRetryPolicy()
         self._client: httpx.Client | None = None
         self._dimension: int | None = None
 
@@ -1473,9 +1510,16 @@ class ZeroEntropyEmbeddings(Embeddings):
         if not texts:
             return []
 
-        return self._encode_batched(texts, lambda batch: self._embed_batch(batch, input_type))
+        # One retry budget for the whole call: batching must not multiply the
+        # worst-case added latency of a single encode(). Shared across the concurrent
+        # batches too, which is why _RetryBudget takes a lock.
+        budget = self.retry_policy.new_budget()
 
-    def _embed_batch(self, batch: list[str], input_type: ZeroEntropyInputType) -> list[list[float]]:
+        return self._encode_batched(texts, lambda batch: self._embed_batch(batch, input_type, budget))
+
+    def _embed_batch(
+        self, batch: list[str], input_type: ZeroEntropyInputType, budget: "_RetryBudget"
+    ) -> list[list[float]]:
         """Embed one batch-sized slice. ``httpx.Client`` is safe to share across threads."""
         request = _ZeroEntropyEmbedRequest(
             model=self.model,
@@ -1486,9 +1530,21 @@ class ZeroEntropyEmbeddings(Embeddings):
             latency=self.latency,
         )
 
-        try:
+        def post_batch() -> httpx.Response:
             response = self._client.post(self.embed_url, json=request.model_dump(exclude_none=True))
+            # Inside the retried closure so a 429 or 5xx is retried rather than raised
+            # straight through. The RuntimeError wrap below stays OUTSIDE the retry:
+            # it erases the status code that _is_transient_embedding_error classifies on.
             response.raise_for_status()
+            return response
+
+        try:
+            response = _call_with_retry(
+                post_batch,
+                policy=self.retry_policy,
+                budget=budget,
+                provider=self.provider_name,
+            )
         except httpx.HTTPError as e:
             raise RuntimeError(f"ZeroEntropy embedding request failed: {e}") from e
 
@@ -1733,6 +1789,7 @@ class LiteLLMSDKEmbeddings(Embeddings):
         self,
         api_key: str | None = None,
         model: str = DEFAULT_EMBEDDINGS_LITELLM_SDK_MODEL,
+        model_id: str | None = None,
         api_base: str | None = None,
         output_dimensions: int | None = None,
         batch_size: int = 100,
@@ -1749,6 +1806,11 @@ class LiteLLMSDKEmbeddings(Embeddings):
             api_key: API key for the embedding provider (optional — omit for
                      providers that use ambient credentials, e.g. AWS Bedrock with IAM)
             model: Model name with provider prefix (e.g., "cohere/embed-english-v3.0")
+            model_id: Bedrock only — the real invoke target when it differs from
+                `model` (e.g. an application inference profile ARN). LiteLLM picks the
+                Bedrock request/response shape from `model`, so that has to stay a
+                recognizable id ("bedrock/amazon.titan-embed-text-v2:0") while
+                `model_id` is what actually gets invoked. None means "invoke `model`".
             api_base: Custom base URL for API (optional)
             output_dimensions: Optional output embedding dimensions (provider-dependent)
             batch_size: Maximum batch size for embedding requests (default: 100)
@@ -1762,6 +1824,7 @@ class LiteLLMSDKEmbeddings(Embeddings):
         """
         self.api_key = api_key
         self.model = model
+        self.model_id = model_id
         self.api_base = api_base
         self.output_dimensions = output_dimensions
         self.batch_size = batch_size
@@ -1810,6 +1873,8 @@ class LiteLLMSDKEmbeddings(Embeddings):
             }
             if self.api_key:
                 embed_kwargs["api_key"] = self.api_key
+            if self.model_id:
+                embed_kwargs["model_id"] = self.model_id
             if self.encoding_format:
                 embed_kwargs["encoding_format"] = self.encoding_format
             if self.api_base:
@@ -1900,6 +1965,8 @@ class LiteLLMSDKEmbeddings(Embeddings):
             }
             if self.api_key:
                 embed_kwargs["api_key"] = self.api_key
+            if self.model_id:
+                embed_kwargs["model_id"] = self.model_id
             if self.encoding_format:
                 embed_kwargs["encoding_format"] = self.encoding_format
             if self.api_base:
@@ -1974,6 +2041,7 @@ class GeminiEmbeddings(Embeddings):
         output_dimensionality: int | None = None,
         batch_size: int = 100,
         force_ipv4: bool = False,
+        retry_policy: EmbeddingRetryPolicy | None = None,
     ):
         self.model = model
         self.api_key = api_key
@@ -1983,6 +2051,7 @@ class GeminiEmbeddings(Embeddings):
         self.output_dimensionality = output_dimensionality
         self.batch_size = batch_size
         self.force_ipv4 = force_ipv4
+        self.retry_policy = retry_policy or EmbeddingRetryPolicy()
         self._client = None
         self._httpx_client = None
         self._dimension: int | None = None
@@ -2023,7 +2092,16 @@ class GeminiEmbeddings(Embeddings):
         if self._embed_config is not None:
             embed_kwargs["config"] = self._embed_config
 
-        result = self._client.models.embed_content(**embed_kwargs)  # type: ignore[union-attr]
+        # to_thread + the async retry helper: initialize() is awaited on the event
+        # loop, so a blocking call and a time.sleep() backoff would stall the model
+        # loads running concurrently with it. Retried so a quota blip at startup
+        # does not crash-loop the daemon.
+        result = await _acall_with_retry(
+            lambda: asyncio.to_thread(self._client.models.embed_content, **embed_kwargs),  # type: ignore[union-attr]
+            policy=self.retry_policy,
+            budget=self.retry_policy.new_budget(),
+            provider=self.provider_name,
+        )
         if result.embeddings and len(result.embeddings) > 0:
             self._dimension = len(result.embeddings[0].values)
 
@@ -2120,7 +2198,14 @@ class GeminiEmbeddings(Embeddings):
         # round trip per text.
         batch_size = 1 if _gemini_model_aggregates_inputs(self.model) else self.batch_size
 
-        all_embeddings = self._encode_batched(texts, self._embed_batch, batch_size=batch_size)
+        # One retry budget for the whole call: batching must not multiply the
+        # worst-case added latency of a single encode(). Shared across the concurrent
+        # batches too, which is why _RetryBudget takes a lock.
+        budget = self.retry_policy.new_budget()
+
+        all_embeddings = self._encode_batched(
+            texts, lambda batch: self._embed_batch(batch, budget), batch_size=batch_size
+        )
 
         # L2-normalize when output_dimensionality is set — Gemini only returns
         # normalized vectors at full 3072 dims; truncated dims need re-normalization
@@ -2135,13 +2220,21 @@ class GeminiEmbeddings(Embeddings):
 
         return all_embeddings
 
-    def _embed_batch(self, batch: list[str]) -> list[list[float]]:
+    def _embed_batch(self, batch: list[str], budget: "_RetryBudget") -> list[list[float]]:
         """Embed one batch-sized slice through the google.genai sync client."""
         embed_kwargs = {"model": self.model, "contents": batch}
         if self._embed_config is not None:
             embed_kwargs["config"] = self._embed_config
 
-        result = self._client.models.embed_content(**embed_kwargs)
+        # Recall runs this inline, and a shared Gemini project hands out 429s well
+        # before anything is actually wrong, so transient upstream failures are
+        # retried here rather than dead-lettering the whole operation (#4103).
+        result = _call_with_retry(
+            lambda: self._client.models.embed_content(**embed_kwargs),
+            policy=self.retry_policy,
+            budget=budget,
+            provider=self.provider_name,
+        )
 
         embeddings = result.embeddings or []
         if len(embeddings) != len(batch):
@@ -2325,6 +2418,7 @@ def create_embeddings_from_env() -> Embeddings:
                 batch_size=config.embeddings_zeroentropy_batch_size,
                 encoding_format=config.embeddings_zeroentropy_encoding_format,
                 latency=config.embeddings_zeroentropy_latency,
+                retry_policy=_retry_policy_from_config(config),
             ),
             config,
         )
@@ -2338,6 +2432,7 @@ def create_embeddings_from_env() -> Embeddings:
                 model=config.embeddings_cohere_model,
                 base_url=config.embeddings_cohere_base_url,
                 output_dimensions=config.embeddings_cohere_output_dimensions,
+                retry_policy=_retry_policy_from_config(config),
             ),
             config,
         )
@@ -2359,6 +2454,7 @@ def create_embeddings_from_env() -> Embeddings:
             LiteLLMSDKEmbeddings(
                 api_key=config.embeddings_litellm_sdk_api_key or None,
                 model=config.embeddings_litellm_sdk_model,
+                model_id=config.embeddings_litellm_sdk_model_id,
                 api_base=config.embeddings_litellm_sdk_api_base,
                 output_dimensions=config.embeddings_litellm_sdk_output_dimensions,
                 encoding_format=config.embeddings_litellm_sdk_encoding_format,
@@ -2388,6 +2484,7 @@ def create_embeddings_from_env() -> Embeddings:
                 vertexai_service_account_key=config.embeddings_vertexai_service_account_key,
                 output_dimensionality=config.embeddings_gemini_output_dimensionality,
                 force_ipv4=config.embeddings_gemini_force_ipv4,
+                retry_policy=_retry_policy_from_config(config),
             ),
             config,
         )

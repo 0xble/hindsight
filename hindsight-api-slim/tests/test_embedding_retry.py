@@ -14,6 +14,7 @@ contract of the retry wrapper:
 """
 
 import time
+from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 import httpx
@@ -24,6 +25,7 @@ from hindsight_api.engine.embeddings import (
     LiteLLMEmbeddings,
     LiteLLMSDKEmbeddings,
     _is_transient_embedding_error,
+    _status_code_of,
 )
 
 
@@ -99,6 +101,18 @@ class TestTransientClassification:
     def test_unknown_errors_are_not_transient(self):
         assert _is_transient_embedding_error(ValueError("bad input")) is False
         assert _is_transient_embedding_error(Exception("API Error")) is False
+
+    def test_google_genai_status_on_code_attribute(self):
+        """google.genai.errors.APIError carries the status on `code`, with `response` often None."""
+        assert _is_transient_embedding_error(SimpleNamespace(code=429, response=None)) is True
+        assert _is_transient_embedding_error(SimpleNamespace(code=503, response=None)) is True
+        assert _is_transient_embedding_error(SimpleNamespace(code=403, response=None)) is False
+
+    def test_non_status_code_attributes_are_ignored(self):
+        """`code` is a common attribute name; only plausible HTTP statuses may classify."""
+        assert _status_code_of(SimpleNamespace(code="RESOURCE_EXHAUSTED")) is None
+        assert _status_code_of(SimpleNamespace(code=1)) is None
+        assert _status_code_of(SimpleNamespace(code=429)) == 429
 
 
 class TestEncodeRetries:
@@ -371,3 +385,54 @@ class TestLiteLLMProxyEncodeRetries:
             emb.encode(["query"])
 
         assert emb._client.post.call_count == 1
+
+
+class TestEveryRemoteProviderRetries:
+    """A structural guard over the whole provider family.
+
+    Retry is implemented once per provider, so the provider that forgets is by
+    definition the one nobody wrote a test for: Gemini shipped without it (#4103),
+    and Cohere and ZeroEntropy had the same gap. This asserts over every
+    ``Embeddings`` subclass rather than over the ones we happened to remember, so a
+    new remote backend has to make a deliberate choice instead of silently
+    inheriting none.
+    """
+
+    # Providers that legitimately do not take an EmbeddingRetryPolicy, and why.
+    _EXEMPT = {
+        # In-process: no round trip to fail transiently.
+        "LocalSTEmbeddings": "in-process",
+        "OnnxEmbeddings": "in-process",
+        # Their own retry loop, including TEI's 429-as-backpressure handling.
+        "RemoteTEIEmbeddings": "own _request_with_retry (see tei_retry.py)",
+        # The OpenAI SDK retries internally; max_retries is passed to the client.
+        "OpenAIEmbeddings": "openai SDK max_retries",
+        "CodexOAuthEmbeddings": "openai SDK max_retries (subclass)",
+    }
+
+    def test_every_remote_backend_takes_a_retry_policy(self):
+        import inspect
+
+        from hindsight_api.engine import embeddings as embeddings_module
+        from hindsight_api.engine.embeddings import Embeddings
+
+        missing = []
+        for name, obj in vars(embeddings_module).items():
+            if not inspect.isclass(obj) or not issubclass(obj, Embeddings) or obj is Embeddings:
+                continue
+            if inspect.isabstract(obj) or name in self._EXEMPT:
+                continue
+            if "retry_policy" not in inspect.signature(obj.__init__).parameters:
+                missing.append(name)
+
+        assert not missing, (
+            f"{missing} take no retry_policy. Wire them through EmbeddingRetryPolicy "
+            f"(as the litellm/google/cohere/zeroentropy backends are), or add them to "
+            f"_EXEMPT with the reason they retry some other way."
+        )
+
+    def test_exemptions_still_name_real_classes(self):
+        """Keep the exemption list from silently outliving the classes it names."""
+        from hindsight_api.engine import embeddings as embeddings_module
+
+        assert not [name for name in self._EXEMPT if not hasattr(embeddings_module, name)]
