@@ -81,16 +81,29 @@ runtime activation are separate stages.
 ### HINDSIGHT-005: Generated-language integrity
 
 - **Status:** Active
-- **Commit:** `2a1fdca`
-- **Surfaces:** generated-fact validation, consolidation, metrics, multilingual
-  documentation, and `tests/test_language_validation.py`
-- **Behavior:** Reject generated facts and observations that switch away from the
-  source language while preserving proper nouns, short text, and mixed-language input.
-- **Upstream issue:** None after checked 2026-09-03
-- **Upstream PR:** None after checked 2026-09-03
-- **Regression:** `uv run --frozen pytest tests/test_language_validation.py`
-- **Retire when:** A released upstream build enforces equivalent language integrity
-  and passes the focused regression without this commit.
+- **Commit:** This patch stack
+- **Surfaces:** generated-language source profiling, retain extraction,
+  consolidation, configuration, metrics, multilingual documentation, and focused
+  language-integrity tests
+- **Behavior:** Conservatively profile source language once outside async hot paths,
+  detect confident generated drift with maintained `py3langid`, and emit bounded
+  metrics in the default `observe` mode. Operators may select `retry` to add generic
+  source-language guidance, regenerate once, and then preserve availability by
+  accepting a persistent mismatch. Explicit fail-closed `reject` leaves source facts
+  unmodified and eligible for an operator-controlled retry. `off` disables the guard.
+  The guard abstains on short, ambiguous, materially multilingual, and unsupported
+  same-script inputs, and it exempts copied foreign-script quotations.
+- **Upstream issue:** [#4016](https://github.com/vectorize-io/hindsight/issues/4016),
+  closed as not planned after checked 2026-09-04
+- **Upstream PR:** Direct predecessor
+  [#4018](https://github.com/vectorize-io/hindsight/pull/4018), closed unmerged after
+  maintainer review; this implementation replaces rather than extends that design
+- **Regression:** `uv run --frozen pytest tests/test_language_integrity.py tests/test_language_integrity_retain.py tests/test_consolidation_retry_budget.py tests/test_fact_extraction_retry.py`
+- **Rollback:** Set `HINDSIGHT_API_LLM_LANGUAGE_INTEGRITY=off` immediately, then
+  revert the HINDSIGHT-005 patch stack and remove `py3langid` from the lockfile.
+- **Retire when:** A released upstream build enforces an equivalent configurable,
+  non-destructive-by-default language-integrity policy and passes these focused
+  regressions.
 
 ## Update and verify
 
