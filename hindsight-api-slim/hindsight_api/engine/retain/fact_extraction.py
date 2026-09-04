@@ -16,6 +16,19 @@ from typing import TYPE_CHECKING, Any, Literal, cast
 
 from pydantic import BaseModel, ConfigDict, Field, create_model, field_validator
 
+from ..language_integrity import (
+    GeneratedLanguageMismatch,
+    GeneratedText,
+    LanguageIntegrityError,
+    LanguageIntegrityMode,
+    build_retry_instruction,
+    build_source_instruction,
+    configured_mode,
+    find_mismatches_safely,
+    prepare_context_safely,
+    record_outcome,
+    should_check,
+)
 from ..llm_interface import ProviderContentPolicyError, ProviderRateLimitResetError
 from ..llm_wrapper import LLMConfig, OutputTooLongError, parse_llm_json, sanitize_llm_output, sanitize_llm_value
 from ..operation_metadata import RetainExtractionErrors
@@ -1877,10 +1890,33 @@ async def _extract_facts_from_chunk(
     # the initial request — so a zero budget still performs one request (#2731). The raw
     # budget is forwarded unchanged to llm_config.call(), which owns transport retries.
     outer_attempts = llm_max_retries + 1
+    language_mode = configured_mode(config)
+    has_unprofiled_attachments = isinstance(user_content, list) and any(
+        isinstance(part, dict) and part.get("type") != "text" for part in user_content
+    )
+    language_check_enabled = should_check(config) and extraction_mode != "verbatim" and not has_unprofiled_attachments
+    language_retry_available = language_check_enabled and language_mode in {
+        LanguageIntegrityMode.RETRY,
+        LanguageIntegrityMode.REJECT,
+    }
+    max_requests = outer_attempts + int(language_retry_available)
+    language_retry_used = False
+    language_retry_instruction = ""
+    language_context = (
+        await prepare_context_safely({"chunk": chunk}, stage="retain", mode=language_mode)
+        if language_check_enabled
+        else None
+    )
+    language_source_instruction = (
+        build_source_instruction(language_context, ("chunk",))
+        if language_context is not None and language_mode in {LanguageIntegrityMode.RETRY, LanguageIntegrityMode.REJECT}
+        else ""
+    )
+    content_failures = 0
     last_error: Exception | None = None
 
     usage = TokenUsage()  # Track cumulative usage across retries
-    for attempt in range(outer_attempts):
+    for _request_attempt in range(max_requests):
         try:
             initial_backoff = (
                 config.retain_llm_initial_backoff
@@ -1891,8 +1927,18 @@ async def _extract_facts_from_chunk(
                 config.retain_llm_max_backoff if config.retain_llm_max_backoff is not None else config.llm_max_backoff
             )
 
+            language_instruction = language_source_instruction + language_retry_instruction
+            if language_instruction:
+                call_user_content = (
+                    user_content + language_instruction
+                    if isinstance(user_content, str)
+                    else [*user_content, {"type": "text", "text": language_instruction}]
+                )
+            else:
+                call_user_content = user_content
+
             call_kwargs: dict[str, Any] = dict(
-                messages=[{"role": "system", "content": prompt}, {"role": "user", "content": user_content}],
+                messages=[{"role": "system", "content": prompt}, {"role": "user", "content": call_user_content}],
                 response_format=response_schema,
                 scope="retain_extract_facts",
                 temperature=config.llm_temperature_retain,
@@ -1918,9 +1964,11 @@ async def _extract_facts_from_chunk(
             # Handle malformed LLM responses
             coerced_response_json = _coerce_fact_response(extraction_response_json)
             if coerced_response_json is None:
-                if attempt < outer_attempts - 1:
+                if content_failures < llm_max_retries:
+                    content_failures += 1
                     logger.warning(
-                        f"LLM returned non-dict JSON on attempt {attempt + 1}/{outer_attempts}: {type(extraction_response_json).__name__}. Retrying..."
+                        f"LLM returned non-dict JSON on content attempt {content_failures}/{outer_attempts}: "
+                        f"{type(extraction_response_json).__name__}. Retrying..."
                     )
                     continue
                 else:
@@ -2152,9 +2200,11 @@ async def _extract_facts_from_chunk(
                     continue
 
             # If we got malformed facts and haven't exhausted retries, try again
-            if has_malformed_facts and len(chunk_facts) < len(raw_facts) * 0.8 and attempt < outer_attempts - 1:
+            if has_malformed_facts and len(chunk_facts) < len(raw_facts) * 0.8 and content_failures < llm_max_retries:
+                content_failures += 1
                 logger.warning(
-                    f"Got {len(raw_facts) - len(chunk_facts)} malformed facts out of {len(raw_facts)} on attempt {attempt + 1}/{outer_attempts}. Retrying..."
+                    f"Got {len(raw_facts) - len(chunk_facts)} malformed facts out of {len(raw_facts)} "
+                    f"on content attempt {content_failures}/{outer_attempts}. Retrying..."
                 )
                 continue
 
@@ -2173,6 +2223,35 @@ async def _extract_facts_from_chunk(
                     f"Model '{llm_config.model}' may not honour the extraction schema — consider enabling "
                     f"HINDSIGHT_API_LLM_STRICT_SCHEMA_RETAIN or using a model with strict schema support."
                 )
+
+            if language_context is not None and chunk_facts:
+                mismatches = await find_mismatches_safely(
+                    language_context,
+                    [GeneratedText(str(index), fact.fact, ("chunk",)) for index, fact in enumerate(chunk_facts)],
+                    stage="retain",
+                    mode=language_mode,
+                )
+                if mismatches:
+                    if language_mode is LanguageIntegrityMode.OBSERVE:
+                        record_outcome(stage="retain", mode=language_mode, outcome="mismatch_observed")
+                    elif not language_retry_used:
+                        language_retry_used = True
+                        language_retry_instruction = build_retry_instruction(mismatches)
+                        record_outcome(stage="retain", mode=language_mode, outcome="mismatch_retry")
+                        logger.warning(
+                            "generated_language_mismatch stage=retain mode=%s retry=1 count=%s",
+                            language_mode.value,
+                            len(mismatches),
+                        )
+                        continue
+                    elif language_mode is LanguageIntegrityMode.REJECT:
+                        record_outcome(stage="retain", mode=language_mode, outcome="mismatch_rejected")
+                        raise GeneratedLanguageMismatch(mismatches)
+                    else:
+                        record_outcome(stage="retain", mode=language_mode, outcome="mismatch_accepted")
+                else:
+                    outcome = "retry_passed" if language_retry_used else "passed"
+                    record_outcome(stage="retain", mode=language_mode, outcome=outcome)
 
             return chunk_facts, usage
 
@@ -2209,7 +2288,7 @@ async def _extract_facts_from_chunk(
     # If we exhausted all retries, raise the last error or a descriptive fallback
     if last_error is not None:
         raise last_error
-    raise RuntimeError(f"Fact extraction failed after {outer_attempts} attempts: LLM did not return valid JSON")
+    raise RuntimeError(f"Fact extraction failed after {max_requests} requests: LLM did not return valid JSON")
 
 
 async def _extract_facts_with_auto_split(
@@ -2448,6 +2527,10 @@ async def extract_facts_from_text(
                     f"First failures: {failed_summary}. Provider detail: {quota_errors[0]}"
                 ),
             ) from quota_errors[0]
+
+        language_errors = [err for _, err in failed_chunks if isinstance(err, LanguageIntegrityError)]
+        if language_errors:
+            raise language_errors[0]
 
         # A content-policy refusal is deterministic: the offending chunk earns
         # the same refusal on every replay, so no amount of task-level retrying

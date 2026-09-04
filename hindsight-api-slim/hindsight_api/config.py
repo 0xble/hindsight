@@ -593,6 +593,7 @@ ENV_TEXT_SEARCH_EXTENSION_NATIVE_LANGUAGE = "HINDSIGHT_API_TEXT_SEARCH_EXTENSION
 ENV_TEXT_SEARCH_EXTENSION_PG_SEARCH_TOKENIZER = "HINDSIGHT_API_TEXT_SEARCH_EXTENSION_PG_SEARCH_TOKENIZER"
 ENV_TEXT_SEARCH_EXTENSION_PG_SEARCH_FUNCTION_SCHEMA = "HINDSIGHT_API_TEXT_SEARCH_EXTENSION_PG_SEARCH_FUNCTION_SCHEMA"
 ENV_LLM_OUTPUT_LANGUAGE = "HINDSIGHT_API_LLM_OUTPUT_LANGUAGE"
+ENV_LLM_LANGUAGE_INTEGRITY = "HINDSIGHT_API_LLM_LANGUAGE_INTEGRITY"
 ENV_QUERY_ANALYZER_LANGUAGES = "HINDSIGHT_API_QUERY_ANALYZER_LANGUAGES"
 
 ENV_HOST = "HINDSIGHT_API_HOST"
@@ -2574,6 +2575,10 @@ class HindsightConfig:
     # observations, reflect responses) is forced into this language regardless
     # of the source content. Unset preserves source language.
     llm_output_language: str | None
+    # Post-generation source-language guard: off, observe, retry, or reject.
+    # Observe-only by default. Operators can enable corrective retries after
+    # validating detector behavior against their own workload.
+    llm_language_integrity: Literal["off", "observe", "retry", "reject"]
 
     # LLM (default, used as fallback for per-operation config)
     llm_provider: str
@@ -3676,6 +3681,14 @@ class HindsightConfig:
                 else None
             ),
             llm_output_language=(os.getenv(ENV_LLM_OUTPUT_LANGUAGE) or None),
+            llm_language_integrity=(
+                _parse_optional_choice(
+                    ENV_LLM_LANGUAGE_INTEGRITY,
+                    os.getenv(ENV_LLM_LANGUAGE_INTEGRITY, "observe"),
+                    frozenset({"off", "observe", "retry", "reject"}),
+                )
+                or "observe"
+            ),
             # LLM
             llm_provider=llm_provider,
             llm_api_key=os.getenv(ENV_LLM_API_KEY),

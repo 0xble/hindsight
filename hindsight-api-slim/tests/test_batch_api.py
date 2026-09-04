@@ -219,6 +219,8 @@ async def test_batch_api_normal_flow(mock_llm_config, test_contents, hindsight_c
             await memory.delete_bank(bank_id, request_context=request_context)
         except Exception:
             pass
+
+
 @pytest.mark.asyncio
 async def test_batch_api_accepts_top_level_fact_list(mock_llm_config, test_contents, hindsight_config):
     """Batch extraction accepts a recoverable top-level facts array."""

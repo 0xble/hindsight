@@ -36,6 +36,19 @@ from ...config import get_config
 from ...worker.stage import set_stage
 from ..db import DatabaseBackend
 from ..db_utils import acquire_with_retry
+from ..language_integrity import (
+    GeneratedLanguageMismatch,
+    GeneratedText,
+    LanguageIntegrityError,
+    LanguageIntegrityMode,
+    build_retry_instruction,
+    build_source_instruction,
+    configured_mode,
+    find_mismatches_safely,
+    prepare_context_safely,
+    record_outcome,
+    should_check,
+)
 from ..llm_interface import OutputTooLongError, ProviderRateLimitResetError
 from ..llm_trace import (
     record_created_memory_ids,
@@ -3061,7 +3074,10 @@ def _classify_batch_failure(exc: Exception) -> _BatchFailureClass:
     the input, which is what an input-shaped failure needs. It is the identical
     re-send at the same batch size that has nothing to offer.
     """
-    if isinstance(exc, ProviderRateLimitResetError):
+    if isinstance(exc, ProviderRateLimitResetError | LanguageIntegrityError):
+        # Quota failures must preserve their retry timestamp. Strict language
+        # failures fail the operation without bisection, leaving source facts
+        # eligible for a later operator-controlled retry.
         return _BatchFailureClass.PROPAGATE
     # Duck-typed rather than importing a provider SDK's error class: every SDK we
     # front (openai, anthropic) exposes the HTTP status this way.
@@ -3142,11 +3158,25 @@ async def _consolidate_batch_with_llm(
         observation_capacity_note=observation_capacity_note,
     )
 
+    language_mode = configured_mode(config)
+    language_check_enabled = should_check(config)
+    source_text_by_id = {str(memory.get("id")): str(memory.get("text") or "") for memory in memories}
+    language_context = (
+        await prepare_context_safely(source_text_by_id, stage="consolidation", mode=language_mode)
+        if language_check_enabled
+        else None
+    )
+    language_source_instruction = (
+        build_source_instruction(language_context, tuple(source_text_by_id))
+        if language_context is not None and language_mode in {LanguageIntegrityMode.RETRY, LanguageIntegrityMode.REJECT}
+        else ""
+    )
+
     # Providers commonly reject an oversized input before returning a structured
     # response. Detect it locally so the caller's adaptive splitter can reduce the
     # batch immediately. Retrying the same oversized prompt is non-progressing and
     # was the root cause of the historical 46/69064 consolidation wedge.
-    prompt_tokens = count_tokens(system_prompt) + count_tokens(user_content)
+    prompt_tokens = count_tokens(system_prompt) + count_tokens(user_content + language_source_instruction)
     max_context_tokens = max(
         1,
         int(getattr(config, "consolidation_max_context_tokens", 100_000)),
@@ -3158,7 +3188,7 @@ async def _consolidate_batch_with_llm(
         )
         return _BatchLLMResult(
             obs_count=len(union_observations),
-            prompt_chars=len(system_prompt) + len(user_content),
+            prompt_chars=len(system_prompt) + len(user_content) + len(language_source_instruction),
             failed=True,
         )
 
@@ -3185,6 +3215,14 @@ async def _consolidate_batch_with_llm(
 
     max_attempts = config.consolidation_max_attempts
     inner_max_retries = config.consolidation_llm_max_retries
+    language_retry_available = language_check_enabled and language_mode in {
+        LanguageIntegrityMode.RETRY,
+        LanguageIntegrityMode.REJECT,
+    }
+    max_requests = max_attempts + int(language_retry_available)
+    language_retry_used = False
+    language_retry_instruction = ""
+    transport_failures = 0
     last_exc: Exception | None = None
     attempts_made = 0
     # Pre-compute a stable identifier set for the batch so failure logs name the
@@ -3197,13 +3235,24 @@ async def _consolidate_batch_with_llm(
     else:
         ids_label = f"{', '.join(memory_ids[:3])}, ... +{len(memory_ids) - 3} more"
     batch_label = f"{len(memory_ids)} memories [{ids_label}]"
-    for attempt in range(1, max_attempts + 1):
-        attempts_made = attempt
+    for request_attempt in range(1, max_requests + 1):
+        attempts_made = request_attempt
         try:
+            if prompt_tokens + count_tokens(language_retry_instruction) > max_context_tokens:
+                last_exc = RuntimeError("language correction would exceed the configured context limit")
+                logger.warning(
+                    "[CONSOLIDATION] Language correction would exceed the context limit for %s; "
+                    "adaptive splitting will retry a smaller batch",
+                    batch_label,
+                )
+                break
             call_kwargs: dict[str, Any] = {
                 "messages": [
                     {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": user_content},
+                    {
+                        "role": "user",
+                        "content": user_content + language_source_instruction + language_retry_instruction,
+                    },
                 ],
                 "response_format": response_model,
                 "temperature": config.llm_temperature_consolidation,
@@ -3236,12 +3285,55 @@ async def _consolidate_batch_with_llm(
                     )
                     creates = creates[:remaining_observation_slots]
             updates = _dedupe_updates(response.updates, batch_label=batch_label)
+            if language_context is not None:
+                generated: list[GeneratedText] = []
+                for action_kind, actions in (("create", creates), ("update", updates)):
+                    for action_index, action in enumerate(actions):
+                        generated.append(
+                            GeneratedText(
+                                f"{action_kind}:{action_index}",
+                                action.text,
+                                tuple(action.source_fact_ids),
+                            )
+                        )
+                mismatches = await find_mismatches_safely(
+                    language_context,
+                    generated,
+                    stage="consolidation",
+                    mode=language_mode,
+                )
+                if mismatches:
+                    if language_mode is LanguageIntegrityMode.OBSERVE:
+                        record_outcome(stage="consolidation", mode=language_mode, outcome="mismatch_observed")
+                    elif not language_retry_used:
+                        language_retry_used = True
+                        language_retry_instruction = build_retry_instruction(mismatches)
+                        record_outcome(stage="consolidation", mode=language_mode, outcome="mismatch_retry")
+                        logger.warning(
+                            "generated_language_mismatch stage=consolidation mode=%s retry=1 count=%s",
+                            language_mode.value,
+                            len(mismatches),
+                        )
+                        continue
+                    elif language_mode is LanguageIntegrityMode.REJECT:
+                        record_outcome(stage="consolidation", mode=language_mode, outcome="mismatch_rejected")
+                        raise GeneratedLanguageMismatch(mismatches)
+                    else:
+                        record_outcome(stage="consolidation", mode=language_mode, outcome="mismatch_accepted")
+                else:
+                    outcome = "retry_passed" if language_retry_used else "passed"
+                    record_outcome(stage="consolidation", mode=language_mode, outcome=outcome)
             return _BatchLLMResult(
                 creates=creates,
                 updates=updates,
                 deletes=response.deletes,
                 obs_count=len(union_observations),
-                prompt_chars=len(system_prompt) + len(user_content),
+                prompt_chars=(
+                    len(system_prompt)
+                    + len(user_content)
+                    + len(language_source_instruction)
+                    + len(language_retry_instruction)
+                ),
             )
         except Exception as exc:
             failure_class = _classify_batch_failure(exc)
@@ -3255,26 +3347,36 @@ async def _consolidate_batch_with_llm(
             last_exc = exc
             if failure_class is _BatchFailureClass.FAIL_FAST:
                 logger.warning(
-                    f"[CONSOLIDATION] LLM batch call failed (attempt {attempt}/{max_attempts}) for "
+                    f"[CONSOLIDATION] LLM batch call failed (request {request_attempt}/{max_requests}) for "
                     f"{batch_label} with a non-retryable {type(exc).__name__}; not re-sending the "
                     f"identical payload: {exc}"
                 )
                 break
             logger.warning(
-                f"[CONSOLIDATION] LLM batch call failed (attempt {attempt}/{max_attempts}) for {batch_label}: {exc}"
+                f"[CONSOLIDATION] LLM batch call failed (request {request_attempt}/{max_requests}) "
+                f"for {batch_label}: {exc}"
             )
             # Backoff on the outer ladder too. Without it a rate limit or a transient
             # overload was re-sent immediately, three times, defeating the point of the
             # provider's own backoff. Skipped after the final attempt — nothing follows it.
-            if attempt < max_attempts:
-                await asyncio.sleep(min(_OUTER_RETRY_INITIAL_BACKOFF * (2 ** (attempt - 1)), _OUTER_RETRY_MAX_BACKOFF))
+            transport_failures += 1
+            if transport_failures >= max_attempts:
+                break
+            if request_attempt < max_requests:
+                await asyncio.sleep(
+                    min(_OUTER_RETRY_INITIAL_BACKOFF * (2 ** (transport_failures - 1)), _OUTER_RETRY_MAX_BACKOFF)
+                )
 
     logger.error(
-        f"[CONSOLIDATION] LLM batch call failed after {attempts_made}/{max_attempts} attempt(s) for "
+        f"[CONSOLIDATION] LLM batch call failed after {attempts_made}/{max_requests} request(s) for "
         f"{batch_label}, skipping batch (the caller will bisect it). Last error: {last_exc}"
     )
     return _BatchLLMResult(
-        obs_count=len(union_observations), prompt_chars=len(system_prompt) + len(user_content), failed=True
+        obs_count=len(union_observations),
+        prompt_chars=(
+            len(system_prompt) + len(user_content) + len(language_source_instruction) + len(language_retry_instruction)
+        ),
+        failed=True,
     )
 
 

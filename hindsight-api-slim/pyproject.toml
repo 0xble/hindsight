@@ -32,6 +32,7 @@ dependencies = [
     # vocabularies ship in the wheel so nothing is downloaded at runtime.
     # Contained to engine/token_encoding.py — see that module for the rationale.
     "toktok-rs>=0.1.3", # 0.1.3 adds truncate()/batch_truncate()
+    "py3langid>=0.4.0,<0.5", # 0.4 adds usable packaged-model loading; 0.3's from_modelpath fails
     "httpx>=0.27.0",
     "fastmcp>=3.2.0", # SSRF/path traversal, OAuth confused deputy, command injection fixes
     "python-dateutil>=2.8.0",
