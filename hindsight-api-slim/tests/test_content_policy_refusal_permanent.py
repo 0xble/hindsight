@@ -19,8 +19,6 @@ These tests pin the permanence at all three layers:
 
 from __future__ import annotations
 
-from hindsight_api.engine.response_models import TokenUsage
-
 import json
 import uuid
 from dataclasses import dataclass, field
@@ -31,6 +29,7 @@ from unittest.mock import patch
 
 import pytest
 
+from hindsight_api.engine.language_integrity import GeneratedLanguageMismatch, LanguageMismatch
 from hindsight_api.engine.llm_interface import ProviderContentPolicyError, ProviderRateLimitResetError
 from hindsight_api.engine.memory_engine import _is_non_retryable_task_error
 from hindsight_api.worker.exceptions import RetryTaskAt
@@ -252,6 +251,17 @@ async def test_refused_chunk_raises_permanent_error():
 
     assert "content policy" in str(excinfo.value).lower()
     assert "chunk 0" in str(excinfo.value)
+    assert _is_non_retryable_task_error(excinfo.value) is True
+
+
+@pytest.mark.asyncio
+async def test_language_mismatch_survives_chunk_gather_and_is_non_retryable():
+    error = GeneratedLanguageMismatch((LanguageMismatch("fact", "en", "es"),))
+
+    with pytest.raises(GeneratedLanguageMismatch) as excinfo:
+        await _run_extraction({0: error})
+
+    assert excinfo.value is error
     assert _is_non_retryable_task_error(excinfo.value) is True
 
 

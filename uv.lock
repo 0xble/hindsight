@@ -1723,6 +1723,7 @@ dependencies = [
     { name = "pillow" },
     { name = "protobuf" },
     { name = "psycopg2-binary" },
+    { name = "py3langid" },
     { name = "pyasn1" },
     { name = "pydantic" },
     { name = "pygments" },
@@ -1863,6 +1864,7 @@ requires-dist = [
     { name = "pillow", specifier = ">=12.3.0" },
     { name = "protobuf", specifier = ">=7.35.1" },
     { name = "psycopg2-binary", specifier = ">=2.9.11" },
+    { name = "py3langid", specifier = ">=0.4.0,<0.5" },
     { name = "pyasn1", specifier = ">=0.6.3" },
     { name = "pydantic", specifier = ">=2.0.0" },
     { name = "pygments", specifier = ">=2.20.0" },
@@ -3857,6 +3859,18 @@ keyring = [
 ]
 memory = [
     { name = "cachetools" },
+]
+
+[[package]]
+name = "py3langid"
+version = "0.4.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "numpy" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/16/fc/51c88e5ef8346878ae6c09e1f7c86c6e6308c57794723bf423a72ddba4dd/py3langid-0.4.0.tar.gz", hash = "sha256:5924159039b5cc282c2edc10a7ea9363b2099834a0e99ed8d5bea3cc435d7871", size = 4604185, upload-time = "2026-09-02T09:10:53.983Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/69/2d/0eeff2727c970b1d553be70d15ba2d84e3830696c09a79d954c5ae3d5212/py3langid-0.4.0-py3-none-any.whl", hash = "sha256:c25bd038147951ba3a89efe9ec12cc7d2116cb6f311ff8af84ade398a8bc0616", size = 4600605, upload-time = "2026-09-02T09:10:49.54Z" },
 ]
 
 [[package]]
