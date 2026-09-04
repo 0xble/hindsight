@@ -247,7 +247,11 @@ With `HINDSIGHT_API_LLM_OUTPUT_LANGUAGE` unset, retain and consolidation are bot
 - **Updates follow the new facts.** When an existing observation is written in a different language from the facts updating it, the whole observation is rewritten in the new facts' language. A bank whose observations previously drifted into the wrong language converges back as new facts arrive.
 - **Names and technical terms are never translated** — proper nouns, product and place names, identifiers, code, and units stay as written in the source facts, whatever the surrounding language.
 
-This is prompt-level guidance, not a hard guarantee: a model that ignores instructions can still emit the wrong language. Set `HINDSIGHT_API_LLM_OUTPUT_LANGUAGE` explicitly when a bank must be single-language no matter what its sources look like.
+Hindsight also applies a conservative source-language guard to retain facts and consolidation observations. The default `observe` mode profiles source text and emits bounded metrics without changing generated content. After validating those metrics against your workload, select `retry` to add generic preservation guidance and regenerate once after a confident mismatch. Retry mode accepts a persistent mismatch rather than dropping an otherwise valid retain.
+
+Set `HINDSIGHT_API_LLM_LANGUAGE_INTEGRITY=reject` to fail a persistent mismatch after the corrective retry, leaving source facts eligible for an operator-controlled retry, or `off` to disable profiling. The detector abstains on short, ambiguous, and materially multilingual sources and exempts copied foreign-script quotations. Retain calls containing unprofiled binary attachments also abstain because those attachments may legitimately use a different language than the text chunk. When `HINDSIGHT_API_LLM_OUTPUT_LANGUAGE` is set, the source-language guard is disabled because translation is then intentional.
+
+Detector initialization or classification failures emit an `error` outcome. They fail open in `observe` and `retry` modes; `reject` mode fails the operation while preserving its source facts.
 
 ---
 
@@ -266,11 +270,13 @@ For best results, query using the same language as your stored content. Cross-la
 
 ## Technical Details
 
-Multilingual support is implemented through LLM prompt instructions rather than external language detection libraries. This approach:
+Multilingual generation is implemented primarily through LLM prompt instructions. Retain and consolidation add a conservative `py3langid` safety layer when source-language integrity is enabled. This design:
 
-- **Requires no additional dependencies**
 - **Works with any LLM** that supports multiple languages
-- **Handles edge cases** like mixed-language content naturally
+- **Abstains on uncertain, materially mixed-language, and unprofiled attachment content** rather than guessing
+- **Runs classification off the async event loop** and profiles source text only once before generation, reusing that profile for any corrective retry
+- **Does not fail closed by default**; strict rejection is explicit operator policy
+- **Fails open on detector errors outside strict mode** and records those errors in guard metrics
 - **Preserves semantic meaning** better than rule-based translation
 
 The LLM is instructed to:
