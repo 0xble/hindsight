@@ -249,6 +249,8 @@ With `HINDSIGHT_API_LLM_OUTPUT_LANGUAGE` unset, retain and consolidation are bot
 
 Hindsight also applies a conservative source-language guard to retain facts and consolidation observations. The default `observe` mode profiles source text and emits bounded metrics without changing generated content. After validating those metrics against your workload, select `retry` to add generic preservation guidance and regenerate once after a confident mismatch. Retry mode accepts a persistent mismatch rather than dropping an otherwise valid retain.
 
+Retain Batch API requests continue to use the provider batch path in `off` and `observe` modes. Selecting `retry` or `reject` routes that retain through the live provider path so a corrective regeneration or strict rejection cannot be bypassed by an already-completed batch result.
+
 Set `HINDSIGHT_API_LLM_LANGUAGE_INTEGRITY=reject` to fail a persistent mismatch after the corrective retry, leaving source facts eligible for an operator-controlled retry, or `off` to disable profiling. The detector abstains on short, ambiguous, and materially multilingual sources and exempts copied foreign-script quotations. Retain calls containing unprofiled binary attachments also abstain because those attachments may legitimately use a different language than the text chunk. When `HINDSIGHT_API_LLM_OUTPUT_LANGUAGE` is set, the source-language guard is disabled because translation is then intentional.
 
 Detector initialization or classification failures emit an `error` outcome. They fail open in `observe` and `retry` modes; `reject` mode fails the operation while preserving its source facts.

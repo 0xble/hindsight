@@ -14,6 +14,7 @@ from hindsight_api.engine.language_integrity import (
     build_retry_instruction,
     build_source_instruction,
     configured_mode,
+    evaluate_language_integrity,
     find_mismatches,
     find_mismatches_safely,
     prepare_context,
@@ -178,6 +179,27 @@ def test_config_defaults_to_observe_only() -> None:
         assert HindsightConfig.from_env().llm_language_integrity == "observe"
 
 
+def test_language_integrity_defaults_for_legacy_constructor_input() -> None:
+    legacy_values = vars(HindsightConfig.from_env()).copy()
+    legacy_values.pop("llm_language_integrity")
+
+    assert HindsightConfig(**legacy_values).llm_language_integrity == "observe"
+
+
+@pytest.mark.asyncio
+async def test_evaluation_distinguishes_abstention_from_pass() -> None:
+    context = await prepare_context({"source": "short text"})
+
+    result = await evaluate_language_integrity(
+        context,
+        [GeneratedText("fact:0", "texto corto", ("source",))],
+    )
+
+    assert result.mismatches == ()
+    assert result.checked == 0
+    assert result.abstained == 1
+
+
 def test_config_environment_rejects_unknown_language_integrity_mode() -> None:
     with (
         patch.dict(os.environ, {"HINDSIGHT_API_LLM_LANGUAGE_INTEGRITY": "guess"}),
@@ -226,7 +248,7 @@ async def test_source_detector_failure_is_terminal_in_strict_mode() -> None:
 async def test_output_detector_failure_fails_open_in_retry_mode() -> None:
     context = await prepare_context({"source": ENGLISH_SOURCE})
     with (
-        patch.object(guard, "_find_mismatches_sync", side_effect=RuntimeError("detector unavailable")),
+        patch.object(guard, "_evaluate_sync", side_effect=RuntimeError("detector unavailable")),
         patch.object(guard, "record_outcome") as metric,
     ):
         assert (

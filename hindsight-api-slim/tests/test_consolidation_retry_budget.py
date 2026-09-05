@@ -406,6 +406,47 @@ class TestConsolidationLanguageIntegrity:
         assert "LANGUAGE CORRECTION" in retry_prompt
 
     @pytest.mark.asyncio
+    async def test_multilingual_retry_targets_only_mismatching_action(self, mock_llm_config, mock_config):
+        from hindsight_api.engine.consolidation.consolidator import _ConsolidationBatchResponse, _CreateAction
+
+        mock_config.llm_language_integrity = "retry"
+        mock_config.llm_output_language = None
+        mock_config.consolidation_max_attempts = 1
+        first = LLMCallResult(
+            content=_ConsolidationBatchResponse(
+                creates=[
+                    _CreateAction(text=self.spanish, source_fact_ids=["en"]),
+                    _CreateAction(text=self.spanish, source_fact_ids=["es"]),
+                ]
+            ),
+            usage=TokenUsage(),
+        )
+        corrected = LLMCallResult(
+            content=_ConsolidationBatchResponse(
+                creates=[
+                    _CreateAction(text=self.english, source_fact_ids=["en"]),
+                    _CreateAction(text=self.spanish, source_fact_ids=["es"]),
+                ]
+            ),
+            usage=TokenUsage(),
+        )
+        mock_llm_config.call.side_effect = [first, corrected]
+
+        result = await _consolidate_batch_with_llm(
+            llm_config=mock_llm_config,
+            memories=[{"id": "en", "text": self.source}, {"id": "es", "text": self.spanish}],
+            union_observations=[],
+            union_source_facts={},
+            config=mock_config,
+        )
+
+        assert [action.text for action in result.creates] == [self.english, self.spanish]
+        retry_prompt = mock_llm_config.call.await_args_list[1].kwargs["messages"][1]["content"]
+        assert "correct only these text fields: create:0" in retry_prompt
+        assert "create:1" not in retry_prompt
+        assert "a multilingual response is valid" in retry_prompt
+
+    @pytest.mark.asyncio
     async def test_reject_mode_propagates_after_one_correction(self, mock_llm_config, mock_config):
         mock_config.llm_language_integrity = "reject"
         mock_config.llm_output_language = None
