@@ -187,9 +187,12 @@ async def test_batch_api_normal_flow(mock_llm_config, test_contents, hindsight_c
             profiled_sources.update(source_texts)
             return await prepare_context(source_texts)
 
-        with patch(
-            "hindsight_api.engine.retain.fact_extraction.prepare_context_safely",
-            side_effect=capture_sources,
+        with (
+            patch(
+                "hindsight_api.engine.retain.fact_extraction.prepare_context_safely",
+                side_effect=capture_sources,
+            ),
+            patch("hindsight_api.engine.retain.fact_extraction.record_outcome") as metric,
         ):
             extraction = await extract_facts_from_contents_batch_api(
                 contents=test_contents,
@@ -217,6 +220,7 @@ async def test_batch_api_normal_flow(mock_llm_config, test_contents, hindsight_c
             "0:0": test_contents[0].content,
             "1:1": test_contents[1].content,
         }
+        metric.assert_called_once_with(stage="retain_batch", mode=ANY, outcome="passed")
 
         # Verify token usage
         assert usage.input_tokens == 200  # 100 per chunk
@@ -1036,6 +1040,6 @@ async def test_language_enforcement_modes_bypass_batch_api(mode, mock_llm_config
     assert result is sentinel
     routed_call = live_extract.await_args
     assert routed_call is not None
-    routed_config = routed_call.args[2]
+    routed_config = routed_call.kwargs["config"]
     assert routed_config.retain_batch_enabled is False
     mock_llm_config._provider_impl.submit_batch.assert_not_awaited()
