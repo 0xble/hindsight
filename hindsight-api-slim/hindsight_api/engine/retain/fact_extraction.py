@@ -2574,6 +2574,17 @@ from .types import ExtractedFact as ExtractedFactType
 
 logger = logging.getLogger(__name__)
 
+
+def _batch_language_sources(chunks_metadata: list[ChunkMetadata]) -> dict[str, str]:
+    """Build unique source keys while excluding chunks with unresolved attachments."""
+
+    return {
+        f"{meta.content_index}:{meta.chunk_index}": meta.chunk_text
+        for meta in chunks_metadata
+        if not any(attachment_content.iter_placeholder_ids(meta.chunk_text))
+    }
+
+
 # Each fact gets 10ms offset to preserve ordering within a document
 SECONDS_PER_FACT = 0.01
 
@@ -3177,11 +3188,7 @@ async def extract_facts_from_contents_batch_api(
 
     if should_check(config) and extracted_facts:
         try:
-            source_text_by_chunk = {
-                f"{meta.content_index}:{meta.chunk_index}": meta.chunk_text
-                for meta in chunks_metadata
-                if not any(attachment_content.iter_placeholder_ids(meta.chunk_text))
-            }
+            source_text_by_chunk = _batch_language_sources(chunks_metadata)
             language_context = await prepare_context_safely(
                 source_text_by_chunk,
                 stage="retain_batch",
