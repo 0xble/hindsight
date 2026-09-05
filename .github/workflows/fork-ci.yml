@@ -37,11 +37,15 @@ jobs:
           tests/test_consolidation_failure_isolation.py
           tests/test_consolidation_prompt_budget.py
           tests/test_db_abstraction.py
-          tests/test_language_validation.py
+          tests/test_language_integrity.py
+          tests/test_language_integrity_retain.py
+          tests/test_consolidation_retry_budget.py
+          tests/test_fact_extraction_retry.py
+          tests/test_content_policy_refusal_permanent.py
           tests/test_operation_status.py
           tests/test_response_schema_validation.py
           tests/test_metrics.py
-          tests/test_batch_api.py::test_batch_api_retries_only_a_mismatching_chunk_synchronously
+          tests/test_batch_api.py
       - name: Run generated-client discriminator regressions
         run: |
           uv run --directory hindsight-clients/python --frozen pytest tests/test_operation_details.py
