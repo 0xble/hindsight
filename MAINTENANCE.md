@@ -4,7 +4,7 @@
 
 Maintained fork: `0xble/hindsight` of `vectorize-io/hindsight`, branch `main`.
 Canonical checkout: `/Users/brianle/Repos/hindsight`. Accepted upstream baseline:
-`82729887a077945ec51c1824aedd66c1f22871c0`. Publish only to `origin`; never
+`163fbb0ede6543af837b2c7c89e13012893d6a6b`. Publish only to `origin`; never
 push to `upstream`. Source synchronization, publication, installation, and
 runtime activation are separate stages.
 
@@ -81,7 +81,7 @@ runtime activation are separate stages.
 ### HINDSIGHT-005: Generated-language integrity
 
 - **Status:** Active
-- **Commit:** This patch stack
+- **Commits:** `dd4d903`, `2605d8f`, `a537c1c`, `829d407`, `cfa22cb`, `a2eeef1`
 - **Surfaces:** generated-language source profiling, retain extraction,
   consolidation, configuration, metrics, multilingual documentation, and focused
   language-integrity tests
