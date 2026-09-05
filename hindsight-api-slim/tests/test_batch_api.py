@@ -19,12 +19,30 @@ import pytest
 from hindsight_api.config import HindsightConfig
 from hindsight_api.engine.retain.fact_extraction import (
     RetainContent,
+    _batch_language_sources,
     extract_facts_from_contents,
     extract_facts_from_contents_batch_api,
 )
+from hindsight_api.engine.retain.types import ChunkMetadata
 from hindsight_api.worker.poller import WorkerPoller
 
 logger = logging.getLogger(__name__)
+
+
+def test_batch_language_sources_exclude_only_attachment_chunks() -> None:
+    sources = _batch_language_sources(
+        [
+            ChunkMetadata(chunk_text="plain source", fact_count=1, content_index=0, chunk_index=0),
+            ChunkMetadata(
+                chunk_text="image source\n⟦hs-att:000000000000⟧",
+                fact_count=1,
+                content_index=1,
+                chunk_index=1,
+            ),
+        ]
+    )
+
+    assert sources == {"0:0": "plain source"}
 
 
 @pytest.fixture
@@ -90,7 +108,6 @@ def hindsight_config():
 async def test_batch_api_normal_flow(mock_llm_config, test_contents, hindsight_config, memory, request_context):
     """Test normal batch API flow: submit, poll, complete."""
     bank_id = f"test_batch_{datetime.now(timezone.utc).timestamp()}"
-    test_contents[1].content += "\n⟦hs-att:000000000000⟧"
 
     try:
         # Mock batch API responses
@@ -219,6 +236,7 @@ async def test_batch_api_normal_flow(mock_llm_config, test_contents, hindsight_c
         assert chunks[1].fact_count == 1
         assert profiled_sources == {
             "0:0": test_contents[0].content,
+            "1:1": test_contents[1].content,
         }
         metric.assert_called_once_with(stage="retain_batch", mode=ANY, outcome="passed")
 
