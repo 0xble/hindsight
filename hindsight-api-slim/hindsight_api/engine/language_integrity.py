@@ -102,6 +102,15 @@ class LanguageMismatch:
     generated_language: str
 
 
+@dataclass(frozen=True, slots=True)
+class LanguageCheckResult:
+    """Bounded validation result that distinguishes checks from abstentions."""
+
+    mismatches: tuple[LanguageMismatch, ...]
+    checked: int
+    abstained: int
+
+
 class LanguageIntegrityError(RuntimeError):
     retryable = False
 
@@ -134,12 +143,14 @@ def should_check(config: Any) -> bool:
     return configured_mode(config) is not LanguageIntegrityMode.OFF and not getattr(config, "llm_output_language", None)
 
 
-def build_retry_instruction(_mismatches: Sequence[LanguageMismatch]) -> str:
+def build_retry_instruction(mismatches: Sequence[LanguageMismatch]) -> str:
+    keys = ", ".join(sorted({item.key for item in mismatches}))
     return (
         "\n\nLANGUAGE CORRECTION: The previous generated text switched away from the source's language. "
-        "Regenerate the entire structured response while preserving the source's language. "
-        "Do not translate or mix languages. Preserve names, identifiers, URLs, quoted text, "
-        "and required JSON keys exactly."
+        f"Regenerate the structured response and correct only these text fields: {keys}. "
+        "Each corrected field must preserve the language of its own cited source. Keep unaffected fields in "
+        "their own source-specific languages; a multilingual response is valid. Preserve names, identifiers, "
+        "URLs, quoted text, and required JSON keys exactly."
     )
 
 
@@ -316,19 +327,26 @@ def _expected_source(context: LanguageContext, keys: tuple[str, ...]) -> tuple[L
     return actionable[0], combined_text
 
 
-def _find_mismatches_sync(context: LanguageContext, generated: Sequence[GeneratedText]) -> tuple[LanguageMismatch, ...]:
+def _evaluate_sync(context: LanguageContext, generated: Sequence[GeneratedText]) -> LanguageCheckResult:
     # py3langid's NumPy-backed identifier is process-global. Serialize each whole
     # validation batch so concurrent async requests never share mutable classifier
     # internals, while the event loop remains free.
     with _classification_lock:
         mismatches: list[LanguageMismatch] = []
+        checked = 0
+        abstained = 0
         for item in generated:
             expected = _expected_source(context, item.source_keys)
             if expected is None:
+                abstained += 1
                 continue
             source_profile, source_text = expected
             generated_profile = _profile(item.text, source=False)
-            if not generated_profile.actionable or generated_profile.language == source_profile.language:
+            if not generated_profile.actionable:
+                abstained += 1
+                continue
+            checked += 1
+            if generated_profile.language == source_profile.language:
                 continue
             same_script = generated_profile.dominant_script == source_profile.dominant_script
             if not same_script and _preserves_foreign_script_text(
@@ -353,7 +371,7 @@ def _find_mismatches_sync(context: LanguageContext, generated: Sequence[Generate
                     generated_language=generated_profile.language,
                 )
             )
-        return tuple(mismatches)
+        return LanguageCheckResult(tuple(mismatches), checked, abstained)
 
 
 async def prepare_context(source_texts: Mapping[str, str]) -> LanguageContext:
@@ -365,9 +383,36 @@ async def prepare_context(source_texts: Mapping[str, str]) -> LanguageContext:
 async def find_mismatches(context: LanguageContext, generated: Sequence[GeneratedText]) -> tuple[LanguageMismatch, ...]:
     """Classify one output batch against a prepared source context."""
 
+    return (await evaluate_language_integrity(context, generated)).mismatches
+
+
+async def evaluate_language_integrity(
+    context: LanguageContext, generated: Sequence[GeneratedText]
+) -> LanguageCheckResult:
+    """Classify outputs and report how many were checked versus abstained."""
+
     if not context.source_texts or not generated:
-        return ()
-    return await asyncio.to_thread(_find_mismatches_sync, context, tuple(generated))
+        return LanguageCheckResult((), 0, len(generated))
+    return await asyncio.to_thread(_evaluate_sync, context, tuple(generated))
+
+
+async def evaluate_language_integrity_safely(
+    context: LanguageContext,
+    generated: Sequence[GeneratedText],
+    *,
+    stage: str,
+    mode: LanguageIntegrityMode,
+) -> LanguageCheckResult | None:
+    """Evaluate outputs, returning None after a fail-open detector error."""
+
+    try:
+        return await evaluate_language_integrity(context, generated)
+    except Exception as exc:
+        logger.exception("Language-integrity output profiling failed; stage=%s mode=%s", stage, mode.value)
+        record_outcome(stage=stage, mode=mode, outcome="error")
+        if mode is LanguageIntegrityMode.REJECT:
+            raise LanguageIntegrityUnavailable("language-integrity output profiling failed") from exc
+        return None
 
 
 async def prepare_context_safely(
@@ -394,14 +439,8 @@ async def find_mismatches_safely(
 ) -> tuple[LanguageMismatch, ...]:
     """Validate outputs, failing open unless the operator selected strict mode."""
 
-    try:
-        return await find_mismatches(context, generated)
-    except Exception as exc:
-        logger.exception("Language-integrity output profiling failed; stage=%s mode=%s", stage, mode.value)
-        record_outcome(stage=stage, mode=mode, outcome="error")
-        if mode is LanguageIntegrityMode.REJECT:
-            raise LanguageIntegrityUnavailable("language-integrity output profiling failed") from exc
-        return ()
+    result = await evaluate_language_integrity_safely(context, generated, stage=stage, mode=mode)
+    return result.mismatches if result is not None else ()
 
 
 def build_source_instruction(context: LanguageContext, source_keys: Sequence[str]) -> str:
