@@ -90,6 +90,7 @@ def hindsight_config():
 async def test_batch_api_normal_flow(mock_llm_config, test_contents, hindsight_config, memory, request_context):
     """Test normal batch API flow: submit, poll, complete."""
     bank_id = f"test_batch_{datetime.now(timezone.utc).timestamp()}"
+    test_contents[1].content += "\n⟦hs-att:000000000000⟧"
 
     try:
         # Mock batch API responses
@@ -218,7 +219,6 @@ async def test_batch_api_normal_flow(mock_llm_config, test_contents, hindsight_c
         assert chunks[1].fact_count == 1
         assert profiled_sources == {
             "0:0": test_contents[0].content,
-            "1:1": test_contents[1].content,
         }
         metric.assert_called_once_with(stage="retain_batch", mode=ANY, outcome="passed")
 
