@@ -155,11 +155,14 @@ def build_retry_instruction(mismatches: Sequence[LanguageMismatch]) -> str:
 
 
 def record_outcome(*, stage: str, mode: LanguageIntegrityMode, outcome: str) -> None:
-    """Record a text-free, bounded-cardinality language-integrity result."""
+    """Record a text-free, bounded-cardinality result without affecting the request."""
 
-    from hindsight_api.metrics import get_metrics_collector
+    try:
+        from hindsight_api.metrics import get_metrics_collector
 
-    get_metrics_collector().record_language_integrity(stage=stage, mode=mode.value, outcome=outcome)
+        get_metrics_collector().record_language_integrity(stage=stage, mode=mode.value, outcome=outcome)
+    except Exception:
+        logger.exception("Language-integrity metric recording failed; stage=%s mode=%s", stage, mode.value)
 
 
 _identifier: Any | None = None

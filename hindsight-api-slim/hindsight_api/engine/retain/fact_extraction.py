@@ -3176,30 +3176,42 @@ async def extract_facts_from_contents_batch_api(
     _inject_label_tags(extracted_facts, config)
 
     if should_check(config) and extracted_facts:
-        source_text_by_chunk = {str(meta.chunk_index): meta.chunk_text for meta in chunks_metadata}
-        language_context = await prepare_context_safely(
-            source_text_by_chunk,
-            stage="retain_batch",
-            mode=language_mode,
-        )
-        if language_context is not None:
-            evaluation = await evaluate_language_integrity_safely(
-                language_context,
-                [
-                    GeneratedText(str(index), fact.fact_text, (str(fact.chunk_index),))
-                    for index, fact in enumerate(extracted_facts)
-                ],
+        try:
+            source_text_by_chunk = {
+                f"{meta.content_index}:{meta.chunk_index}": meta.chunk_text for meta in chunks_metadata
+            }
+            language_context = await prepare_context_safely(
+                source_text_by_chunk,
                 stage="retain_batch",
                 mode=language_mode,
             )
-            if evaluation is not None:
-                if evaluation.mismatches:
-                    outcome = "mismatch_observed"
-                elif evaluation.checked:
-                    outcome = "passed"
-                else:
-                    outcome = "abstained"
-                record_outcome(stage="retain_batch", mode=language_mode, outcome=outcome)
+            if language_context is not None:
+                evaluation = await evaluate_language_integrity_safely(
+                    language_context,
+                    [
+                        GeneratedText(
+                            f"fact:{index}",
+                            fact.fact_text,
+                            (f"{fact.content_index}:{fact.chunk_index}",),
+                        )
+                        for index, fact in enumerate(extracted_facts)
+                    ],
+                    stage="retain_batch",
+                    mode=language_mode,
+                )
+                if evaluation is not None:
+                    if evaluation.mismatches:
+                        outcome = "mismatch_observed"
+                    elif evaluation.checked:
+                        outcome = "passed"
+                    else:
+                        outcome = "abstained"
+                    record_outcome(stage="retain_batch", mode=language_mode, outcome=outcome)
+        except Exception:
+            # This runs after a paid-for provider batch completed. Observability must
+            # never discard valid extraction output in the default observe mode.
+            logger.exception("Batch language-integrity observation failed open")
+            record_outcome(stage="retain_batch", mode=language_mode, outcome="error")
 
     await _write_batch_extraction_errors(pool, operation_id, schema, extraction_errors)
 
