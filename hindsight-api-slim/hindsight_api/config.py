@@ -2578,7 +2578,7 @@ class HindsightConfig:
     # Post-generation source-language guard: off, observe, retry, or reject.
     # Observe-only by default. Operators can enable corrective retries after
     # validating detector behavior against their own workload.
-    llm_language_integrity: Literal["off", "observe", "retry", "reject"]
+    llm_language_integrity: Literal["off", "observe", "retry", "reject"] = field(default="observe", kw_only=True)
 
     # LLM (default, used as fallback for per-operation config)
     llm_provider: str

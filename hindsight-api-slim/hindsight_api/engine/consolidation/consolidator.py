@@ -44,7 +44,7 @@ from ..language_integrity import (
     build_retry_instruction,
     build_source_instruction,
     configured_mode,
-    find_mismatches_safely,
+    evaluate_language_integrity_safely,
     prepare_context_safely,
     record_outcome,
     should_check,
@@ -3296,12 +3296,13 @@ async def _consolidate_batch_with_llm(
                                 tuple(action.source_fact_ids),
                             )
                         )
-                mismatches = await find_mismatches_safely(
+                evaluation = await evaluate_language_integrity_safely(
                     language_context,
                     generated,
                     stage="consolidation",
                     mode=language_mode,
                 )
+                mismatches = evaluation.mismatches if evaluation is not None else ()
                 if mismatches:
                     if language_mode is LanguageIntegrityMode.OBSERVE:
                         record_outcome(stage="consolidation", mode=language_mode, outcome="mismatch_observed")
@@ -3320,8 +3321,11 @@ async def _consolidate_batch_with_llm(
                         raise GeneratedLanguageMismatch(mismatches)
                     else:
                         record_outcome(stage="consolidation", mode=language_mode, outcome="mismatch_accepted")
-                else:
-                    outcome = "retry_passed" if language_retry_used else "passed"
+                elif evaluation is not None:
+                    if evaluation.checked:
+                        outcome = "retry_passed" if language_retry_used else "passed"
+                    else:
+                        outcome = "abstained"
                     record_outcome(stage="consolidation", mode=language_mode, outcome=outcome)
             return _BatchLLMResult(
                 creates=creates,

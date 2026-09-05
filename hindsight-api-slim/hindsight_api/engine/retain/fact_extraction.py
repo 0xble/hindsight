@@ -10,7 +10,7 @@ import json
 import logging
 import re
 from collections.abc import Iterator
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timedelta
 from typing import TYPE_CHECKING, Any, Literal, cast
 
@@ -24,7 +24,7 @@ from ..language_integrity import (
     build_retry_instruction,
     build_source_instruction,
     configured_mode,
-    find_mismatches_safely,
+    evaluate_language_integrity_safely,
     prepare_context_safely,
     record_outcome,
     should_check,
@@ -2225,12 +2225,13 @@ async def _extract_facts_from_chunk(
                 )
 
             if language_context is not None and chunk_facts:
-                mismatches = await find_mismatches_safely(
+                evaluation = await evaluate_language_integrity_safely(
                     language_context,
-                    [GeneratedText(str(index), fact.fact, ("chunk",)) for index, fact in enumerate(chunk_facts)],
+                    [GeneratedText(f"fact:{index}", fact.fact, ("chunk",)) for index, fact in enumerate(chunk_facts)],
                     stage="retain",
                     mode=language_mode,
                 )
+                mismatches = evaluation.mismatches if evaluation is not None else ()
                 if mismatches:
                     if language_mode is LanguageIntegrityMode.OBSERVE:
                         record_outcome(stage="retain", mode=language_mode, outcome="mismatch_observed")
@@ -2249,8 +2250,11 @@ async def _extract_facts_from_chunk(
                         raise GeneratedLanguageMismatch(mismatches)
                     else:
                         record_outcome(stage="retain", mode=language_mode, outcome="mismatch_accepted")
-                else:
-                    outcome = "retry_passed" if language_retry_used else "passed"
+                elif evaluation is not None:
+                    if evaluation.checked:
+                        outcome = "retry_passed" if language_retry_used else "passed"
+                    else:
+                        outcome = "abstained"
                     record_outcome(stage="retain", mode=language_mode, outcome=outcome)
 
             return chunk_facts, usage
@@ -2634,6 +2638,22 @@ async def extract_facts_from_contents_batch_api(
     """
     if not contents:
         return ExtractionResult([], [], TokenUsage())
+
+    language_mode = configured_mode(config)
+    if should_check(config) and language_mode in {LanguageIntegrityMode.RETRY, LanguageIntegrityMode.REJECT}:
+        logger.info(
+            "Language-integrity mode %s routes retain extraction through the live provider path so corrective "
+            "regeneration and strict rejection cannot be bypassed by Batch API results",
+            language_mode.value,
+        )
+        return await extract_facts_from_contents(
+            contents,
+            llm_config,
+            replace(config, retain_batch_enabled=False),
+            pool,
+            operation_id,
+            schema,
+        )
 
     logger.info(f"Using Batch API for fact extraction ({len(contents)} contents)")
 
@@ -3154,6 +3174,32 @@ async def extract_facts_from_contents_batch_api(
 
     # Step 8: Auto-tag facts from label groups with tag=True
     _inject_label_tags(extracted_facts, config)
+
+    if should_check(config) and extracted_facts:
+        source_text_by_chunk = {str(meta.chunk_index): meta.chunk_text for meta in chunks_metadata}
+        language_context = await prepare_context_safely(
+            source_text_by_chunk,
+            stage="retain_batch",
+            mode=language_mode,
+        )
+        if language_context is not None:
+            evaluation = await evaluate_language_integrity_safely(
+                language_context,
+                [
+                    GeneratedText(str(index), fact.fact_text, (str(fact.chunk_index),))
+                    for index, fact in enumerate(extracted_facts)
+                ],
+                stage="retain_batch",
+                mode=language_mode,
+            )
+            if evaluation is not None:
+                if evaluation.mismatches:
+                    outcome = "mismatch_observed"
+                elif evaluation.checked:
+                    outcome = "passed"
+                else:
+                    outcome = "abstained"
+                record_outcome(stage="retain_batch", mode=language_mode, outcome=outcome)
 
     await _write_batch_extraction_errors(pool, operation_id, schema, extraction_errors)
 

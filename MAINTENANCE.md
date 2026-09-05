@@ -91,6 +91,8 @@ runtime activation are separate stages.
   source-language guidance, regenerate once, and then preserve availability by
   accepting a persistent mismatch. Explicit fail-closed `reject` leaves source facts
   unmodified and eligible for an operator-controlled retry. `off` disables the guard.
+  Retain Batch API remains available in `off` and `observe`; `retry` and `reject`
+  route through the live provider path so enforcement cannot be bypassed by batch results.
   The guard abstains on short, ambiguous, materially multilingual, and unsupported
   same-script inputs, and it exempts copied foreign-script quotations.
 - **Upstream issue:** [#4016](https://github.com/vectorize-io/hindsight/issues/4016),

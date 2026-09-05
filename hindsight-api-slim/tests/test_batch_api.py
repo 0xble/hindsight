@@ -639,8 +639,6 @@ async def test_batch_api_crash_recovery(mock_llm_config, test_contents, hindsigh
             schema=schema,
         )
         facts = extraction.facts
-        chunks = extraction.chunks
-        usage = extraction.usage
 
         # Verify results
         assert len(facts) == 2, "Should extract 2 facts after recovery"
@@ -908,7 +906,7 @@ async def test_batch_api_via_extract_facts_from_contents(
         )
 
         # Call main extract_facts_from_contents (should route to batch API)
-        extraction = await extract_facts_from_contents(
+        await extract_facts_from_contents(
             contents=test_contents,
             llm_config=mock_llm_config,
             config=hindsight_config,
@@ -916,9 +914,6 @@ async def test_batch_api_via_extract_facts_from_contents(
             operation_id=None,
             schema=None,
         )
-        facts = extraction.facts
-        chunks = extraction.chunks
-        usage = extraction.usage
 
         # Verify batch API was called
         mock_llm_config._provider_impl.submit_batch.assert_called_once()
@@ -992,3 +987,30 @@ async def test_batch_api_sanitizes_model_authored_text(mock_llm_config, hindsigh
     assert facts[0].fact_text.encode("utf-8")  # raised UnicodeEncodeError before the fix
     assert "Alex laughed" in facts[0].fact_text
     assert facts[0].entities == ["Alex"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mode", ["retry", "reject"])
+async def test_language_enforcement_modes_bypass_batch_api(mode, mock_llm_config, test_contents, hindsight_config):
+    """Modes that may regenerate or reject cannot silently accept Batch API output."""
+    hindsight_config.llm_language_integrity = mode
+    hindsight_config.llm_output_language = None
+    sentinel = MagicMock()
+
+    with patch(
+        "hindsight_api.engine.retain.fact_extraction.extract_facts_from_contents",
+        new_callable=AsyncMock,
+        return_value=sentinel,
+    ) as live_extract:
+        result = await extract_facts_from_contents_batch_api(
+            contents=test_contents,
+            llm_config=mock_llm_config,
+            config=hindsight_config,
+        )
+
+    assert result is sentinel
+    routed_call = live_extract.await_args
+    assert routed_call is not None
+    routed_config = routed_call.args[2]
+    assert routed_config.retain_batch_enabled is False
+    mock_llm_config._provider_impl.submit_batch.assert_not_awaited()
