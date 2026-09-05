@@ -2647,12 +2647,12 @@ async def extract_facts_from_contents_batch_api(
             language_mode.value,
         )
         return await extract_facts_from_contents(
-            contents,
-            llm_config,
-            replace(config, retain_batch_enabled=False),
-            pool,
-            operation_id,
-            schema,
+            contents=contents,
+            llm_config=llm_config,
+            config=replace(config, retain_batch_enabled=False),
+            pool=pool,
+            operation_id=operation_id,
+            schema=schema,
         )
 
     logger.info(f"Using Batch API for fact extraction ({len(contents)} contents)")
@@ -3178,7 +3178,9 @@ async def extract_facts_from_contents_batch_api(
     if should_check(config) and extracted_facts:
         try:
             source_text_by_chunk = {
-                f"{meta.content_index}:{meta.chunk_index}": meta.chunk_text for meta in chunks_metadata
+                f"{meta.content_index}:{meta.chunk_index}": meta.chunk_text
+                for meta in chunks_metadata
+                if not any(attachment_content.iter_placeholder_ids(meta.chunk_text))
             }
             language_context = await prepare_context_safely(
                 source_text_by_chunk,

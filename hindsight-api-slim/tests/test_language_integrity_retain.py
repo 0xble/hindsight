@@ -8,7 +8,11 @@ from hindsight_api.config import _get_raw_config
 from hindsight_api.engine.language_integrity import GeneratedLanguageMismatch
 from hindsight_api.engine.llm_wrapper import LLMProvider
 from hindsight_api.engine.response_models import LLMCallResult, TokenUsage
-from hindsight_api.engine.retain.fact_extraction import _extract_facts_from_chunk
+from hindsight_api.engine.retain.fact_extraction import (
+    RetainContent,
+    _extract_facts_from_chunk,
+    extract_facts_from_contents_batch_api,
+)
 
 ENGLISH_SOURCE = (
     "The operations team completed the important review findings and the low-cost hardening work "
@@ -139,3 +143,27 @@ async def test_language_retry_does_not_consume_content_retry_budget() -> None:
 
     assert llm.call.await_count == 3
     assert facts[0].fact.startswith("The operations team")
+
+
+@pytest.mark.asyncio
+async def test_batch_retry_mode_reaches_real_live_path_without_recursing() -> None:
+    llm = _llm(SPANISH_DRIFT, ENGLISH_FACT)
+    config = dataclasses.replace(_config("retry"), retain_batch_enabled=True)
+
+    with patch(
+        "hindsight_api.engine.retain.fact_extraction._build_extraction_prompt_and_schema",
+        return_value=("system prompt", MagicMock()),
+    ):
+        result = await extract_facts_from_contents_batch_api(
+            contents=[
+                RetainContent(
+                    content=ENGLISH_SOURCE,
+                    event_date=datetime(2026, 9, 4, tzinfo=timezone.utc),
+                )
+            ],
+            llm_config=llm,
+            config=config,
+        )
+
+    assert llm.call.await_count == 2
+    assert result.facts[0].fact_text.startswith("The operations team")
