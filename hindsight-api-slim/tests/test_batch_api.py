@@ -12,7 +12,7 @@ import json
 import logging
 import uuid
 from datetime import datetime, timezone
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import ANY, AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -177,15 +177,28 @@ async def test_batch_api_normal_flow(mock_llm_config, test_contents, hindsight_c
         ]
         mock_llm_config._provider_impl.retrieve_batch_results = AsyncMock(return_value=mock_results)
 
-        # Call batch API extraction
-        extraction = await extract_facts_from_contents_batch_api(
-            contents=test_contents,
-            llm_config=mock_llm_config,
-            config=hindsight_config,
-            pool=None,  # No DB pool for this test
-            operation_id=None,
-            schema=None,
-        )
+        # Call batch API extraction and verify observe-mode profiling keeps each
+        # content/chunk source distinct.
+        from hindsight_api.engine.language_integrity import prepare_context
+
+        profiled_sources = {}
+
+        async def capture_sources(source_texts, **_kwargs):
+            profiled_sources.update(source_texts)
+            return await prepare_context(source_texts)
+
+        with patch(
+            "hindsight_api.engine.retain.fact_extraction.prepare_context_safely",
+            side_effect=capture_sources,
+        ):
+            extraction = await extract_facts_from_contents_batch_api(
+                contents=test_contents,
+                llm_config=mock_llm_config,
+                config=hindsight_config,
+                pool=None,  # No DB pool for this test
+                operation_id=None,
+                schema=None,
+            )
         facts = extraction.facts
         chunks = extraction.chunks
         usage = extraction.usage
@@ -200,6 +213,10 @@ async def test_batch_api_normal_flow(mock_llm_config, test_contents, hindsight_c
         assert len(chunks) == 2, "Should have 2 chunks metadata"
         assert chunks[0].fact_count == 1
         assert chunks[1].fact_count == 1
+        assert profiled_sources == {
+            "0:0": test_contents[0].content,
+            "1:1": test_contents[1].content,
+        }
 
         # Verify token usage
         assert usage.input_tokens == 200  # 100 per chunk
@@ -268,14 +285,21 @@ async def test_batch_api_accepts_top_level_fact_list(mock_llm_config, test_conte
         ]
     )
 
-    extraction = await extract_facts_from_contents_batch_api(
-        contents=[test_contents[0]],
-        llm_config=mock_llm_config,
-        config=hindsight_config,
-        pool=None,
-        operation_id=None,
-        schema=None,
-    )
+    with (
+        patch(
+            "hindsight_api.engine.retain.fact_extraction.prepare_context_safely",
+            side_effect=RuntimeError("observer bug"),
+        ),
+        patch("hindsight_api.engine.retain.fact_extraction.record_outcome") as metric,
+    ):
+        extraction = await extract_facts_from_contents_batch_api(
+            contents=[test_contents[0]],
+            llm_config=mock_llm_config,
+            config=hindsight_config,
+            pool=None,
+            operation_id=None,
+            schema=None,
+        )
     facts = extraction.facts
     chunks = extraction.chunks
     usage = extraction.usage
@@ -285,6 +309,7 @@ async def test_batch_api_accepts_top_level_fact_list(mock_llm_config, test_conte
     assert len(chunks) == 1
     assert chunks[0].fact_count == 1
     assert usage.total_tokens == 150
+    metric.assert_called_once_with(stage="retain_batch", mode=ANY, outcome="error")
 
 
 @pytest.mark.asyncio
