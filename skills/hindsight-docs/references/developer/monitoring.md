@@ -106,7 +106,7 @@ version, move the liveness path over.
 |--------|------|--------|-------------|
 | `hindsight.operation.duration` | Histogram | operation, bank_id, source, budget, max_tokens, success | Duration of operations in seconds |
 | `hindsight.operation.total` | Counter | operation, bank_id, source, budget, max_tokens, success | Total number of operations executed |
-| `hindsight.language_integrity.total` | Counter | stage, mode, outcome | Source-language guard checks, retries, accepted mismatches, strict rejections, and detector errors |
+| `hindsight.language_integrity.total` | Counter | stage, mode, outcome | Source-language guard checks, abstentions, retries, accepted mismatches, strict rejections, and detector errors |
 
 **Labels:**
 - `operation`: Operation type (`retain`, `recall`, `reflect`, plus async worker task types such as `consolidation`)
