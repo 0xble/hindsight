@@ -25,6 +25,16 @@ SPANISH_DRIFT = (
 ENGLISH_FACT = (
     "The operations team completed the review and hardening work through regression tests and canonical validation."
 )
+TYPESCRIPT_SOURCE = (
+    "TypeScript operating rules require strict mode, a pinned compiler version, shared types when useful, "
+    "runtime validation distinct from compile-time types, generated clients bound to committed source schemas, "
+    "and domain rules outside React components, Server Actions, route handlers, and provider functions."
+)
+MIXED_LANGUAGE_TYPESCRIPT_DRIFT = (
+    "TypeScript stack 的 operating rules 要求启用 strict mode、pin compiler version、在有用时共享 types、"
+    "不要把 compile-time types 误认为 runtime validation、让 generated clients 绑定到 committed source schemas，"
+    "并且不要把 domain rules 藏在 React components、Server Actions、route handlers 或 provider functions 中。"
+)
 
 
 def _config(mode: str):
@@ -62,13 +72,13 @@ def _llm(*texts: str):
     return llm
 
 
-async def _extract(mode: str, llm, *, content_retries: int = 0):
+async def _extract(mode: str, llm, *, content_retries: int = 0, source: str = ENGLISH_SOURCE):
     with patch(
         "hindsight_api.engine.retain.fact_extraction._build_extraction_prompt_and_schema",
         return_value=("system prompt", MagicMock()),
     ):
         return await _extract_facts_from_chunk(
-            chunk=ENGLISH_SOURCE,
+            chunk=source,
             chunk_index=0,
             total_chunks=1,
             event_date=datetime(2026, 9, 4, tzinfo=timezone.utc),
@@ -95,6 +105,17 @@ async def test_retry_mode_regenerates_once_and_returns_corrected_facts() -> None
     assert "LANGUAGE CORRECTION" in second_user_message
     assert "source's language" in second_user_message
     assert "ISO 639" not in second_user_message
+
+
+@pytest.mark.asyncio
+async def test_retry_mode_corrects_introduced_han_prose_after_language_id_abstains() -> None:
+    llm = _llm(MIXED_LANGUAGE_TYPESCRIPT_DRIFT, ENGLISH_FACT)
+
+    facts, _ = await _extract("retry", llm, source=TYPESCRIPT_SOURCE)
+
+    assert llm.call.await_count == 2
+    assert facts[0].fact.startswith("The operations team")
+    assert "LANGUAGE CORRECTION" in llm.call.await_args_list[1].kwargs["messages"][1]["content"]
 
 
 @pytest.mark.asyncio

@@ -353,6 +353,16 @@ class TestConsolidationLanguageIntegrity:
         "endurecimiento mediante pruebas de regresión, y luego ejecutó correctamente las validaciones canónicas."
     )
     english = "The operations team completed the review and hardening work through canonical validation."
+    typescript_source = (
+        "TypeScript operating rules require strict mode, a pinned compiler version, shared types when useful, "
+        "runtime validation distinct from compile-time types, generated clients bound to committed source schemas, "
+        "and domain rules outside React components, Server Actions, route handlers, and provider functions."
+    )
+    mixed_language_typescript_drift = (
+        "TypeScript stack 的 operating rules 要求启用 strict mode、pin compiler version、在有用时共享 types、"
+        "不要把 compile-time types 误认为 runtime validation、让 generated clients 绑定到 committed source schemas，"
+        "并且不要把 domain rules 藏在 React components、Server Actions、route handlers 或 provider functions 中。"
+    )
 
     @staticmethod
     def _response(text: str):
@@ -457,6 +467,29 @@ class TestConsolidationLanguageIntegrity:
             await _consolidate_batch_with_llm(
                 llm_config=mock_llm_config,
                 memories=[{"id": "m1", "text": self.source}],
+                union_observations=[],
+                union_source_facts={},
+                config=mock_config,
+            )
+
+        assert mock_llm_config.call.await_count == 2
+
+    @pytest.mark.asyncio
+    async def test_reject_mode_rejects_introduced_han_prose_after_language_id_abstains(
+        self, mock_llm_config, mock_config
+    ):
+        mock_config.llm_language_integrity = "reject"
+        mock_config.llm_output_language = None
+        mock_config.consolidation_max_attempts = 1
+        mock_llm_config.call.side_effect = [
+            self._response(self.mixed_language_typescript_drift),
+            self._response(self.mixed_language_typescript_drift),
+        ]
+
+        with pytest.raises(GeneratedLanguageMismatch):
+            await _consolidate_batch_with_llm(
+                llm_config=mock_llm_config,
+                memories=[{"id": "m1", "text": self.typescript_source}],
                 union_observations=[],
                 union_source_facts={},
                 config=mock_config,
