@@ -85,10 +85,21 @@ runtime activation are separate stages.
 - **Surfaces:** generated-fact validation, consolidation, metrics, multilingual
   documentation, and `tests/test_language_validation.py`
 - **Behavior:** Reject generated facts and observations that switch away from the
-  source language while preserving proper nouns, short text, and mixed-language input.
-- **Upstream issue:** None after checked 2026-09-03
-- **Upstream PR:** None after checked 2026-09-03
+  source language. The local release backport also checks source-relative novel
+  non-Latin prose independently of statistical language-ID matches or abstention.
+  It preserves literal code, source-compatible foreign-script runs, short names,
+  and genuinely multilingual input. Extraction and consolidation regenerate once
+  and reject a persistent mismatch before storage.
+- **Release scope:** `release/local-language-integrity` remains based on the
+  deployed `8099f46b` runtime, with no unrelated upstream or schema upgrade.
+  `engine/language_script_guard.py` copies the dependency-free guard and constants
+  from maintained main's `engine/language_integrity.py`; verify AST equivalence
+  whenever backporting further changes.
+- **Upstream issue:** [#4016](https://github.com/vectorize-io/hindsight/issues/4016), closed as not planned.
+- **Upstream PR:** [#4018](https://github.com/vectorize-io/hindsight/pull/4018), closed unmerged.
 - **Regression:** `uv run --frozen pytest tests/test_language_validation.py`
+- **Rollback:** Restore the previous immutable local release symlink and restart
+  the owning LaunchAgent. This code-only release requires no data rollback.
 - **Retire when:** A released upstream build enforces equivalent language integrity
   and passes the focused regression without this commit.
 

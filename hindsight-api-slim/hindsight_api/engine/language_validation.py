@@ -15,6 +15,8 @@ from enum import Enum
 
 from langdetect import DetectorFactory, LangDetectException, detect_langs
 
+from .language_script_guard import has_introduced_script_prose
+
 _MIN_ANALYZABLE_CHARS = 48
 _MIN_CONFIDENCE = 0.92
 _MIN_MARGIN = 0.20
@@ -266,6 +268,20 @@ def validate_output_language(
         expected = frozenset({configured}) if configured else frozenset()
     else:
         expected = source.allowed
+
+    # Script drift is independently observable even when statistical language
+    # identification matches technical English or abstains. Do not infer a
+    # language label from the script, and preserve explicit output-language intent.
+    if (not output_language or (expected and expected == source.allowed)) and has_introduced_script_prose(
+        source_text, output_text
+    ):
+        return LanguageValidationResult(
+            outcome=LanguageValidationOutcome.MISMATCH,
+            expected_languages=expected or frozenset({"source-language"}),
+            output_language="non-source-script",
+            source_profile=source,
+            output_profile=output,
+        )
 
     if not expected or output.primary is None:
         outcome = LanguageValidationOutcome.INDETERMINATE

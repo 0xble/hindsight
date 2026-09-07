@@ -30,6 +30,82 @@ CHINESE = (
 JAPANESE = "この文章は日本語で書かれており、生成された記憶も元の日本語のまま保存されなければなりません。"
 
 
+TYPESCRIPT_SOURCE = (
+    "TypeScript is the preferred application and service language. Use strict mode so type errors surface "
+    "before runtime while still validating every untrusted boundary. Enable strict mode and pin the compiler "
+    "version. Share types where useful, but never mistake compile-time types for runtime validation. "
+    "Keep generated clients tied to committed source schemas. Do not bury domain rules in React components, "
+    "Server Actions, route handlers, or provider functions."
+)
+TYPESCRIPT_DRIFT = (
+    "TypeScript stack 的 operating rules 要求启用 strict mode、pin compiler version、在有用时共享 types、"
+    "不要把 compile-time types 误认为 runtime validation、让 generated clients 绑定到 committed source schemas，"
+    "并且不要把 domain rules 藏在 React components、Server Actions、route handlers 或 provider functions 中。"
+)
+
+
+def test_mixed_chinese_typescript_prose_cannot_hide_behind_english_terms():
+    result = validate_output_language(source_text=TYPESCRIPT_SOURCE, output_text=TYPESCRIPT_DRIFT)
+    assert result.outcome is LanguageValidationOutcome.MISMATCH
+    assert result.expected_languages == frozenset({"en"})
+
+
+@pytest.mark.parametrize(
+    "generated",
+    [
+        "fixtures 应保持 explicit 和 safe。",
+        "Vitest 是 TypeScript 的首选 unit 和 integration test runner。",
+        "测试应关注 observable behavior，而不是 framework internals。",
+        "在 `pipeline.md` 中，hardening gate 要求 failures 必须 bounded、typed、actionable、secret-safe。",
+    ],
+)
+def test_short_mixed_script_prose_cannot_hide_behind_identifiers(generated):
+    assert (
+        validate_output_language(source_text=TYPESCRIPT_SOURCE, output_text=generated).outcome
+        is LanguageValidationOutcome.MISMATCH
+    )
+
+
+def test_script_signal_survives_statistical_source_abstention():
+    from hindsight_api.engine.language_validation import LanguageProfile
+
+    uncertain = LanguageProfile(None, frozenset(), 0.0, 0.0, 80, False)
+    with patch("hindsight_api.engine.language_validation.profile_language", return_value=uncertain):
+        result = validate_output_language(source_text=TYPESCRIPT_SOURCE, output_text=TYPESCRIPT_DRIFT)
+    assert result.outcome is LanguageValidationOutcome.MISMATCH
+    assert result.expected_languages == frozenset({"source-language"})
+
+
+@pytest.mark.parametrize(
+    ("source", "generated"),
+    [
+        (TYPESCRIPT_SOURCE, "The engineer 李明 reviewed the TypeScript service."),
+        (TYPESCRIPT_SOURCE, "The service uses `const 标签 = '测试应关注行为而不是实现细节';` as a literal fixture."),
+        (
+            TYPESCRIPT_SOURCE + " The source quotes: 测试应关注行为而不是实现细节。",
+            "The preserved quote is 测试应关注行为而不是实现细节。",
+        ),
+        (
+            TYPESCRIPT_SOURCE + " The source quotes: 测试应关注行为而不是实现细节。",
+            "The quote excerpt is 关注行为而不是实现细节。",
+        ),
+        ("", TYPESCRIPT_DRIFT),
+        ("`source_only_identifier`", TYPESCRIPT_DRIFT),
+        (JAPANESE, JAPANESE),
+        (CHINESE, CHINESE),
+    ],
+)
+def test_new_script_guard_preserves_source_evidence_and_literals(source, generated):
+    from hindsight_api.engine.language_script_guard import has_introduced_script_prose
+
+    assert not has_introduced_script_prose(source, generated)
+
+
+def test_mixed_chinese_output_respects_explicit_chinese_target():
+    result = validate_output_language(source_text=TYPESCRIPT_SOURCE, output_text=CHINESE, output_language="Chinese")
+    assert result.outcome is LanguageValidationOutcome.MATCH
+
+
 def test_confident_cross_language_output_is_rejected():
     result = validate_output_language(source_text=ENGLISH, output_text=SPANISH)
     assert result.outcome is LanguageValidationOutcome.MISMATCH
@@ -167,14 +243,15 @@ def _retain_config(output_language: str | None = None):
 
 
 @pytest.mark.asyncio
-async def test_retain_retries_mismatch_once_and_never_returns_rejected_fact():
+@pytest.mark.parametrize("drift", [SPANISH, TYPESCRIPT_DRIFT])
+async def test_retain_retries_mismatch_once_and_never_returns_rejected_fact(drift):
     from hindsight_api.engine.llm_wrapper import LLMProvider
     from hindsight_api.engine.retain.fact_extraction import _extract_facts_from_chunk
 
     llm = MagicMock(spec=LLMProvider)
     llm.provider = "test-language-drift"
     llm.model = "mock-language-drift"
-    llm.call = AsyncMock(side_effect=[_retain_response(SPANISH), _retain_response(ENGLISH)])
+    llm.call = AsyncMock(side_effect=[_retain_response(drift), _retain_response(ENGLISH)])
 
     with patch(
         "hindsight_api.engine.retain.fact_extraction._build_extraction_prompt_and_schema",
@@ -227,14 +304,15 @@ async def test_retain_retry_honors_configured_output_language():
 
 
 @pytest.mark.asyncio
-async def test_retain_fails_closed_after_second_confident_mismatch():
+@pytest.mark.parametrize("drift", [SPANISH, TYPESCRIPT_DRIFT])
+async def test_retain_fails_closed_after_second_confident_mismatch(drift):
     from hindsight_api.engine.llm_wrapper import LLMProvider
     from hindsight_api.engine.retain.fact_extraction import _extract_facts_from_chunk
 
     llm = MagicMock(spec=LLMProvider)
     llm.provider = "test-language-drift"
     llm.model = "mock-language-drift"
-    llm.call = AsyncMock(side_effect=[_retain_response(SPANISH), _retain_response(SPANISH)])
+    llm.call = AsyncMock(side_effect=[_retain_response(drift), _retain_response(drift)])
 
     with (
         patch(
@@ -271,7 +349,8 @@ def _consolidation_config(output_language: str | None = None):
 
 
 @pytest.mark.asyncio
-async def test_consolidation_retries_mismatch_atomically():
+@pytest.mark.parametrize("drift", [SPANISH, TYPESCRIPT_DRIFT])
+async def test_consolidation_retries_mismatch_atomically(drift):
     from hindsight_api.engine.consolidation.consolidator import (
         _consolidate_batch_with_llm,
         _ConsolidationBatchResponse,
@@ -282,7 +361,7 @@ async def test_consolidation_retries_mismatch_atomically():
     llm._provider_impl = None
     llm.provider = "test-language-drift"
     llm.call.side_effect = [
-        _ConsolidationBatchResponse(creates=[_CreateAction(text=SPANISH, source_fact_ids=["m1"])]),
+        _ConsolidationBatchResponse(creates=[_CreateAction(text=drift, source_fact_ids=["m1"])]),
         _ConsolidationBatchResponse(creates=[_CreateAction(text=ENGLISH, source_fact_ids=["m1"])]),
     ]
 
@@ -333,7 +412,8 @@ async def test_consolidation_retry_honors_configured_output_language():
 
 
 @pytest.mark.asyncio
-async def test_consolidation_fails_closed_after_second_mismatch():
+@pytest.mark.parametrize("drift", [SPANISH, TYPESCRIPT_DRIFT])
+async def test_consolidation_fails_closed_after_second_mismatch(drift):
     from hindsight_api.engine.consolidation.consolidator import (
         _consolidate_batch_with_llm,
         _ConsolidationBatchResponse,
@@ -343,7 +423,7 @@ async def test_consolidation_fails_closed_after_second_mismatch():
     llm = AsyncMock()
     llm._provider_impl = None
     llm.provider = "test-language-drift"
-    rejected = _ConsolidationBatchResponse(creates=[_CreateAction(text=SPANISH, source_fact_ids=["m1"])])
+    rejected = _ConsolidationBatchResponse(creates=[_CreateAction(text=drift, source_fact_ids=["m1"])])
     llm.call.side_effect = [rejected, rejected]
 
     result = await _consolidate_batch_with_llm(
@@ -365,3 +445,37 @@ def test_terminal_language_mismatch_is_non_retryable_for_worker():
     from hindsight_api.engine.memory_engine import _is_non_retryable_task_error
 
     assert _is_non_retryable_task_error(GeneratedLanguageMismatch("still translated"))
+
+
+@pytest.mark.parametrize(
+    "literal",
+    [
+        '```json\n{"greeting": "你好世界", "farewell": "再见朋友"}\n```',
+        '`{"greeting": "你好世界", "farewell": "再见朋友"}`',
+    ],
+)
+def test_code_resident_source_evidence_remains_available(literal):
+    from hindsight_api.engine.language_script_guard import has_introduced_script_prose
+
+    source = f"The application uses the following localized greeting and farewell messages: {literal}"
+    output = "The locale maps greeting to 你好世界 and farewell to 再见朋友."
+    assert not has_introduced_script_prose(source, output)
+    assert has_introduced_script_prose(source, "The locale 必须保留 original messages，而且不能改变 meaning。")
+
+
+@pytest.mark.parametrize(
+    ("name", "inflected"),
+    [("Дмитрий", "Дмитрия"), ("ירושלים", "בירושלים"), ("القاهرة", "بالقاهرة")],
+)
+def test_single_word_script_name_variants_do_not_count_as_prose(name, inflected):
+    from hindsight_api.engine.language_script_guard import has_introduced_script_prose
+
+    source = f"The engineering team recorded a detailed planning discussion involving {name} for the upcoming project."
+    output = f"The discussion included {inflected} and covered the upcoming release."
+    assert not has_introduced_script_prose(source, output)
+    assert has_introduced_script_prose(
+        source, "Команда должна сохранить исходные данные и никогда не изменять их язык."
+    )
+    assert has_introduced_script_prose(source, "The report says Пользователь хочет an update.")
+    combined_source = source * 3 + " Дмитрий ירושלים القاهرة"
+    assert not has_introduced_script_prose(combined_source, "The notes mention Дмитрия, בירושלים, and بالقاهرة.")
