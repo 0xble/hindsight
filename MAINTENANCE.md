@@ -4,7 +4,7 @@
 
 Maintained fork: `0xble/hindsight` of `vectorize-io/hindsight`, branch `main`.
 Canonical checkout: `/Users/brianle/Repos/hindsight`. Accepted upstream baseline:
-`163fbb0ede6543af837b2c7c89e13012893d6a6b`. Publish only to `origin`; never
+`9e6d9e76cc52e918b24440355759991722a758a2`. Publish only to `origin`; never
 push to `upstream`. Source synchronization, publication, installation, and
 runtime activation are separate stages.
 
@@ -22,7 +22,7 @@ runtime activation are separate stages.
 ### HINDSIGHT-001: OCR evidence admission
 
 - **Status:** Active
-- **Commits:** `b114e6e`, `afa1631`, `fd5b8b1`, `3a13f5a`, `6447880`, `a1db3c9`
+- **Commits:** `2fa19ab`, `83d7ad3`, `8c107c6`, `19357a9`, `b684912`, `60128d9`
 - **Surfaces:** `engine/parsers/{__init__,ocr_quality}.py`, `tests/test_ocr_quality.py`
 - **Upstream issue:** https://github.com/vectorize-io/hindsight/issues/3897
 - **Upstream PR:** None after checked 2026-09-03
@@ -34,8 +34,8 @@ runtime activation are separate stages.
 ### HINDSIGHT-002: Preserve live service hardening
 
 - **Status:** Active
-- **Commits:** `fdc93d7` (`fix: preserve live hardening on fork upgrade`),
-  `3474278` (`fix: preserve materialized observation scoring after sync`)
+- **Commits:** `1a7e48c` (`fix: preserve live hardening on fork upgrade`),
+  `ae25d02` (`fix: preserve materialized observation scoring after sync`)
 - **Surfaces:** consolidation, PostgreSQL operations, structured output, config,
   monitoring documentation, and their focused tests
 - **Upstream issue:** None after checked 2026-09-03
@@ -61,7 +61,7 @@ runtime activation are separate stages.
 ### HINDSIGHT-004: Structured OCR terminal failures
 
 - **Status:** Active
-- **Commits:** `5516625`, `199747f`, `47f2865`
+- **Commits:** `1fe5fce`, `f405858`, `fd7fca5`
 - **Surfaces:** API operation-detail models/status persistence, checked-in OpenAPI
   contracts, generated Python/TypeScript/Go clients, and `scripts/generate-clients.sh`
 - **Behavior:** Failed `file_convert_retain` operations expose a stable, discriminated
@@ -81,7 +81,7 @@ runtime activation are separate stages.
 ### HINDSIGHT-005: Generated-language integrity
 
 - **Status:** Active
-- **Commits:** `dd4d903`, `2605d8f`, `a537c1c`, `829d407`, `cfa22cb`, `a2eeef1`
+- **Commits:** `ac28c9a`, `662064e`, `9f9130d`, `01fe0e5`, `e937bd6`, `c695c32`
 - **Surfaces:** generated-language source profiling, retain extraction,
   consolidation, configuration, metrics, multilingual documentation, and focused
   language-integrity tests
