@@ -345,3 +345,41 @@ async def test_output_detector_failure_fails_open_in_retry_mode() -> None:
         )
 
     metric.assert_called_once_with(stage="retain", mode=LanguageIntegrityMode.RETRY, outcome="error")
+
+
+@pytest.mark.parametrize(
+    "literal",
+    [
+        '```json\n{"greeting": "你好世界", "farewell": "再见朋友"}\n```',
+        '`{"greeting": "你好世界", "farewell": "再见朋友"}`',
+    ],
+)
+def test_code_resident_source_evidence_remains_available(literal):
+    source = f"The application uses the following localized greeting and farewell messages: {literal}"
+    output = "The locale maps greeting to 你好世界 and farewell to 再见朋友."
+    assert not has_introduced_script_prose(source, output)
+    assert has_introduced_script_prose(source, "The locale 必须保留 original messages，而且不能改变 meaning。")
+
+
+@pytest.mark.parametrize(
+    ("name", "inflected"),
+    [("Дмитрий", "Дмитрия"), ("ירושלים", "בירושלים"), ("القاهرة", "بالقاهرة")],
+)
+def test_single_word_script_name_variants_do_not_count_as_prose(name, inflected):
+    from hindsight_api.engine.language_integrity import has_introduced_script_prose
+
+    source = f"The engineering team recorded a detailed planning discussion involving {name} for the upcoming project."
+    output = f"The discussion included {inflected} and covered the upcoming release."
+    assert not has_introduced_script_prose(source, output)
+    assert has_introduced_script_prose(
+        source, "Команда должна сохранить исходные данные и никогда не изменять их язык."
+    )
+    assert has_introduced_script_prose(source, "The report says Пользователь хочет an update.")
+    combined_source = source * 3 + " Дмитрий ירושלים القاهرة"
+    assert not has_introduced_script_prose(combined_source, "The notes mention Дмитрия, בירושלים, and بالقاهرة.")
+
+
+def test_cjk_long_common_prefix_is_not_treated_as_name_inflection():
+    source = "The engineering handbook defines an example localization value used to verify the release: 你好世界朋友"
+    output = "The generated note introduces a different value: 你好世界再见"
+    assert has_introduced_script_prose(source, output)
