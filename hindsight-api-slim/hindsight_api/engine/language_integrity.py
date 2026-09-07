@@ -22,11 +22,14 @@ from typing import Any
 _CONFIDENCE_FLOOR = 0.80
 _MARGIN_FLOOR = 0.30
 _MIN_LETTERS = 20
+_MIN_NOVEL_SCRIPT_LETTERS = 4
+_MAX_NAME_RUN_LETTERS = 4
 _MIXED_MIN_LETTERS = 100
 _MIXED_MIN_FOREIGN_LETTERS = 40
 _MIXED_MIN_FOREIGN_SHARE = 0.20
 _ABSTAIN_LANGUAGES = frozenset({"zxx"})
 _SEGMENT_BOUNDARY = re.compile(r"(?:\n+|(?<=[.!?。！？])\s+)")
+_LITERAL_CODE = re.compile(r"```.*?```|`[^`]*`", re.DOTALL)
 _WORD = re.compile(r"[^\W\d_]+", re.UNICODE)
 logger = logging.getLogger(__name__)
 # Independent confirmation for same-script mismatches. Statistical language ID
@@ -223,6 +226,69 @@ def _script_counts(text: str) -> Counter[str]:
     return counts
 
 
+def _non_latin_script_runs(text: str) -> list[tuple[str, str]]:
+    runs: list[tuple[str, str]] = []
+    script = ""
+    letters: list[str] = []
+    for char in text:
+        if not unicodedata.category(char).startswith("L"):
+            if letters:
+                runs.append((script, "".join(letters)))
+                letters = []
+            script = ""
+            continue
+        next_script = _letter_script(char)
+        if next_script in {"LATIN", "OTHER"}:
+            if letters:
+                runs.append((script, "".join(letters)))
+                letters = []
+            script = ""
+            continue
+        if letters and next_script != script:
+            runs.append((script, "".join(letters)))
+            letters = []
+        script = next_script
+        letters.append(char)
+    if letters:
+        runs.append((script, "".join(letters)))
+    return runs
+
+
+def has_introduced_script_prose(source_text: str, generated_text: str) -> bool:
+    """Detect substantial novel non-Latin prose in an otherwise Latin source.
+
+    This stdlib-only signal runs before language-ID abstention. Literal code,
+    source-compatible foreign-script runs (including copied quotations), and
+    short name-sized runs are excluded so it remains narrower than a global
+    English-only policy.
+    """
+
+    source_text = _LITERAL_CODE.sub("", source_text)
+    generated_text = _LITERAL_CODE.sub("", generated_text)
+    source_counts = _script_counts(source_text)
+    if source_counts["LATIN"] < _MIN_NOVEL_SCRIPT_LETTERS:
+        return False
+    source_total = sum(source_counts.values())
+    source_foreign_letters = sum(count for script, count in source_counts.items() if script not in {"LATIN", "OTHER"})
+    if (
+        source_total
+        and source_foreign_letters >= _MIN_NOVEL_SCRIPT_LETTERS
+        and (source_foreign_letters / source_total >= _MIXED_MIN_FOREIGN_SHARE)
+    ):
+        return False
+
+    source_runs = _non_latin_script_runs(source_text)
+    generated_runs = _non_latin_script_runs(generated_text)
+    if len(generated_runs) == 1 and len(generated_runs[0][1]) <= _MAX_NAME_RUN_LETTERS:
+        return False
+
+    novel_counts: Counter[str] = Counter()
+    for script, run in generated_runs:
+        if not any(script == source_script and run in source_run for source_script, source_run in source_runs):
+            novel_counts[script] += len(run)
+    return any(count >= _MIN_NOVEL_SCRIPT_LETTERS for count in novel_counts.values())
+
+
 def _dominant_script(text: str) -> str:
     counts = _script_counts(text)
     return counts.most_common(1)[0][0] if counts else "OTHER"
@@ -317,6 +383,12 @@ def _prepare_context_sync(source_texts: Mapping[str, str]) -> LanguageContext:
     return LanguageContext(copied_texts, profiles)
 
 
+def _source_text_for_keys(context: LanguageContext, keys: tuple[str, ...]) -> str | None:
+    if not keys or any(key not in context.source_texts for key in keys):
+        return None
+    return "\n".join(context.source_texts[key] for key in keys)
+
+
 def _expected_source(context: LanguageContext, keys: tuple[str, ...]) -> tuple[LanguageProfile, str] | None:
     profiles = [context.source_profiles[key] for key in keys if key in context.source_profiles]
     actionable = [profile for profile in profiles if profile.actionable]
@@ -339,6 +411,19 @@ def _evaluate_sync(context: LanguageContext, generated: Sequence[GeneratedText])
         checked = 0
         abstained = 0
         for item in generated:
+            source_text = _source_text_for_keys(context, item.source_keys)
+            if source_text is not None and has_introduced_script_prose(source_text, item.text):
+                source_profile = context.source_profiles[item.source_keys[0]]
+                generated_profile = _profile(item.text, source=False)
+                checked += 1
+                mismatches.append(
+                    LanguageMismatch(
+                        key=item.key,
+                        source_language=source_profile.language,
+                        generated_language=generated_profile.language,
+                    )
+                )
+                continue
             expected = _expected_source(context, item.source_keys)
             if expected is None:
                 abstained += 1

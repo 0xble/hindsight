@@ -94,7 +94,10 @@ runtime activation are separate stages.
   Retain Batch API remains available in `off` and `observe`; `retry` and `reject`
   route through the live provider path so enforcement cannot be bypassed by batch results.
   The guard abstains on short, ambiguous, materially multilingual, and unsupported
-  same-script inputs, and it exempts copied foreign-script quotations.
+  same-script inputs. Before aggregate generated-language abstention, a dependency-free,
+  source-relative script check catches substantial unquoted non-Latin prose absent from
+  a source with minimum Latin evidence while preserving copied quotations, literal code,
+  short names, and legitimate non-English sources.
 - **Upstream issue:** [#4016](https://github.com/vectorize-io/hindsight/issues/4016),
   closed as not planned after checked 2026-09-04
 - **Upstream PR:** Direct predecessor
