@@ -33,6 +33,10 @@ jobs:
         working-directory: hindsight-api-slim
         run: >-
           uv run --frozen --extra all pytest
+          tests/test_codex_quota_reset_defer.py
+          tests/test_provider_quota_reset_defer.py
+          tests/test_op_cancellation.py
+          tests/test_worker.py
           tests/test_ocr_quality.py
           tests/test_consolidation_failure_isolation.py
           tests/test_consolidation_prompt_budget.py
