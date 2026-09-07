@@ -113,6 +113,28 @@ runtime activation are separate stages.
   non-destructive-by-default language-integrity policy and passes these focused
   regressions.
 
+## Upstream-owned recovery
+
+Codex quota deferral is provided by upstream [#4161](https://github.com/vectorize-io/hindsight/pull/4161)
+(`31da16737d98e808e21c4708379eee8c52aff546`). Processing-operation cancellation
+is provided by [#4177](https://github.com/vectorize-io/hindsight/pull/4177)
+(`b1de1b941857c62eb4963185450e93dcee96be70`). Both are included in the accepted
+baseline. Keep these paths upstream-owned rather than adding parallel fork fixes.
+
+- A validated provider quota-reset time defers work. Previously failed facts are
+  not automatically recovered by adopting this code. Diagnose and recover those
+  separately through the supported operation or consolidation APIs.
+- Cancel pending or processing operations through the normal cancellation API,
+  not direct database status updates. Cancellation is cooperative. Read back the
+  operation and affected batch parent before declaring recovery complete.
+- Per-bank consolidation claim serialization is already upstream-owned and was
+  omitted from the original HINDSIGHT-002 port. Do not restore that local layer.
+- Source inclusion is not runtime activation. Verify installed source identity,
+  migrations, health, and recovery behavior before claiming a service adopted it.
+
+Fork CI runs the upstream Codex/provider quota-deferral, cancellation, worker,
+and operation-status regressions alongside retained-patch regressions.
+
 ## Update and verify
 
 Fetch `origin` and `upstream`, reconcile onto current `upstream/main`, and update
