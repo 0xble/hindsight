@@ -43,6 +43,17 @@ runtime activation are separate stages.
 - **Regression:** `uv run --frozen --extra all pytest tests/test_consolidation_failure_isolation.py tests/test_consolidation_prompt_budget.py tests/test_db_abstraction.py tests/test_response_schema_validation.py`
 - **Rollback:** Revert the listed commits; do not alter production data during source rollback.
 - **Retire when:** Released upstream passes the focused regressions without these commits.
+- **Component assessment:** None of the remaining safeguards is replaced by quota
+  deferral or cancellation at the accepted baseline:
+  - Prompt budget: upstream lacks `consolidation_max_context_tokens` and the
+    pre-call token check that triggers adaptive splitting.
+  - Deterministic failures: upstream lacks the context-limit marker classifier
+    and does not classify `MentalModelRefreshError` as non-retryable.
+  - Scoring fence: upstream lacks the materialized candidate-source boundary
+    before observation scoring.
+  - Schema validation: upstream tests property `type` membership without
+    rejecting non-string values first, allowing unhashable types to escape as
+    `TypeError` instead of validation errors.
 
 ### HINDSIGHT-003: Fork-owned CI governance
 
@@ -112,6 +123,28 @@ runtime activation are separate stages.
 - **Retire when:** A released upstream build enforces an equivalent configurable,
   non-destructive-by-default language-integrity policy and passes these focused
   regressions.
+
+## Upstream-owned recovery
+
+Codex quota deferral is provided by upstream [#4161](https://github.com/vectorize-io/hindsight/pull/4161)
+(`31da16737d98e808e21c4708379eee8c52aff546`). Processing-operation cancellation
+is provided by [#4177](https://github.com/vectorize-io/hindsight/pull/4177)
+(`b1de1b941857c62eb4963185450e93dcee96be70`). Both are included in the accepted
+baseline. Keep these paths upstream-owned rather than adding parallel fork fixes.
+
+- A validated provider quota-reset time defers work. Previously failed facts are
+  not automatically recovered by adopting this code. Diagnose and recover those
+  separately through the supported operation or consolidation APIs.
+- Cancel pending or processing operations through the normal cancellation API,
+  not direct database status updates. Cancellation is cooperative. Read back the
+  operation and affected batch parent before declaring recovery complete.
+- Per-bank consolidation claim serialization is already upstream-owned and was
+  omitted from the original HINDSIGHT-002 port. Do not restore that local layer.
+- Source inclusion is not runtime activation. Verify installed source identity,
+  migrations, health, and recovery behavior before claiming a service adopted it.
+
+Fork CI runs the upstream Codex/provider quota-deferral, cancellation, worker,
+and operation-status regressions alongside retained-patch regressions.
 
 ## Update and verify
 
