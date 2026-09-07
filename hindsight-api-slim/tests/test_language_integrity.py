@@ -17,6 +17,7 @@ from hindsight_api.engine.language_integrity import (
     evaluate_language_integrity,
     find_mismatches,
     find_mismatches_safely,
+    has_introduced_script_prose,
     prepare_context,
     prepare_context_safely,
     record_outcome,
@@ -31,6 +32,16 @@ SPANISH_DRIFT = (
     "Se completó la resolución de los hallazgos importantes de revisión y de las sugerencias "
     "de endurecimiento mediante pruebas de regresión, seguidas de las validaciones canónicas."
 )
+TYPESCRIPT_SOURCE = (
+    "TypeScript operating rules require strict mode, a pinned compiler version, shared types when useful, "
+    "runtime validation distinct from compile-time types, generated clients bound to committed source schemas, "
+    "and domain rules outside React components, Server Actions, route handlers, and provider functions."
+)
+MIXED_LANGUAGE_TYPESCRIPT_DRIFT = (
+    "TypeScript stack 的 operating rules 要求启用 strict mode、pin compiler version、在有用时共享 types、"
+    "不要把 compile-time types 误认为 runtime validation、让 generated clients 绑定到 committed source schemas，"
+    "并且不要把 domain rules 藏在 React components、Server Actions、route handlers 或 provider functions 中。"
+)
 
 
 @pytest.mark.asyncio
@@ -40,6 +51,78 @@ async def test_detects_historical_same_script_translation() -> None:
     mismatches = await find_mismatches(context, [GeneratedText("fact:0", SPANISH_DRIFT, ("source",))])
 
     assert [(item.source_language, item.generated_language) for item in mismatches] == [("en", "es")]
+
+
+@pytest.mark.asyncio
+async def test_detects_introduced_han_prose_when_language_id_abstains() -> None:
+    context = await prepare_context({"source": TYPESCRIPT_SOURCE})
+
+    result = await evaluate_language_integrity(
+        context,
+        [GeneratedText("fact:0", MIXED_LANGUAGE_TYPESCRIPT_DRIFT, ("source",))],
+    )
+
+    assert result.checked == 1
+    assert [(item.source_language, item.generated_language) for item in result.mismatches] == [("en", "wuu")]
+
+
+@pytest.mark.asyncio
+async def test_detects_novel_script_prose_when_source_profile_abstains() -> None:
+    context = await prepare_context({"source": "Use strict mode."})
+
+    result = await evaluate_language_integrity(
+        context,
+        [GeneratedText("fact:0", "Use strict mode。请保持测试覆盖并启用安全校验。", ("source",))],
+    )
+
+    assert context.source_profiles["source"].actionable is False
+    assert result.checked == 1
+    assert len(result.mismatches) == 1
+
+
+@pytest.mark.parametrize(
+    ("source", "generated"),
+    [
+        (
+            TYPESCRIPT_SOURCE + ' The customer said, "这是保留的中文引文，不应被当作新的翻译内容。"',
+            'The customer said, "这是保留的中文引文，不应被当作新的翻译内容。"',
+        ),
+        (TYPESCRIPT_SOURCE, "Keep this literal code: `const 标签 = '这是示例代码中的文本内容';`"),
+        (TYPESCRIPT_SOURCE, "The attendee was 王小明."),
+    ],
+)
+def test_source_relative_script_check_exempts_quotes_code_and_names(source: str, generated: str) -> None:
+    assert has_introduced_script_prose(source, generated) is False
+
+
+@pytest.mark.parametrize("source", ["", "`const 标签 = '文本';`", "这是中文源文本。", "ქართული წყარო"])
+def test_source_relative_script_check_requires_latin_source_evidence(source: str) -> None:
+    assert has_introduced_script_prose(source, "Vitest 是 TypeScript 的首选 unit test runner。") is False
+
+
+def test_source_relative_script_check_rejects_novel_prose_despite_a_source_quote() -> None:
+    source = TYPESCRIPT_SOURCE + ' The customer said, "这是保留的中文引文，不应被当作新的翻译内容。"'
+    generated = """The customer said, "请使用不同的中文句子来测试新出现的翻译内容是否会被正确识别。"""
+
+    assert has_introduced_script_prose(source, generated) is True
+
+
+def test_source_relative_script_check_preserves_partial_copied_quote() -> None:
+    source = TYPESCRIPT_SOURCE + ' The customer said, "这是保留的中文引文，不应被当作新的翻译内容。"'
+
+    assert has_introduced_script_prose(source, "当作新的翻译") is False
+
+
+@pytest.mark.parametrize(
+    "generated",
+    [
+        "fixtures 应保持 explicit 和 safe。",
+        "Vitest 是 TypeScript 的首选 unit 和 integration test runner。",
+        "测试边界应优先选择 highest stable existing boundary，只要它仍然 deterministic 且 diagnosable。",
+    ],
+)
+def test_source_relative_script_check_catches_short_novel_prose(generated: str) -> None:
+    assert has_introduced_script_prose(TYPESCRIPT_SOURCE, generated) is True
 
 
 @pytest.mark.asyncio
