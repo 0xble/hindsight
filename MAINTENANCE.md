@@ -43,6 +43,17 @@ runtime activation are separate stages.
 - **Regression:** `uv run --frozen --extra all pytest tests/test_consolidation_failure_isolation.py tests/test_consolidation_prompt_budget.py tests/test_db_abstraction.py tests/test_response_schema_validation.py`
 - **Rollback:** Revert the listed commits; do not alter production data during source rollback.
 - **Retire when:** Released upstream passes the focused regressions without these commits.
+- **Component assessment:** None of the remaining safeguards is replaced by quota
+  deferral or cancellation at the accepted baseline:
+  - Prompt budget: upstream lacks `consolidation_max_context_tokens` and the
+    pre-call token check that triggers adaptive splitting.
+  - Deterministic failures: upstream lacks the context-limit marker classifier
+    and does not classify `MentalModelRefreshError` as non-retryable.
+  - Scoring fence: upstream lacks the materialized candidate-source boundary
+    before observation scoring.
+  - Schema validation: upstream tests property `type` membership without
+    rejecting non-string values first, allowing unhashable types to escape as
+    `TypeError` instead of validation errors.
 
 ### HINDSIGHT-003: Fork-owned CI governance
 
