@@ -263,6 +263,7 @@ def has_introduced_script_prose(source_text: str, generated_text: str) -> bool:
     English-only policy.
     """
 
+    source_evidence = source_text
     source_text = _LITERAL_CODE.sub("", source_text)
     generated_text = _LITERAL_CODE.sub("", generated_text)
     source_counts = _script_counts(source_text)
@@ -277,16 +278,37 @@ def has_introduced_script_prose(source_text: str, generated_text: str) -> bool:
     ):
         return False
 
-    source_runs = _non_latin_script_runs(source_text)
+    source_runs = _non_latin_script_runs(source_evidence)
     generated_runs = _non_latin_script_runs(generated_text)
     if len(generated_runs) == 1 and len(generated_runs[0][1]) <= _MAX_NAME_RUN_LETTERS:
         return False
 
     novel_counts: Counter[str] = Counter()
     for script, run in generated_runs:
-        if not any(script == source_script and run in source_run for source_script, source_run in source_runs):
+        if not any(
+            script == source_script and _script_run_is_evidenced(script, run, source_run)
+            for source_script, source_run in source_runs
+        ):
             novel_counts[script] += len(run)
     return any(count >= _MIN_NOVEL_SCRIPT_LETTERS for count in novel_counts.values())
+
+
+def _script_run_is_evidenced(script: str, generated: str, source: str) -> bool:
+    if generated in source:
+        return True
+    # Bounded affix changes preserve source-backed names in word-based scripts.
+    # Do not apply stem matching to CJK, where a few characters can be prose.
+    shorter = min(len(generated), len(source))
+    if script == "EAST_ASIAN" or shorter < 5 or abs(len(generated) - len(source)) > 2:
+        return False
+    if source in generated:
+        return True
+    common_prefix = 0
+    for left, right in zip(generated, source):
+        if left != right:
+            break
+        common_prefix += 1
+    return common_prefix >= max(4, shorter - 2)
 
 
 def _dominant_script(text: str) -> str:

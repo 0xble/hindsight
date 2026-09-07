@@ -97,7 +97,10 @@ runtime activation are separate stages.
   same-script inputs. Before aggregate generated-language abstention, a dependency-free,
   source-relative script check catches substantial unquoted non-Latin prose absent from
   a source with minimum Latin evidence while preserving copied quotations, literal code,
-  short names, and legitimate non-English sources.
+  short names, and legitimate non-English sources. Source code literals remain
+  available as evidence when a generated fact restates their values in prose.
+  Bounded source-backed affix matching preserves word-script name inflections
+  without raising the prose threshold or applying stem matching to CJK.
 - **Upstream issue:** [#4016](https://github.com/vectorize-io/hindsight/issues/4016),
   closed as not planned after checked 2026-09-04
 - **Upstream PR:** Direct predecessor
