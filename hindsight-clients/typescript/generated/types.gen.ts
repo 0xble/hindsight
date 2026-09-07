@@ -2292,30 +2292,6 @@ export type FeaturesInfo = {
 };
 
 /**
- * FileConvertRetainOperationDetails
- *
- * A deterministic terminal outcome from a file conversion operation.
- */
-export type FileConvertRetainOperationDetails = {
-  /**
-   * Operation Type
-   *
-   * Discriminator: which operation type this detail describes.
-   */
-  operation_type?: "file_convert_retain";
-  /**
-   * Failure Class
-   *
-   * Stable failure class callers may use to decide whether the source artifact is retryable.
-   */
-  failure_class: "low_quality_ocr";
-  /**
-   * The OCR quality gate that rejected the converted image text.
-   */
-  failure_reason: OcrQualityReason;
-};
-
-/**
  * FileContentBlock
  *
  * A non-image attachment — a PDF, a spreadsheet — in the position it was written.
@@ -2337,6 +2313,30 @@ export type FileContentBlock = {
    * Original filename, passed to providers that show one to the model (e.g. OpenAI).
    */
   filename?: string | null;
+};
+
+/**
+ * FileConvertRetainOperationDetails
+ *
+ * A deterministic terminal outcome from a file conversion operation.
+ */
+export type FileConvertRetainOperationDetails = {
+  /**
+   * Operation Type
+   *
+   * Discriminator: which operation type this detail describes.
+   */
+  operation_type?: "file_convert_retain";
+  /**
+   * Failure Class
+   *
+   * Stable failure class callers may use to decide whether the source artifact is retryable.
+   */
+  failure_class: "low_quality_ocr";
+  /**
+   * The OCR quality gate that rejected the converted image text.
+   */
+  failure_reason: OcrQualityReason;
 };
 
 /**
