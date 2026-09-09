@@ -152,7 +152,7 @@ Every maintenance run must synchronize `main` with the latest upstream default
 (`upstream/main`) while preserving each intentional registered patch. Reconcile and test the exact candidate,
 then publish to owned `origin`, or report `Blocked` with the concrete unresolved
 conflict, failed proof, or unavailable authority. Before reporting `Updated` or
-`Already current`, fetch `upstream` fresh, prove zero upstream-only commits with
+`Already current`, perform a fresh upstream fetch, prove zero upstream-only commits with
 `git rev-list --left-right --count upstream/main...main`, and read back owned
 `origin/main` SHA parity.
 
