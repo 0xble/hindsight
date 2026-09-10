@@ -83,6 +83,27 @@ async def _teardown_memory_engine(mem: MemoryEngine) -> None:
 
 
 @pytest.fixture(autouse=True)
+def _reset_config_cache():
+    """Let a test's ``monkeypatch.setenv`` actually reach the code under test.
+
+    ``HindsightConfig`` is built once and cached for the process, and every
+    ``HINDSIGHT_API_*`` value is now read off it rather than from ``os.environ`` at
+    the point of use. Without this, a test that sets an environment variable and
+    then calls the code would be read against whatever config the *first* test in
+    this xdist worker happened to build — the value would silently not apply, and
+    which tests noticed would depend on file ordering.
+
+    Clearing on the way out as well keeps a config built from one test's patched
+    environment from outliving it.
+    """
+    from hindsight_api.config import clear_config_cache
+
+    clear_config_cache()
+    yield
+    clear_config_cache()
+
+
+@pytest.fixture(autouse=True)
 def _cleanup_leaked_span_recorders():
     """Fail-safe for the process-global LLM-trace recorder registry (#2229).
 
@@ -505,11 +526,7 @@ def _skip_without_local_ml(what: str) -> None:
     """Skip rather than error when the local ML stack is not installed.
 
     The ``local-ml`` extra (sentence-transformers, transformers, torch) is optional: a
-    deployment using TEI/OpenAI/Cohere for embeddings and reranking never installs it,
-    and a free-threaded build may deliberately leave it out -- importing
-    ``sentence_transformers`` re-enables the GIL, so a process that wants to stay
-    free-threaded cannot load the local models. (torch, tokenizers, safetensors and
-    transformers are all fine on their own; see ``hindsight_api/_free_threading.py``.)
+    deployment using TEI/OpenAI/Cohere for embeddings and reranking never installs it.
 
     Without this, every DB-backed test collapses into an ImportError from deep inside
     fixture setup ("sentence-transformers is required for LocalSTEmbeddings"), which
