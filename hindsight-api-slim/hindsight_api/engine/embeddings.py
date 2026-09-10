@@ -46,8 +46,6 @@ from ..config import (
     ENV_EMBEDDINGS_GEMINI_API_KEY,
     ENV_EMBEDDINGS_LITELLM_DIMENSIONS,
     ENV_EMBEDDINGS_OPENAI_API_KEY,
-    ENV_EMBEDDINGS_OPENAI_BASE_URL,
-    ENV_EMBEDDINGS_OPENAI_MODEL,
     ENV_EMBEDDINGS_PROVIDER,
     ENV_EMBEDDINGS_TEI_URL,
     ENV_EMBEDDINGS_ZEROENTROPY_API_KEY,
@@ -159,9 +157,7 @@ class Embeddings(ABC):
     # max_concurrent_requests. Deliberately NOT one per encode() call: a pool per call
     # multiplies threads by every concurrent caller, and it makes the bound per-caller
     # when it is supposed to describe the embedding service — four concurrent retains
-    # would put 4 x max_concurrent_requests on the wire. That got sharper once the API
-    # gained several event loops in one process (#4067) on a free-threaded build (#4037),
-    # where those callers genuinely run at the same time. Shared here, the bound holds
+    # would put 4 x max_concurrent_requests on the wire. Shared here, the bound holds
     # process-wide and the thread count stays flat.
     #
     # Lock is class-level: creation is once per instance, so contention is nil, and it
@@ -668,16 +664,15 @@ class RemoteTEIEmbeddings(Embeddings):
         self.query_prefix = query_prefix
         self.passage_prefix = passage_prefix
         # One client per THREAD, not one per provider. `encode` is called through
-        # `run_in_executor`, so several threads share this object, and on a free-threaded build
-        # they genuinely run at once. httpcore's sync pool has at least one unguarded
-        # check-then-use on the shared connection state:
+        # `run_in_executor`, so several threads share this object. httpcore's sync pool has
+        # at least one unguarded check-then-use on the shared connection state:
         #
         #     keepalive_expired = self._expire_at is not None and now > self._expire_at
         #
         # Another thread can null `_expire_at` between the two halves, and the comparison then
         # raises `'>' not supported between instances of 'float' and 'NoneType'` — surfacing as
-        # a 500 from recall. Under the GIL the window is small enough that it effectively never
-        # happens; without it, it does.
+        # a 500 from recall. The window is narrow, but it is real: the executor runs these
+        # threads concurrently and nothing serialises them.
         #
         # A client per thread removes the sharing rather than trying to serialise around it. The
         # cost is one connection pool per executor thread, which is bounded by the executor.
@@ -2019,7 +2014,9 @@ class GeminiEmbeddings(Embeddings):
         # batches too, which is why RetryBudget takes a lock.
         budget = self.retry_policy.new_budget()
 
-        all_embeddings = self._encode_batched(texts, lambda batch: self._embed_batch(batch, budget))
+        all_embeddings = self._encode_batched(
+            texts, lambda batch: self._embed_batch(batch, budget), batch_size=self._effective_batch_size()
+        )
 
         # L2-normalize when output_dimensionality is set — Gemini only returns
         # normalized vectors at full 3072 dims; truncated dims need re-normalization
@@ -2033,6 +2030,30 @@ class GeminiEmbeddings(Embeddings):
             all_embeddings = (arr / norms).tolist()
 
         return all_embeddings
+
+    def _effective_batch_size(self) -> int:
+        """How many texts may share one ``embed_content`` call.
+
+        ``batch_size`` everywhere except the Vertex models that take exactly one
+        Content per request: on Vertex the SDK routes every embedding model whose
+        name contains ``gemini`` — bar ``gemini-embedding-001`` — and every ``maas``
+        model to the single-content ``embedContent`` endpoint, and raises
+        ``ValueError("The embedContent API for this model only supports one content
+        at a time.")`` client-side for anything longer. We cannot batch around that:
+        each text has to be its own Content to come back as its own vector (#4001),
+        so for these models one request per text is the only shape that returns the
+        1:1 alignment ``_embed_batch`` asserts. The Gemini API (non-Vertex) path has
+        no such limit and keeps the configured batch size.
+
+        Mirrored from ``google.genai._transformers.t_is_vertex_embed_content_model``
+        rather than imported: it is private, and a copy that drifts fails loudly
+        here (the SDK raises) instead of silently sending batches that never worked.
+        """
+        if not self._is_vertexai:
+            return self.batch_size
+        model = self.model.removeprefix("google/")
+        single_content_only = ("gemini" in model and model != "gemini-embedding-001") or "maas" in model
+        return 1 if single_content_only else self.batch_size
 
     def _embed_batch(self, batch: list[str], budget: "RetryBudget") -> list[list[float]]:
         """Embed one batch-sized slice through the google.genai sync client."""
@@ -2154,14 +2175,14 @@ def create_embeddings_from_env() -> Embeddings:
         )
     elif provider == "openai":
         # Use dedicated embeddings API key, or fall back to LLM API key
-        api_key = os.environ.get(ENV_EMBEDDINGS_OPENAI_API_KEY) or os.environ.get(ENV_LLM_API_KEY)
+        api_key = config.embeddings_openai_api_key
         if not api_key:
             raise ValueError(
                 f"{ENV_EMBEDDINGS_OPENAI_API_KEY} or {ENV_LLM_API_KEY} is required "
                 f"when {ENV_EMBEDDINGS_PROVIDER} is 'openai'"
             )
-        model = os.environ.get(ENV_EMBEDDINGS_OPENAI_MODEL, DEFAULT_EMBEDDINGS_OPENAI_MODEL)
-        base_url = os.environ.get(ENV_EMBEDDINGS_OPENAI_BASE_URL) or None
+        model = config.embeddings_openai_model
+        base_url = config.embeddings_openai_base_url
         return _with_request_concurrency(
             OpenAIEmbeddings(
                 api_key=api_key,
@@ -2175,7 +2196,7 @@ def create_embeddings_from_env() -> Embeddings:
             config,
         )
     elif provider == "openai-codex":
-        model = os.environ.get(ENV_EMBEDDINGS_OPENAI_MODEL, DEFAULT_EMBEDDINGS_OPENAI_MODEL)
+        model = config.embeddings_openai_model
         return _with_request_concurrency(
             CodexOAuthEmbeddings(
                 model=model,

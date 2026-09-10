@@ -26,7 +26,9 @@ from fastapi.responses import JSONResponse
 
 from hindsight_api.api import page_markdown
 from hindsight_api.api.disconnect import ClientDisconnectCancellationMiddleware, get_scope_cancellation_token
+from hindsight_api.api.observability import HttpObservabilityMiddleware
 from hindsight_api.api.passthrough_headers import collect_passthrough_headers
+from hindsight_api.api.unknown_params import UnknownParamsRoute, use_unknown_params_routes
 from hindsight_api.cancellation import OperationCancelledError
 from hindsight_api.engine.audit import (
     AuditEntry,
@@ -80,6 +82,35 @@ def _migrate_entity_labels_input(value: Any) -> Any:
     return value
 
 
+def _drop_additional_properties(schema: dict[str, Any]) -> None:
+    """Strip the ``additionalProperties: true`` that ``extra="allow"`` publishes.
+
+    The passthrough is a runtime property of the row models (see ``OpenRowModel``); it does
+    not belong in the spec, and openapi-generator 7.10.0's Python generator crashes on a
+    schema that pairs ``additionalProperties`` with a nullable ``anyOf`` property
+    ("Codegen Property not yet supported in getPydanticType"), which every row here has.
+    """
+    schema.pop("additionalProperties", None)
+
+
+class OpenRowModel(BaseModel):
+    """Base for the typed list/graph rows: named fields, but nothing is lost or dropped.
+
+    The rows these describe used to be ``dict[str, Any]`` (#4218), so every generated SDK
+    handed callers untyped dicts. Typing them must not change a single byte of the wire, so
+    a row model is *open* in both directions:
+
+    - ``extra="allow"`` carries through a key the server emits and the model does not
+      declare — a memories store that owns its own document or entity registry builds these
+      rows itself, and its extra columns must survive.
+    - ``ExcludeNoneRoute`` leaves these routes' nulls alone (see ``_model_must_keep_nulls``).
+      A ``dict`` row's null values were always emitted, and a caller indexing a row would
+      get a ``KeyError`` if typing the rows started omitting them.
+    """
+
+    model_config = ConfigDict(extra="allow", json_schema_extra=_drop_additional_properties)
+
+
 def _annotation_is_nullable(annotation: Any) -> bool:
     """True if the annotation is a Union that includes None (i.e. ``X | None``)."""
     if get_origin(annotation) in (Union, UnionType):
@@ -96,39 +127,45 @@ def _iter_models(annotation: Any) -> Iterable[type[BaseModel]]:
         yield from _iter_models(arg)
 
 
-def _model_has_required_nullable(model: type[BaseModel], seen: set[type[BaseModel]]) -> bool:
-    """True if the model (or any nested model) declares a required *and* nullable field.
+def _model_must_keep_nulls(model: type[BaseModel], seen: set[type[BaseModel]]) -> bool:
+    """True if dropping nulls from this model (or a nested one) would break clients.
 
-    Such a field is in the OpenAPI ``required`` set but may serialize to null, so dropping
-    it (via ``exclude_none``) would omit a key that strict generated clients expect to be
-    present. Routes whose response model contains one of these must keep emitting nulls to
-    stay wire-compatible with already-generated clients.
+    Two cases:
+
+    - A required *and* nullable field is in the OpenAPI ``required`` set but may serialize
+      to null, so dropping it (via ``exclude_none``) would omit a key strict generated
+      clients expect to be present.
+    - An ``OpenRowModel`` describes rows that shipped as bare dicts before #4218, whose
+      nulls were always on the wire because ``exclude_none`` does not reach inside a
+      ``dict[str, Any]`` value. Typing the rows must not start omitting those keys.
     """
     if model in seen:
         return False
     seen.add(model)
+    if issubclass(model, OpenRowModel):
+        return True
     for field in model.model_fields.values():
         annotation = field.annotation
         if field.is_required() and _annotation_is_nullable(annotation):
             return True
         for nested in _iter_models(annotation):
-            if _model_has_required_nullable(nested, seen):
+            if _model_must_keep_nulls(nested, seen):
                 return True
     return False
 
 
-def _response_model_has_required_nullable(response_model: Any) -> bool:
+def _response_model_must_keep_nulls(response_model: Any) -> bool:
     seen: set[type[BaseModel]] = set()
-    return any(_model_has_required_nullable(model, seen) for model in _iter_models(response_model))
+    return any(_model_must_keep_nulls(model, seen) for model in _iter_models(response_model))
 
 
 class ExcludeNoneRoute(APIRoute):
     """Route class that drops null fields from responses, preserving wire compatibility.
 
     ``response_model_exclude_none`` is enabled automatically for every route whose response
-    model has no required-and-nullable field. Routes that *do* have such a field (where an
-    omitted key would break strict clients) are left untouched and keep emitting nulls.
-    An explicit ``response_model_exclude_none`` passed to the route decorator is respected.
+    model can afford it. Routes whose model must keep its nulls (see
+    ``_model_must_keep_nulls``) are left untouched and keep emitting them. An explicit
+    ``response_model_exclude_none`` passed to the route decorator is respected.
     """
 
     def __init__(self, *args: Any, **kwargs: Any) -> None:
@@ -136,7 +173,7 @@ class ExcludeNoneRoute(APIRoute):
         if (
             not kwargs.get("response_model_exclude_none")
             and response_model is not None
-            and not _response_model_has_required_nullable(response_model)
+            and not _response_model_must_keep_nulls(response_model)
         ):
             kwargs["response_model_exclude_none"] = True
         super().__init__(*args, **kwargs)
@@ -221,7 +258,6 @@ from hindsight_api.metrics import (
     create_metrics_collector,
     get_metrics_collector,
     initialize_metrics,
-    normalize_http_endpoint,
     reset_metrics_collector,
 )
 from hindsight_api.models import RequestContext
@@ -481,6 +517,14 @@ class RecallResult(BaseModel):
         None  # IDs of source facts (observation type only, when source_facts is enabled)
     )
     scores: RecallScores | None = None  # Per-stage recall scores (final/reranker/semantic/text)
+    attachments: list["ChunkAttachment"] | None = Field(
+        default=None,
+        description=(
+            "Attachments this fact was drawn from, as recorded per fact at extraction time — the "
+            "same edge the memory read endpoints return, not everything its chunk happened to "
+            "carry. A fact stated in prose reports none. Omitted when there are none."
+        ),
+    )
 
 
 class EntityObservationResponse(BaseModel):
@@ -549,6 +593,44 @@ class EntityListResponse(BaseModel):
     offset: int
 
 
+class EntityGraphNodeData(OpenRowModel):
+    """The payload of one entity node in the co-occurrence graph.
+
+    Extra keys are allowed and passed through: the graph payload has always been an open
+    object, and typing it must not drop a field an older or newer server also returns.
+    """
+
+    id: str = Field(description="Entity ID")
+    label: str = Field(default="", description="Entity canonical name")
+    mentionCount: int = Field(default=0, description="How many times this entity was mentioned")
+    color: str | None = Field(default=None, description="Suggested node colour for rendering")
+
+
+class EntityGraphNode(OpenRowModel):
+    """An entity node, in the Cytoscape ``{"data": {...}}`` envelope the graph uses."""
+
+    data: EntityGraphNodeData
+
+
+class EntityGraphEdgeData(OpenRowModel):
+    """The payload of one co-occurrence edge."""
+
+    id: str = Field(description="Edge ID (``<source>-<target>``)")
+    source: str = Field(description="Source entity ID")
+    target: str = Field(description="Target entity ID")
+    linkType: str = Field(default="cooccurrence", description="Kind of relationship this edge represents")
+    weight: int = Field(default=0, description="Number of co-occurrences between the two entities")
+    color: str | None = Field(default=None, description="Suggested edge colour for rendering")
+    lineStyle: str | None = Field(default=None, description="Suggested edge line style for rendering")
+    lastCooccurred: str | None = Field(default=None, description="ISO 8601 timestamp of the most recent co-occurrence")
+
+
+class EntityGraphEdge(OpenRowModel):
+    """A co-occurrence edge, in the Cytoscape ``{"data": {...}}`` envelope the graph uses."""
+
+    data: EntityGraphEdgeData
+
+
 class EntityGraphResponse(BaseModel):
     """Response model for entity co-occurrence graph endpoint."""
 
@@ -580,8 +662,8 @@ class EntityGraphResponse(BaseModel):
         }
     )
 
-    nodes: list[dict[str, Any]]
-    edges: list[dict[str, Any]]
+    nodes: list[EntityGraphNode]
+    edges: list[EntityGraphEdge]
     total_entities: int
     total_edges: int
     limit: int
@@ -836,7 +918,7 @@ def chunk_attachments_of(
     return list(seen.values()) or None
 
 
-def _attachment_payload(bank_id: str, record: "StoredAttachment") -> dict[str, Any]:
+def _attachment_model(bank_id: str, record: "StoredAttachment") -> ChunkAttachment:
     """One attachment, in the shape every read surface returns."""
     return ChunkAttachment(
         id=record.short_id,
@@ -846,7 +928,12 @@ def _attachment_payload(bank_id: str, record: "StoredAttachment") -> dict[str, A
         byte_size=record.byte_size,
         filename=record.filename,
         url=bank_attachment_url(bank_id, record.short_id),
-    ).model_dump()
+    )
+
+
+def _attachment_payload(bank_id: str, record: "StoredAttachment") -> dict[str, Any]:
+    """The same attachment as a plain dict, for the endpoints that return one."""
+    return _attachment_model(bank_id, record).model_dump()
 
 
 async def _attach_to_memories(
@@ -875,6 +962,36 @@ async def _attach_to_memories(
         records = by_unit.get(str(item.get("id"))) if isinstance(item, dict) else None
         if records:
             item["attachments"] = [_attachment_payload(bank_id, record) for record in records]
+
+
+async def _attach_to_recall_results(
+    memory_app: "MemoryEngine",
+    bank_id: str,
+    results: "list[RecallResult]",
+    request_context: RequestContext,
+) -> None:
+    """Add ``attachments`` to recall results — the same per-fact edge as :func:`_attach_to_memories`.
+
+    Recall already reports the chunk each fact came from, and a chunk lists every
+    attachment its text references; that is strictly coarser. A chunk holding a
+    screenshot also holds the prose around it, so going through the chunk shows
+    the screenshot against the paragraph that never mentioned it. This reads the
+    edge the extractor recorded instead.
+
+    One lookup for the whole page. For a bank that has retained no attachments it
+    is a single indexed read of the ids column that returns nothing to resolve,
+    which is why this is unconditional rather than another `include` flag.
+    """
+    unit_ids = [result.id for result in results if result.id]
+    if not unit_ids:
+        return
+    by_unit = await memory_app.attachments_for_memories(bank_id, unit_ids, request_context)
+    if not by_unit:
+        return
+    for result in results:
+        records = by_unit.get(str(result.id))
+        if records:
+            result.attachments = [_attachment_model(bank_id, record) for record in records]
 
 
 def canonicalize_item_content(
@@ -1523,6 +1640,15 @@ class ReflectResponse(BaseModel):
         default=None,
         description="Structured output parsed according to the request's response_schema. Only present when response_schema was provided in the request.",
     )
+    structured_output_error: str | None = Field(
+        default=None,
+        description=(
+            "Why structured output could not be produced. Present only when a response_schema was "
+            "given and the extraction call failed (provider error, timeout, unparseable output). "
+            "A missing structured_output *without* this field means the answer held nothing "
+            "matching the schema — the reflect itself still succeeded either way."
+        ),
+    )
     usage: TokenUsage | None = Field(
         default=None,
         description="Token usage metrics for LLM calls during reflection.",
@@ -1884,6 +2010,68 @@ class BankConfigResponse(BaseModel):
     overrides: dict[str, Any] = Field(description="Bank-specific configuration overrides only (Python field names)")
 
 
+class MemoryGraphNodeData(OpenRowModel):
+    """The payload of one memory-unit node in the memory graph.
+
+    Extra keys are allowed and passed through, so typing this never drops a field the
+    server also returns.
+    """
+
+    id: str = Field(description="Memory unit ID")
+    label: str = Field(default="", description="Short display label (the text, truncated)")
+    text: str = Field(default="", description="Full memory unit text")
+    date: str = Field(default="", description="Event date (ISO 8601), empty when unknown")
+    context: str = Field(default="", description="Context the memory was captured in")
+    entities: str = Field(default="", description="Comma-separated entity names, 'None' when there are none")
+    color: str | None = Field(default=None, description="Suggested node colour for rendering")
+
+
+class MemoryGraphNode(OpenRowModel):
+    """A memory-unit node, in the Cytoscape ``{"data": {...}}`` envelope the graph uses."""
+
+    data: MemoryGraphNodeData
+
+
+class MemoryGraphEdgeData(OpenRowModel):
+    """The payload of one edge between two memory units."""
+
+    id: str = Field(description="Edge ID (``<source>-<target>-<linkType>``)")
+    source: str = Field(description="Source memory unit ID")
+    target: str = Field(description="Target memory unit ID")
+    linkType: str = Field(default="", description="Link kind: 'entity', 'semantic', 'temporal', ...")
+    weight: float = Field(default=0.0, description="Link strength")
+    entityName: str = Field(default="", description="Shared entity for an 'entity' link, empty otherwise")
+    color: str | None = Field(default=None, description="Suggested edge colour for rendering")
+    lineStyle: str | None = Field(default=None, description="Suggested edge line style for rendering")
+
+
+class MemoryGraphEdge(OpenRowModel):
+    """An edge between two memory units, in the Cytoscape ``{"data": {...}}`` envelope."""
+
+    data: MemoryGraphEdgeData
+
+
+class MemoryGraphTableRow(OpenRowModel):
+    """One row of the flat table view that accompanies the memory graph."""
+
+    id: str = Field(description="Memory unit ID")
+    text: str = Field(default="", description="Memory unit text")
+    context: str = Field(default="", description="Context the memory was captured in ('N/A' when absent)")
+    occurred_start: str | None = Field(default=None, description="Start of the event interval (ISO 8601)")
+    occurred_end: str | None = Field(default=None, description="End of the event interval (ISO 8601)")
+    mentioned_at: str | None = Field(default=None, description="When the memory was mentioned (ISO 8601)")
+    date: str | None = Field(
+        default=None, description="Deprecated: formatted event date, kept for backwards compatibility"
+    )
+    entities: str = Field(default="", description="Comma-separated entity names, 'None' when there are none")
+    document_id: str | None = Field(default=None, description="Source document ID")
+    chunk_id: str | None = Field(default=None, description="Source chunk ID")
+    fact_type: str | None = Field(default=None, description="Fact type: world, experience or observation")
+    tags: list[str] = FieldWithDefault(list, description="Tags on this memory unit")
+    created_at: str | None = Field(default=None, description="When the memory unit was created (ISO 8601)")
+    proof_count: int | None = Field(default=None, description="How many times the fact was independently seen")
+
+
 class GraphDataResponse(BaseModel):
     """Response model for graph data endpoint."""
 
@@ -1891,10 +2079,20 @@ class GraphDataResponse(BaseModel):
         json_schema_extra={
             "example": {
                 "nodes": [
-                    {"id": "1", "label": "Alice works at Google", "type": "world"},
-                    {"id": "2", "label": "Bob went hiking", "type": "world"},
+                    {"data": {"id": "1", "label": "Alice works at Google", "text": "Alice works at Google"}},
+                    {"data": {"id": "2", "label": "Bob went hiking", "text": "Bob went hiking"}},
                 ],
-                "edges": [{"from": "1", "to": "2", "type": "semantic", "weight": 0.8}],
+                "edges": [
+                    {
+                        "data": {
+                            "id": "1-2-semantic",
+                            "source": "1",
+                            "target": "2",
+                            "linkType": "semantic",
+                            "weight": 0.8,
+                        }
+                    }
+                ],
                 "table_rows": [
                     {
                         "id": "abc12345...",
@@ -1910,9 +2108,9 @@ class GraphDataResponse(BaseModel):
         }
     )
 
-    nodes: list[dict[str, Any]]
-    edges: list[dict[str, Any]]
-    table_rows: list[dict[str, Any]]
+    nodes: list[MemoryGraphNode]
+    edges: list[MemoryGraphEdge]
+    table_rows: list[MemoryGraphTableRow]
     total_units: int
     limit: int
 
@@ -1950,6 +2148,41 @@ class ObservationScopesResponse(BaseModel):
     offset: int = Field(description="Offset this page started at")
 
 
+class MemoryUnitListItem(OpenRowModel):
+    """One row of the memory-unit listing.
+
+    Extra keys are allowed and passed through: the rows used to be an open object, and
+    typing them must not drop a field an older or newer server also returns.
+    """
+
+    id: str = Field(description="Memory unit ID")
+    text: str = Field(default="", description="The fact text")
+    context: str = Field(default="", description="Context the memory was captured in")
+    date: str = Field(default="", description="Event date (ISO 8601), empty when unknown")
+    fact_type: str | None = Field(default=None, description="Fact type: world, experience or observation")
+    document_id: str | None = Field(default=None, description="Source document ID")
+    mentioned_at: str | None = Field(default=None, description="When the memory was mentioned (ISO 8601)")
+    occurred_start: str | None = Field(default=None, description="Start of the event interval (ISO 8601)")
+    occurred_end: str | None = Field(default=None, description="End of the event interval (ISO 8601)")
+    entities: str = Field(default="", description="Comma-separated canonical entity names")
+    chunk_id: str | None = Field(default=None, description="Source chunk ID")
+    proof_count: int = Field(default=1, description="How many times the fact was independently seen")
+    tags: list[str] = FieldWithDefault(list, description="Tags on this memory unit")
+    metadata: dict[str, Any] = FieldWithDefault(dict, description="Arbitrary metadata stored with the memory")
+    consolidated_at: str | None = Field(default=None, description="When consolidation last succeeded (ISO 8601)")
+    consolidation_failed_at: str | None = Field(
+        default=None, description="When consolidation last failed permanently (ISO 8601)"
+    )
+    state: str = Field(default="valid", description="Curation state: 'valid' or 'invalidated'")
+    invalidation_reason: str | None = Field(default=None, description="Why the fact was invalidated, if it was")
+    invalidated_at: str | None = Field(default=None, description="When the fact was invalidated (ISO 8601)")
+    edited_at: str | None = Field(default=None, description="When the fact was last edited by hand (ISO 8601)")
+    updated_at: str | None = Field(default=None, description="Write watermark for this row (ISO 8601)")
+    source_memory_ids: list[str] = FieldWithDefault(
+        list, description="An observation's source facts; empty for a source fact"
+    )
+
+
 class ListMemoryUnitsResponse(BaseModel):
     """Response model for list memory units endpoint."""
 
@@ -1962,8 +2195,10 @@ class ListMemoryUnitsResponse(BaseModel):
                         "text": "Alice works at Google on the AI team",
                         "context": "Work conversation",
                         "date": "2024-01-15T10:30:00Z",
-                        "type": "world",
-                        "entities": "Alice (PERSON), Google (ORGANIZATION)",
+                        "fact_type": "world",
+                        "entities": "Alice, Google",
+                        "state": "valid",
+                        "tags": ["user:alice"],
                         "metadata": {"source": "slack", "channel": "engineering"},
                     }
                 ],
@@ -1974,7 +2209,7 @@ class ListMemoryUnitsResponse(BaseModel):
         }
     )
 
-    items: list[dict[str, Any]]
+    items: list[MemoryUnitListItem]
     total: int
     limit: int
     offset: int
@@ -2171,6 +2406,25 @@ class DryRunExtractRequest(BaseModel):
         return v
 
 
+class DocumentListItem(OpenRowModel):
+    """One row of the document listing — a document's metadata without its text.
+
+    Extra keys are allowed and passed through: the rows used to be an open object, and
+    typing them must not drop a field an older or newer server also returns.
+    """
+
+    id: str = Field(description="Document ID")
+    bank_id: str = Field(default="", description="Bank the document belongs to")
+    content_hash: str | None = Field(default=None, description="Hash of the document text, for idempotent retain")
+    created_at: str = Field(default="", description="When the document was first retained (ISO 8601)")
+    updated_at: str = Field(default="", description="When the document was last written (ISO 8601)")
+    text_length: int = Field(default=0, description="Length of the stored document text in characters")
+    memory_unit_count: int = Field(default=0, description="Number of memory units extracted from this document")
+    retain_params: dict[str, Any] | None = Field(default=None, description="Parameters used during retain")
+    document_metadata: dict[str, Any] | None = Field(default=None, description="Document metadata")
+    tags: list[str] = FieldWithDefault(list, description="Tags associated with this document")
+
+
 class ListDocumentsResponse(BaseModel):
     """Response model for list documents endpoint."""
 
@@ -2196,7 +2450,7 @@ class ListDocumentsResponse(BaseModel):
         }
     )
 
-    items: list[dict[str, Any]]
+    items: list[DocumentListItem]
     total: int
     limit: int
     offset: int
@@ -2295,8 +2549,9 @@ class UpdateDocumentRequest(BaseModel):
 
     tags: list[str] | None = Field(
         default=None,
-        description="New tags for the document and its memory units. "
-        "Triggers observation invalidation and re-consolidation.",
+        description="The complete new set of tags for the document and its memory units — this "
+        "REPLACES the existing tags rather than adding to them, so omitting a tag drops it and "
+        "`[]` clears them all. Triggers observation invalidation and re-consolidation.",
     )
 
 
@@ -4401,7 +4656,6 @@ def create_app(
     memory: MemoryEngine,
     initialize_memory: bool = True,
     http_extension: HttpExtension | None = None,
-    run_background_tasks: bool = True,
 ) -> FastAPI:
     """
     Create and configure the FastAPI application.
@@ -4412,10 +4666,6 @@ def create_app(
         initialize_memory: Whether to initialize memory system on startup (default: True)
         http_extension: Optional HTTP extension to mount custom endpoints under /extension/.
                        If None, attempts to load from HINDSIGHT_API_HTTP_EXTENSION env var.
-        run_background_tasks: Whether this app starts the worker poller (default: True).
-                       Set False for the extra event loops of the multi-loop launcher: the
-                       worker id identifies the *process*, so a second poller under the same
-                       id would claim the same tasks rather than add capacity.
 
     Returns:
         Configured FastAPI application
@@ -4425,6 +4675,14 @@ def create_app(
         In that case, you should call memory.initialize() manually before starting the server
         and memory.close() when shutting down.
     """
+
+    # Arm profiling here as well as in main(): with `--workers N`, uvicorn spawns worker
+    # processes that import the app but never run main(), so arming only there profiles
+    # the supervisor -- which does nothing but waitpid() -- and reports an empty process
+    # while every request is served elsewhere. install() is idempotent.
+    from hindsight_api.profiling import install as _install_profiling
+
+    _install_profiling()
     # Load HTTP extension from environment if not provided
     if http_extension is None:
         http_extension = load_extension("HTTP", HttpExtension)
@@ -4488,7 +4746,7 @@ def create_app(
 
         # Start worker poller if the backend supports it.
         # All current backends (PostgreSQL, Oracle) support async worker/poller.
-        if run_background_tasks and config.worker_enabled and memory._backend.supports_worker_poller:
+        if config.worker_enabled and memory._backend.supports_worker_poller:
             from ..config import DEFAULT_DATABASE_SCHEMA
             from ..utils import warn_if_container_default_worker_id
 
@@ -4512,7 +4770,7 @@ def create_app(
             )
             poller_task = asyncio.create_task(poller.run())
             logging.info(f"Worker poller started (worker_id={worker_id})")
-        elif run_background_tasks and config.worker_enabled and not memory._backend.supports_worker_poller:
+        elif config.worker_enabled and not memory._backend.supports_worker_poller:
             logging.warning(
                 "Worker poller disabled — backend does not support async operations. "
                 "Tasks (mental model refresh, consolidation) will run synchronously."
@@ -4619,99 +4877,13 @@ def create_app(
 
     app.openapi = _patched_openapi  # type: ignore[assignment]
 
-    # Add unknown parameters detection middleware
-    @app.middleware("http")
-    async def unknown_params_middleware(request, call_next):
-        """Detect unknown query params and body fields, log warning and set response header."""
-        import inspect
-
-        from starlette.routing import Match
-
-        ignored_params: list[str] = []
-
-        # --- Query parameters ---
-        if request.query_params:
-            for route in app.routes:
-                match, _ = route.matches(request.scope)
-                if match == Match.FULL:
-                    endpoint = getattr(route, "endpoint", None)
-                    if endpoint:
-                        sig = inspect.signature(endpoint)
-                        declared = set(sig.parameters.keys())
-                        path_params = set(getattr(route, "param_convertors", {}).keys()) | set(
-                            request.path_params.keys()
-                        )
-                        known_query = declared - path_params
-                        for name in request.query_params:
-                            if name not in known_query and name not in path_params:
-                                ignored_params.append(name)
-                    break
-
-        # --- Body fields ---
-        body_ignored: list[str] = []
-        content_type = request.headers.get("content-type", "")
-        if request.method in ("POST", "PUT", "PATCH") and "application/json" in content_type:
-            try:
-                body_bytes = await request.body()
-                if body_bytes:
-                    body_json = json.loads(body_bytes)
-                    if isinstance(body_json, dict):
-                        for route in app.routes:
-                            match, _ = route.matches(request.scope)
-                            if match == Match.FULL:
-                                endpoint = getattr(route, "endpoint", None)
-                                if endpoint:
-                                    sig = inspect.signature(endpoint)
-                                    for param in sig.parameters.values():
-                                        ann = param.annotation
-                                        if isinstance(ann, type) and issubclass(ann, BaseModel):
-                                            known_fields = set(ann.model_fields.keys())
-                                            for field in ann.model_fields.values():
-                                                # Pydantic models can expose public JSON names via aliases
-                                                # (for example RetainRequest.async_ is sent as "async").
-                                                # Treat aliases as known fields so valid client payloads are
-                                                # not reported as ignored parameters.
-                                                if isinstance(field.alias, str):
-                                                    known_fields.add(field.alias)
-                                            for key in body_json:
-                                                if key not in known_fields:
-                                                    body_ignored.append(key)
-                                            break
-                                break
-            except (json.JSONDecodeError, UnicodeDecodeError):
-                pass
-
-        all_ignored = ignored_params + body_ignored
-
-        response = await call_next(request)
-
-        if all_ignored:
-            ignored_str = ", ".join(all_ignored)
-            logger.warning(
-                "Unknown parameters ignored: [%s] for %s %s",
-                ignored_str,
-                request.method,
-                request.url.path,
-            )
-            response.headers["X-Ignored-Params"] = ignored_str
-
-        return response
-
-    # Add HTTP metrics middleware
-    @app.middleware("http")
-    async def http_metrics_middleware(request, call_next):
-        """Record HTTP request metrics."""
-        # Template id segments (bank ids, UUIDs, numeric ids) so the endpoint
-        # metric label stays bounded-cardinality.
-        path = normalize_http_endpoint(request.url.path)
-
-        status_code = [500]  # Default to 500, will be updated
-        metrics_collector = get_metrics_collector()
-
-        with metrics_collector.record_http_request(request.method, path, lambda: status_code[0]):
-            response = await call_next(request)
-            status_code[0] = response.status_code
-            return response
+    # Unknown-param reporting and HTTP metrics used to be two
+    # `@app.middleware("http")` handlers. Both are gone: that decorator installs a
+    # Starlette BaseHTTPMiddleware, whose per-request child task and memory-stream
+    # hops cost ~3x the throughput of the whole endpoint on cheap routes. The
+    # reporting now happens in the route class (already resolved, nothing to
+    # re-discover) and the metrics in a pure-ASGI middleware installed below.
+    app.router.route_class = UnknownParamsRoute
 
     # Register all routes
     _register_routes(app)
@@ -4719,12 +4891,17 @@ def create_app(
     # Mount HTTP extension router if available
     if http_extension:
         extension_router = http_extension.get_router(memory)
+        # include_router does not apply the app's route_class to a router's own
+        # routes, so without this the extension loses the unknown-param reporting
+        # the old middleware gave it (it sat above the router).
+        use_unknown_params_routes(extension_router)
         app.include_router(extension_router, prefix="/ext", tags=["Extension"])
         logging.info("HTTP extension router mounted at /ext/")
 
         # Mount root router if provided (for well-known endpoints, etc.)
         root_router = http_extension.get_root_router(memory)
         if root_router:
+            use_unknown_params_routes(root_router)
             app.include_router(root_router)
             logging.info("HTTP extension root router mounted")
 
@@ -4734,6 +4911,9 @@ def create_app(
     # Request.is_disconnected(), so the only way to observe an abandoned request
     # is to own the raw ASGI receive channel from outside it (issue #2122).
     app.add_middleware(ClientDisconnectCancellationMiddleware)
+    # Pure ASGI, so unlike the BaseHTTPMiddleware it replaces it adds no task hop:
+    # records the request metrics and attaches X-Ignored-Params for the route class.
+    app.add_middleware(HttpObservabilityMiddleware)
 
     _instrument_app_for_tracing(app, config)
 
@@ -5548,6 +5728,7 @@ def _register_routes(app: FastAPI):
                 )
 
             recall_results = [_fact_to_result(fact) for fact in core_result.results]
+            await _attach_to_recall_results(app.state.memory, bank_id, recall_results, request_context)
 
             # Convert chunks from engine to HTTP API format
             chunks_response = None
@@ -5762,6 +5943,7 @@ def _register_routes(app: FastAPI):
                 text=core_result.text,
                 based_on=based_on_result,
                 structured_output=core_result.structured_output,
+                structured_output_error=core_result.structured_output_error,
                 usage=core_result.usage,
                 trace=trace_result,
             )
@@ -6096,14 +6278,31 @@ def _register_routes(app: FastAPI):
         tags_filter: list[str] | None = Query(None, alias="tags", description="Filter by tags"),
         tags_match: Literal["any", "all", "exact"] = Query("any", description="How to match tags"),
         detail: Literal["metadata", "content", "full"] = Query(
-            "full",
-            description="Detail level: 'metadata' (names/tags only), 'content' (adds content/config), 'full' (includes reflect_response)",
+            "metadata",
+            description=(
+                "Detail level: 'metadata' (names/tags/staleness — the default), "
+                "'content' (adds content/config), 'full' (includes reflect_response). "
+                "Content is opt-in: it is returned only when explicitly requested."
+            ),
         ),
         limit: int = Query(100, ge=1, le=1000),
         offset: int = Query(0, ge=0),
         request_context: RequestContext = Depends(get_request_context),
     ):
-        """List mental models for a bank."""
+        """List mental models for a bank.
+
+        Defaults to metadata only (id, name, tags, staleness, timestamps).
+        Content is now opt-in via ``detail=content``/``full`` rather than the
+        default: returning every model's synthesized content by default bloated
+        callers' context and let a single list pull a whole bank's synthesized
+        knowledge in bulk. To read one model, prefer
+        GET .../mental-models/{id} (get_mental_model).
+
+        Note that ``detail=content``/``full`` still validates as one
+        ``LIST_MENTAL_MODELS`` bank read, not as one read per returned model —
+        the default is what keeps bulk content off the wire, not the
+        authorization surface.
+        """
         try:
             page = await app.state.memory.list_mental_models(
                 bank_id=bank_id,
@@ -7227,9 +7426,15 @@ def _register_routes(app: FastAPI):
         response_model=UpdateDocumentResponse,
         summary="Update document",
         description="Update mutable fields on a document without re-processing its content.\n\n"
-        "**Tags** (`tags`): Propagated to all associated memory units. Observations derived from "
+        "**Tags** (`tags`): The array REPLACES the document's tags, it is not merged into them — "
+        "send the complete set you want the document to end up with, and any tag you leave out is "
+        "dropped. An empty array (`[]`) therefore clears every tag; only omitting the field "
+        "entirely is rejected (422).\n\n"
+        "The new tags are propagated to all associated memory units. Observations derived from "
         "those units are invalidated and queued for re-consolidation under the new tags. "
-        "Co-source memories from other documents that shared those observations are also reset.\n\n"
+        "Co-source memories from other documents that shared those observations are also reset. "
+        "Tags are compared as a set, so re-sending the tags a document already has (in any order) "
+        "changes nothing and queues no re-consolidation.\n\n"
         "At least one field must be provided.",
         operation_id="update_document",
         tags=["Documents"],
@@ -7701,6 +7906,23 @@ def _register_routes(app: FastAPI):
         "Use dry_run=true to validate the manifest without applying changes.",
         operation_id="import_bank_template",
         tags=["Bank Templates"],
+        # Keep parsing and validation in the handler so malformed JSON and
+        # template errors retain the API's established 400 response format,
+        # while publishing the typed manifest schema for OpenAPI clients.
+        openapi_extra={
+            "requestBody": {
+                "required": True,
+                "content": {
+                    "application/json": {
+                        "schema": {
+                            "title": "Manifest",
+                            "description": "Bank template manifest",
+                            "$ref": "#/components/schemas/BankTemplateManifest",
+                        }
+                    }
+                },
+            }
+        },
     )
     @audited("import_bank_template", request_param=None)
     async def api_import_bank_template(
@@ -7711,7 +7933,7 @@ def _register_routes(app: FastAPI):
     ):
         """Import a bank template manifest."""
         try:
-            # Parse raw JSON and validate against the Pydantic model manually
+            # Parse and validate against the Pydantic model manually
             # so we can return clean error messages instead of raw 422s.
             raw_body = await request.json()
             from pydantic import ValidationError
