@@ -92,6 +92,12 @@ results = await asyncio.gather(*tasks, return_exceptions=True)
 - **Prefer moving the work down a layer when it needs routing context.** Anything that has to know which endpoint was hit — its parameters, its signature, its body model — belongs in an `APIRoute` subclass (`app.router.route_class = ...`), not in a middleware that re-derives the route by walking `app.routes` and calling `route.matches()`. The route is already resolved there, and per-route facts can be computed once at startup instead of per request. See `api/unknown_params.py`. Note that `include_router` does not apply the app's `route_class` to a router's own routes — FastAPI <= 0.140 keeps each source route's class, >= 0.141 materialises from the source router's `route_class` — so routes from an included/extension router need `use_unknown_params_routes(router)` before the include.
 - **Header values built from client input must be sanitised** before they reach `message["headers"]`: query-param and body-field names are percent-decoded attacker input, so a non-latin-1 name raises mid-`send` (a 500 from a typo) and a name containing CR/LF splits the response.
 
+### Outbound HTTP: aiohttp, async only
+- **Production code makes HTTP calls with aiohttp, never httpx.** httpx's async client costs noticeably more per request than aiohttp (httpcore pool, anyio layers), and that overhead lands on the hottest paths we have — embeddings, reranking and LLM calls on every retain and recall. Build clients with `hindsight_api/engine/aiohttp_session.py`: `LoopLocalSession` (one `ClientSession` per event loop, created lazily — never create a session in `__init__` or in an `initialize()` that may run under `asyncio.run` in another thread), `per_phase_timeout` (httpx-style per-phase timeouts; aiohttp's `total` would cut off a long streamed body), and `raise_for_status` (raises `UpstreamHTTPError`, which keeps the body and a `status_code` that `remote_retry` classifies on).
+- **Sync HTTP is forbidden in production code** — no `requests`, `urllib.request`, `urllib3`, `http.client`, `httpx.Client`, and no sync SDK client (`openai.OpenAI`, `cohere.Client`, `litellm.embedding`, …) where the SDK has an async one. A sync call either blocks the event loop or needs a thread per in-flight request; use the async form on the loop instead. Wrapping a sync call in `asyncio.to_thread` / `run_in_executor` is not a fix. The only accepted exception is an SDK that offers no async API at all (e.g. `google.auth` credential refresh) — run that in a thread and say why in a comment.
+- **Enforced by ruff** (`TID251`, `banned-api` in `hindsight-api-slim/pyproject.toml`). `import httpx` is allowed only to *configure or classify* a third-party SDK that is built on it (`llm_transport.build_sdk_timeout` for the OpenAI/Anthropic SDKs, `remote_retry` classifying their errors), with a `# noqa: TID251` plus a comment naming the SDK. Reject any other `noqa: TID251`. `http_probe.py` is the one per-file exemption (stdlib-only readiness probe, its own process).
+- **Tests are exempt.** FastAPI's `TestClient` / `httpx.ASGITransport` are fine. To stub an upstream for an aiohttp client, serve it from `tests/aiohttp_stub.py::stub_server` rather than mocking the session.
+
 ### Bank/Tenant Isolation in Queries
 - **Bank isolation is a hard security invariant: no query may read, count, update, or delete another bank's rows.** Tenant isolation is enforced at the schema level (the resolved `search_path` / `fq_table(...)` qualifier, gated by `_authenticate_tenant`); bank isolation is enforced *within* a schema by a `bank_id` predicate on every statement that touches a multi-bank table.
 - **Every SQL statement against a multi-bank table must be constrained by `bank_id`** — directly in the `WHERE`, or transitively (see below). Multi-bank tables carry a `bank_id` column: `memory_units`, `documents`, `entities`, `entity_links`, `mental_models`, `knowledge_pages`, `memory_links`, `observation_history`, and similar.
@@ -235,6 +241,58 @@ Direct SQL on those tables is legitimate **only** when it forces or inspects int
 public API cannot express — e.g. an `UPDATE documents SET updated_at` that forges a race, or a
 raw `memory_links` row-count that the deduped `get_graph_data` edge list cannot reproduce. Those
 must carry a comment saying why the direct access is necessary; flag any that do not.
+
+### 6b. Check user-facing capabilities have a system test
+
+`hindsight-system-tests/` holds blackbox stories that drive a real `hindsight-api`
+process through the published Python client — no engine access, no SQL, no internal
+imports. They exist because the ~500-file api-slim suite is one test per *mechanism*,
+which catches mechanism bugs and misses **composition** bugs: consolidation wiping the
+facts under it, a delta refresh missing a backdated window, a transfer dropping
+mental-model evidence, a reprocess that is a silent no-op. Every one of those spanned
+steps no single-mechanism test crosses. Tracking issue: #4214.
+
+A change needs a system story when it **adds a capability a user can name**, or when it
+**makes two existing capabilities meet**. Concretely, flag as **should fix** a PR that:
+
+- adds or changes an API endpoint, a retain/recall/reflect parameter, or a bank-config
+  field that alters observable behaviour;
+- adds a new derived layer or lifecycle step (an observation kind, a refresh trigger, a
+  background operation);
+- makes an existing feature interact with another for the first time — a new
+  combination is exactly what the unit suite cannot see;
+- fixes a composition bug. The regression test belongs here, not only in api-slim,
+  because the bug lived in the seam between steps.
+
+It does **not** need one for: internal refactors with no observable change, performance
+work, a mechanism already covered by an existing story, or anything whose only surface
+is the control plane (this suite is API-only by design).
+
+When reviewing an added or changed story, check:
+
+- **It goes through the client.** `client.aretain(...)`, not `httpx` and not
+  `MemoryEngine`. Reaching around the published client hides SDK defects the suite
+  exists to surface — `import_bank_template` was uncallable from every SDK (#4232) and
+  only a client-driven test could show it. **Must fix** if a story bypasses the client
+  to make itself pass.
+- **Every LLM call is declared.** An unscripted call fails the test with the rule to
+  paste in; a story that answers one with a plausible default proves nothing. Never
+  add a catch-all rule to quiet a miss.
+- **Background work is awaited, not disabled.** Retain enqueues consolidation; a story
+  that switches it off to stay deterministic has removed the half where the composition
+  bugs live. Use `settled(bank_id)`.
+- **It asserts the whole deterministic payload**, not the presence of a keyword. With
+  the LLM, embedder and reranker all stubbed, recall is a pure function of its input —
+  ranking, scores and rendered text are all pinnable, and "the word appears somewhere"
+  passes just as happily when fusion inverts.
+- **A known defect fails, rather than being documented.** If the PR leaves a contract
+  unmet, the story asserts the behaviour we *want* and is red until it is fixed — not
+  `xfail`, which keeps the run green so nothing forces the question, and not a test
+  pinning today's wrong answer, which breaks the day someone fixes it and teaches the
+  next reader to delete tests. **Must fix** either shape.
+
+The suite's README documents the conventions; `tests/test_01_retain_and_recall.py` is
+the reference for how total the assertions should be.
 
 ### 7. Check API consistency
 
@@ -386,6 +444,18 @@ see "HTTP Middleware" above. Ask for a pure-ASGI middleware (or an `APIRoute` su
 if the logic needs routing context), and check that a `send` wrapper sanitises any
 header value derived from client input.
 
+### 11f. Check outbound HTTP is aiohttp and async
+
+```bash
+git diff main...HEAD -- '*.py' ':!**/tests/**' | grep -nE "^\+.*(import httpx|from httpx|import requests|urllib\.request|http\.client|noqa: TID251|\.Client\(|asyncio\.to_thread|run_in_executor)"
+```
+
+Any new httpx use or sync HTTP call in production code is a **must fix** — see
+"Outbound HTTP" above. `ruff` catches the imports; review catches what it can't: a sync
+SDK client where an async one exists, a sync call pushed into `to_thread` /
+`run_in_executor`, an `aiohttp.ClientSession` created outside `LoopLocalSession`, and any
+`# noqa: TID251` that is not configuring or classifying a third-party SDK.
+
 ### 11d. Check concurrency primitives
 
 See "Concurrency" above. Grep the diff:
@@ -434,6 +504,8 @@ Present a clear summary organized by severity:
 - Raw dict usage for structured data (including internal code)
 - Multi-item tuple returns (including internal code)
 - Missing tests for new endpoints
+- A new user-facing capability, or a new combination of existing ones, with no story in `hindsight-system-tests/` (see step 6b)
+- A system story that bypasses the published client, silences an unscripted LLM call, or disables background work to stay deterministic
 - Direct DB access (raw SQL / `acquire_with_retry` / `fq_table`) in an `api/` handler instead of a `MemoryEngine` method
 - Tenant-scoped data accessed without authentication enforced in the engine (`_authenticate_tenant` / `get_bank_profile`)
 - A SQL statement against a multi-bank table filtered by a caller-supplied, non-globally-unique key without a `bank_id` predicate (cross-bank read/write leak — see step 7c)

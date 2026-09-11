@@ -4,7 +4,7 @@
 
 Maintained fork: `0xble/hindsight` of `vectorize-io/hindsight`, branch `main`.
 Canonical checkout: `/Users/brianle/Repos/hindsight`. Accepted upstream baseline:
-`9e6d9e76cc52e918b24440355759991722a758a2`. Publish only to `origin`; never
+`4cc131c0b238c8f206def60804d7b6591f6a45e7`. Publish only to `origin`; never
 push to `upstream`. Source synchronization, publication, installation, and
 runtime activation are separate stages.
 
@@ -25,7 +25,7 @@ runtime activation are separate stages.
 - **Commits:** `2fa19ab`, `83d7ad3`, `8c107c6`, `19357a9`, `b684912`, `60128d9`
 - **Surfaces:** `engine/parsers/{__init__,ocr_quality}.py`, `tests/test_ocr_quality.py`
 - **Upstream issue:** https://github.com/vectorize-io/hindsight/issues/3897
-- **Upstream PR:** None after checked 2026-09-03
+- **Upstream PR:** None after checked 2026-09-11
 - **Regression:** `uv run --frozen pytest tests/test_ocr_quality.py`
 - **Rollback:** Revert the listed commits in reverse order and rerun the regression.
 - **Retire when:** A released upstream build provides equivalent admission,
@@ -38,8 +38,8 @@ runtime activation are separate stages.
   `ae25d02` (`fix: preserve materialized observation scoring after sync`)
 - **Surfaces:** consolidation, PostgreSQL operations, structured output, config,
   monitoring documentation, and their focused tests
-- **Upstream issue:** None after checked 2026-09-03
-- **Upstream PR:** None after checked 2026-09-03
+- **Upstream issue:** None after checked 2026-09-11
+- **Upstream PR:** None after checked 2026-09-11
 - **Regression:** `uv run --frozen --extra all pytest tests/test_consolidation_failure_isolation.py tests/test_consolidation_prompt_budget.py tests/test_db_abstraction.py tests/test_response_schema_validation.py`
 - **Rollback:** Revert the listed commits; do not alter production data during source rollback.
 - **Retire when:** Released upstream passes the focused regressions without these commits.
@@ -73,8 +73,8 @@ runtime activation are separate stages.
   `fork-policy.yml` uses `pull_request_target` only to run default-branch policy
   code against an immutable candidate checkout, without persisted credentials or
   candidate actions, scripts, manifests, or hooks.
-- **Upstream issue:** None after checked 2026-09-09
-- **Upstream PR:** None after checked 2026-09-09
+- **Upstream issue:** None after checked 2026-09-11
+- **Upstream PR:** None after checked 2026-09-11
 - **Regression:** `uv run --directory hindsight-api-slim --frozen python ../tests/ci/test_validate_fork_workflows.py && uv run --directory hindsight-api-slim --frozen python ../scripts/ci/validate_fork_workflows.py`
 - **Rollback:** Restore only the HINDSIGHT-003 surfaces to the vetted fork-only
   workflow set established by `0ac5ba463940618d25781a7ac765bdeec64a9f33`, then
@@ -95,8 +95,8 @@ runtime activation are separate stages.
   `low_quality_ocr` detail with the OCR quality reason, so callers can settle
   deterministic evidence exclusions without parsing error prose. Retries clear
   stale terminal details, and generated clients accept both supported detail types.
-- **Upstream issue:** None after checked 2026-09-03
-- **Upstream PR:** None after checked 2026-09-03
+- **Upstream issue:** None after checked 2026-09-11
+- **Upstream PR:** None after checked 2026-09-11
 - **Regression:** `uv run --frozen pytest tests/test_operation_status.py`; generated
   client discriminator tests in `hindsight-clients/{python,go}`; and a successful
   `./scripts/generate-openapi.sh && ./scripts/generate-clients.sh` run.

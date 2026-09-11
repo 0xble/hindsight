@@ -22,14 +22,13 @@ import random
 import sys
 import time
 import uuid
-from collections.abc import AsyncIterator, Awaitable, Callable, Iterable, Iterator, Sequence
+from collections.abc import AsyncIterator, Awaitable, Callable, Iterable, Iterator, Mapping, Sequence
 from contextlib import AsyncExitStack, asynccontextmanager, contextmanager
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime, timedelta, timezone
 from typing import TYPE_CHECKING, Any, Literal, NoReturn, ParamSpec, TypeVar, cast, overload
 
 import asyncpg
-import httpx
 from pydantic import ValidationError
 
 from .._vector_index import (
@@ -53,6 +52,7 @@ from ..config import (
     LLMStrategyConfig,
     get_config,
 )
+from ..metrics import get_metrics_collector
 from ..tracing import create_operation_span, extract_task_trace_context, inject_task_trace_context
 from ..utils import mask_network_location
 from ..worker.exceptions import DeferOperation, RetryTaskAt, format_task_error
@@ -195,6 +195,9 @@ def _bind_bank_id(
 
     def decorate(func: Callable[_P, Awaitable[_R]]) -> Callable[_P, Awaitable[_R]]:
         sig = inspect.signature(func)
+        # Decided once per decorated function rather than per call: this decorator wraps every
+        # bank-scoped engine method, and only recall has a phase breakdown to feed.
+        times_recall_body = getattr(func, "__name__", None) == "recall_async"
 
         @functools.wraps(func)
         async def wrapper(*args: _P.args, **kwargs: _P.kwargs) -> _R:
@@ -202,10 +205,19 @@ def _bind_bank_id(
             if key is not None and type(value) is dict:
                 value = value.get(key)
             token = _current_bank_id.set(value if type(value) is str else None)
+            # Times the decorated coroutine itself, so "inside recall_async" can be separated from
+            # "between the handler's timer and the body running". Every await inside the body is
+            # already a phase and they summed to about half of `engine_call`, with no CPU to
+            # explain the rest — so the split has to be measured rather than reasoned about.
+            _t0_body = time.time()
             try:
                 return await func(*args, **kwargs)
             finally:
                 _current_bank_id.reset(token)
+                if times_recall_body:
+                    get_metrics_collector().record_recall_phase(
+                        "recall_async_body", time.time() - _t0_body, diagnostic=True
+                    )
 
         return wrapper
 
@@ -496,6 +508,7 @@ if TYPE_CHECKING:
     )
     from hindsight_api.models import RequestContext
 
+    from ..webhooks.url_guard import GuardedWebhookClient
     from .audit import AuditLogListResponse, AuditLogStatsResponse
     from .memories import MemoryScopeWatermark
     from .prompt_preview import PromptPreview
@@ -2048,6 +2061,36 @@ def _attachment_ids_of(value: "Any") -> list[str]:
     return [str(v) for v in value]
 
 
+async def _resolve_memory_attachments(
+    conn,
+    bank_id: str,
+    refs: "Mapping[str, tuple[str | None, Sequence[str]]]",
+) -> "dict[str, list[StoredAttachment]]":
+    """Resolve each memory's attachment ids, keyed by unit id; ``refs`` is unit id -> (document_id, ids).
+
+    Where the ids came from — `memory_units` or the store's own rows — is the caller's
+    concern; this only reads the SQL ``attachments`` / ``document_attachments`` tables.
+    Resolved per document because the filename lives on the document edge, and a page
+    of memories usually spans very few documents. A memory whose ids all fail to
+    resolve (the blob was reclaimed) is omitted rather than mapped to an empty list.
+    """
+    from .retain.attachment_store import load_bank_attachments
+
+    by_document: dict[str | None, dict[str, StoredAttachment]] = {}
+    for document_id, ids in refs.values():
+        cached = by_document.setdefault(document_id, {})
+        missing = [i for i in dict.fromkeys(ids) if i not in cached]
+        if missing:
+            cached.update(await load_bank_attachments(conn, bank_id, missing, document_id=document_id))
+
+    resolved: dict[str, list[StoredAttachment]] = {}
+    for unit_id, (document_id, ids) in refs.items():
+        records = [by_document[document_id][i] for i in ids if i in by_document[document_id]]
+        if records:
+            resolved[unit_id] = records
+    return resolved
+
+
 def _provider_default_base_url(provider: str | None) -> str:
     """The base URL a provider needs when the caller did not supply one.
 
@@ -2237,7 +2280,7 @@ class MemoryEngine(MemoryEngineInterface):
 
         # Webhook manager (will be created in initialize() after pool is ready)
         self._webhook_manager = None
-        self._http_client: httpx.AsyncClient | None = None
+        self._webhook_client: GuardedWebhookClient | None = None
 
         # Initialize entity resolver (will be created in initialize())
         self.entity_resolver = None
@@ -3906,6 +3949,7 @@ class MemoryEngine(MemoryEngineInterface):
         from ..webhooks.manager import MAX_ATTEMPTS, RETRY_DELAYS
         from ..webhooks.models import WebhookHttpConfig
         from ..webhooks.url_guard import WebhookURLError
+        from .aiohttp_session import UpstreamHTTPError
 
         url = task_dict["url"]
         secret = task_dict.get("secret")
@@ -3944,23 +3988,21 @@ class MemoryEngine(MemoryEngineInterface):
                 secret, payload_bytes, int(datetime.now(UTC).timestamp())
             )
 
-        if self._http_client is None:
+        if self._webhook_client is None:
             raise RuntimeError("HTTP client not initialized")
 
-        response = None
+        is_get = http_config.method.upper() == "GET"
         try:
-            request_kwargs: dict[str, Any] = {
-                "headers": headers,
-                "params": http_config.params if http_config.params else None,
-                "timeout": http_config.timeout_seconds,
-            }
-            if http_config.method.upper() == "GET":
-                response = await self._http_client.get(url, **request_kwargs)
-            else:
-                response = await self._http_client.post(url, content=payload_bytes, **request_kwargs)
-            response.raise_for_status()
+            response = await self._webhook_client.request(
+                "GET" if is_get else "POST",
+                url,
+                headers=headers,
+                params=http_config.params,
+                body=None if is_get else payload_bytes,
+                timeout_seconds=http_config.timeout_seconds,
+            )
             if operation_id:
-                await self._update_webhook_delivery_metadata(operation_id, response.status_code, response.text)
+                await self._update_webhook_delivery_metadata(operation_id, response.status_code, response.body)
         except WebhookURLError as e:
             # Destination is disallowed (SSRF guard). This never becomes valid on
             # retry, so fail permanently instead of burning the retry schedule.
@@ -3969,8 +4011,10 @@ class MemoryEngine(MemoryEngineInterface):
                 await self._update_webhook_delivery_metadata(operation_id, None, None)
             raise
         except Exception as e:
-            status_code = response.status_code if response is not None else None
-            response_body = response.text if response is not None else None
+            # A non-2xx response carries its status and body; a transport failure
+            # (connect error, timeout) has neither.
+            status_code = e.status_code if isinstance(e, UpstreamHTTPError) else None
+            response_body = e.body if isinstance(e, UpstreamHTTPError) else None
             if operation_id:
                 await self._update_webhook_delivery_metadata(operation_id, status_code, response_body)
             if retry_count >= MAX_ATTEMPTS - 1:
@@ -4989,17 +5033,13 @@ class MemoryEngine(MemoryEngineInterface):
         self._ext_ctx.webhook_manager = self._webhook_manager
         logger.debug("Webhook manager initialized")
 
-        # Long-lived HTTP client for webhook delivery tasks. All delivery
-        # traffic flows through the guarded transport, which rejects
-        # private/loopback/link-local destinations (SSRF) and pins the
-        # connection to a validated IP. See webhooks/url_guard.py.
-        from ..webhooks.url_guard import GuardedAsyncTransport, parse_allowlist
+        # HTTP client for webhook delivery tasks (its aiohttp session is created
+        # lazily per event loop). All delivery traffic flows through it: it
+        # rejects private/loopback/link-local destinations (SSRF) and only
+        # connects to addresses its resolver validated. See webhooks/url_guard.py.
+        from ..webhooks.url_guard import GuardedWebhookClient, parse_allowlist
 
-        _webhook_allowlist = parse_allowlist(get_config().webhook_allowed_hosts)
-        self._http_client = httpx.AsyncClient(
-            timeout=30.0,
-            transport=GuardedAsyncTransport(_webhook_allowlist),
-        )
+        self._webhook_client = GuardedWebhookClient(parse_allowlist(get_config().webhook_allowed_hosts))
 
         # Set executor for task backend and initialize
         self._task_backend.set_executor(self.execute_task)
@@ -5122,9 +5162,15 @@ class MemoryEngine(MemoryEngineInterface):
             logger.warning(f"Error shutting down memories store: {e}")
 
         # Close HTTP client used for webhook delivery
-        if self._http_client is not None:
-            await self._http_client.aclose()
-            self._http_client = None
+        if self._webhook_client is not None:
+            await self._webhook_client.close()
+            self._webhook_client = None
+
+        # Embedding, reranker and LLM provider clients have no close hook of their
+        # own; close the aiohttp sessions they opened on this loop.
+        from .aiohttp_session import close_loop_sessions
+
+        await close_loop_sessions()
 
         if self._read_backend is not None and self._read_backend is not self._backend:
             await self._read_backend.shutdown()
@@ -6605,17 +6651,33 @@ class MemoryEngine(MemoryEngineInterface):
         bank_id: str,
         document_ids: "Sequence[str]",
         request_context: "RequestContext",
+        *,
+        carried_texts: "Mapping[str, str | None] | None" = None,
     ) -> "dict[str, list[StoredAttachment]]":
         """The attachments each document references, keyed by document_id.
 
         Read from ``document_attachments`` rather than by re-parsing the document
         body: that table is derived from the same text on every write, and joining
         it avoids pulling whole documents back just to scan them for placeholders.
+
+        A store-owned bank has no SQL ``documents`` row, so no ``document_attachments``
+        row can exist for it (the edge's FK needs the document row). There the ids are
+        derived from the document's text instead: ``carried_texts`` (document_id -> the
+        text a caller already read from the store) when given, else the store's own
+        record, falling back to its chunk texts when the full text is not kept.
+        Filenames live only on that edge, so they come back ``None`` for such a bank.
         """
         from .retain.attachment_store import StoredAttachment
 
         if not document_ids:
             return {}
+        from .memories import get_memories
+
+        store = get_memories()
+        if store.store_owned_for(bank_id):
+            return await self._attachments_for_store_owned_documents(
+                store, bank_id, list(dict.fromkeys(document_ids)), request_context, carried_texts or {}
+            )
         profile = await self.get_bank_profile(bank_id, request_context=request_context, create_if_missing=False)
         if profile is None:
             return {}
@@ -6649,11 +6711,57 @@ class MemoryEngine(MemoryEngineInterface):
             )
         return grouped
 
+    async def _attachments_for_store_owned_documents(
+        self,
+        store,
+        bank_id: str,
+        document_ids: list[str],
+        request_context: "RequestContext",
+        carried_texts: "Mapping[str, str | None]",
+    ) -> "dict[str, list[StoredAttachment]]":
+        """:meth:`attachments_for_documents` for a store-owned bank: ids derived from the text.
+
+        A carried text costs nothing to scan. A document without one is read from the store —
+        the retain-ingress revisit has no text in hand, and it only asks when the caller wrote
+        something placeholder-shaped. The record's ``original_text`` is null when a deployment
+        does not keep full text; its chunk texts still carry every placeholder, so they stand in.
+        """
+        from .retain.attachment_content import iter_placeholder_ids
+
+        texts = {d: carried_texts.get(d) for d in document_ids}
+        if all(texts[d] is not None for d in document_ids) and not any(
+            any(True for _ in iter_placeholder_ids(texts[d] or "")) for d in document_ids
+        ):
+            return {}
+        profile = await self.get_bank_profile(bank_id, request_context=request_context, create_if_missing=False)
+        if profile is None:
+            return {}
+        for document_id in document_ids:
+            if texts[document_id] is not None:
+                continue
+            record = await store.get_document_record(bank_id=bank_id, document_id=document_id, include_text=True)
+            if record is None:
+                continue
+            text = record.get("original_text")
+            if text is None:
+                text = "\n".join(
+                    t or "" for t in (await store.list_chunk_texts(bank_id=bank_id, document_id=document_id) or [])
+                )
+            texts[document_id] = text
+        refs = {d: (d, ids) for d in document_ids if (ids := list(dict.fromkeys(iter_placeholder_ids(texts[d] or ""))))}
+        if not refs:
+            return {}
+        backend = await self._get_backend()
+        async with backend.acquire() as conn:
+            return await _resolve_memory_attachments(conn, bank_id, refs)
+
     async def attachments_for_chunks(
         self,
         bank_id: str,
         chunk_ids: "Sequence[str]",
         request_context: "RequestContext",
+        *,
+        carried_texts: "Mapping[str, tuple[str | None, str | None]] | None" = None,
     ) -> "dict[str, list[StoredAttachment]]":
         """The attachments each chunk references, keyed by chunk_id.
 
@@ -6661,12 +6769,34 @@ class MemoryEngine(MemoryEngineInterface):
         and one chunk usually yields several facts of which only some were read
         off the screenshot. Per-fact provenance comes from
         ``attachments_for_memories`` instead.
+
+        ``carried_texts`` is chunk_id -> ``(document_id, chunk_text)`` for chunks whose
+        text the caller already read from the memories store. For a store-owned bank it
+        is the only source: such a bank keeps no SQL ``chunks`` rows, so reading them
+        could only come back empty.
         """
         from .retain.attachment_content import iter_placeholder_ids
         from .retain.attachment_store import load_bank_attachments
 
         if not chunk_ids:
             return {}
+        from .memories import get_memories
+
+        if get_memories().store_owned_for(bank_id):
+            wanted = set(chunk_ids)
+            refs = {
+                chunk_id: (document_id, ids)
+                for chunk_id, (document_id, text) in (carried_texts or {}).items()
+                if chunk_id in wanted and (ids := list(dict.fromkeys(iter_placeholder_ids(text or ""))))
+            }
+            if not refs:
+                return {}
+            profile = await self.get_bank_profile(bank_id, request_context=request_context, create_if_missing=False)
+            if profile is None:
+                return {}
+            backend = await self._get_backend()
+            async with backend.acquire() as conn:
+                return await _resolve_memory_attachments(conn, bank_id, refs)
         profile = await self.get_bank_profile(bank_id, request_context=request_context, create_if_missing=False)
         if profile is None:
             return {}
@@ -6709,6 +6839,8 @@ class MemoryEngine(MemoryEngineInterface):
         bank_id: str,
         unit_ids: "Sequence[str]",
         request_context: "RequestContext",
+        *,
+        carried: "Mapping[str, tuple[str | None, Sequence[str]]] | None" = None,
     ) -> "dict[str, list[StoredAttachment]]":
         """The attachments each memory was actually drawn from, keyed by unit id.
 
@@ -6718,15 +6850,41 @@ class MemoryEngine(MemoryEngineInterface):
         mentioned it. A fact stated in the text has no ids and correctly shows
         nothing.
 
-        The ids live on ``memory_units.attachment_ids`` — an attribute of the
-        memory, like its tags — so this reads the column and resolves the ids,
-        rather than joining a junction table that only a Postgres-backed memory
-        store would ever have written.
+        The ids are an attribute of the memory, like its tags. For a Postgres-backed
+        bank they live on ``memory_units.attachment_ids`` and this reads the column.
+        For a store-owned bank they come back on the rows the store already returned
+        — recall results and list/detail items — and the caller hands them in as
+        ``carried``: unit id -> ``(document_id, attachment_ids)``. Either way only the
+        ids are resolved here, against the SQL ``attachments`` / ``document_attachments``
+        tables, which every bank writes and which carry no vector indexes.
         """
-        from .retain.attachment_store import load_bank_attachments
-
         if not unit_ids:
             return {}
+        from .memories import get_memories
+
+        if get_memories().store_owned_for(bank_id):
+            # Never `memory_units` for a store-owned bank. It holds none of the bank's memories,
+            # so the read can only come back empty, and it is not a cheap empty read: the table
+            # carries partial vector indexes per bank, and the planner opens and locks every one
+            # of them to plan any statement against it. In a tenant with a few thousand banks
+            # that is ~15k locks and ~450ms of planning to return nothing -- on every recall.
+            # The ids the store returned on its rows are the whole answer, so a page that
+            # carried none returns before touching Postgres at all.
+            wanted = {str(u) for u in unit_ids}
+            refs = {
+                unit_id: (document_id, list(ids))
+                for unit_id, (document_id, ids) in (carried or {}).items()
+                if unit_id in wanted and ids
+            }
+            if not refs:
+                return {}
+            profile = await self.get_bank_profile(bank_id, request_context=request_context, create_if_missing=False)
+            if profile is None:
+                return {}
+            backend = await self._get_backend()
+            async with backend.acquire() as conn:
+                return await _resolve_memory_attachments(conn, bank_id, refs)
+
         profile = await self.get_bank_profile(bank_id, request_context=request_context, create_if_missing=False)
         if profile is None:
             return {}
@@ -6745,31 +6903,12 @@ class MemoryEngine(MemoryEngineInterface):
             )
             if not rows:
                 return {}
-            ids_by_unit = {row["id"]: ids for row in rows if (ids := _attachment_ids_of(row["attachment_ids"]))}
-            document_by_unit = {row["id"]: row["document_id"] for row in rows}
-            # The filename lives on the document edge, so resolve per document.
-            # A page of memories usually spans very few documents, and the common
-            # case is one.
-            by_document: dict[str | None, dict[str, StoredAttachment]] = {}
-            for unit_id, ids in ids_by_unit.items():
-                document_id = document_by_unit.get(unit_id)
-                if document_id not in by_document:
-                    by_document[document_id] = {}
-                missing = [i for i in ids if i not in by_document[document_id]]
-                if missing:
-                    by_document[document_id].update(
-                        await load_bank_attachments(conn, bank_id, missing, document_id=document_id)
-                    )
-
-        return {
-            unit_id: [
-                by_document[document_by_unit.get(unit_id)][i]
-                for i in ids
-                if i in by_document[document_by_unit.get(unit_id)]
-            ]
-            for unit_id, ids in ids_by_unit.items()
-            if any(i in by_document[document_by_unit.get(unit_id)] for i in ids)
-        }
+            refs = {
+                row["id"]: (row["document_id"], ids)
+                for row in rows
+                if (ids := _attachment_ids_of(row["attachment_ids"]))
+            }
+            return await _resolve_memory_attachments(conn, bank_id, refs)
 
     async def retrieve_bank_attachment(
         self,
@@ -7233,7 +7372,16 @@ class MemoryEngine(MemoryEngineInterface):
             - chunks: Optional dict of chunks (if include_chunks=True, independent of max_tokens)
         """
         # Authenticate tenant and set schema in context (for fq_table())
+        # Timed: an awaited call with no phase timer, sitting INSIDE the window the HTTP handler
+        # reports as `recall=`. On a loaded fleet the existing phases covered 10% of a recall's
+        # wall time (store hop 32ms, embedding 5ms of a 356ms mean) while event-loop lag stayed at
+        # 0.2ms — so the other 90% is a real await, and every untimed await here is a candidate.
+        _auth_t0 = time.time()
         await self._authenticate_tenant(request_context)
+        _auth_s = time.time() - _auth_t0
+        get_metrics_collector().record_recall_phase("engine_auth", _auth_s)
+        if _auth_s > 0.025:
+            logger.info("[RECALL AUTH] bank=%s tenant_auth=%.3fs", bank_id, _auth_s)
 
         # Cooperative cancellation checkpoint: if the client already disconnected
         # while this request waited to be scheduled, abort before doing any work
@@ -7303,7 +7451,12 @@ class MemoryEngine(MemoryEngineInterface):
                 tags_match=tags_match,
                 tag_groups=tag_groups,
             )
+            _t0 = time.time()
             result = await self._validate_operation(self._operation_validator.validate_recall(ctx))
+            _d = time.time() - _t0
+            get_metrics_collector().record_recall_phase("validate_pre", _d)
+            if _d > 0.100:
+                logger.info("[RECALL PHASE] validate_pre=%.3fs bank=%s", _d, bank_id)
             if result:
                 if result.tags is not None:
                     tags = result.tags
@@ -7314,12 +7467,22 @@ class MemoryEngine(MemoryEngineInterface):
 
         # Resolve fuzzy tag tokens into real tags before anything builds SQL. Runs after
         # the validator so a validator-supplied tag_groups is resolved too.
+        _t0 = time.time()
         tag_groups = await self._resolve_fuzzy_tag_groups(bank_id, tag_groups)
+        _d = time.time() - _t0
+        get_metrics_collector().record_recall_phase("fuzzy_tags", _d)
+        if _d > 0.100:
+            logger.info("[RECALL PHASE] fuzzy_tags=%.3fs bank=%s", _d, bank_id)
 
         # Map budget enum to thinking_budget number using bank-resolved config.
         # Function "fixed" preserves legacy {LOW: 100, MID: 300, HIGH: 1000}; function "adaptive"
         # derives from max_tokens and clamps to [recall_budget_min, recall_budget_max].
+        _t0 = time.time()
         budget_config_dict = await self._config_resolver.get_bank_config(bank_id, request_context)
+        _d = time.time() - _t0
+        get_metrics_collector().record_recall_phase("bank_config", _d)
+        if _d > 0.100:
+            logger.info("[RECALL PHASE] bank_config=%.3fs bank=%s", _d, bank_id)
         thinking_budget = _resolve_thinking_budget(budget_config_dict, budget, max_tokens)
         # Reranker candidate cap, optionally scaled by the same budget level (env-configured,
         # 0/unset → flat reranker_max_candidates). Static config, so read from get_config().
@@ -7357,10 +7520,12 @@ class MemoryEngine(MemoryEngineInterface):
             semaphore_wait_start = time.time()
             async with self._search_semaphore:
                 semaphore_wait = time.time() - semaphore_wait_start
+                get_metrics_collector().record_recall_phase("semaphore_acquire", semaphore_wait)
                 # Retry loop for connection errors
                 max_retries = 3
                 for attempt in range(max_retries + 1):
                     try:
+                        _t0_swr2 = time.time()
                         result = await self._search_with_retries(
                             bank_id,
                             query,
@@ -7393,6 +7558,9 @@ class MemoryEngine(MemoryEngineInterface):
                             enable_text_search=enable_text_search,
                             enable_temporal_retrieval=enable_temporal_retrieval,
                             enable_graph_retrieval=enable_graph_retrieval,
+                        )
+                        get_metrics_collector().record_recall_phase(
+                            "search_with_retries", time.time() - _t0_swr2, diagnostic=True
                         )
                         break  # Success - exit retry loop
                     except OperationCancelledError:
@@ -7440,7 +7608,12 @@ class MemoryEngine(MemoryEngineInterface):
                                     error=error_msg,
                                 )
                                 try:
+                                    _t0 = time.time()
                                     await self._operation_validator.on_recall_complete(result_ctx)
+                                    _d = time.time() - _t0
+                                    get_metrics_collector().record_recall_phase("validate_post", _d)
+                                    if _d > 0.100:
+                                        logger.info("[RECALL PHASE] validate_post=%.3fs bank=%s", _d, bank_id)
                                 except Exception as hook_err:
                                     logger.warning(f"Post-recall hook error (non-fatal): {hook_err}")
                             raise
@@ -7468,7 +7641,9 @@ class MemoryEngine(MemoryEngineInterface):
                             error=error_msg,
                         )
                         try:
+                            _t0_vp = time.time()
                             await self._operation_validator.on_recall_complete(result_ctx)
+                            get_metrics_collector().record_recall_phase("validate_post", time.time() - _t0_vp)
                         except Exception as hook_err:
                             logger.warning(f"Post-recall hook error (non-fatal): {hook_err}")
                     raise Exception(error_msg)
@@ -7495,7 +7670,9 @@ class MemoryEngine(MemoryEngineInterface):
                     error=None,
                 )
                 try:
+                    _t0_vp = time.time()
                     await self._operation_validator.on_recall_complete(result_ctx)
+                    get_metrics_collector().record_recall_phase("validate_post", time.time() - _t0_vp)
                 except Exception as e:
                     logger.warning(f"Post-recall hook error (non-fatal): {e}")
 
@@ -7624,6 +7801,7 @@ class MemoryEngine(MemoryEngineInterface):
             embedding_span.set_attribute("hindsight.query", query[:100])
 
             try:
+                get_metrics_collector().record_recall_phase("swr_prelude", time.time() - backend_acquire_start)
                 query_embeddings = await embedding_utils.generate_embeddings_batch(
                     self.embeddings,
                     [query],
@@ -7717,11 +7895,13 @@ class MemoryEngine(MemoryEngineInterface):
             )
             if _store_result is not None:
                 _full_elapsed = time.time() - _full_start
+                _t0_tail = time.time()
                 log_buffer.append(
                     f"  [1.5] Store-answered recall: {len(_store_result.results)} results in {_full_elapsed:.3f}s"
                 )
                 if not quiet:
                     logger.info("\n" + "\n".join(log_buffer))
+                    get_metrics_collector().record_recall_phase("store_branch_tail", time.time() - _t0_tail)
                 # The store's own per-stage timings become this recall's phase breakdown.
                 # Without this the trace goes dark exactly where the work moved to, and the
                 # only thing left to compare between the two paths is a total.
@@ -7733,8 +7913,15 @@ class MemoryEngine(MemoryEngineInterface):
                 # showed up as an unattributed remainder, on the one path where the work is not
                 # in this process to begin with. `store_*` are the store's own stages, `full_recall`
                 # is the whole hop including the Python either side of it.
+                _store_reported = 0.0
                 for _name, _micros in (_store_result.store_stages or {}).items():
                     tracer.add_phase_metric(f"store_{_name}", _micros / 1_000_000)
+                    _store_reported += _micros / 1_000_000
+                # The hop minus what the store says it spent: our gRPC client, the
+                # serialization either side, and any time the request sat in the
+                # channel. Recorded per-request because p99s of the individual stages
+                # are not additive, so this gap cannot be derived after the fact.
+                tracer.add_phase_metric("store_hop_overhead", max(0.0, _full_elapsed - _store_reported))
                 tracer.add_phase_metric(
                     "full_recall",
                     _full_elapsed,
@@ -8992,6 +9179,7 @@ class MemoryEngine(MemoryEngineInterface):
                         tags=result_dict.get("tags"),
                         source_fact_ids=source_fact_ids_by_obs.get(result_id) if include_source_facts else None,
                         scores=scores_by_id.get(result_id),
+                        attachment_ids=result_dict.get("attachment_ids"),
                     )
                 )
 
@@ -10936,9 +11124,17 @@ class MemoryEngine(MemoryEngineInterface):
                 new_fact = new_fact_type if new_fact_type is not None else live.fact_type
                 new_occ_start = _parse_edit_date(occurred_start) if occurred_start is not None else live.occurred_start
                 new_occ_end = _parse_edit_date(occurred_end) if occurred_end is not None else live.occurred_end
-                # event_date (NOT NULL, legacy single date + used by temporal links) tracks the
-                # occurred start when it's set.
-                new_event_date = new_occ_start or live.event_date
+                # event_date (legacy single date, still what temporal links and the curation
+                # list's `date` are built from) tracks the occurred start when it's set. An
+                # explicit occurred_start edit — including "" to clear it — re-derives it with
+                # retain's own rule (`occurred_start or mentioned_at`, see memories/pg/writes.py),
+                # so clearing an occurrence cannot leave the legacy date on the old one. An
+                # omitted occurred_start is not an occurrence edit and leaves it untouched.
+                new_event_date = (
+                    (new_occ_start if new_occ_start is not None else live.mentioned_at)
+                    if occurred_start is not None
+                    else live.event_date
+                )
 
                 entity_resolution = None
                 resolved_for_unit = None

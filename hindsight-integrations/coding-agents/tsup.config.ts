@@ -57,6 +57,8 @@ export default defineConfig({
     "droid-stop-hook": "src/droid-stop-hook.ts",
     // Spawned DETACHED to start the local daemon — a cold start outlives every hook timeout.
     "daemon-start": "src/daemon-start.ts",
+    // Spawned DETACHED to hold the codebase-survey lease for the survey agent's lifetime.
+    "survey-supervisor": "src/survey-supervisor.ts",
     "mcp-server": "src/mcp-server.ts",
     "hindsight-seed": "src/hindsight-seed.ts",
   },
@@ -84,5 +86,7 @@ export default defineConfig({
     /^zod/,
     /^@vectorize-io\/hindsight-all/,
     /^jsonc-parser/,
+    // smol-toml likewise: installer.js parses ~/.grok/config.toml with it.
+    /^smol-toml/,
   ],
 });

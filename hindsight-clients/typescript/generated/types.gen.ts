@@ -9534,8 +9534,11 @@ export type GetBankAttachmentResponses = {
   /**
    * Attachment bytes
    */
-  200: unknown;
+  200: Blob | File;
 };
+
+export type GetBankAttachmentResponse =
+  GetBankAttachmentResponses[keyof GetBankAttachmentResponses];
 
 export type DownloadFileData = {
   body?: never;
@@ -9568,8 +9571,10 @@ export type DownloadFileResponses = {
   /**
    * Stored file
    */
-  200: unknown;
+  200: Blob | File;
 };
+
+export type DownloadFileResponse = DownloadFileResponses[keyof DownloadFileResponses];
 
 export type GetBankTemplateSchemaData = {
   body?: never;
