@@ -42,6 +42,30 @@ def test_untagged_fence_keeps_foreign_first_body_line_for_rejection():
 
 
 @pytest.mark.parametrize(
+    "wrapper",
+    [
+        "`{prose}`",
+        "```{prose}```",
+        "```\n{prose}\n```",
+        "```text\n{prose}\n```",
+        "```\r\n{prose}\r\n```",
+    ],
+)
+def test_backtick_delimiters_preserve_novel_foreign_prose(wrapper):
+    foreign = "L’équipe continue la vérification des résultats et prépare les documents pour la prochaine réunion."
+    output = wrapper.format(prose=foreign)
+
+    assert foreign in guard._without_code(output)
+    assert guard.enforcement_failures(check(ENGLISH, output), guard.LanguageIntegrityMode.REJECT)
+
+
+def test_single_line_fenced_genuine_code_remains_exempt():
+    output = "```print('hello')```"
+
+    assert not guard.enforcement_failures(check(ENGLISH, output), guard.LanguageIntegrityMode.REJECT)
+
+
+@pytest.mark.parametrize(
     "output",
     [
         "```\nprint('hello')\n```",
