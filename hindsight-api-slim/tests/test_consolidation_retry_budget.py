@@ -384,6 +384,7 @@ class TestConsolidationLanguageIntegrity:
         result = await _consolidate_batch_with_llm(
             llm_config=mock_llm_config,
             memories=[{"id": "m1", "text": self.source}],
+            original_source_text_by_id={"m1": self.source},
             union_observations=[],
             union_source_facts={},
             config=mock_config,
@@ -404,6 +405,7 @@ class TestConsolidationLanguageIntegrity:
         result = await _consolidate_batch_with_llm(
             llm_config=mock_llm_config,
             memories=[{"id": "m1", "text": self.source}],
+            original_source_text_by_id={"m1": self.source},
             union_observations=[],
             union_source_facts={},
             config=mock_config,
@@ -445,6 +447,7 @@ class TestConsolidationLanguageIntegrity:
         result = await _consolidate_batch_with_llm(
             llm_config=mock_llm_config,
             memories=[{"id": "en", "text": self.source}, {"id": "es", "text": self.spanish}],
+            original_source_text_by_id={"en": self.source, "es": self.spanish},
             union_observations=[],
             union_source_facts={},
             config=mock_config,
@@ -467,6 +470,7 @@ class TestConsolidationLanguageIntegrity:
             await _consolidate_batch_with_llm(
                 llm_config=mock_llm_config,
                 memories=[{"id": "m1", "text": self.source}],
+                original_source_text_by_id={"m1": self.source},
                 union_observations=[],
                 union_source_facts={},
                 config=mock_config,
@@ -490,6 +494,7 @@ class TestConsolidationLanguageIntegrity:
             await _consolidate_batch_with_llm(
                 llm_config=mock_llm_config,
                 memories=[{"id": "m1", "text": self.typescript_source}],
+                original_source_text_by_id={"m1": self.typescript_source},
                 union_observations=[],
                 union_source_facts={},
                 config=mock_config,
@@ -513,6 +518,7 @@ class TestConsolidationLanguageIntegrity:
         result = await _consolidate_batch_with_llm(
             llm_config=mock_llm_config,
             memories=[{"id": "m1", "text": self.source}],
+            original_source_text_by_id={"m1": self.source},
             union_observations=[],
             union_source_facts={},
             config=mock_config,
