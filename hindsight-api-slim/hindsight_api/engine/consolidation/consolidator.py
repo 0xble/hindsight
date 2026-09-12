@@ -314,6 +314,8 @@ async def _dedup_adjudicate(
     anchor_emb_str: str | None,
     tags: list[str] | None,
     exclude_id: str | None,
+    *,
+    anchor_source_ids: list[str] | None = None,
 ) -> _DedupOutcome:
     """Probe one observation's embedding against in-scope observations and adjudicate a merge.
 
@@ -366,18 +368,64 @@ async def _dedup_adjudicate(
     if best_id is None:
         return _DedupOutcome(best_id=None, merged_text="", should_merge=False)
 
-    dedup_call = await dedup_llm_config.call(
-        messages=[{"role": "user", "content": _DEDUP_PROMPT.format(new=anchor_text, existing=best_text)}],
-        response_format=_DedupDecision,
-        temperature=config.llm_temperature_consolidation,
-        scope="consolidation_dedup",
-        strict_schema=get_config().llm_strict_schema_consolidation,
-    )
-    decision = _dedup_decision_from_response(dedup_call.content)
-    if decision.action != "merge":
-        return _DedupOutcome(best_id=best_id, merged_text="", should_merge=False, best_text=best_text)
-    merged_text = (sanitize_llm_output(decision.text) or "").strip() or best_text
-    return _DedupOutcome(best_id=best_id, merged_text=merged_text, should_merge=True, best_text=best_text)
+    language_context = None
+    language_mode = configured_mode(config)
+    source_ids = set(anchor_source_ids or [])
+    prompt = _DEDUP_PROMPT.format(new=anchor_text, existing=best_text)
+    for attempt in range(2):
+        dedup_call = await dedup_llm_config.call(
+            messages=[{"role": "user", "content": prompt}],
+            response_format=_DedupDecision,
+            temperature=config.llm_temperature_consolidation,
+            scope="consolidation_dedup",
+            strict_schema=get_config().llm_strict_schema_consolidation,
+        )
+        decision = _dedup_decision_from_response(dedup_call.content)
+        if decision.action != "merge":
+            return _DedupOutcome(best_id=best_id, merged_text="", should_merge=False, best_text=best_text)
+        merged_text = (sanitize_llm_output(decision.text) or "").strip() or best_text
+        if language_context is None and should_check(config):
+            # The nearest twin need not have appeared in the main consolidation recall.
+            # Resolve its actual provenance (and the update anchor's prior provenance),
+            # not either generated observation's language. Missing lineage stays unchecked.
+            observation_ids = [best_id] + ([exclude_id] if exclude_id else [])
+            async with acquire_with_retry(pool) as conn:
+                observations = await get_memories().get_memories(
+                    conn=conn, fq_table=fq_table, bank_id=bank_id, unit_ids=observation_ids
+                )
+            by_id = {observation.unit_id: observation for observation in observations}
+            for observation_id in observation_ids:
+                observation = by_id.get(observation_id)
+                source_ids.update(
+                    observation.source_memory_ids if observation and observation.source_memory_ids else [observation_id]
+                )
+            originals = await _resolve_original_source_texts(pool, bank_id, source_ids)
+            if not anchor_source_ids:
+                source_ids.add("missing-anchor-source")
+            language_context = await prepare_context_safely(originals, stage="consolidation_dedup", mode=language_mode)
+        if language_context is not None:
+            evaluation = await evaluate_language_integrity_safely(
+                language_context,
+                [GeneratedText("dedup:text", merged_text, tuple(sorted(source_ids)))],
+                stage="consolidation_dedup",
+                mode=language_mode,
+            )
+            failures = enforcement_failures(evaluation, language_mode) if evaluation is not None else ()
+            if failures:
+                if language_mode is LanguageIntegrityMode.OBSERVE:
+                    record_outcome(stage="consolidation_dedup", mode=language_mode, outcome="mismatch_observed")
+                elif attempt == 0:
+                    prompt += build_source_instruction(language_context, sorted(source_ids))
+                    prompt += build_retry_instruction(failures)
+                    record_outcome(stage="consolidation_dedup", mode=language_mode, outcome="mismatch_retry")
+                    continue
+                elif language_mode is LanguageIntegrityMode.REJECT:
+                    record_outcome(stage="consolidation_dedup", mode=language_mode, outcome="mismatch_rejected")
+                    raise GeneratedLanguageMismatch(failures)
+                else:
+                    record_outcome(stage="consolidation_dedup", mode=language_mode, outcome="mismatch_accepted")
+        return _DedupOutcome(best_id=best_id, merged_text=merged_text, should_merge=True, best_text=best_text)
+    raise AssertionError("dedup language retry exhausted without a decision")
 
 
 async def _apply_dedup_create_fold(
@@ -1913,14 +1961,58 @@ async def _run_consolidation_job(
                 sub_deleted: int = 0
                 sub_llm_failed = False
                 sub_ids = [m["id"] for m in sub_batch]
-                if obs_tags_list:
-                    sub_results: list[dict[str, Any]] = []
-                    for pass_index, obs_tags in enumerate(obs_tags_list):
-                        # A memory consolidated at several tag scopes gets one LLM call per
-                        # scope; the ``consolidated_at`` stamp belongs to the last of them, so
-                        # an earlier scope's write and the stamp never commit apart (#3876).
-                        is_final_pass = pass_index == len(obs_tags_list) - 1
-                        pass_results, pass_deleted, pass_failed = await _process_memory_batch(
+                try:
+                    if obs_tags_list:
+                        sub_results: list[dict[str, Any]] = []
+                        for pass_index, obs_tags in enumerate(obs_tags_list):
+                            # A memory consolidated at several tag scopes gets one LLM call per
+                            # scope; the ``consolidated_at`` stamp belongs to the last of them, so
+                            # an earlier scope's write and the stamp never commit apart (#3876).
+                            is_final_pass = pass_index == len(obs_tags_list) - 1
+                            pass_results, pass_deleted, pass_failed = await _process_memory_batch(
+                                pool=pool,
+                                memory_engine=memory_engine,
+                                llm_config=llm_config,
+                                bank_id=bank_id,
+                                memories=sub_batch,
+                                request_context=request_context,
+                                perf=batch_perf,
+                                config=config,
+                                obs_tags_override=obs_tags,
+                                mark_consolidated_ids=sub_ids if is_final_pass else None,
+                            )
+                            sub_deleted += pass_deleted
+                            if pass_failed:
+                                # Stop the remaining scopes: the sub-batch is going to be bisected
+                                # and re-run in full, and every write this pass made is already
+                                # committed. Running the rest would only add writes to discard.
+                                sub_llm_failed = True
+                                break
+                            if not sub_results:
+                                sub_results = pass_results
+                            else:
+                                for i, (existing, new) in enumerate(zip(sub_results, pass_results)):
+                                    if existing.get("action") == "skipped" and new.get("action") != "skipped":
+                                        sub_results[i] = new
+                                    elif existing.get("action") != "skipped" and new.get("action") != "skipped":
+                                        existing_created = existing.get(
+                                            "created", 1 if existing.get("action") == "created" else 0
+                                        )
+                                        existing_updated = existing.get(
+                                            "updated", 1 if existing.get("action") == "updated" else 0
+                                        )
+                                        new_created = new.get("created", 1 if new.get("action") == "created" else 0)
+                                        new_updated = new.get("updated", 1 if new.get("action") == "updated" else 0)
+                                        total = existing_created + existing_updated + new_created + new_updated
+                                        sub_results[i] = {
+                                            "action": "multiple",
+                                            "created": existing_created + new_created,
+                                            "updated": existing_updated + new_updated,
+                                            "merged": 0,
+                                            "total_actions": total,
+                                        }
+                    else:
+                        sub_results, sub_deleted, sub_llm_failed = await _process_memory_batch(
                             pool=pool,
                             memory_engine=memory_engine,
                             llm_config=llm_config,
@@ -1929,52 +2021,17 @@ async def _run_consolidation_job(
                             request_context=request_context,
                             perf=batch_perf,
                             config=config,
-                            obs_tags_override=obs_tags,
-                            mark_consolidated_ids=sub_ids if is_final_pass else None,
+                            mark_consolidated_ids=sub_ids,
                         )
-                        sub_deleted += pass_deleted
-                        if pass_failed:
-                            # Stop the remaining scopes: the sub-batch is going to be bisected
-                            # and re-run in full, and every write this pass made is already
-                            # committed. Running the rest would only add writes to discard.
-                            sub_llm_failed = True
-                            break
-                        if not sub_results:
-                            sub_results = pass_results
-                        else:
-                            for i, (existing, new) in enumerate(zip(sub_results, pass_results)):
-                                if existing.get("action") == "skipped" and new.get("action") != "skipped":
-                                    sub_results[i] = new
-                                elif existing.get("action") != "skipped" and new.get("action") != "skipped":
-                                    existing_created = existing.get(
-                                        "created", 1 if existing.get("action") == "created" else 0
-                                    )
-                                    existing_updated = existing.get(
-                                        "updated", 1 if existing.get("action") == "updated" else 0
-                                    )
-                                    new_created = new.get("created", 1 if new.get("action") == "created" else 0)
-                                    new_updated = new.get("updated", 1 if new.get("action") == "updated" else 0)
-                                    total = existing_created + existing_updated + new_created + new_updated
-                                    sub_results[i] = {
-                                        "action": "multiple",
-                                        "created": existing_created + new_created,
-                                        "updated": existing_updated + new_updated,
-                                        "merged": 0,
-                                        "total_actions": total,
-                                    }
-                else:
-                    sub_results, sub_deleted, sub_llm_failed = await _process_memory_batch(
-                        pool=pool,
-                        memory_engine=memory_engine,
-                        llm_config=llm_config,
-                        bank_id=bank_id,
-                        memories=sub_batch,
-                        request_context=request_context,
-                        perf=batch_perf,
-                        config=config,
-                        mark_consolidated_ids=sub_ids,
-                    )
 
+                except GeneratedLanguageMismatch:
+                    # Deterministic rejection is content-local, not an outage. Reuse
+                    # bounded bisection and the existing durable failed-fact lifecycle:
+                    # isolate bad facts, preserve their sources, and drain later work.
+                    # Detector/infrastructure failures still propagate without holding
+                    # an entire bank's healthy facts.
+                    sub_llm_failed = True
+                    sub_results = []
                 all_deleted += sub_deleted
 
                 if sub_llm_failed and len(sub_batch) > 1:
@@ -2707,6 +2764,7 @@ async def _process_memory_batch(
                 embedding_str,
                 agg.tags,
                 exclude_id=update.observation_id,
+                anchor_source_ids=[str(source_id) for source_id in source_memory_ids],
             )
         prepared_updates.append(prepared)
 
@@ -2776,6 +2834,7 @@ async def _process_memory_batch(
                 embedding_str,
                 agg.tags,
                 exclude_id=None,
+                anchor_source_ids=[str(source_id) for source_id in create_source_ids],
             )
         prepared_creates.append(prepared_create)
 
@@ -3730,9 +3789,8 @@ async def _consolidate_batch_with_llm(
             failed_attempts += 1
             if failure_class is _BatchFailureClass.PROPAGATE:
                 logger.warning(
-                    f"[CONSOLIDATION] LLM batch call for {batch_label} raised a non-batch failure "
-                    f"({type(exc).__name__}); propagating to the task handler rather than marking "
-                    f"the memories failed: {exc}"
+                    f"[CONSOLIDATION] LLM batch call for {batch_label} raised a non-retried failure "
+                    f"({type(exc).__name__}); propagating to the caller for classification: {exc}"
                 )
                 raise
             last_exc = exc

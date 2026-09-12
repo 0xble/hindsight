@@ -241,6 +241,9 @@ def _ctx(threshold: float = 0.97):
         # The merge path builds a search_vector UPDATE clause from the text-search
         # config, so these must be present (production defaults: native/english).
         config=types.SimpleNamespace(
+            # Pure fold tests have no source store; guard-on PG coverage lives
+            # in test_language_prevention_dedup.
+            llm_language_integrity="off",
             consolidation_dedup_threshold=threshold,
             llm_temperature_consolidation=0.0,
             text_search_extension="native",
@@ -471,6 +474,9 @@ def _update_ctx(threshold: float = 0.97):
         # The merge path builds a search_vector UPDATE clause from the text-search
         # config, so these must be present (production defaults: native/english).
         config=types.SimpleNamespace(
+            # Pure fold tests have no source store; guard-on PG coverage lives
+            # in test_language_prevention_dedup.
+            llm_language_integrity="off",
             consolidation_dedup_threshold=threshold,
             llm_temperature_consolidation=0.0,
             text_search_extension="native",
@@ -743,7 +749,7 @@ async def _run_create_batch(create_action_result: str):
             bank_id="bank1",
             memories=memories,
             request_context=object(),
-            config=object(),
+            config=types.SimpleNamespace(llm_language_integrity="off"),
         )
     return result, create_action, mem_id
 

@@ -2140,6 +2140,7 @@ async def _extract_facts_from_chunk(
 
             # Lenient parsing of facts from raw JSON
             chunk_facts = []
+            language_fields: list[GeneratedText] = []
             has_malformed_facts = False
 
             # Handle malformed LLM responses
@@ -2375,6 +2376,15 @@ async def _extract_facts_from_chunk(
                 try:
                     fact = Fact(fact=combined_text, fact_type=fact_type, **fact_data)
                     chunk_facts.append(fact)
+                    # Validate the model's prose, not deterministic When:/Involving:
+                    # labels. Keep each dimension separate so short copied names and
+                    # numeric dates cannot hide (or create) language drift.
+                    if language_context is not None:
+                        language_fields.extend(
+                            GeneratedText(f"fact:{i}:{name}", sanitize_llm_output(str(value)) or "", ("chunk",))
+                            for name, value in (("what", what), ("when", when), ("who", who), ("why", why))
+                            if isinstance(value, str) and value and value.lower() != "not specified"
+                        )
                 except Exception as e:
                     logger.error(f"Failed to create Fact model for fact {i}: {e}")
                     has_malformed_facts = True
@@ -2408,7 +2418,7 @@ async def _extract_facts_from_chunk(
             if language_context is not None and chunk_facts:
                 evaluation = await evaluate_language_integrity_safely(
                     language_context,
-                    [GeneratedText(f"fact:{index}", fact.fact, ("chunk",)) for index, fact in enumerate(chunk_facts)],
+                    language_fields,
                     stage="retain",
                     mode=language_mode,
                 )
