@@ -2085,6 +2085,15 @@ async def _extract_facts_from_chunk(
                 who = get_value("who")
                 why = get_value("why")
 
+                # ``when`` and ``who`` are interpolated into the text that is
+                # persisted and then checked for language drift.  Do not stringify
+                # structured model output and accidentally omit it from that check.
+                # Marking it malformed uses the normal corrective extraction retry.
+                if any(value is not None and not isinstance(value, str) for value in (when, who)):
+                    logger.warning("Skipping fact %s: non-string when/who dimension", i)
+                    has_malformed_facts = True
+                    continue
+
                 # Fallback to old format if new fields not present
                 if not what:
                     what = get_value("factual_core")

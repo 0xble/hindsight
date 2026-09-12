@@ -990,6 +990,38 @@ class _ConsolidationBatchResponse(BaseModel):
     deletes: list[_DeleteAction] = []
 
 
+class _InvalidConsolidationReferences(ValueError):
+    """The model named an action reference unavailable to this batch."""
+
+
+def _response_references_are_valid(
+    response: _ConsolidationBatchResponse,
+    *,
+    memories: list[dict[str, Any]],
+    union_observations: list["MemoryFact"],
+) -> bool:
+    """Reject an entire response whose citations cannot be persisted as shown.
+
+    CREATE/UPDATE source ids must be facts in this batch, and UPDATE/DELETE targets
+    must be observations actually recalled for it.  Silently dropping an unknown
+    citation later would make language validation authorize text using evidence that
+    never reaches the stored observation, while allowing sibling actions to write.
+    """
+    valid_fact_ids = {str(memory["id"]) for memory in memories}
+    valid_observation_ids = {str(observation.id) for observation in union_observations}
+    for action in response.creates:
+        if not action.source_fact_ids or not set(action.source_fact_ids).issubset(valid_fact_ids):
+            return False
+    for action in response.updates:
+        if (
+            action.observation_id not in valid_observation_ids
+            or not action.source_fact_ids
+            or not set(action.source_fact_ids).issubset(valid_fact_ids)
+        ):
+            return False
+    return all(action.observation_id in valid_observation_ids for action in response.deletes)
+
+
 @dataclass
 class _PreparedUpdate:
     """One UPDATE from an LLM response, with every slow step already done.
@@ -3277,7 +3309,7 @@ def _classify_batch_failure(exc: Exception) -> _BatchFailureClass:
         return _BatchFailureClass.PROPAGATE
     if any(marker in str(exc).casefold() for marker in _CONTEXT_LIMIT_MARKERS):
         return _BatchFailureClass.FAIL_FAST
-    if isinstance(exc, json.JSONDecodeError | ValidationError | OutputTooLongError):
+    if isinstance(exc, json.JSONDecodeError | ValidationError | OutputTooLongError | _InvalidConsolidationReferences):
         return _BatchFailureClass.FAIL_FAST
     # Providers that surface an empty/unusable body flag their own retryability.
     if getattr(exc, "retryable", None) is False:
@@ -3472,6 +3504,16 @@ async def _consolidate_batch_with_llm(
                 call_kwargs["cached_prefix"] = cached_prefix_name
             batch_call = await llm_config.call(**call_kwargs)
             response: _ConsolidationBatchResponse = batch_call.content
+            if not _response_references_are_valid(
+                response,
+                memories=memories,
+                union_observations=union_observations,
+            ):
+                # Validate before deduplication, truncation, language checks, or
+                # preparation.  Otherwise an invalid sibling can be discarded while
+                # the remaining actions commit, and their language authority no
+                # longer corresponds exactly to the persisted source ids.
+                raise _InvalidConsolidationReferences("consolidation response contains unpersistable source or observation reference")
             # Defensive truncation: some LLM providers may not enforce JSON schema max_length
             creates = response.creates
             if remaining_observation_slots is not None and remaining_observation_slots >= 0:

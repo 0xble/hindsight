@@ -428,16 +428,24 @@ def _profile(text: str, *, source: bool) -> LanguageProfile:
 def _without_code(text: str) -> str:
     """Backticks are formatting, not evidence of code. Require recognizable syntax."""
 
+    def is_recognizable_code(line: str) -> bool:
+        return bool(
+            re.search(
+                r"(?:\b(?:const|let|var|def|class|import|from)\s+\w+|\b(?:return|raise|yield|pass|break|continue)\b|\b(?:print|assert|len|range|console\.log)\s*\([^)]*\)|\w+\s*(?:=|:=)\s*[^=])",
+                line,
+            )
+        )
+
     def replace(match: re.Match[str]) -> str:
         body = match.group().strip("`").strip()
         # Strip a fenced language tag, but never trust that tag as code evidence.
         if match.group().startswith("```") and "\n" in body:
             body = body.split("\n", 1)[1]
-        if re.search(
-            r"(?:\b(?:const|let|var|def|class|import|from)\s+\w+|\w+\s*\([^)]*\)|\w+\s*(?:=|:=)\s*[^=])", body
-        ):
-            return " "
-        return body
+        if not match.group().startswith("```"):
+            return " " if is_recognizable_code(body) else body
+        # A fence can contain prose around a small code fragment. Classify each
+        # line so that fragment cannot exempt the surrounding foreign prose.
+        return "\n".join(" " if is_recognizable_code(line) else line for line in body.splitlines())
 
     return _LITERAL_CODE.sub(replace, text)
 

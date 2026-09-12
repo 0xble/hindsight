@@ -128,6 +128,48 @@ async def test_missing_original_source_text_does_not_fall_back_to_fact_text(
 
 
 @pytest.mark.asyncio
+async def test_unpersistable_recalled_citation_rejects_the_whole_response_before_language_check(
+    monkeypatch: pytest.MonkeyPatch, config: SimpleNamespace
+) -> None:
+    """A recalled-only citation cannot authorize a sibling action that is written."""
+    llm = AsyncMock()
+    llm._provider_impl = None
+    llm.call.return_value = LLMCallResult(
+        content=SimpleNamespace(
+            creates=[
+                SimpleNamespace(text="valid sibling", source_fact_ids=["new-source"]),
+                SimpleNamespace(text="invalid citation", source_fact_ids=["recalled-only"]),
+            ],
+            updates=[],
+            deletes=[],
+        ),
+        usage=TokenUsage(),
+    )
+
+    async def prepare(*_args: object, **_kwargs: object) -> object:
+        return object()
+
+    async def evaluate(*_args: object, **_kwargs: object) -> LanguageCheckResult:
+        raise AssertionError("invalid response must be rejected before language authority is evaluated")
+
+    monkeypatch.setattr(consolidator, "prepare_context_safely", prepare)
+    monkeypatch.setattr(consolidator, "evaluate_language_integrity_safely", evaluate)
+
+    result = await _consolidate_batch_with_llm(
+        llm_config=llm,
+        memories=[{"id": "new-source", "text": "new fact"}],
+        union_observations=[],
+        union_source_facts={"recalled-only": cast(MemoryFact, SimpleNamespace())},
+        original_source_text_by_id={"new-source": "original chunk", "recalled-only": "unrelated chunk"},
+        config=config,
+    )
+
+    assert result.failed
+    assert not result.creates
+    assert llm.call.await_count == 1
+
+
+@pytest.mark.asyncio
 async def test_original_sources_are_resolved_bank_scoped_from_store_chunks(monkeypatch: pytest.MonkeyPatch) -> None:
     """New, recalled-union, and prior-observation sources all resolve from their chunks."""
     bank_id = "bank-a"
