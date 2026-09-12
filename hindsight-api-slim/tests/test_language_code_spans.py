@@ -13,6 +13,8 @@ from tests.test_language_prevention_review import check
         "`El equipo completó la revisión (incluyendo las pruebas) y preservará los datos originales para la próxima reunión.`",
         "`El equipo completó la revisión palabra(incluida) y preservará los datos originales para la próxima reunión.`",
         "```text\nconst status = 'ready';\nEl equipo completó la revisión y preservará los datos originales para la próxima reunión.\n```",
+        "`L’équipe continue la vérification des résultats et prépare les documents pour la prochaine réunion.`",
+        "`const status = 'ready'; El equipo completó la revisión y preservará los datos originales.`",
     ],
 )
 def test_foreign_prose_inside_code_delimiters_is_not_exempt(output):

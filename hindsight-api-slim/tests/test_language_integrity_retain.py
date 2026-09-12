@@ -216,3 +216,29 @@ async def test_non_string_persisted_dimensions_trigger_corrective_retry(field: s
     persisted_text = getattr(facts[0], "fact", "")
     assert persisted_text.startswith("The operations team")
     assert str(bad_value) not in persisted_text
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("field, bad_value", [("when", ["mañana"]), ("who", {"name": "María"})])
+async def test_persistently_non_string_dimensions_are_rejected(field: str, bad_value: object) -> None:
+    """Retry only helps when the corrected response is persistable."""
+    malformed = {"what": ENGLISH_FACT, field: bad_value, "fact_type": "world"}
+    llm = MagicMock(spec=LLMProvider)
+    llm.provider = "mock"
+    llm.model = "mock-model"
+    llm.call = AsyncMock(
+        side_effect=[
+            LLMCallResult(content={"facts": [malformed]}, usage=TokenUsage()),
+            LLMCallResult(content={"facts": [malformed]}, usage=TokenUsage()),
+        ]
+    )
+
+    with pytest.raises(RuntimeError, match="unusable"):
+        await _extract(
+            "reject",
+            llm,
+            content_retries=1,
+            source=ENGLISH_SOURCE + " Alice Smith led the team on 2026-09-04.",
+        )
+
+    assert llm.call.await_count == 2
