@@ -107,13 +107,13 @@ async def test_original_source_rejection_preserves_document_fact_and_observation
                 )
                 assert result["status"] == "completed"
             else:
-                with pytest.raises(GeneratedLanguageMismatch):
-                    await run_consolidation_job(memory_engine=memory, bank_id=bank, request_context=request_context)
+                result = await run_consolidation_job(memory_engine=memory, bank_id=bank, request_context=request_context)
+                assert result["memories_failed"] == 1
         assert len(calls) == 2
         assert await _observations(memory, bank) == (
             [ENGLISH] if corrected else ["Earlier review awaiting completion."]
         )
-        assert await _pending_facts(memory, bank) == ([] if corrected else [SPANISH])
+        assert await _pending_facts(memory, bank) == []
         async with memory._pool.acquire() as conn:
             assert (
                 await conn.fetchval("SELECT original_text FROM documents WHERE id='document' AND bank_id=$1", bank)
@@ -129,6 +129,9 @@ async def test_original_source_rejection_preserves_document_fact_and_observation
             assert await conn.fetchval(
                 "SELECT EXISTS(SELECT 1 FROM memory_units WHERE id=$1 AND bank_id=$2)", old_obs, bank
             ) is (not corrected)
+            assert bool(await conn.fetchval(
+                "SELECT consolidation_failed_at FROM memory_units WHERE id=$1 AND bank_id=$2", fact, bank
+            )) is (not corrected)
     finally:
         await memory.delete_bank(bank, request_context=request_context)
 

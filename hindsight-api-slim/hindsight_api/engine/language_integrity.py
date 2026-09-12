@@ -8,6 +8,7 @@ claim that statistical language identification is infallible.
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import re
 import threading
@@ -30,6 +31,10 @@ _MIXED_MIN_FOREIGN_SHARE = 0.20
 _ABSTAIN_LANGUAGES = frozenset({"zxx"})
 _SEGMENT_BOUNDARY = re.compile(r"(?:\n+|(?<=[.!?。！？])\s+)")
 _LITERAL_CODE = re.compile(r"```.*?```|`[^`]*`", re.DOTALL)
+_QUOTED_SPAN = re.compile(
+    r"\"[^\"]*\"|“[^”]*”|«[^»]*»|(?<!\w)'[^']+'(?!\w)|(?<!\w)‘[^’]+’(?!\w)|^\s*>[^\n]*(?:\n\s*>[^\n]*)*",
+    re.MULTILINE,
+)
 _WORD = re.compile(r"[^\W\d_]+", re.UNICODE)
 logger = logging.getLogger(__name__)
 # Independent confirmation for same-script mismatches. Statistical language ID
@@ -96,6 +101,8 @@ class LanguageContext:
 
     source_texts: dict[str, str]
     source_profiles: dict[str, LanguageProfile]
+    source_prose: dict[str, str]
+    supported_languages: dict[str, frozenset[str]]
 
 
 @dataclass(frozen=True, slots=True)
@@ -113,7 +120,7 @@ class LanguageVerdict:
     status: str
     reason: str
     source_keys: tuple[str, ...]
-    policy_version: str = "source-spans-v2"
+    policy_version: str = "source-spans-v3"
 
 
 @dataclass(frozen=True, slots=True)
@@ -279,9 +286,11 @@ def has_introduced_script_prose(source_text: str, generated_text: str) -> bool:
     English-only policy.
     """
 
+    generated_runs = _non_latin_script_runs(_without_code(generated_text))
+    if not generated_runs:
+        return False  # Routine Latin prose needs no full-source script scan.
     source_evidence = source_text
-    source_text = _LITERAL_CODE.sub("", source_text)
-    generated_text = _LITERAL_CODE.sub("", generated_text)
+    source_text = _source_prose(source_text)
     source_counts = _script_counts(source_text)
     if source_counts["LATIN"] < _MIN_NOVEL_SCRIPT_LETTERS:
         return False
@@ -295,7 +304,6 @@ def has_introduced_script_prose(source_text: str, generated_text: str) -> bool:
         return False
 
     source_runs = _non_latin_script_runs(source_evidence)
-    generated_runs = _non_latin_script_runs(generated_text)
     if len(generated_runs) == 1 and len(generated_runs[0][1]) <= _MAX_NAME_RUN_LETTERS:
         return False
 
@@ -388,7 +396,10 @@ def _materially_mixed(text: str, primary_language: str) -> bool:
             return True
 
     language_letters: Counter[str] = Counter()
-    for segment in _SEGMENT_BOUNDARY.split(text):
+    segments = [segment for segment in _SEGMENT_BOUNDARY.split(text) if segment.strip()]
+    if len(segments) <= 1:
+        return False  # The caller already ranked this entire source; do not rank it twice.
+    for segment in segments:
         letters = _letter_count(segment)
         if letters < 30:
             continue
@@ -414,16 +425,74 @@ def _profile(text: str, *, source: bool) -> LanguageProfile:
     return LanguageProfile(language, confidence, margin, letters, _dominant_script(text), mixed)
 
 
+def _without_code(text: str) -> str:
+    """Backticks are formatting, not evidence of code. Require recognizable syntax."""
+
+    def replace(match: re.Match[str]) -> str:
+        body = match.group().strip("`").strip()
+        # Strip a fenced language tag, but never trust that tag as code evidence.
+        if match.group().startswith("```") and "\n" in body:
+            body = body.split("\n", 1)[1]
+        if re.search(
+            r"(?:\b(?:const|let|var|def|class|import|from)\s+\w+|\w+\s*\([^)]*\)|\w+\s*(?:=|:=)\s*[^=])", body
+        ):
+            return " "
+        return body
+
+    return _LITERAL_CODE.sub(replace, text)
+
+
+def _represented_source(text: str) -> str:
+    """Decode JSON/JSONL values before treating prose quotation marks as quotations.
+
+    Transcript envelopes quote every value syntactically; those quotes do not
+    turn the whole utterance into a quoted foreign-language exception.
+    """
+
+    def values(value: Any) -> list[str]:
+        if isinstance(value, str):
+            return [value]
+        if isinstance(value, dict):
+            return [part for child in value.values() for part in values(child)]
+        if isinstance(value, list):
+            return [part for child in value for part in values(child)]
+        return []
+
+    try:
+        return "\n".join(values(json.loads(text)))
+    except (ValueError, RecursionError):
+        lines = text.splitlines()
+        if len(lines) > 1:
+            try:
+                return "\n".join(part for line in lines if line.strip() for part in values(json.loads(line)))
+            except (ValueError, RecursionError):
+                pass
+        return text
+
+
 def _source_prose(text: str) -> str:
     """Quoted spans authorize copying, not a new language for surrounding prose."""
-    return re.sub(r'"[^"\n]*"|“[^”\n]*”|«[^»\n]*»', " ", _LITERAL_CODE.sub("", text))
+    return _QUOTED_SPAN.sub(" ", _LITERAL_CODE.sub(" ", text))
 
 
 def _prepare_context_sync(source_texts: Mapping[str, str]) -> LanguageContext:
     with _classification_lock:
-        copied_texts = dict(source_texts)
-        profiles = {key: _profile(_source_prose(text), source=True) for key, text in copied_texts.items()}
-    return LanguageContext(copied_texts, profiles)
+        represented = {text: _represented_source(text) for text in set(source_texts.values())}
+        copied_texts = {key: represented[text] for key, text in source_texts.items()}
+        prose_by_text = {text: _source_prose(text) for text in set(copied_texts.values())}
+        profiles_by_text = {text: _profile(prose, source=True) for text, prose in prose_by_text.items()}
+        supported_by_text = {}
+        for text, profile in profiles_by_text.items():
+            evidence = [profile]
+            if not profile.actionable:
+                evidence.extend(_profile(part, source=False) for part in _SEGMENT_BOUNDARY.split(prose_by_text[text]))
+            supported_by_text[text] = frozenset(p.language for p in evidence if p.actionable)
+    return LanguageContext(
+        copied_texts,
+        {key: profiles_by_text[text] for key, text in copied_texts.items()},
+        {key: prose_by_text[text] for key, text in copied_texts.items()},
+        {key: supported_by_text[text] for key, text in copied_texts.items()},
+    )
 
 
 def _source_text_for_keys(context: LanguageContext, keys: tuple[str, ...]) -> str | None:
@@ -446,19 +515,18 @@ def _expected_source(context: LanguageContext, keys: tuple[str, ...]) -> tuple[L
 
 
 def _is_copied(source: str, text: str) -> bool:
+    # source is whitespace-normalized once per source set by _evaluate_sync.
     # Preserve punctuation/word boundaries; never concatenate letters across spans.
-    normalized = " ".join(text.split()).strip(' "“”‘’')
-    return bool(normalized) and normalized in " ".join(source.split())
+    normalized = " ".join(text.split()).strip(" \"'“”‘’«»")
+    return bool(normalized) and normalized in source
 
 
 def _novel_segments(source: str, text: str) -> list[str]:
     # Code is not prose. Only source-evidenced quotations are removed: quotation
     # marks alone must not offer a bypass for a newly generated translation.
-    text = _LITERAL_CODE.sub("", text)
-    text = re.sub(
-        r'"[^"\n]+"|“[^”]+”|‘[^’]+’',
-        lambda match: "" if _is_copied(source, match.group()) else match.group(),
-        text,
+    text = _without_code(text)
+    text = _QUOTED_SPAN.sub(
+        lambda match: " " if _is_copied(source, match.group().lstrip("> ")) else match.group(), text
     )
     return [segment for segment in _SEGMENT_BOUNDARY.split(text) if segment.strip() and not _is_copied(source, segment)]
 
@@ -468,12 +536,15 @@ def _evaluate_sync(context: LanguageContext, generated: Sequence[GeneratedText])
     with _classification_lock:
         mismatches: list[LanguageMismatch] = []
         verdicts: list[LanguageVerdict] = []
+        sources = {keys: _source_text_for_keys(context, keys) for keys in {item.source_keys for item in generated}}
+        copy_sources = {keys: " ".join(source.split()) for keys, source in sources.items() if source is not None}
         for item in generated:
-            source = _source_text_for_keys(context, item.source_keys)
+            source = sources[item.source_keys]
             status, reason = "unchecked", "missing_original_source"
             mismatch = None
             if source is not None:
-                if _is_copied(source, item.text):
+                copy_source = copy_sources[item.source_keys]
+                if _is_copied(copy_source, item.text):
                     status, reason = "copied", "source_evidenced_span_not_independent_assertion"
                 elif has_introduced_script_prose(source, item.text):
                     mismatch = LanguageMismatch(
@@ -486,22 +557,34 @@ def _evaluate_sync(context: LanguageContext, generated: Sequence[GeneratedText])
                     # A quoted foreign span authorizes copying it, not translating the
                     # surrounding account into that language. Infer language authority
                     # from unquoted prose only (literal copies were handled above).
-                    prose = re.sub(r'"[^"\n]*"|“[^”\n]*”|«[^»\n]*»', " ", _LITERAL_CODE.sub("", source))
-                    evidence = [context.source_profiles[key] for key in item.source_keys]
-                    if expected is None:
-                        evidence += [_profile(part, source=False) for part in _SEGMENT_BOUNDARY.split(prose)]
-                    supported = {profile.language for profile in evidence if profile.actionable}
+                    prose = "\n".join(context.source_prose[key] for key in item.source_keys)
+                    supported = set().union(*(context.supported_languages[key] for key in item.source_keys))
                     unknown = False
-                    segments = _novel_segments(source, item.text)
+                    segments = _novel_segments(copy_source, item.text)
+                    # Sentence boundaries alone miss same-Latin clauses buried in a
+                    # long English sentence. Only lexical foreign-language candidates
+                    # get overlapping 12-word checks (linear work, not every substring).
+                    # Copied quotes/code were already removed by _novel_segments.
+                    windows: set[str] = set()
+                    if expected is not None and expected[0].dominant_script == "LATIN":
+                        for segment in segments:
+                            words = _WORD.findall(segment)
+                            for start in range(0, max(0, len(words) - 11), 4):
+                                window = " ".join(words[start : start + 12])
+                                if _is_copied(copy_source, window):
+                                    continue
+                                expected_markers = max((_marker_count(window, lang) for lang in supported), default=0)
+                                if any(
+                                    _marker_count(window, lang) >= max(3, expected_markers + 1)
+                                    for lang in _LANGUAGE_MARKERS.keys() - supported
+                                ):
+                                    windows.add(window)
+                    segments.extend(sorted(windows))
                     for segment in segments:
                         if not _letter_count(segment):
                             continue
                         profile = _profile(segment, source=False)
                         if not profile.actionable:
-                            # Names and identifiers are not natural-language claims.
-                            words = _WORD.findall(segment)
-                            if len(words) <= 2 and all(word[:1].isupper() for word in words):
-                                continue
                             unknown = True
                             continue
                         if profile.language in supported:
@@ -515,7 +598,7 @@ def _evaluate_sync(context: LanguageContext, generated: Sequence[GeneratedText])
                             same_script
                             and profile.dominant_script == "LATIN"
                             and not _same_script_mismatch_confirmed(
-                                source_text=source,
+                                source_text=prose,
                                 generated_text=segment,
                                 source_language=source_profile.language,
                                 generated_language=profile.language,
