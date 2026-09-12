@@ -1000,24 +1000,29 @@ def _response_references_are_valid(
     *,
     memories: list[dict[str, Any]],
     union_observations: list["MemoryFact"],
+    per_fact_observation_ids: dict[str, set[str]] | None = None,
 ) -> bool:
     """Reject an entire response whose citations cannot be persisted as shown.
 
     CREATE/UPDATE source ids must be facts in this batch, and UPDATE/DELETE targets
-    must be observations actually recalled for it.  Silently dropping an unknown
-    citation later would make language validation authorize text using evidence that
-    never reaches the stored observation, while allowing sibling actions to write.
+    must be observations actually recalled for it.  An UPDATE's target must be in
+    the recall set for at least one fact it cites, exactly mirroring write
+    preparation. Silently dropping an unknown citation later would make language
+    validation authorize text using evidence that never reaches the stored
+    observation, while allowing sibling actions to write.
     """
     valid_fact_ids = {str(memory["id"]) for memory in memories}
     valid_observation_ids = {str(observation.id) for observation in union_observations}
     for action in response.creates:
         if not action.source_fact_ids or not set(action.source_fact_ids).issubset(valid_fact_ids):
             return False
+    topology = per_fact_observation_ids or {fact_id: valid_observation_ids for fact_id in valid_fact_ids}
     for action in response.updates:
         if (
             action.observation_id not in valid_observation_ids
             or not action.source_fact_ids
             or not set(action.source_fact_ids).issubset(valid_fact_ids)
+            or not any(action.observation_id in topology.get(fact_id, set()) for fact_id in action.source_fact_ids)
         ):
             return False
     return all(action.observation_id in valid_observation_ids for action in response.deletes)
@@ -2687,6 +2692,7 @@ async def _process_memory_batch(
         union_observations=union_observations,
         union_source_facts=union_source_facts,
         original_source_text_by_id=original_source_text_by_id,
+        per_fact_observation_ids=per_fact_obs_ids,
         config=config,
         remaining_observation_slots=remaining_observation_slots,
         max_observations_per_scope=max_obs,
@@ -3553,6 +3559,7 @@ async def _consolidate_batch_with_llm(
     union_source_facts: "dict[str, MemoryFact]",
     config: Any,
     original_source_text_by_id: dict[str, str] | None = None,
+    per_fact_observation_ids: dict[str, set[str]] | None = None,
     remaining_observation_slots: int | None = None,
     max_observations_per_scope: int = -1,
 ) -> _BatchLLMResult:
@@ -3737,12 +3744,15 @@ async def _consolidate_batch_with_llm(
                 response,
                 memories=memories,
                 union_observations=union_observations,
+                per_fact_observation_ids=per_fact_observation_ids,
             ):
                 # Validate before deduplication, truncation, language checks, or
                 # preparation.  Otherwise an invalid sibling can be discarded while
                 # the remaining actions commit, and their language authority no
                 # longer corresponds exactly to the persisted source ids.
-                raise _InvalidConsolidationReferences("consolidation response contains unpersistable source or observation reference")
+                raise _InvalidConsolidationReferences(
+                    "consolidation response contains unpersistable source or observation reference"
+                )
             # Defensive truncation: some LLM providers may not enforce JSON schema max_length
             creates = response.creates
             if remaining_observation_slots is not None and remaining_observation_slots >= 0:

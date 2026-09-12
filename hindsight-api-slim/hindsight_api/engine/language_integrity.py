@@ -426,15 +426,31 @@ def _profile(text: str, *, source: bool) -> LanguageProfile:
 
 
 def _without_code(text: str) -> str:
-    """Backticks are formatting, not evidence of code. Require recognizable syntax."""
+    """Remove only whole recognized code spans or actual code fragments.
 
-    def is_recognizable_code(line: str) -> bool:
-        return bool(
-            re.search(
-                r"(?:\b(?:const|let|var|def|class|import|from)\s+\w+|\b(?:return|raise|yield|pass|break|continue)\b|\b(?:print|assert|len|range|console\.log)\s*\([^)]*\)|\w+\s*(?:=|:=)\s*[^=])",
-                line,
-            )
-        )
+    Delimiters and incidental programming words are ordinary prose.  In
+    particular, one ``continue`` or a tiny declaration must not erase the rest
+    of a backticked natural-language sentence.
+    """
+
+    declaration = (
+        r"(?:const|let|var)\s+[\w$]+\s*=\s*(?:'(?:[^']*)'|\"(?:[^\"]*)\"|`(?:[^`]*)`|\d+|true|false|null|[\w.]+)\s*;?"
+    )
+    whole_line = re.compile(
+        rf"\s*(?:{declaration}|(?:async\s+)?def\s+\w+\s*\([^)]*\)\s*:|class\s+\w+(?:\([^)]*\))?\s*:|"
+        r"(?:from\s+[\w.]+\s+import\s+[\w*, ]*|import\s+[\w., ]+)|"
+        r"(?:print|assert|len|range|console\.log)\s*\([^)]*\)|"
+        r"(?:return|raise|yield)\s+(?:f?['\"`][^'\"`]*['\"`]|\w+(?:\([^)]*\))?)|"
+        r"\w+\s*(?:=|:=)\s*(?:f?['\"`][^'\"`]*['\"`]|\d+|\w+(?:\([^)]*\))?))\s*"
+    )
+    declaration_prefix = re.compile(rf"^\s*{declaration[:-2]};\s*")
+
+    def strip_code(line: str) -> str:
+        if whole_line.fullmatch(line):
+            return " "
+        # A known statement preceding prose is removable, but the residual is
+        # still evaluated as prose.  Never use a keyword search as authority.
+        return declaration_prefix.sub(" ", line, count=1)
 
     def replace(match: re.Match[str]) -> str:
         body = match.group().strip("`").strip()
@@ -442,10 +458,10 @@ def _without_code(text: str) -> str:
         if match.group().startswith("```") and "\n" in body:
             body = body.split("\n", 1)[1]
         if not match.group().startswith("```"):
-            return " " if is_recognizable_code(body) else body
+            return strip_code(body)
         # A fence can contain prose around a small code fragment. Classify each
         # line so that fragment cannot exempt the surrounding foreign prose.
-        return "\n".join(" " if is_recognizable_code(line) else line for line in body.splitlines())
+        return "\n".join(strip_code(line) for line in body.splitlines())
 
     return _LITERAL_CODE.sub(replace, text)
 

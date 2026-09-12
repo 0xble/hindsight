@@ -11,6 +11,7 @@ from hindsight_api.engine.consolidation.consolidator import (
     _ConsolidationBatchResponse,
     _CreateAction,
     _DeleteAction,
+    _UpdateAction,
     run_consolidation_job,
 )
 from hindsight_api.engine.language_integrity import GeneratedLanguageMismatch
@@ -107,7 +108,9 @@ async def test_original_source_rejection_preserves_document_fact_and_observation
                 )
                 assert result["status"] == "completed"
             else:
-                result = await run_consolidation_job(memory_engine=memory, bank_id=bank, request_context=request_context)
+                result = await run_consolidation_job(
+                    memory_engine=memory, bank_id=bank, request_context=request_context
+                )
                 assert result["memories_failed"] == 1
         assert len(calls) == 2
         assert await _observations(memory, bank) == (
@@ -129,9 +132,94 @@ async def test_original_source_rejection_preserves_document_fact_and_observation
             assert await conn.fetchval(
                 "SELECT EXISTS(SELECT 1 FROM memory_units WHERE id=$1 AND bank_id=$2)", old_obs, bank
             ) is (not corrected)
-            assert bool(await conn.fetchval(
-                "SELECT consolidation_failed_at FROM memory_units WHERE id=$1 AND bank_id=$2", fact, bank
-            )) is (not corrected)
+            assert bool(
+                await conn.fetchval(
+                    "SELECT consolidation_failed_at FROM memory_units WHERE id=$1 AND bank_id=$2", fact, bank
+                )
+            ) is (not corrected)
+    finally:
+        await memory.delete_bank(bank, request_context=request_context)
+
+
+@pytest.mark.asyncio
+@pytest.mark.memory_backend_incompatible
+async def test_cross_recall_update_response_rejects_whole_real_pg_batch_without_writes_or_stamps(
+    memory, request_context
+):
+    """A union-visible target is not writable through an unrelated cited fact."""
+    bank = "language-topology-" + uuid.uuid4().hex[:8]
+    await memory.get_bank_profile(bank, request_context=request_context)
+    target = uuid.uuid4()
+    try:
+        async with memory._pool.acquire() as conn:
+            fact_a = await _insert_memory(conn, bank, "Fact A is only related to its own context.", [])
+            fact_b = await _insert_memory(conn, bank, "Fact B is related to observation O.", [])
+            await conn.execute(
+                "INSERT INTO memory_units (id, bank_id, text, fact_type) VALUES ($1, $2, $3, 'observation')",
+                target,
+                bank,
+                "Observation O must survive the rejected response.",
+            )
+
+        def response(_messages, scope):
+            assert scope == "consolidation"
+            return _ConsolidationBatchResponse(
+                creates=[_CreateAction(text="A valid-looking sibling create.", source_fact_ids=[str(fact_b)])],
+                updates=[
+                    _UpdateAction(
+                        observation_id=str(target),
+                        text="This update cites A but O was recalled only for B.",
+                        source_fact_ids=[str(fact_a)],
+                    )
+                ],
+                deletes=[_DeleteAction(observation_id=str(target))],
+            )
+
+        async def recalled(*, query, **_kwargs):
+            if query.startswith("Fact B"):
+                return SimpleNamespace(
+                    results=[
+                        MemoryFact(
+                            id=str(target),
+                            text="Observation O must survive the rejected response.",
+                            fact_type="observation",
+                            source_fact_ids=[],
+                        )
+                    ],
+                    source_facts={},
+                )
+            return SimpleNamespace(results=[], source_facts={})
+
+        with (
+            patch.object(memory, "_consolidation_llm_config", _llm(response)),
+            patch.object(memory, "submit_async_consolidation"),
+            patch(
+                "hindsight_api.engine.consolidation.consolidator._find_related_observations",
+                new=AsyncMock(side_effect=recalled),
+            ),
+            _override_config(
+                memory,
+                enable_observations=True,
+                llm_language_integrity="off",
+                consolidation_batch_size=2,
+                consolidation_llm_batch_size=2,
+                consolidation_llm_parallelism=1,
+            ),
+        ):
+            result = await run_consolidation_job(memory_engine=memory, bank_id=bank, request_context=request_context)
+
+        assert result["memories_failed"] == 2
+        assert await _observations(memory, bank) == ["Observation O must survive the rejected response."]
+        # The existing failed-fact lifecycle holds the facts for recovery, but
+        # no response-derived success stamp or write can escape the preflight.
+        assert await _pending_facts(memory, bank) == []
+        async with memory._pool.acquire() as conn:
+            stamps = await conn.fetch(
+                "SELECT consolidated_at, consolidation_failed_at FROM memory_units WHERE bank_id=$1 AND id = ANY($2)",
+                bank,
+                [fact_a, fact_b],
+            )
+        assert all(row["consolidated_at"] is None and row["consolidation_failed_at"] is not None for row in stamps)
     finally:
         await memory.delete_bank(bank, request_context=request_context)
 
