@@ -453,11 +453,16 @@ def _without_code(text: str) -> str:
         return declaration_prefix.sub(" ", line, count=1)
 
     def replace(match: re.Match[str]) -> str:
-        body = match.group().strip("`").strip()
-        # Strip a fenced language tag, but never trust that tag as code evidence.
-        if match.group().startswith("```") and "\n" in body:
-            body = body.split("\n", 1)[1]
-        if not match.group().startswith("```"):
+        fenced = match.group().startswith("```")
+        if fenced:
+            # The optional info string is only the opening-fence line. Parsing
+            # it before trimming preserves an untagged fence's first body line.
+            fenced_content = match.group()[3:-3]
+            opening_line_end = fenced_content.find("\n")
+            body = fenced_content[opening_line_end + 1 :] if opening_line_end >= 0 else ""
+        else:
+            body = match.group().strip("`").strip()
+        if not fenced:
             return strip_code(body)
         # A fence can contain prose around a small code fragment. Classify each
         # line so that fragment cannot exempt the surrounding foreign prose.

@@ -31,3 +31,30 @@ def test_foreign_prose_inside_code_delimiters_is_not_exempt(output):
 )
 def test_recognizable_code_spans_remain_exempt(output):
     assert not guard.enforcement_failures(check(ENGLISH, output), guard.LanguageIntegrityMode.REJECT)
+
+
+def test_untagged_fence_keeps_foreign_first_body_line_for_rejection():
+    foreign = "L’équipe continue la vérification des résultats et prépare les documents pour la prochaine réunion."
+    output = f"```\n{foreign}\nprint('hello')\n```"
+
+    assert foreign in guard._without_code(output)
+    assert guard.enforcement_failures(check(ENGLISH, output), guard.LanguageIntegrityMode.REJECT)
+
+
+@pytest.mark.parametrize(
+    "output",
+    [
+        "```\nprint('hello')\n```",
+        "```python\ndef greeting(name):\n    return f'hello {name}'\n```",
+        "```\n\nprint('hello')\n```",
+        "```\r\nprint('hello')\r\n```",
+    ],
+)
+def test_fenced_code_with_optional_info_and_blank_or_crlf_lines_remains_exempt(output):
+    assert not guard.enforcement_failures(check(ENGLISH, output), guard.LanguageIntegrityMode.REJECT)
+
+
+def test_fenced_mixed_code_and_foreign_prose_is_not_exempt():
+    output = "```python\nprint('hello')\nL’équipe continue la vérification des résultats et prépare les documents.\n```"
+
+    assert guard.enforcement_failures(check(ENGLISH, output), guard.LanguageIntegrityMode.REJECT)
