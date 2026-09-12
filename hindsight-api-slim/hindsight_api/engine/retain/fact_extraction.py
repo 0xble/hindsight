@@ -24,6 +24,7 @@ from ..language_integrity import (
     build_retry_instruction,
     build_source_instruction,
     configured_mode,
+    enforcement_failures,
     evaluate_language_integrity_safely,
     prepare_context_safely,
     record_outcome,
@@ -2071,7 +2072,9 @@ async def _extract_facts_from_chunk(
     has_unprofiled_attachments = isinstance(user_content, list) and any(
         isinstance(part, dict) and part.get("type") != "text" for part in user_content
     )
-    language_check_enabled = should_check(config) and extraction_mode != "verbatim" and not has_unprofiled_attachments
+    language_check_enabled = should_check(config) and extraction_mode != "verbatim"
+    if should_check(config) and extraction_mode == "verbatim":
+        record_outcome(stage="retain", mode=language_mode, outcome="output_verbatim")
     language_retry_available = language_check_enabled and language_mode in {
         LanguageIntegrityMode.RETRY,
         LanguageIntegrityMode.REJECT,
@@ -2080,7 +2083,9 @@ async def _extract_facts_from_chunk(
     language_retry_used = False
     language_retry_instruction = ""
     language_context = (
-        await prepare_context_safely({"chunk": chunk}, stage="retain", mode=language_mode)
+        await prepare_context_safely(
+            {} if has_unprofiled_attachments else {"chunk": chunk}, stage="retain", mode=language_mode
+        )
         if language_check_enabled
         else None
     )
@@ -2407,7 +2412,7 @@ async def _extract_facts_from_chunk(
                     stage="retain",
                     mode=language_mode,
                 )
-                mismatches = evaluation.mismatches if evaluation is not None else ()
+                mismatches = enforcement_failures(evaluation, language_mode) if evaluation is not None else ()
                 if mismatches:
                     if language_mode is LanguageIntegrityMode.OBSERVE:
                         record_outcome(stage="retain", mode=language_mode, outcome="mismatch_observed")
@@ -2427,7 +2432,7 @@ async def _extract_facts_from_chunk(
                     else:
                         record_outcome(stage="retain", mode=language_mode, outcome="mismatch_accepted")
                 elif evaluation is not None:
-                    if evaluation.checked:
+                    if evaluation.checked and not evaluation.abstained:
                         outcome = "retry_passed" if language_retry_used else "passed"
                     else:
                         outcome = "abstained"

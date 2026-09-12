@@ -36,6 +36,7 @@ from pydantic import AliasChoices, BaseModel, ConfigDict, Field, ValidationError
 from ...config import get_config
 from ...metrics import get_metrics_collector
 from ...worker.stage import set_stage
+from ..chunk_ids import resolve_chunk_id_in
 from ..db import DatabaseBackend
 from ..db_utils import acquire_with_retry
 from ..language_integrity import (
@@ -46,6 +47,7 @@ from ..language_integrity import (
     build_retry_instruction,
     build_source_instruction,
     configured_mode,
+    enforcement_failures,
     evaluate_language_integrity_safely,
     prepare_context_safely,
     record_outcome,
@@ -801,6 +803,77 @@ async def _any_live_source_memory(
         conn=conn, fq_table=fq_table, bank_id=bank_id, unit_ids=[str(mid) for mid in source_memory_ids]
     )
     return bool(present)
+
+
+async def _resolve_original_source_texts(
+    pool: DatabaseBackend,
+    bank_id: str,
+    source_ids: set[str],
+) -> dict[str, str]:
+    """Read source chunks for language validation without treating extracted facts as originals.
+
+    The addressed memory read is bank-scoped before its chunk reference is used. SQL
+    chunks are globally keyed; store-owned chunks are reached through the store's
+    bank-scoped interface. A missing memory, chunk, or chunk body deliberately stays
+    absent: language integrity must abstain rather than infer authority from fact text.
+    """
+    if not source_ids:
+        return {}
+
+    store = get_memories()
+    source_id_list = list(source_ids)
+    if store.store_owned_for(bank_id):
+        source_memories = await store.get_memories(
+            conn=None,
+            fq_table=fq_table,
+            bank_id=bank_id,
+            unit_ids=source_id_list,
+        )
+    else:
+        async with acquire_with_retry(pool) as conn:
+            source_memories = await store.get_memories(
+                conn=conn,
+                fq_table=fq_table,
+                bank_id=bank_id,
+                unit_ids=source_id_list,
+            )
+
+    refs_by_id: dict[str, tuple[str, int]] = {}
+    for memory in source_memories:
+        ref = resolve_chunk_id_in(memory.chunk_id or "", bank_id)
+        if ref is not None:
+            refs_by_id[memory.unit_id] = (ref.document_id, ref.chunk_index)
+    if not refs_by_id:
+        return {}
+
+    ordered_ids = list(refs_by_id)
+    refs = [refs_by_id[source_id] for source_id in ordered_ids]
+    if store.store_owned_for(bank_id):
+        try:
+            chunk_texts = await store.get_chunk_texts(bank_id=bank_id, refs=refs)
+        except NotImplementedError:
+            # A store that cannot address its original chunk bodies cannot safely
+            # substitute extracted fact text. Returning no authority lets the
+            # language-integrity policy explicitly abstain or reject.
+            logger.warning("Consolidation language validation abstained: store cannot read original chunks")
+            return {}
+    else:
+        chunk_id_by_source_id = {
+            memory.unit_id: memory.chunk_id
+            for memory in source_memories
+            if memory.unit_id in refs_by_id and memory.chunk_id
+        }
+        async with acquire_with_retry(pool) as conn:
+            rows = await conn.fetch(
+                f"SELECT chunk_id, chunk_text FROM {fq_table('chunks')} "
+                "WHERE bank_id = $1 AND chunk_id = ANY($2::text[])",
+                bank_id,
+                list(chunk_id_by_source_id.values()),
+            )
+        text_by_chunk_id = {str(row["chunk_id"]): row["chunk_text"] for row in rows}
+        chunk_texts = [text_by_chunk_id.get(chunk_id_by_source_id[source_id]) for source_id in ordered_ids]
+
+    return {source_id: chunk_text for source_id, chunk_text in zip(ordered_ids, chunk_texts) if chunk_text is not None}
 
 
 class _CreateAction(BaseModel):
@@ -2479,6 +2552,25 @@ async def _process_memory_batch(
         if recall_result.source_facts:
             union_source_facts.update(recall_result.source_facts)
 
+    # Facts and recalled observations are concise, derived memory text. Language
+    # validation instead needs the bank-scoped source chunks behind every fact an
+    # update could cite, including an observation's pre-existing evidence.
+    language_source_ids = {str(memory["id"]) for memory in memories}
+    language_source_ids.update(union_source_facts)
+    for observation in union_observations:
+        language_source_ids.update(observation.source_fact_ids or [])
+    original_source_text_by_id = (
+        await _resolve_original_source_texts(pool, bank_id, language_source_ids) if should_check(config) else {}
+    )
+
+    # Determine effective tag scope for observations.
+    # When obs_tags_override is set, use it; otherwise use the memory's own tags.
+    if obs_tags_override is not None:
+        fact_tags = obs_tags_override
+    else:
+        # All memories in the batch share the same tag set (enforced by batching)
+        fact_tags = memories[0].get("tags") or [] if memories else []
+
     # 2b. Compute remaining observation slots for this scope (if limit configured).
     # The cap is resolved per-scope: an observation_scope_limits rule may override
     # the bank-wide max_observations_per_scope for scopes matching its tag pattern.
@@ -2505,6 +2597,7 @@ async def _process_memory_batch(
         memories=memories,
         union_observations=union_observations,
         union_source_facts=union_source_facts,
+        original_source_text_by_id=original_source_text_by_id,
         config=config,
         remaining_observation_slots=remaining_observation_slots,
         max_observations_per_scope=max_obs,
@@ -3368,6 +3461,7 @@ async def _consolidate_batch_with_llm(
     union_observations: "list[MemoryFact]",
     union_source_facts: "dict[str, MemoryFact]",
     config: Any,
+    original_source_text_by_id: dict[str, str] | None = None,
     remaining_observation_slots: int | None = None,
     max_observations_per_scope: int = -1,
 ) -> _BatchLLMResult:
@@ -3429,7 +3523,10 @@ async def _consolidate_batch_with_llm(
 
     language_mode = configured_mode(config)
     language_check_enabled = should_check(config)
-    source_text_by_id = {str(memory.get("id")): str(memory.get("text") or "") for memory in memories}
+    # The caller supplies original chunk text, not the extracted/transformed fact
+    # text in this batch. An absent source remains unknown so strict modes can
+    # reject or abstain according to language_integrity's policy.
+    source_text_by_id = original_source_text_by_id or {}
     language_context = (
         await prepare_context_safely(source_text_by_id, stage="consolidation", mode=language_mode)
         if language_check_enabled
@@ -3557,13 +3654,23 @@ async def _consolidate_batch_with_llm(
             updates = _dedupe_updates(response.updates, batch_label=batch_label)
             if language_context is not None:
                 generated: list[GeneratedText] = []
+                existing_source_ids_by_observation = {
+                    str(observation.id): tuple(observation.source_fact_ids or []) for observation in union_observations
+                }
                 for action_kind, actions in (("create", creates), ("update", updates)):
                     for action_index, action in enumerate(actions):
+                        source_ids = action.source_fact_ids
+                        if action_kind == "update":
+                            source_ids = list(
+                                dict.fromkeys(
+                                    [*source_ids, *existing_source_ids_by_observation.get(action.observation_id, ())]
+                                )
+                            )
                         generated.append(
                             GeneratedText(
                                 f"{action_kind}:{action_index}",
                                 action.text,
-                                tuple(action.source_fact_ids),
+                                tuple(source_ids),
                             )
                         )
                 evaluation = await evaluate_language_integrity_safely(
@@ -3572,7 +3679,7 @@ async def _consolidate_batch_with_llm(
                     stage="consolidation",
                     mode=language_mode,
                 )
-                mismatches = evaluation.mismatches if evaluation is not None else ()
+                mismatches = enforcement_failures(evaluation, language_mode) if evaluation is not None else ()
                 if mismatches:
                     if language_mode is LanguageIntegrityMode.OBSERVE:
                         record_outcome(stage="consolidation", mode=language_mode, outcome="mismatch_observed")
@@ -3592,7 +3699,7 @@ async def _consolidate_batch_with_llm(
                     else:
                         record_outcome(stage="consolidation", mode=language_mode, outcome="mismatch_accepted")
                 elif evaluation is not None:
-                    if evaluation.checked:
+                    if evaluation.checked and not evaluation.abstained:
                         outcome = "retry_passed" if language_retry_used else "passed"
                     else:
                         outcome = "abstained"
