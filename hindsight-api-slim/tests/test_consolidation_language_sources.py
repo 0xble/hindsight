@@ -170,6 +170,88 @@ async def test_unpersistable_recalled_citation_rejects_the_whole_response_before
 
 
 @pytest.mark.asyncio
+async def test_update_must_be_recalled_for_one_of_its_cited_sources_before_language_check(
+    monkeypatch: pytest.MonkeyPatch, config: SimpleNamespace
+) -> None:
+    """Union membership cannot replace the per-cited-source recall topology."""
+    llm = AsyncMock()
+    llm._provider_impl = None
+    llm.call.return_value = LLMCallResult(
+        content=SimpleNamespace(
+            creates=[SimpleNamespace(text="valid sibling", source_fact_ids=["B"])],
+            updates=[SimpleNamespace(text="invalid update", observation_id="O", source_fact_ids=["A"])],
+            deletes=[SimpleNamespace(observation_id="O")],
+        ),
+        usage=TokenUsage(),
+    )
+
+    async def prepare(*_args: object, **_kwargs: object) -> object:
+        return object()
+
+    async def evaluate(*_args: object, **_kwargs: object) -> LanguageCheckResult:
+        raise AssertionError("invalid response must be rejected before language evaluation")
+
+    monkeypatch.setattr(consolidator, "prepare_context_safely", prepare)
+    monkeypatch.setattr(consolidator, "evaluate_language_integrity_safely", evaluate)
+
+    result = await _consolidate_batch_with_llm(
+        llm_config=llm,
+        memories=[{"id": "A", "text": "fact A"}, {"id": "B", "text": "fact B"}],
+        union_observations=[MemoryFact(id="O", text="observation", fact_type="observation", source_fact_ids=[])],
+        union_source_facts={},
+        original_source_text_by_id={"A": "original A", "B": "original B"},
+        per_fact_observation_ids={"A": set(), "B": {"O"}},
+        config=config,
+    )
+
+    assert result.failed
+    assert not result.creates
+    assert not result.updates
+    assert not result.deletes
+    assert llm.call.await_count == 1
+
+
+@pytest.mark.asyncio
+async def test_update_recalled_for_a_cited_source_and_prior_provenance_remains_valid(
+    monkeypatch: pytest.MonkeyPatch, config: SimpleNamespace
+) -> None:
+    llm = AsyncMock()
+    llm._provider_impl = None
+    llm.call.return_value = LLMCallResult(
+        content=SimpleNamespace(
+            creates=[],
+            updates=[SimpleNamespace(text="valid update", observation_id="O", source_fact_ids=["B"])],
+            deletes=[],
+        ),
+        usage=TokenUsage(),
+    )
+    seen: list[tuple[str, ...]] = []
+
+    async def prepare(*_args: object, **_kwargs: object) -> object:
+        return object()
+
+    async def evaluate(_context: object, generated, **_kwargs: object) -> LanguageCheckResult:
+        seen.extend(item.source_keys for item in generated)
+        return LanguageCheckResult(mismatches=(), checked=1, abstained=0)
+
+    monkeypatch.setattr(consolidator, "prepare_context_safely", prepare)
+    monkeypatch.setattr(consolidator, "evaluate_language_integrity_safely", evaluate)
+
+    result = await _consolidate_batch_with_llm(
+        llm_config=llm,
+        memories=[{"id": "A", "text": "fact A"}, {"id": "B", "text": "fact B"}],
+        union_observations=[MemoryFact(id="O", text="observation", fact_type="observation", source_fact_ids=["prior"])],
+        union_source_facts={},
+        original_source_text_by_id={"A": "original A", "B": "original B", "prior": "prior original"},
+        per_fact_observation_ids={"A": set(), "B": {"O"}},
+        config=config,
+    )
+
+    assert result.updates
+    assert seen == [("B", "prior")]
+
+
+@pytest.mark.asyncio
 async def test_original_sources_are_resolved_bank_scoped_from_store_chunks(monkeypatch: pytest.MonkeyPatch) -> None:
     """New, recalled-union, and prior-observation sources all resolve from their chunks."""
     bank_id = "bank-a"
