@@ -188,3 +188,31 @@ async def test_batch_retry_mode_reaches_real_live_path_without_recursing() -> No
 
     assert llm.call.await_count == 2
     assert result.facts[0].fact_text.startswith("The operations team")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("field, bad_value", [("when", ["mañana"]), ("who", {"name": "María"})])
+async def test_non_string_persisted_dimensions_trigger_corrective_retry(field: str, bad_value: object) -> None:
+    malformed = {"what": ENGLISH_FACT, field: bad_value, "fact_type": "world"}
+    corrected = {"what": ENGLISH_FACT, field: "2026-09-04" if field == "when" else "Alice Smith", "fact_type": "world"}
+    llm = MagicMock(spec=LLMProvider)
+    llm.provider = "mock"
+    llm.model = "mock-model"
+    llm.call = AsyncMock(
+        side_effect=[
+            LLMCallResult(content={"facts": [malformed]}, usage=TokenUsage()),
+            LLMCallResult(content={"facts": [corrected]}, usage=TokenUsage()),
+        ]
+    )
+
+    facts, _ = await _extract(
+        "reject",
+        llm,
+        content_retries=1,
+        source=ENGLISH_SOURCE + " Alice Smith led the team on 2026-09-04.",
+    )
+
+    assert llm.call.await_count == 2
+    persisted_text = getattr(facts[0], "fact", "")
+    assert persisted_text.startswith("The operations team")
+    assert str(bad_value) not in persisted_text
