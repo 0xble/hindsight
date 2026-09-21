@@ -383,3 +383,42 @@ def test_cjk_long_common_prefix_is_not_treated_as_name_inflection():
     source = "The engineering handbook defines an example localization value used to verify the release: 你好世界朋友"
     output = "The generated note introduces a different value: 你好世界再见"
     assert has_introduced_script_prose(source, output)
+
+
+def test_detector_dependency_is_declared_not_merely_installed():
+    """The detector's package must be a declared dependency, not an ambient one.
+
+    `_get_identifier()` imports `py3langid` at runtime on the ingestion path. Its
+    declaration was removed from `pyproject.toml` by a cleanup that deleted a
+    duplicate `[project]` block (it was the only one of that block's 53 dependencies
+    not also declared elsewhere), and the package survived purely because `uv.lock`
+    still pinned it. A later re-lock would have dropped it.
+
+    That failure is silent in the modes people actually run: `prepare_context_safely`
+    and `evaluate_language_integrity_safely` fail OPEN for off/observe/retry, so the
+    guard would simply stop guarding, with one log line. Only `reject` surfaces it.
+    An import test alone cannot catch this — the package is installed. Read the
+    declaration.
+    """
+    import re
+    import tomllib
+    from pathlib import Path
+
+    pyproject = Path(__file__).resolve().parents[1] / "pyproject.toml"
+    project = tomllib.loads(pyproject.read_text())["project"]
+    declared = list(project["dependencies"])
+    for group in (project.get("optional-dependencies") or {}).values():
+        declared.extend(group)
+    names = {re.match(r"^([A-Za-z0-9_.\-]+)", d).group(1).lower() for d in declared}
+    assert "py3langid" in names, (
+        "py3langid is imported by engine/language_integrity.py but is not declared in "
+        f"{pyproject.name}; a re-lock would drop it and language integrity would fail open"
+    )
+
+
+def test_detector_actually_loads():
+    """The declaration is necessary but not sufficient: the model must load too."""
+    identifier = guard._get_identifier()
+    assert identifier is not None
+    language, confidence = identifier.classify("The quick brown fox jumps over the lazy dog today.")
+    assert language == "en" and confidence > 0.5
