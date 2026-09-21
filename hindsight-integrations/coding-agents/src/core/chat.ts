@@ -256,7 +256,10 @@ async function writeSession(
   const submit = (content: string, operationId: string, append: boolean) =>
     client.retain(
       content,
-      "coding agent session",
+      // Configured context wins. The default says nothing about authorship, which lets extraction
+      // record an assistant's proposal as the user's decision; a deployment that cares states the
+      // boundary here (see RawConfig.retainContext).
+      stamp?.context ?? "coding agent session",
       refId,
       // Configured tags first, built-ins last and deduped: `source:chat` and `harness:<id>` are what
       // the documents list filters and draws its agent logo from, so a template cannot displace them.

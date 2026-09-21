@@ -76,6 +76,39 @@ describe("retainLiveSession", () => {
       ref_id: "conversation:s2",
     });
   });
+
+  it("sends the stamp's resolved context instead of the default when one is configured", async () => {
+    // The default says nothing about authorship, so extraction can record an assistant's
+    // proposal as the user's decision. This is the path a deployment uses to state the boundary.
+    const retain = vi.fn().mockResolvedValue(undefined);
+    const client = { retain } as unknown as HindsightClient;
+    const turns: TransportTurn[] = [
+      { role: "user", content: "hi", timestamp: "2026-01-01T00:00:00Z" },
+    ];
+    const configured = "Assistant turns are agent-generated and not the user's decisions.";
+
+    await retainLiveSession(client, "s3", turns, "2026-01-01T00:00:00Z", undefined, {
+      stamp: { tags: [], metadata: {}, context: configured },
+    });
+
+    const [, context] = retain.mock.calls[0];
+    expect(context).toBe(configured);
+  });
+
+  it("keeps the default when a stamp carries tags but no context", async () => {
+    const retain = vi.fn().mockResolvedValue(undefined);
+    const client = { retain } as unknown as HindsightClient;
+    const turns: TransportTurn[] = [
+      { role: "user", content: "hi", timestamp: "2026-01-01T00:00:00Z" },
+    ];
+
+    await retainLiveSession(client, "s4", turns, "2026-01-01T00:00:00Z", undefined, {
+      stamp: { tags: ["project:x"], metadata: {} },
+    });
+
+    const [, context] = retain.mock.calls[0];
+    expect(context).toBe("coding agent session");
+  });
 });
 
 describe("ingestChats", () => {
