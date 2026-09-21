@@ -1677,6 +1677,12 @@ async def retain_batch(
                 existing_content["metadata"] = first["metadata"]
             if first.get("observation_scopes") is not None:
                 existing_content["observation_scopes"] = first["observation_scopes"]
+            # retain_params is built from contents_dicts[0], and the line below makes THIS
+            # synthetic item that element — so a strategy left off here is a strategy the
+            # document never records, and every reprocess silently re-extracts under the
+            # bank default instead of the one the caller asked for.
+            if first.get("strategy"):
+                existing_content["strategy"] = first["strategy"]
             if first.get("tags"):
                 existing_content["tags"] = first["tags"]
             contents_dicts = [existing_content, *contents_dicts]
@@ -1699,6 +1705,8 @@ async def retain_batch(
                     merged_item["metadata"] = first["metadata"]
                 if first.get("observation_scopes") is not None:
                     merged_item["observation_scopes"] = first["observation_scopes"]
+                if first.get("strategy"):
+                    merged_item["strategy"] = first["strategy"]
                 if first.get("tags"):
                     merged_item["tags"] = first["tags"]
                 contents_dicts = [merged_item]
