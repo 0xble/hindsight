@@ -132,12 +132,16 @@ describe("retainContext", () => {
   });
 
   it("is returned verbatim when it carries no placeholder", () => {
-    const text = "Conversation between the user and a coding agent. Assistant turns are agent-generated.";
+    const text =
+      "Conversation between the user and a coding agent. Assistant turns are agent-generated.";
     expect(buildRetainStamp({ retainContext: text }, ctx()).context).toBe(text);
   });
 
   it("resolves the same placeholders as retainTags", () => {
-    const stamp = buildRetainStamp({ retainContext: "session {sessionId} via {harness} in {bankId}" }, ctx());
+    const stamp = buildRetainStamp(
+      { retainContext: "session {sessionId} via {harness} in {bankId}" },
+      ctx()
+    );
     expect(stamp.context).toBe("session sess-1 via codex in shared-bank");
   });
 
