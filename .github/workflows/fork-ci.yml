@@ -45,6 +45,15 @@ jobs:
           tests/test_language_integrity_retain.py
           tests/test_consolidation_retry_budget.py
           tests/test_fact_extraction_retry.py
+          tests/test_language_prevention.py
+          tests/test_language_prevention_atomicity.py
+          tests/test_language_prevention_dedup.py
+          tests/test_language_prevention_review.py
+          tests/test_language_code_spans.py
+          tests/test_consolidation_language_sources.py
+          tests/test_consolidation_batch_atomicity.py
+          tests/test_consolidation_dedup.py
+          tests/test_worker_retry_knobs.py
           tests/test_content_policy_refusal_permanent.py
           tests/test_operation_status.py
           tests/test_response_schema_validation.py
