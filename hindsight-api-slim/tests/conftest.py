@@ -201,6 +201,10 @@ os.environ.setdefault("HINDSIGHT_API_LLM_TRACE_RETENTION_DAYS", "-1")
 # Load environment variables from .env at the start of test session
 def pytest_configure(config):
     """Load environment variables before running tests."""
+    if config.getoption("portable_ci", default=False):
+        if os.getenv("HINDSIGHT_API_DATABASE_URL"):
+            raise pytest.UsageError("Portable CI cannot target an external database")
+        return
     # Look for .env in the workspace root (two levels up from tests dir)
     env_file = Path(__file__).parent.parent.parent / ".env"
     if env_file.exists():
@@ -224,7 +228,7 @@ def db_url():
 
 
 @pytest.fixture(scope="session")
-def pg0_db_url(db_url, tmp_path_factory, worker_id):
+def pg0_db_url(db_url, tmp_path_factory, worker_id, request):
     """
     Session-scoped fixture that ensures pg0 is running, migrations are applied,
     and returns the database URL.
@@ -240,6 +244,9 @@ def pg0_db_url(db_url, tmp_path_factory, worker_id):
     Note: We don't stop pg0 at the end because pytest-xdist runs workers in separate
     processes that share the same pg0 instance. pg0 will persist for the next test run.
     """
+    if request.config.getoption("portable_ci", default=False):
+        return request.getfixturevalue("portable_database")
+
     from hindsight_api.pg0 import parse_pg0_url as _parse_pg0_url
 
     # Determine pg0 instance name/port from db_url (if it's a pg0:// URL) or use defaults
@@ -544,7 +551,7 @@ def llm_config():
     return LLMConfig.from_env()
 
 
-def _skip_without_local_ml(what: str) -> None:
+def _skip_without_local_ml(what: str, required: bool = False) -> None:
     """Skip rather than error when the local ML stack is not installed.
 
     The ``local-ml`` extra (sentence-transformers, transformers, torch) is optional: a
@@ -555,6 +562,8 @@ def _skip_without_local_ml(what: str) -> None:
     reads as 1495 broken tests rather than one absent optional dependency.
     """
     if importlib.util.find_spec("sentence_transformers") is None:
+        if required:
+            pytest.fail(f"Portable CI requires local ML for {what}; run ./bin/ci setup")
         pytest.skip(
             f"local ML stack not installed; {what} fixture needs the 'local-ml' extra "
             "(pip install 'hindsight-api-slim[local-ml]')",
@@ -563,7 +572,7 @@ def _skip_without_local_ml(what: str) -> None:
 
 
 @pytest.fixture(scope="session")
-def embeddings(tmp_path_factory, worker_id):
+def embeddings(tmp_path_factory, worker_id, request):
     """
     Session-scoped embeddings fixture with filelock to prevent race conditions.
 
@@ -580,8 +589,13 @@ def embeddings(tmp_path_factory, worker_id):
 
     lock_file = root_tmp_dir / "embeddings_init.lock"
 
-    _skip_without_local_ml("embeddings")
-    emb = LocalSTEmbeddings()
+    portable = request.config.getoption("portable_ci", default=False)
+    _skip_without_local_ml("embeddings", required=portable)
+    emb = (
+        LocalSTEmbeddings(model_name=request.getfixturevalue("portable_models").embedding, force_cpu=True)
+        if portable
+        else LocalSTEmbeddings()
+    )
 
     # Serialize model initialization across workers
     with filelock.FileLock(str(lock_file)):
@@ -595,7 +609,7 @@ def embeddings(tmp_path_factory, worker_id):
 
 
 @pytest.fixture(scope="session")
-def cross_encoder(tmp_path_factory, worker_id):
+def cross_encoder(tmp_path_factory, worker_id, request):
     """
     Session-scoped cross-encoder fixture with filelock to prevent race conditions.
 
@@ -612,8 +626,13 @@ def cross_encoder(tmp_path_factory, worker_id):
 
     lock_file = root_tmp_dir / "cross_encoder_init.lock"
 
-    _skip_without_local_ml("cross_encoder")
-    ce = LocalSTCrossEncoder()
+    portable = request.config.getoption("portable_ci", default=False)
+    _skip_without_local_ml("cross_encoder", required=portable)
+    ce = (
+        LocalSTCrossEncoder(model_name=request.getfixturevalue("portable_models").reranker, force_cpu=True)
+        if portable
+        else LocalSTCrossEncoder()
+    )
 
     # Serialize model initialization across workers
     with filelock.FileLock(str(lock_file)):

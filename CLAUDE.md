@@ -247,22 +247,13 @@ migration file dispatches through `run_for_dialect`, which calls either
 
 **Before writing code, read `.claude/skills/code-review/SKILL.md`** for the full coding standards (Python style, type safety, TypeScript style, general principles).
 
-**Always run the lint script after making Python or TypeScript/Node changes:**
-```bash
-./scripts/hooks/lint.sh
-```
-
-Dead-code detection runs in CI (the `check-unused-code` job) at two levels:
-- **Blocking:** unused imports (ruff `F401`) and variables (`F841`) — `lint.sh` auto-removes
-  them and `verify-generated-files` fails on any leftover diff; and **knip** for orphaned
-  control-plane files / unused (or unlisted) `package.json` dependencies.
-- **Advisory:** whole unused Python functions (vulture) and unused control-plane *exports*
-  (the shadcn/ui surface is kept on purpose) — surfaced, not gated.
-
-Run both locally with:
-```bash
-./scripts/hooks/check-unused.sh
-```
+**Run `./bin/ci check` after implementation changes**, following the setup
+prerequisites in [CONTRIBUTING.md](CONTRIBUTING.md#fork-checks). It owns the
+maintained fork gate and never formats tracked source. For broader application
+changes, also run the relevant component checks. `scripts/hooks/lint.sh` is an
+optional broad development formatter, not a CI prerequisite. Unused Python
+imports and variables are covered by the gate's Ruff checks. Additional dead-code
+inspection is available through `scripts/hooks/check-unused.sh`.
 
 **After completing any implementation work, run `/code-review`** to verify your changes against project standards (missing tests, dead code, type safety, etc.). Fix any "must fix" issues before considering the task done.
 
@@ -381,7 +372,7 @@ generated file built from unformatted source fails the byte comparison in CI.
 Every new integration in `hindsight-integrations/` must satisfy all of the following before it can be merged:
 
 1. **Tests are required** — tests must simulate or exercise the external system (mock the framework's interfaces and verify the integration actually calls Hindsight correctly). Pure unit tests of helper functions are not sufficient.
-2. **CI job** — add a test job in `.github/workflows/test.yml` following the existing pattern (e.g., `test-crewai-integration`). The job must build, install deps, and run `uv run pytest tests -v`. Also add the integration to `detect-changes` outputs so it only runs when its files change.
+2. **Portable checks**: add the integration build and regression tests to the repository-owned check entrypoint with declared dependencies. Do not restore GitHub Actions workflows in this fork.
 3. **Release process** — add the integration name to the `VALID_INTEGRATIONS` array in `scripts/release-integration.sh` so it can be released via the standard release workflow.
 4. **Follow project code standards** — Python style, type safety, no raw dicts for structured data, no multi-item tuple returns (see `.claude/skills/code-review/SKILL.md`).
 

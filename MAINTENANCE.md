@@ -55,10 +55,10 @@ intentional registered patch. Evaluate all support-file adoption and retirement
 conditions; update the responsible record in the same delivery as any patch
 addition, change, or retirement. Missing or stale patch coverage blocks publication.
 
-Run all retained-patch and upstream-recovery regressions on the exact candidate.
-From `hindsight-api-slim`, also run `uv run --frozen ruff check .`,
-`uv run --frozen ruff format --check .`, and `uv run --frozen ty check hindsight_api`;
-run the HINDSIGHT-003 regression from the repository root.
+Run `./bin/ci` in the candidate checkout, or `./bin/ci check` after setup.
+This includes all maintained retained-patch/upstream-recovery regressions,
+API Ruff/format/types, package/import smoke and the HINDSIGHT-003 policy gate.
+Keep the coverage mapping in [maintenance/ci.md](maintenance/ci.md) current.
 
 Publish to owned `origin` when authorized, or report `Blocked` with the exact
 failed stage, refs, and evidence. Before `Updated` or `Already current`, fetch

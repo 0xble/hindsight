@@ -72,9 +72,10 @@ uv run perf-test --suite stats --scale huge
 
 ### CI
 
-The `perf-test.yml` workflow runs only on manual dispatch. Scale is configurable
-via workflow input (defaults to `tiny`). Results are uploaded as artifacts with
-14-day retention.
+This fork runs no hosted benchmark workflow. Run the commands above or
+`scripts/benchmarks/run-perf-test.sh` in an explicitly prepared benchmark
+environment and retain the local results as needed. Benchmarks are outside the
+maintained `bin/ci` result.
 
 ## Standalone Benchmarks
 

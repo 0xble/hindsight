@@ -151,16 +151,6 @@ ensure_env_file() {
     SUMMARY+=(".env: created — add your LLM API key")
 }
 
-setup_git_hooks() {
-    step "Git hooks"
-    if [ "$(git config --get core.hooksPath || true)" = "$ROOT_DIR/.githooks" ]; then
-        ok "hooks already configured"
-        return
-    fi
-    ./scripts/setup-hooks.sh >/dev/null
-    ok "configured core.hooksPath -> .githooks"
-}
-
 # ---------------------------------------------------------------------------
 # Dependencies (also primes offline caches)
 # ---------------------------------------------------------------------------
@@ -312,7 +302,6 @@ ensure_uv
 ensure_node
 ensure_rust
 ensure_env_file
-setup_git_hooks
 
 install_python_deps
 install_node_deps

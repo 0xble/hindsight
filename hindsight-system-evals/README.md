@@ -76,16 +76,13 @@ to describe the same thing again.
 
 ## Where it runs
 
-**Not on PRs.** It needs provider secrets, and a single red run is as likely to
-be sampling noise as a regression. It runs in the `system-evals` job of
-`.github/workflows/perf-test.yml` — the daily schedule, alongside LoComo and
-obs-dedup — and publishes to the
+These provider-backed evaluations are outside this fork's maintained PR gate.
+They need explicit provider credentials and a red run may reflect sampling noise.
+Run them manually in a prepared evaluation environment using the commands below.
+This fork does not schedule or publish results through GitHub Actions. Upstream's
 [continuous performance monitor](https://vectorize-io.github.io/hindsight-continuous-performance-monitor/system-evals.html)
-as a quality metric tracked over time: correct rate and trap count, overall and
-per suite (`by_kind`). Traps must stay at 0.
-
-A failing run is still published: for a quality metric the red run is the data
-point. `scripts/benchmarks/publish-system-evals-results.sh` does the push.
+is upstream-owned. Do not run `scripts/benchmarks/publish-system-evals-results.sh`
+as part of contributor checks or fork merging.
 
 ## Two modes
 

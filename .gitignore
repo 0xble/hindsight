@@ -76,3 +76,6 @@ hindsight-integrations/_drafts/
 
 blog-post*
 .worktrees/
+.ci/
+!bin/
+!bin/ci

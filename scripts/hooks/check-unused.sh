@@ -3,17 +3,16 @@
 # via vulture) and unused files/exports/dependencies (TypeScript, via knip).
 #
 # This complements the BLOCKING checks already enforced by ./scripts/hooks/lint.sh
-# + the verify-generated-files CI job, where ruff catches unused imports (F401)
+# + the maintained local gate, where ruff catches unused imports (F401)
 # and unused variables (F841). Those tools cannot see whole unused functions,
 # orphaned React components, or stale package.json deps — that is what this
 # script reports.
 #
 # This script is ADVISORY (always exits 0): vulture's function/argument
 # heuristics produce false positives against FastAPI / SQLAlchemy / Pydantic /
-# ABC patterns, so its output is a review aid, not a gate. The CI job
-# (check-unused-code) additionally runs `knip --include files,dependencies` as a
-# separate BLOCKING step — orphaned files and dead package.json deps are
-# unambiguous and fail the build.
+# ABC patterns, so its output is a review aid, not a gate. For control-plane
+# changes, run `knip --include files,dependencies` separately when checking for
+# orphaned files and dead package.json dependencies.
 #
 # Usage: ./scripts/hooks/check-unused.sh
 
