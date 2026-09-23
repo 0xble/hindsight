@@ -70,6 +70,8 @@ export interface KnowledgeNode {
   tags: string[];
   timestamp: string | null;
   is_stale: boolean | null;
+  /** Pages only: when the last refresh failed. Set = the page no longer rebuilds itself. */
+  last_refresh_failed_at?: string | null;
   /** Pages only: when the page rebuilds itself and over which facts. Null on folders. */
   trigger: MentalModel["trigger"] | null;
   children: KnowledgeNode[];
@@ -258,6 +260,8 @@ export interface MentalModel {
   created_at: string;
   reflect_response?: any;
   is_stale?: boolean | null;
+  /** When the last refresh failed. Set = automatic refreshes are paused for this model. */
+  last_refresh_failed_at?: string | null;
 }
 
 /** How a refresh resolved full-vs-delta, and why it did not stay in delta. */
@@ -731,6 +735,8 @@ export class ControlPlaneClient {
         items_count: number;
         document_id: string | null;
         filename?: string | null;
+        /** The model a refresh operation belongs to; null on every other type. */
+        mental_model_id?: string | null;
         created_at: string;
         updated_at?: string | null;
         status: string;
@@ -1558,6 +1564,21 @@ export class ControlPlaneClient {
    * consolidated with. Returns every distinct scope (tag order normalized) with
    * the number of observations in it; the empty tag list is the global scope.
    */
+  /** Which existing observation scopes each draft consolidation strategy would
+   *  apply to — computed by the server with consolidation's own matching. */
+  async previewConsolidationStrategies(
+    bankId: string,
+    strategies: Record<string, unknown>[],
+    sampleLimit = 5
+  ) {
+    return this.fetchApi<ConsolidationStrategiesPreview>(
+      bankApi(bankId, "/consolidation-strategies/preview"),
+      { method: "POST", body: JSON.stringify({ strategies, sample_limit: sampleLimit }) },
+      // Runs as the user types; a transient failure must not toast on every keystroke.
+      { suppressErrorToast: true }
+    );
+  }
+
   async listObservationScopes(bankId: string, params?: { limit?: number; offset?: number }) {
     const query = new URLSearchParams();
     if (params?.limit !== undefined) query.append("limit", String(params.limit));
@@ -1662,6 +1683,8 @@ export class ControlPlaneClient {
         last_memory_seen_at: string | null;
         /** Whether a memory in this model's own scope has been written since it last read them. */
         is_stale: boolean | null;
+        /** When the last refresh failed. Set = automatic refreshes are paused for this model. */
+        last_refresh_failed_at?: string | null;
         created_at: string;
         reflect_response?: {
           text: string;
@@ -2355,3 +2378,26 @@ export class ControlPlaneClient {
 
 // Export singleton instance
 export const client = new ControlPlaneClient();
+
+// ============= CONSOLIDATION STRATEGY PREVIEW =============
+
+export interface StrategyScopePreview {
+  tags: string[];
+  count: number;
+  /** Index of the strategy that actually applies, or null for Default. */
+  handled_by: number | null;
+}
+
+export interface StrategyRulePreview {
+  match_count: number;
+  taken_count: number;
+  observation_count: number;
+  samples: StrategyScopePreview[];
+}
+
+export interface ConsolidationStrategiesPreview {
+  strategies: { active: boolean; claimed_count: number; rules: StrategyRulePreview[] }[];
+  default: { match_count: number; observation_count: number; samples: StrategyScopePreview[] };
+  scopes_scanned: number;
+  complete: boolean;
+}

@@ -11,15 +11,26 @@ See [Mental Models](../mental-models) for the concepts behind this API.
 
 Mental models are **saved reflect responses** that you curate for your memory bank. When you create a mental model, Hindsight runs a reflect operation with your source query and stores the result. During future reflect calls, these pre-computed summaries are checked first — providing faster, more consistent answers.
 
-```mermaid
-graph LR
-    A[Create Mental Model] --> B[Run Reflect]
-    B --> C[Store Result]
-    C --> D[Future Queries]
-    D --> E{Match Found?}
-    E -->|Yes| F[Return Mental Model]
-    E -->|No| G[Run Full Reflect]
-```
+**Figure: Mental Models (API).** An animated diagram on the docs site; its narration, step by step:
+
+- **create()**
+  1. You create a mental model: a name, the question it answers, and when it should refresh.
+  2. The API saves it right away. Its content does not exist yet.
+  3. The content is written in the background. The response is an operation id you can poll.
+  4. A refresh is a reflect run on the source query. It reads observations first…
+  5. …then raw facts, to check the details.
+  6. It writes the document and stores it with the memories it is based on.
+- **auto refresh**
+  1. Later, your agent retains a new fact. Consolidation picks it up.
+  2. It writes an observation about Carol.
+  3. Before queueing a refresh, consolidation checks that the model’s scope holds a memory newer than the last one it read. If not, no refresh runs and no LLM is spent.
+  4. In delta mode it reads only the new memories, and answers with small edits instead of a rewrite.
+  5. Lines no edit touches are copied byte for byte. Only Carol’s line is added.
+- **reflect()**
+  1. Now your agent asks a question.
+  2. Reflect searches mental models first, by meaning. Team overview matches, and it is up to date.
+  3. It covers the question, so the agent can answer from it. If it were stale or off topic, the agent would go on to observations and raw facts.
+  4. The answer comes back, citing the mental model it used.
 
 ### Why Use Mental Models?
 
@@ -204,6 +215,10 @@ When `refresh_after_consolidation` is enabled, the mental model will be re-gener
 
 When `refresh_cron` is set, Hindsight checks the schedule on the server's mental-model refresh tick and refreshes the model only if memories in its scope have changed since the last refresh. `refresh_cron` and `refresh_after_consolidation` are mutually exclusive, so a model refreshes either after consolidation or on a fixed UTC schedule, not both.
 
+`last_refresh_failed_at` on the model (and on a page in the knowledge tree) carries when that happened, so a list view can show which models have stopped refreshing themselves without reading each one's history.
+
+**A failed refresh pauses the automatic ones.** A failed refresh is retried by the worker (`HINDSIGHT_API_WORKER_MAX_RETRIES`, 3 by default) and then stops. Neither `refresh_after_consolidation` nor `refresh_cron` queues that model again until a refresh succeeds, so a refresh that cannot work (a prompt too large for the model, an empty account, a delta that will not apply) costs a few attempts instead of an LLM bill every tick. The failure shows in the model's [history](#history). Fix the cause and refresh the model yourself: a successful refresh resumes the automatic ones. A refresh cut off by `HINDSIGHT_API_REFLECT_WALL_TIMEOUT`, which bounds a whole refresh the same way it bounds a reflect, counts as a failure too.
+
 ### Rate-limiting automatic refreshes
 
 A refresh is a full reflect run: retrieval plus an agentic LLM loop. With
@@ -297,6 +312,23 @@ Two strategies are available for how a refresh produces the new content:
 
 - **`delta`** — refresh emits a list of typed *operations* (add a section, append a bullet, replace a block, remove a stale paragraph) against the document's existing structure, then renders the result. Sections that aren't targeted by any operation are copied through **byte-identical** — no paraphrasing, no whitespace drift, no list-style normalisation. Best for long-lived "playbook"–style mental models where you want stability across refreshes and only the genuinely changed parts to move.
 
+**Figure: Refresh modes: full vs delta.** An animated diagram on the docs site; its narration, step by step:
+
+- **full**
+  1. Full is the default. Every refresh writes the whole document again.
+  2. It reads everything in the model’s scope, old and new.
+  3. The LLM writes a fresh document. Carol is in, but untouched sections come back reworded too, and small drifts add up over many refreshes.
+- **delta**
+  1. Delta edits the document instead of rewriting it.
+  2. It only reads memories newer than the last one the previous refresh saw.
+  3. A second LLM call compares the new findings with the current sections and answers with edit operations, not a document.
+  4. The operation is applied. Every section it does not touch is copied through byte for byte, and the watermark moves to Sep.
+- **delta falls back**
+  1. Delta needs something stable to edit. Here the source query was changed.
+  2. The topic moved, so the old structure may no longer fit. The refresh falls back to a full rewrite. The same happens when the model has no content yet.
+  3. It reads the whole scope, like full mode…
+  4. …and writes a new document for the new question. The next refresh can edit this one in delta mode again.
+
 #### How delta mode works
 
 Hindsight keeps an authoritative **structured** representation of the document — an ordered list of sections, each holding a list of blocks, where a block is one markdown fragment (a paragraph, a list, a table, a code fence) stored exactly as written. The markdown you read is a deterministic render of that structure. Because a block is never re-interpreted, formatting a refresh didn't touch cannot be rewritten by one — a table stays a table. A delta refresh never asks the LLM to rewrite the document; it asks for operations against that structure:
@@ -311,13 +343,13 @@ Hindsight keeps an authoritative **structured** representation of the document �
 
 Anything no operation mentions is copied through untouched, so unchanged prose is preserved rather than regenerated and checked. This matters because "preserve the unchanged content" is only a soft constraint on an LLM — generating the next token from a gestalt of the input is what it intrinsically does, so instructed-to-preserve prose drifts over many refreshes.
 
-Sections and blocks are addressed by id, never by position, so an operation cannot land on the wrong one by miscounting. Failure modes are conservative by design: an operation referencing a section or block that doesn't exist — or a block that lives in a different section than the one it names — is **dropped** rather than guessed at, and the rest of the operations still apply. The refresh records which ones were dropped and why, so you can see that part of that round's new information didn't make it into the document.
+Sections and blocks are addressed by id, never by position, so an operation cannot land on the wrong one by miscounting. Failure modes are conservative by design: an operation referencing a section or block that doesn't exist — or a block that lives in a different section than the one it names — is **dropped** rather than guessed at, and the rest of the operations still apply. When *every* operation points at something missing, the model is asked once more, shown the ids it got wrong and the sections the document actually has. The refresh records which ones were dropped and why, so you can see that part of that round's new information didn't make it into the document.
 
 Delta mode falls back to a full regeneration automatically in two cases:
 1. The mental model has no existing content yet (nothing to anchor edits on).
 2. The `source_query` has changed since the last refresh (the topic has shifted; the existing structure may no longer apply).
 
-**A delta refresh never replaces the document with a partial one.** Because delta retrieval only reads memories newer than the last refresh, an answer written from that window covers just the recent slice of the topic — it is material for editing the document, not a replacement for it. So when the edits can't be made at all — the provider call fails, the response can't be read, or every single operation is rejected — the existing content stays exactly as it is and the refresh **fails** instead of completing. Nothing is lost, the refresh's time window is not advanced, and a retry sees the same memories again. The same holds for an empty answer: a populated document is never overwritten with an empty one.
+**A delta refresh never replaces the document with a partial one.** Because delta retrieval only reads memories newer than the last refresh, an answer written from that window covers just the recent slice of the topic — it is material for editing the document, not a replacement for it. So when the edits can't be made at all — the provider call fails, the response can't be read, or every single operation is rejected — the existing content stays exactly as it is and the refresh **fails** instead of completing. Nothing is lost, the refresh's time window is not advanced, and a retry sees the same memories again. The same holds for an empty answer: a populated document is never overwritten with an empty one. A delta refresh is never turned into a full rewrite behind your back: if a model's delta refreshes keep failing, switch its `mode` to `full`.
 
 | Use Case | Recommended Mode | Why |
 |----------|-----------------|-----|
