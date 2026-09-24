@@ -1621,6 +1621,8 @@ async def retain_batch(
     # document row in Postgres and can lock it; a store that owns the document store has no such
     # row, so this is what serializes concurrent appends there.
     append_base_watermark: int | None = None
+    append_base_text_for_delta: str | None = None
+    append_tail_contents: list[RetainContent] | None = None
     is_append = update_mode == "append" and bool(effective_doc_id) and is_first_batch
 
     if is_append:
@@ -1662,6 +1664,12 @@ async def retain_batch(
                 if base_row is None:
                     append_base_hash = _record.get("content_hash") or _APPEND_BASE_ABSENT
         if existing_text:
+            # The caller's own items, before the stored body is prepended: if the whole-body
+            # re-chunk later matches nothing (a chunk-size change), delta keeps the stored chunks
+            # and extracts just these. Only for an unsplit append, whose items ARE the whole tail.
+            if full_document_body is None:
+                append_tail_contents = list(contents)
+                append_base_text_for_delta = existing_text
             # Prepend existing text as a new content item at the beginning
             existing_content: RetainContentDict = {"content": existing_text}
             if prior_filenames:
@@ -1834,6 +1842,8 @@ async def retain_batch(
             full_document_body=full_document_body,
             delta_full_body=_delta_full_body,
             append_base_hash=append_base_hash,
+            append_base_text=append_base_text_for_delta,
+            append_tail_contents=append_tail_contents,
             attachment_loader=attachment_loader,
             vlm_config=vlm_config,
         )
@@ -3540,6 +3550,92 @@ class _ChunkDiff:
     removed: list[int]
 
 
+def _stored_chunks_cover_text(chunk_texts: list[str], text: str) -> bool:
+    """Whether ``chunk_texts``, in order, account for all of ``text``.
+
+    Conversation arrays are chunked at turn boundaries and each chunk is re-serialized, so for a
+    JSON array of objects the chunks' turns must equal the document's turns. Anything else is cut
+    from the text itself, so each chunk must occur in order with only whitespace between them.
+    """
+    if not chunk_texts:
+        return False
+    try:
+        parsed = json.loads(text)
+    except (json.JSONDecodeError, ValueError, TypeError):
+        parsed = None
+    if isinstance(parsed, list) and parsed and all(isinstance(e, dict) for e in parsed):
+        turns: list = []
+        for chunk in chunk_texts:
+            try:
+                piece = json.loads(chunk)
+            except (json.JSONDecodeError, ValueError, TypeError):
+                return False
+            if not (isinstance(piece, list) and all(isinstance(e, dict) for e in piece)):
+                return False
+            turns.extend(piece)
+        return turns == parsed
+    cursor = 0
+    for chunk in chunk_texts:
+        found = text.find(chunk, cursor)
+        if found < 0 or text[cursor:found].strip():
+            return False
+        cursor = found + len(chunk)
+    return not text[cursor:].strip()
+
+
+async def _plan_append_tail_after_rechunk(
+    pool: Any,
+    bank_id: str,
+    document_id: str,
+    existing_chunks: list,
+    append_base_text: str,
+    append_tail_contents: list[RetainContent],
+    config,
+) -> tuple[dict[int, str], dict[int, str], list[int], list[int]] | None:
+    """Keep an append's stored history when re-chunking the whole body matched nothing.
+
+    Zero unchanged chunks on an append is what a chunk-size change produces: the stored chunks
+    were cut at the old size, the re-chunk at the new one, so no two are byte-identical even
+    though every stored turn is untouched. The stored chunks still describe the stored body
+    exactly, so they are kept and only the appended tail is chunked and extracted.
+
+    Returns ``(chunk_texts, chunk_hashes, unchanged, new)`` indexed as the document will be
+    stored, or ``None`` when the stored chunks cannot be shown to cover the stored body — in
+    which case the caller falls back to a full retain exactly as before.
+    """
+    async with acquire_with_retry(pool) as conn:
+        rows = await conn.fetch(
+            f"SELECT chunk_index, chunk_text, content_hash FROM {fq_table('chunks')} "
+            "WHERE document_id = $1 AND bank_id = $2 ORDER BY chunk_index",
+            document_id,
+            bank_id,
+        )
+    if not rows or [r["chunk_index"] for r in rows] != list(range(len(rows))):
+        return None
+    loaded_hashes = {c.chunk_index: c.content_hash for c in existing_chunks}
+    stored_texts: list[str] = []
+    for r in rows:
+        chunk_text = r["chunk_text"]
+        # Empty text means document text storage is off; nothing here can prove coverage.
+        if not chunk_text or chunk_storage.compute_chunk_hash(chunk_text) != r["content_hash"]:
+            return None
+        if loaded_hashes.get(r["chunk_index"]) != r["content_hash"]:
+            return None
+        stored_texts.append(chunk_text)
+    if not _stored_chunks_cover_text(stored_texts, append_base_text):
+        return None
+
+    tail_chunks = _chunk_contents_for_delta(append_tail_contents, config)
+    if not tail_chunks:
+        return None
+    offset = len(stored_texts)
+    chunk_texts = dict(enumerate(stored_texts))
+    for idx in sorted(tail_chunks):
+        chunk_texts[offset + idx] = tail_chunks[idx]
+    chunk_hashes = {idx: chunk_storage.compute_chunk_hash(t) for idx, t in chunk_texts.items()}
+    return chunk_texts, chunk_hashes, list(range(offset)), [offset + idx for idx in sorted(tail_chunks)]
+
+
 def _classify_chunk_diff(existing_by_index: dict[int, Any], new_hashes: dict[int, str]) -> _ChunkDiff:
     """Classify chunk indices by comparing freshly computed ``new_hashes``
     (index -> content hash) against the currently stored chunks
@@ -3587,6 +3683,10 @@ async def _try_delta_retain(
     # deliberately not for an append.
     delta_full_body: str | None = None,
     append_base_hash: str | None = None,
+    # For an unsplit append: the stored body the append extends and the caller's own items (the
+    # tail), before the stored body was prepended. Lets a zero-match diff keep the history.
+    append_base_text: str | None = None,
+    append_tail_contents: list[RetainContent] | None = None,
     attachment_loader: "RetainAttachmentLoader | None" = None,
     vlm_config: "LLMConfig | None" = None,
 ) -> RetainBatchResult | None:
@@ -3782,8 +3882,31 @@ async def _try_delta_retain(
                 config=config,
                 expected_content_hash=doc_hash_at_load,
             )
-        logger.info(f"Delta retain: no unchanged chunks for {effective_doc_id}, falling back to full retain")
-        return None
+        plan = None
+        if append_base_text and append_tail_contents and not _store_owned_delta:
+            plan = await _plan_append_tail_after_rechunk(
+                pool,
+                bank_id,
+                effective_doc_id,
+                existing_chunks,
+                append_base_text,
+                append_tail_contents,
+                config,
+            )
+        if plan is None:
+            logger.info(f"Delta retain: no unchanged chunks for {effective_doc_id}, falling back to full retain")
+            return None
+        new_chunks_with_contents, new_hashes, unchanged_indices, new_indices = plan
+        changed_indices = []
+        removed_indices = []
+        log_buffer.append(
+            f"[delta] Append re-chunk matched no stored chunk; stored chunks cover the stored body, "
+            f"keeping {len(unchanged_indices)} and extracting {len(new_indices)} tail chunk(s)"
+        )
+        logger.info(
+            f"Delta retain: append to {effective_doc_id} re-chunked differently from its stored chunks; "
+            f"kept {len(unchanged_indices)} stored chunk(s), extracting {len(new_indices)} tail chunk(s)"
+        )
 
     chunks_to_process = changed_indices + new_indices
 
