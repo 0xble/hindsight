@@ -57,7 +57,8 @@
       "switchTitle": "切换记忆库",
       "returnTo": "返回 {bank}",
       "copyName": "复制名称",
-      "copied": "已复制到剪贴板"
+      "copied": "已复制到剪贴板",
+      "viaAlias": "通过 {aliases}"
     },
     "viewOnGitHub": "在 GitHub 查看"
   },
@@ -251,6 +252,24 @@
     "create": "创建",
     "save": "保存"
   },
+  "bankAliases": {
+    "title": "别名",
+    "description": "同样可以访问 <name>{bankId}</name> 的额外 ID，可让调用方在不停机的情况下迁移到新 ID。",
+    "placeholder": "新 ID",
+    "add": "添加",
+    "shownAsLabel": "显示为",
+    "shownAsDescription": "控制台为该记忆库显示的 ID。仅影响显示 —— 在其他所有地方 {bankId} 仍是它的标识。",
+    "primaryTitle": "显示在记忆库 ID 的位置",
+    "removeAria": "删除别名 {alias}",
+    "removeTitle": "要删除别名 {alias} 吗？",
+    "removeConfirm": "所有仍通过 {alias} 连接的应用会立即停止工作。消失的只是这个 ID —— {bankId} 及其记忆不受影响，之后也可以重新添加该别名。",
+    "remove": "删除别名",
+    "cancel": "取消",
+    "loadFailed": "加载别名失败",
+    "addFailed": "添加别名失败",
+    "primaryFailed": "更改显示的 ID 失败",
+    "removeFailed": "删除别名失败"
+  },
   "bankStats": {
     "memoryStore": "记忆存储",
     "memories": "记忆",
@@ -427,8 +446,8 @@
     "empathyDescription": "对情感背景的权重程度",
     "empathyLowLabel": "抽离",
     "empathyHighLabel": "共情",
-    "mcpToolsTitle": "MCP 工具",
-    "mcpToolsDescription": "限制此库向代理公开的 MCP 工具",
+    "clientsTitle": "客户端",
+    "clientsDescription": "应用和智能体在该记忆库上可以访问的内容。",
     "mcpFailedToSave": "无法保存 MCP 设置",
     "auditEnabledLabel": "启用审计日志",
     "auditEnabledDescription": "记录该记忆库的 retain、recall 和 reflect 操作。仅对该记忆库覆盖服务器默认值。",
@@ -480,6 +499,55 @@
     "sourceFactsMaxTokensPerObservationDescription": "生成单个观察时考虑的源事实最大 token 数。留空使用服务器默认值。",
     "maxObservationsPerScopeLabel": "每个范围的最大观察数",
     "maxObservationsPerScopeDescription": "合并后每个范围存储的观察数上限。留空使用服务器默认值。",
+    "consolidationStrategiesAddRule": "添加规则",
+    "consolidationStrategiesAddTagPlaceholder": "添加标签，例如 company:*",
+    "consolidationStrategiesAnd": "且",
+    "consolidationStrategiesChecking": "正在检查现有范围…",
+    "consolidationStrategiesDefaultCoversNone": "每个现有范围都已匹配到策略。",
+    "consolidationStrategiesDefaultLead": "用于没有策略匹配的范围，以及策略留空的任何设置。",
+    "consolidationStrategiesDefaultTitle": "默认",
+    "consolidationStrategiesGlobalScope": "全局（无标签）",
+    "consolidationStrategiesHandledBy": "由 {name} 处理",
+    "consolidationStrategiesHide": "隐藏",
+    "consolidationStrategiesHowDefault": "策略留空的内容，以及没有策略匹配的范围，都使用\"默认\"。",
+    "consolidationStrategiesHowPriority": "如果多个策略匹配同一范围，排在最前的标签页优先。策略不会合并。",
+    "consolidationStrategiesHowRules": "规则中的每个标签都必须出现在范围上。规则之间是\"或\"的关系：只要有一条匹配，策略就适用。",
+    "consolidationStrategiesHowScopes": "策略适用于其规则匹配的观察范围。范围是保留记忆时观察所归入的一组标签。",
+    "consolidationStrategiesHowTitle": "策略如何运作",
+    "consolidationStrategiesInheritedServerDefault": "继承自\"默认\"（服务器默认值）",
+    "consolidationStrategiesInheritedValue": "继承自\"默认\"：{value}",
+    "consolidationStrategiesLead": "为特定的观察组设置各自的使命和上限——例如，让公司范围的观察保持概括，而每个用户的观察保持详细。",
+    "consolidationStrategiesMatchesCount": "匹配 {count, plural, other {# 个现有范围}}",
+    "consolidationStrategiesMatchesCountAtLeast": "至少匹配 {count, plural, other {# 个现有范围}}",
+    "consolidationStrategiesMatchesNone": "尚无现有范围匹配此规则。",
+    "consolidationStrategiesMatchesTaken": "{count, plural, other {# 个已由更早的策略处理}}",
+    "consolidationStrategiesModeAll": "以下全部标签",
+    "consolidationStrategiesModeAllNote": "可含其他标签",
+    "consolidationStrategiesModeExact": "恰好以下标签",
+    "consolidationStrategiesModeExactNote": "不含其他标签",
+    "consolidationStrategiesMoreScopes": "及另外 {count, plural, other {# 个}}",
+    "consolidationStrategiesMoveEarlier": "前移（提高优先级）",
+    "consolidationStrategiesMoveLater": "后移（降低优先级）",
+    "consolidationStrategiesNoScopeTab": "无范围",
+    "consolidationStrategiesNoScopes": "请至少添加一个范围。在此之前，此策略不适用于任何内容。",
+    "consolidationStrategiesObservationCount": "{count, plural, other {# 条观察}}",
+    "consolidationStrategiesOr": "或",
+    "consolidationStrategiesOverridesNothing": "此策略尚未更改任何内容。请在下方至少填写一项设置。",
+    "consolidationStrategiesPriority": "优先级 {position}/{total}",
+    "consolidationStrategiesRemove": "删除策略 {name}",
+    "consolidationStrategiesRemoveRule": "删除规则",
+    "consolidationStrategiesRuleSentence": "范围包含",
+    "consolidationStrategiesSettingsLead": "字段留空即使用其中显示的默认值。",
+    "consolidationStrategiesSettingsTitle": "这些范围的设置",
+    "consolidationStrategiesShow": "显示",
+    "consolidationStrategiesTitle": "整合策略",
+    "consolidationStrategiesUnlimited": "无限制",
+    "consolidationStrategiesWhichScopes": "适用范围",
+    "consolidationStrategiesWhichScopesLead": "此策略适用于匹配以下任一规则的范围。",
+    "consolidationStrategyMaxObservationsDescription": "这些范围中每个范围可保存的观察数上限。",
+    "consolidationStrategyMissionDescription": "这些范围中的观察应记录的内容。",
+    "consolidationStrategySourceFactsDescription": "对这些范围，每次整合调用传入的源事实最大令牌数。",
+    "consolidationStrategySourceFactsPerObservationDescription": "在这些范围中，每条观察考虑的源事实最大令牌数。",
     "mentalModelMinRefreshIntervalLabel": "心智模型最小刷新间隔",
     "mentalModelMinRefreshIntervalDescription": "本记忆库中同一个心智模型两次自动刷新之间的最小秒数。更早触发的刷新会入队并等待窗口结束，其后的触发会合并进去——因此一连串 retain 只需一次刷新，而不是每次 retain 一次。手动刷新始终立即执行。留空则使用服务器默认值；0 表示不限制。单个模型可在其自身的刷新设置中覆盖此值。",
     "knowledgePageDefaultTriggerLabel": "知识页面默认触发器",
@@ -529,7 +597,7 @@
     "memoryDefenseEnterpriseFeatureSizeAnomaly": "大小异常:拒绝可疑的过大负载",
     "memoryDefenseEnterpriseFeatureProtectedKeys": "受保护的标签命名空间:强制使用不可变的身份标签",
     "memoryDefenseEnterpriseCta": "申请演示",
-    "recallTitle": "召回流水线",
+    "recallTitle": "召回",
     "recallDescription": "该记忆库召回时执行的检索阶段",
     "recallServerDefault": "服务器默认值",
     "recallFailedToSave": "保存召回流水线设置失败",
@@ -1026,7 +1094,10 @@
     "triggerSeconds": "秒",
     "triggerMinIntervalLabel": "最小刷新间隔",
     "toastContentCleared": "心智模型内容已清空",
-    "actionOpenDetail": "查看详情"
+    "actionOpenDetail": "查看详情",
+    "nextRefreshPaused": "刷新失败后已暂停",
+    "nextRefreshRetrying": "重试中，下次尝试{time}",
+    "nextRefreshRunning": "正在刷新"
   },
   "cronPreview": {
     "invalid": "无效的 cron 表达式",
@@ -1688,9 +1759,12 @@
     "failureAttempts": "· {count} 次尝试",
     "tabErrors": "错误",
     "noErrors": "没有失败的刷新。",
-    "errorsIntro": "拒绝写入的刷新，按时间倒序排列。它们都没有改动已存储的内容。失败的刷新会自动重试几次；之后模型将保留最后一个有效版本，直到再次被触发。",
+    "errorsIntro": "拒绝写入的刷新，按时间从新到旧排列。它们都没有改动已保存的内容。刷新失败后会自动重试几次；之后模型会保留上一个正常版本。",
     "errorsPresent": "此心智模型有失败的刷新",
-    "failureReasonUnexpected": "意外错误"
+    "failureReasonUnexpected": "意外错误",
+    "refreshPaused": "刷新已暂停",
+    "errorsPausedNotice": "该模型不再自动刷新：这些失败之后，自动刷新已暂停。手动刷新可重试，成功后会恢复自动刷新。",
+    "noHistoryOnlyFailures": "尚无版本——迄今每次刷新都失败了。请查看“错误”标签页。"
   },
   "constellation": {
     "instructions": "滚动缩放 · 拖拽平移 · 悬停探索 · 点击选择",
@@ -1881,6 +1955,12 @@
         "update": "更新记忆库配置失败",
         "reset": "重置记忆库配置失败"
       },
+      "bankAliases": {
+        "list": "获取记忆库别名列表失败",
+        "create": "创建记忆库别名失败",
+        "delete": "删除记忆库别名失败",
+        "update": "更新记忆库别名失败"
+      },
       "memories": {
         "list": "列出记忆单元失败",
         "fetch": "获取记忆失败",
@@ -1959,7 +2039,8 @@
       },
       "consolidation": {
         "trigger": "触发整合失败",
-        "recover": "恢复整合失败"
+        "recover": "恢复整合失败",
+        "previewStrategies": "预览整合策略失败"
       },
       "recall": {
         "failed": "召回失败"
@@ -2114,6 +2195,10 @@
     "inSync": "已同步",
     "staleAutoTitle": "此模型作用域内有新记忆 — 它会自动刷新",
     "staleManualTitle": "此模型作用域内有新记忆 — 请刷新以同步",
-    "inSyncTitle": "此模型作用域内没有新记忆"
+    "inSyncTitle": "此模型作用域内没有新记忆",
+    "paused": "已暂停",
+    "pausedTitle": "上次刷新失败，该模型不再自动刷新——手动刷新可恢复",
+    "retrying": "重试中",
+    "retryingTitle": "上次尝试失败，已排队下一次尝试——只有这次也失败才会停止自动刷新"
   }
 }

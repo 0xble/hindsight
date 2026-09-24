@@ -38,6 +38,7 @@ from .embedded import (
     _check_local_runtime,
     _embedded_llm_api_key,
     _embedded_profile_env_path,
+    _ensure_local_runtime,
     _export_port_health_grace_timeout,
     _load_simple_env,
     _local_runtime_hint,
@@ -397,6 +398,10 @@ class HindsightMemoryProvider(MemoryProvider):
             setattr(self, f"_{name}", "")
         self._session_id = self._parent_session_id = self._document_id = ""
         self._status_callback: Optional[Callable[[str], None]] = None
+        # Set from initialize() kwargs; defaults keep _start_embedded_daemon safe when a
+        # host constructs the provider without calling initialize() (availability probes do).
+        self._warning_callback: Optional[Callable[[str], None]] = None
+        self._platform: str = "cli"
 
         # Retain: single-writer model — sync_turn() enqueues, one writer thread
         # drains sequentially (ad-hoc threads raced interpreter shutdown:
@@ -438,7 +443,10 @@ class HindsightMemoryProvider(MemoryProvider):
             cfg = _load_config()
             mode = cfg.get("mode", "cloud")
             if mode in _LOCAL_MODES:
-                return _check_local_runtime()[0]
+                # The availability gate is the only place worth self-healing from: agent_init drops
+                # the provider outright when this returns False, and every other runtime probe below
+                # runs after it has already passed.
+                return _ensure_local_runtime()[0]
             return mode == "local_external" or bool(
                 _cloud_api_key(cfg) or cfg.get("api_url") or get_secret("HINDSIGHT_API_URL", "")
             )
@@ -929,6 +937,9 @@ class HindsightMemoryProvider(MemoryProvider):
         # Status channel for the retain indicator (recall reports via recall_status()).
         if callable(kwargs.get("status_callback")):
             self._status_callback = kwargs["status_callback"]
+        # Gated presentation for automatic startup warnings (agent._emit_warning on CLI).
+        self._warning_callback = kwargs.get("warning_callback") if callable(kwargs.get("warning_callback")) else None
+        self._platform = str(kwargs.get("platform") or "cli")
         # session_id stays in tags so processes for one session remain filterable together.
         self._document_id = _mint_document_id(self._session_id)
         _maybe_upgrade_client()
@@ -1102,11 +1113,20 @@ class HindsightMemoryProvider(MemoryProvider):
                 "to cloud / local_external mode via 'hermes memory setup'."
             )
             logger.warning(msg)
-            # Also print: otherwise the user would only see Hermes get sluggish.
+            # Surface to the terminal too — a daemon that never starts would otherwise fail silently and
+            # the user would only see Hermes get sluggish (issue #13125). This is an automatic
+            # startup diagnostic: it goes through the agent's gated warning sink when wired,
+            # otherwise through the shared render boundary; the log line above never does.
             with contextlib.suppress(Exception):
-                # Surface to the terminal too — a daemon that never starts would otherwise fail silently and
-                # the user would only see Hermes get sluggish. (issue #13125)
-                print(f"  ⚠ {msg}", file=sys.stderr, flush=True)
+                if self._warning_callback is not None:
+                    self._warning_callback(msg)
+                else:
+                    from gateway.warning_notifications import render_notification
+
+                    render_notification(
+                        lambda: print(f"  ⚠ {msg}", file=sys.stderr, flush=True),
+                        platform=self._platform,
+                    )
             self._mode = "disabled"
             return
         spawn_context_thread(self._daemon_start_worker, name="hindsight-daemon-start").start()
@@ -1431,7 +1451,15 @@ class HindsightMemoryProvider(MemoryProvider):
         # Advance the watermark only after the delta is queued so a later retain
         # doesn't re-ship turns already handed to the writer.
         if update_mode == "append":
-            self._last_retained_turn_count = len(self._session_turns)
+            # Every buffered turn has now been shipped (the retain content was
+            # snapshotted into the closure above). Append retains only ever read
+            # the un-retained tail — sync_turn slices from the watermark and
+            # flush-on-switch flushes what's left — so drop the retained turns
+            # instead of letting the buffer grow for the whole session. Overwrite
+            # mode is deliberately untouched: it resends the full session each
+            # retain and must keep every turn.
+            self._session_turns.clear()
+            self._last_retained_turn_count = 0
 
     def _enqueue_retain(self, job: Callable[[], None]) -> None:
         """Hand *job* to the (lazily started) writer and arm the atexit drain."""
