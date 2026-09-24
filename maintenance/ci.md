@@ -34,4 +34,3 @@ intentional fork infrastructure policy, not upstream deployment ownership.
   publishing. Run the HINDSIGHT-003 regression after the source-only rollback.
 - **Retire when:** This repository is no longer a maintained fork or assumes
   explicit ownership of deployment and publication infrastructure.
-
