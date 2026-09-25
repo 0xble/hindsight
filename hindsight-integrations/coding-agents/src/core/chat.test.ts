@@ -1,6 +1,12 @@
 import { describe, expect, it, vi } from "vitest";
 import { RateLimitedError, type HindsightClient } from "./hindsight";
-import { ingestChats, renderSessionJsonl, retainLiveSession, type TransportTurn } from "./chat";
+import {
+  DEFAULT_RETAIN_CONTEXT,
+  ingestChats,
+  renderSessionJsonl,
+  retainLiveSession,
+  type TransportTurn,
+} from "./chat";
 import { PENDING_MAX_AGE_MS, memoryCursorStore, type RetainCursorStore } from "./retain-cursor";
 
 describe("renderSessionJsonl", () => {
@@ -65,7 +71,7 @@ describe("retainLiveSession", () => {
       timestamp: "2026-01-01T00:00:00Z",
     });
     expect(parsed[1]).toEqual({ role: "user", content: "hi", timestamp: "2026-01-01T00:00:00Z" });
-    expect(context).toBe("coding agent session");
+    expect(context).toBe(DEFAULT_RETAIN_CONTEXT);
     expect(documentId).toBe("conversation:s2");
     expect(tags).toEqual(["source:chat"]);
     expect(strategy).toBe("conversation");
@@ -107,7 +113,7 @@ describe("retainLiveSession", () => {
     });
 
     const [, context] = retain.mock.calls[0];
-    expect(context).toBe("coding agent session");
+    expect(context).toBe(DEFAULT_RETAIN_CONTEXT);
   });
 });
 

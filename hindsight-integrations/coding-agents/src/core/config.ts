@@ -223,10 +223,9 @@ export interface RawConfig {
   /** Extra metadata stamped on every session write-back, e.g. {"repo": "{gitProject}"}. Same
    *  placeholders as retainTags; built-in metadata (harness attribution) wins on conflict. */
   retainMetadata?: Record<string, string>;
-  /** The `context` sent with every session write-back (default: "coding agent session"). Same
-   *  placeholders as retainTags. Extraction reads this to decide WHOSE claim a sentence is, so the
-   *  default's silence on authorship lets an assistant's proposal be recorded as the user's
-   *  decision. Set it to say that assistant turns are agent-generated and unendorsed. */
+  /** The `context` sent with every session write-back (default: DEFAULT_RETAIN_CONTEXT in
+   *  core/chat.ts, which names the user and the agent as the two speakers). Same placeholders as
+   *  retainTags. Extraction reads this to decide WHOSE claim a sentence is. */
   retainContext?: string;
   /** Let the plugin shape the bank's own configuration — the retain strategies it writes under,
    *  the `knowledge` entity-label group, and (on a bank that has none) the missions (default true).
