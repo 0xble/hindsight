@@ -14,7 +14,7 @@ import uuid
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 from ...extensions.memory_defense import (
     DefenseAction,
@@ -183,7 +183,8 @@ def append_document_body(existing_text: str, incoming_text: str) -> str:
 class AppendWouldTruncateDocument(Exception):
     """An append produced a body that does not extend the document it was appending to.
 
-    An append is monotonic by definition: whatever it writes must start with what was stored. When
+    An append is monotonic by definition: whatever it writes must preserve what was stored — the
+    stored text as a prefix, or every object of a stored JSON conversation array, in order. When
     that does not hold, the write is about to DESTROY committed content — and silently, because the
     chunks come from the real content, so extraction still looks correct and only the stored body
     is wrong. That is exactly how #3989 went unnoticed: an oversized append reported the new tail
@@ -193,6 +194,16 @@ class AppendWouldTruncateDocument(Exception):
     Raised rather than logged. A failed append is recoverable — the caller resubmits, and retain is
     idempotent by ``operation_id`` — whereas a truncating one is not.
     """
+
+
+def _json_object_without_duplicate_keys(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    """Reject ambiguous objects before the append guard can discard committed members."""
+    result: dict[str, Any] = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError("duplicate JSON object key")
+        result[key] = value
+    return result
 
 
 def assert_append_extends_stored_body(
@@ -207,6 +218,27 @@ def assert_append_extends_stored_body(
     if _is_strict_append_of_stored_document(stored_original_text, new_body):
         return
     sanitized = fact_extraction._sanitize_text(new_body) or ""
+    # JSON conversation arrays move their closing bracket when extended. A byte
+    # prefix check therefore rejects a valid merge from append_document_body.
+    # Compare canonical array prefixes, retaining every old object in order.
+    # Default json.loads collapses duplicate keys, which could hide a removed
+    # committed member. Check both bodies at every nesting level before comparing.
+    try:
+        stored = json.loads(stored_original_text, object_pairs_hook=_json_object_without_duplicate_keys)
+        appended = json.loads(sanitized, object_pairs_hook=_json_object_without_duplicate_keys)
+    except ValueError:  # JSONDecodeError, and the duplicate-key rejection above
+        stored = appended = None
+    if (
+        isinstance(stored, list)
+        and isinstance(appended, list)
+        and len(appended) > len(stored)
+        and all(isinstance(item, dict) for item in stored)
+        and all(isinstance(item, dict) for item in appended)
+        # Python equality considers True == 1; serialized JSON must not.
+        and json.dumps(appended[: len(stored)], sort_keys=True, ensure_ascii=False)
+        == json.dumps(stored, sort_keys=True, ensure_ascii=False)
+    ):
+        return
     raise AppendWouldTruncateDocument(
         f"append to {document_id} produced a {len(sanitized):,}-char body that does not extend the "
         f"stored {len(stored_original_text):,}-char one; refusing to overwrite it"
@@ -1695,45 +1727,33 @@ async def retain_batch(
                 if base_row is None:
                     append_base_hash = _record.get("content_hash") or _APPEND_BASE_ABSENT
         if existing_text:
-            # Prepend existing text as a new content item at the beginning
-            existing_content: RetainContentDict = {"content": existing_text}
-            if prior_filenames:
-                # First, so a name the new turn gives the same attachment wins.
-                existing_content["attachment_filenames"] = prior_filenames
-            # Copy context/tags from first item for consistency
+            # Prepend existing text as a new content item at the beginning.
+            #
+            # Carry the WHOLE caller item onto it, not a hand-listed subset. This synthetic item
+            # becomes `contents_dicts[0]`, which is exactly what `_build_retain_params` records on
+            # the document — so a field left off here is a field the document never records, and
+            # the reprocess replays under the bank default instead. An inclusion list dropped
+            # `strategy` that way (#4590); the same list in `merged_item` below also dropped the
+            # caller's `entities`, which that branch is the only carrier of. `{**item, "content":
+            # ...}` is how the oversized-item splitter already re-slices an item, so the two agree.
             first = contents_dicts[0]
-            if first.get("context"):
-                existing_content["context"] = first["context"]
-            if first.get("event_date"):
-                existing_content["event_date"] = first["event_date"]
-            if first.get("metadata"):
-                existing_content["metadata"] = first["metadata"]
-            if first.get("observation_scopes") is not None:
-                existing_content["observation_scopes"] = first["observation_scopes"]
-            if first.get("tags"):
-                existing_content["tags"] = first["tags"]
+            existing_content = cast(RetainContentDict, {**first, "content": existing_text})
+            existing_content.pop("attachment_filenames", None)
+            if prior_filenames:
+                # The stored document's names, not the new turn's: they describe the base text.
+                existing_content["attachment_filenames"] = prior_filenames
             contents_dicts = [existing_content, *contents_dicts]
             # Collapse to the merged array when every part is one, so `original_text` stays valid
             # JSON (#2409). `merge_json_array_parts` is the same function the splitter predicts an
             # oversized append's body with, so the two cannot disagree about what this produces.
             _merged_text = merge_json_array_parts([_item.get("content", "") for _item in contents_dicts])
             if _merged_text is not None:
-                merged_item: RetainContentDict = {"content": _merged_text}
+                merged_item = cast(RetainContentDict, {**first, "content": _merged_text})
                 merged_filenames: dict[str, str] = {}
                 for _item in contents_dicts:
                     merged_filenames.update(_item.get("attachment_filenames") or {})
                 if merged_filenames:
                     merged_item["attachment_filenames"] = merged_filenames
-                if first.get("context"):
-                    merged_item["context"] = first["context"]
-                if first.get("event_date"):
-                    merged_item["event_date"] = first["event_date"]
-                if first.get("metadata"):
-                    merged_item["metadata"] = first["metadata"]
-                if first.get("observation_scopes") is not None:
-                    merged_item["observation_scopes"] = first["observation_scopes"]
-                if first.get("tags"):
-                    merged_item["tags"] = first["tags"]
                 contents_dicts = [merged_item]
             # Rebuild contents list to match
             contents = _build_contents(contents_dicts, document_tags)
