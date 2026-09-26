@@ -876,6 +876,8 @@ export class HindsightClient {
       consolidationLlmBatchSize?: number;
       /** Concurrent LLM calls during consolidation. */
       consolidationLlmParallelism?: number;
+      /** Fetch the oldest facts of many observation-scope groups per consolidation round. */
+      consolidationFairGroupSelection?: boolean;
       /** Memories consolidated per round. */
       consolidationMaxMemoriesPerRound?: number;
       /** Max tokens for source facts across all observations in a pass. */
@@ -973,6 +975,8 @@ export class HindsightClient {
       updates.consolidation_llm_batch_size = options.consolidationLlmBatchSize;
     if (options.consolidationLlmParallelism !== undefined)
       updates.consolidation_llm_parallelism = options.consolidationLlmParallelism;
+    if (options.consolidationFairGroupSelection !== undefined)
+      updates.consolidation_fair_group_selection = options.consolidationFairGroupSelection;
     if (options.consolidationMaxMemoriesPerRound !== undefined)
       updates.consolidation_max_memories_per_round = options.consolidationMaxMemoriesPerRound;
     if (options.consolidationSourceFactsMaxTokens !== undefined)

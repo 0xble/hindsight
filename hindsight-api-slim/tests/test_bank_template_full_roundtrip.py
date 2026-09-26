@@ -116,6 +116,7 @@ _SAMPLE_VALUES: dict[str, Any] = {
     "enable_auto_consolidation": False,
     "consolidation_max_memories_per_round": 42,
     "consolidation_llm_parallelism": 3,
+    "consolidation_fair_group_selection": True,
     "recall_include_chunks": True,
     "recall_max_tokens": 9000,
     "recall_chunks_max_tokens": 4500,

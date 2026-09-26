@@ -8387,6 +8387,18 @@
             "title": "Consolidation Llm Parallelism",
             "description": "Number of consolidation LLM batches processed concurrently"
           },
+          "consolidation_fair_group_selection": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Consolidation Fair Group Selection",
+            "description": "Fetch the oldest facts of many observation-scope groups per consolidation round instead of the oldest facts overall, so parallel lanes are not left idle behind one large group"
+          },
           "recall_include_chunks": {
             "anyOf": [
               {

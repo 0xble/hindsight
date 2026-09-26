@@ -5587,6 +5587,9 @@ components:
         consolidation_llm_parallelism:
           nullable: true
           type: integer
+        consolidation_fair_group_selection:
+          nullable: true
+          type: boolean
         recall_include_chunks:
           nullable: true
           type: boolean

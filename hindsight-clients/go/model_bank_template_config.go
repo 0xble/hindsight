@@ -64,6 +64,7 @@ type BankTemplateConfig struct {
 	EnableAutoConsolidation NullableBool `json:"enable_auto_consolidation,omitempty"`
 	ConsolidationMaxMemoriesPerRound NullableInt32 `json:"consolidation_max_memories_per_round,omitempty"`
 	ConsolidationLlmParallelism NullableInt32 `json:"consolidation_llm_parallelism,omitempty"`
+	ConsolidationFairGroupSelection NullableBool `json:"consolidation_fair_group_selection,omitempty"`
 	RecallIncludeChunks NullableBool `json:"recall_include_chunks,omitempty"`
 	RecallMaxTokens NullableInt32 `json:"recall_max_tokens,omitempty"`
 	RecallChunksMaxTokens NullableInt32 `json:"recall_chunks_max_tokens,omitempty"`
@@ -1923,6 +1924,48 @@ func (o *BankTemplateConfig) UnsetConsolidationLlmParallelism() {
 	o.ConsolidationLlmParallelism.Unset()
 }
 
+// GetConsolidationFairGroupSelection returns the ConsolidationFairGroupSelection field value if set, zero value otherwise (both if not set or set to explicit null).
+func (o *BankTemplateConfig) GetConsolidationFairGroupSelection() bool {
+	if o == nil || IsNil(o.ConsolidationFairGroupSelection.Get()) {
+		var ret bool
+		return ret
+	}
+	return *o.ConsolidationFairGroupSelection.Get()
+}
+
+// GetConsolidationFairGroupSelectionOk returns a tuple with the ConsolidationFairGroupSelection field value if set, nil otherwise
+// and a boolean to check if the value has been set.
+// NOTE: If the value is an explicit nil, `nil, true` will be returned
+func (o *BankTemplateConfig) GetConsolidationFairGroupSelectionOk() (*bool, bool) {
+	if o == nil {
+		return nil, false
+	}
+	return o.ConsolidationFairGroupSelection.Get(), o.ConsolidationFairGroupSelection.IsSet()
+}
+
+// HasConsolidationFairGroupSelection returns a boolean if a field has been set.
+func (o *BankTemplateConfig) HasConsolidationFairGroupSelection() bool {
+	if o != nil && o.ConsolidationFairGroupSelection.IsSet() {
+		return true
+	}
+
+	return false
+}
+
+// SetConsolidationFairGroupSelection gets a reference to the given NullableBool and assigns it to the ConsolidationFairGroupSelection field.
+func (o *BankTemplateConfig) SetConsolidationFairGroupSelection(v bool) {
+	o.ConsolidationFairGroupSelection.Set(&v)
+}
+// SetConsolidationFairGroupSelectionNil sets the value for ConsolidationFairGroupSelection to be an explicit nil
+func (o *BankTemplateConfig) SetConsolidationFairGroupSelectionNil() {
+	o.ConsolidationFairGroupSelection.Set(nil)
+}
+
+// UnsetConsolidationFairGroupSelection ensures that no value is present for ConsolidationFairGroupSelection, not even an explicit nil
+func (o *BankTemplateConfig) UnsetConsolidationFairGroupSelection() {
+	o.ConsolidationFairGroupSelection.Unset()
+}
+
 // GetRecallIncludeChunks returns the RecallIncludeChunks field value if set, zero value otherwise (both if not set or set to explicit null).
 func (o *BankTemplateConfig) GetRecallIncludeChunks() bool {
 	if o == nil || IsNil(o.RecallIncludeChunks.Get()) {
@@ -2226,6 +2269,9 @@ func (o BankTemplateConfig) ToMap() (map[string]interface{}, error) {
 	}
 	if o.ConsolidationLlmParallelism.IsSet() {
 		toSerialize["consolidation_llm_parallelism"] = o.ConsolidationLlmParallelism.Get()
+	}
+	if o.ConsolidationFairGroupSelection.IsSet() {
+		toSerialize["consolidation_fair_group_selection"] = o.ConsolidationFairGroupSelection.Get()
 	}
 	if o.RecallIncludeChunks.IsSet() {
 		toSerialize["recall_include_chunks"] = o.RecallIncludeChunks.Get()
