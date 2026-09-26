@@ -743,6 +743,12 @@ export type BankTemplateConfig = {
    */
   consolidation_llm_parallelism?: number | null;
   /**
+   * Consolidation Fair Group Selection
+   *
+   * Fetch the oldest facts of many observation-scope groups per consolidation round instead of the oldest facts overall, so parallel lanes are not left idle behind one large group
+   */
+  consolidation_fair_group_selection?: boolean | null;
+  /**
    * Recall Include Chunks
    *
    * Include raw chunks in recall results

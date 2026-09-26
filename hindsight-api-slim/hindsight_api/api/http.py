@@ -3666,6 +3666,11 @@ class BankTemplateConfig(BaseModel):
     consolidation_llm_parallelism: int | None = Field(
         default=None, description="Number of consolidation LLM batches processed concurrently"
     )
+    consolidation_fair_group_selection: bool | None = Field(
+        default=None,
+        description="Fetch the oldest facts of many observation-scope groups per consolidation round "
+        "instead of the oldest facts overall, so parallel lanes are not left idle behind one large group",
+    )
     recall_include_chunks: bool | None = Field(default=None, description="Include raw chunks in recall results")
     recall_max_tokens: int | None = Field(default=None, description="Max tokens of results returned by recall")
     recall_chunks_max_tokens: int | None = Field(

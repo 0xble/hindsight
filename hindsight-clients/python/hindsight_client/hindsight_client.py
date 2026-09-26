@@ -2491,6 +2491,7 @@ class Hindsight:
         observation_scope_limits: list[dict[str, Any]] | None = None,
         enable_auto_consolidation: bool | None = None,
         consolidation_llm_parallelism: int | None = None,
+        consolidation_fair_group_selection: bool | None = None,
         consolidation_max_memories_per_round: int | None = None,
         mental_model_min_refresh_interval_seconds: int | None = None,
         knowledge_page_default_trigger: dict[str, Any] | None = None,
@@ -2554,6 +2555,7 @@ class Hindsight:
                 observation_scope_limits=observation_scope_limits,
                 enable_auto_consolidation=enable_auto_consolidation,
                 consolidation_llm_parallelism=consolidation_llm_parallelism,
+                consolidation_fair_group_selection=consolidation_fair_group_selection,
                 consolidation_max_memories_per_round=consolidation_max_memories_per_round,
                 mental_model_min_refresh_interval_seconds=mental_model_min_refresh_interval_seconds,
                 knowledge_page_default_trigger=knowledge_page_default_trigger,
@@ -2614,6 +2616,7 @@ class Hindsight:
         observation_scope_limits: list[dict[str, Any]] | None = None,
         enable_auto_consolidation: bool | None = None,
         consolidation_llm_parallelism: int | None = None,
+        consolidation_fair_group_selection: bool | None = None,
         consolidation_max_memories_per_round: int | None = None,
         mental_model_min_refresh_interval_seconds: int | None = None,
         knowledge_page_default_trigger: dict[str, Any] | None = None,
@@ -2684,6 +2687,8 @@ class Hindsight:
             observation_scope_limits: Per-scope observation caps, overriding max_observations_per_scope.
             enable_auto_consolidation: Consolidate automatically after retain() rather than on demand.
             consolidation_llm_parallelism: Concurrent LLM calls during consolidation.
+            consolidation_fair_group_selection: Fetch the oldest facts of many observation-scope groups
+                per consolidation round instead of the oldest facts overall.
             consolidation_max_memories_per_round: Memories consolidated per round.
             mental_model_min_refresh_interval_seconds: Debounce between mental-model refreshes.
             knowledge_page_default_trigger: Trigger fields merged over the built-in default for new
@@ -2747,6 +2752,7 @@ class Hindsight:
                 "observation_scope_limits": observation_scope_limits,
                 "enable_auto_consolidation": enable_auto_consolidation,
                 "consolidation_llm_parallelism": consolidation_llm_parallelism,
+                "consolidation_fair_group_selection": consolidation_fair_group_selection,
                 "consolidation_max_memories_per_round": consolidation_max_memories_per_round,
                 "mental_model_min_refresh_interval_seconds": mental_model_min_refresh_interval_seconds,
                 "knowledge_page_default_trigger": knowledge_page_default_trigger,

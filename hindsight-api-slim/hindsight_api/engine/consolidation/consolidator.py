@@ -1433,6 +1433,109 @@ async def _fetch_unconsolidated_rows(
     ]
 
 
+#: Upper bound on the lightweight candidate scan behind fair group selection. A backlog
+#: larger than this is still drained: its oldest ``_FAIR_SCAN_LIMIT`` facts are grouped
+#: each fetch, and the remainder enters the scan as those are consolidated.
+_FAIR_SCAN_LIMIT = 100_000
+
+
+def _fair_group_cap(fetch_limit: int, llm_parallelism: int) -> int:
+    """Most facts one scope group may contribute to a fair fetch.
+
+    One lane's share of the fetch. A fetch is processed as one round whose groups run
+    concurrently up to ``llm_parallelism`` and serially within a group, so the round
+    lasts as long as its busiest lane. Capping every group at one lane's share keeps the
+    largest group (usually the shared scope) from being the only lane with work, without
+    starving it: it still receives a full lane's worth each round.
+    """
+    return max(1, -(-fetch_limit // max(1, llm_parallelism)))
+
+
+async def _fetch_fair_unconsolidated_rows(
+    conn,
+    bank_id: str,
+    fact_types: list[str],
+    limit: int,
+    group_cap: int,
+) -> list[dict[str, Any]] | None:
+    """Unconsolidated candidates chosen fairly across scope groups, or ``None`` if unsupported.
+
+    The strict fetch takes the ``limit`` oldest facts in the bank. When one scope group
+    holds most of the oldest facts, every fetch is that group alone, and since a group's
+    batches must run serially the parallel dispatcher has nothing to run beside it.
+
+    This fetch takes up to ``group_cap`` of the oldest facts from each group, visiting
+    groups in order of their oldest fact, until ``limit`` facts are chosen. Within a group
+    the order is still oldest-first, and the dispatcher's grouping, per-scope locks and
+    serial within-group execution are untouched: this changes only which facts a round
+    sees, never how they are processed. Groups are keyed with ``_consolidation_batch_key``,
+    the same function the dispatcher groups by, so selection cannot disagree with it.
+
+    Reads ``memory_units`` directly, so it applies only where that table is the store
+    (``store_owned_for`` false) on Postgres. Anywhere else it returns ``None`` and the
+    caller falls back to the strict fetch.
+    """
+    if get_memories().store_owned_for(bank_id):
+        return None
+    if getattr(conn, "backend_type", "postgresql") != "postgresql":
+        return None
+
+    candidates = await conn.fetch(
+        f"""
+        SELECT id, tags, observation_scopes
+        FROM {fq_table("memory_units")}
+        WHERE bank_id = $1
+          AND consolidated_at IS NULL
+          AND consolidation_failed_at IS NULL
+          AND fact_type = ANY($2)
+        ORDER BY created_at ASC, id ASC
+        LIMIT $3
+        """,
+        bank_id,
+        list(fact_types),
+        _FAIR_SCAN_LIMIT,
+    )
+    if not candidates:
+        return []
+
+    # Rows arrive oldest-first, so each group's list is oldest-first and dict insertion
+    # order is "group whose oldest fact is oldest" first.
+    groups: dict[tuple[str, ...], list[Any]] = {}
+    for row in candidates:
+        key = _consolidation_batch_key({"tags": row["tags"], "observation_scopes": row["observation_scopes"]})
+        members = groups.setdefault(key, [])
+        if len(members) < group_cap:
+            members.append(row["id"])
+
+    chosen: list[Any] = []
+    for members in groups.values():
+        chosen.extend(members[: limit - len(chosen)])
+        if len(chosen) >= limit:
+            break
+
+    stored = await get_memories().get_memories(
+        conn=conn, fq_table=fq_table, bank_id=bank_id, unit_ids=[str(i) for i in chosen]
+    )
+    by_id = {m.unit_id: m for m in stored}
+    # Keep the selection order (group by group, oldest-first within each). A fact deleted
+    # between the two reads is simply absent.
+    ordered = [by_id[str(i)] for i in chosen if str(i) in by_id]
+    return [
+        {
+            "id": uuid.UUID(m.unit_id),
+            "text": m.text,
+            "fact_type": m.fact_type,
+            "occurred_start": m.occurred_start,
+            "occurred_end": m.occurred_end,
+            "event_date": m.event_date,
+            "tags": list(m.tags or []),
+            "mentioned_at": m.mentioned_at,
+            "observation_scopes": m.observation_scopes,
+        }
+        for m in ordered
+    ]
+
+
 #: Cap on the store-side count of unconsolidated facts. Used only for the "is there work?"
 #: gate and progress reporting, so a floor at this size is harmless on a huge backlog.
 _COUNT_LIMIT = 100_000
@@ -1583,6 +1686,7 @@ async def _run_consolidation_job(
     max_memories_per_batch = config.consolidation_batch_size
     max_memories_per_round = config.consolidation_max_memories_per_round
     llm_batch_size = max(1, config.consolidation_llm_batch_size)
+    fair_group_selection = bool(getattr(config, "consolidation_fair_group_selection", False))
 
     # Check if consolidation is enabled
     if not config.enable_observations:
@@ -1689,12 +1793,24 @@ async def _run_consolidation_job(
         )
 
         # Fetch next batch of unconsolidated memories — through the store, so a store that
-        # keeps its rows outside Postgres is read too.
+        # keeps its rows outside Postgres is read too. With fair group selection on (and no
+        # job-level scope filter), the fetch spreads across scope groups instead of taking
+        # the oldest facts overall; it falls back to the strict fetch where unsupported.
         async with acquire_with_retry(pool) as conn:
             t0 = time.time()
-            memories = await _fetch_unconsolidated_rows(
-                conn, bank_id, ["experience", "world"], fetch_limit, observation_scopes
-            )
+            memories = None
+            if fair_group_selection and not observation_scopes:
+                memories = await _fetch_fair_unconsolidated_rows(
+                    conn,
+                    bank_id,
+                    ["experience", "world"],
+                    fetch_limit,
+                    _fair_group_cap(fetch_limit, config.consolidation_llm_parallelism),
+                )
+            if memories is None:
+                memories = await _fetch_unconsolidated_rows(
+                    conn, bank_id, ["experience", "world"], fetch_limit, observation_scopes
+                )
             perf.record_timing("fetch_memories", time.time() - t0)
 
         if not memories:
