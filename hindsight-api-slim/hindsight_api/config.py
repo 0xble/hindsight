@@ -846,6 +846,7 @@ ENV_CONSOLIDATION_MAX_MEMORIES_PER_ROUND = "HINDSIGHT_API_CONSOLIDATION_MAX_MEMO
 ENV_CONSOLIDATION_LLM_BATCH_SIZE = "HINDSIGHT_API_CONSOLIDATION_LLM_BATCH_SIZE"
 ENV_CONSOLIDATION_DEDUP_THRESHOLD = "HINDSIGHT_API_CONSOLIDATION_DEDUP_THRESHOLD"
 ENV_CONSOLIDATION_LLM_PARALLELISM = "HINDSIGHT_API_CONSOLIDATION_LLM_PARALLELISM"
+ENV_CONSOLIDATION_FAIR_GROUP_SELECTION = "HINDSIGHT_API_CONSOLIDATION_FAIR_GROUP_SELECTION"
 ENV_CONSOLIDATION_MAX_TOKENS = "HINDSIGHT_API_CONSOLIDATION_MAX_TOKENS"
 ENV_CONSOLIDATION_MAX_COMPLETION_TOKENS = "HINDSIGHT_API_CONSOLIDATION_MAX_COMPLETION_TOKENS"
 ENV_CONSOLIDATION_SOURCE_FACTS_MAX_TOKENS = "HINDSIGHT_API_CONSOLIDATION_SOURCE_FACTS_MAX_TOKENS"
@@ -1741,6 +1742,7 @@ DEFAULT_CONSOLIDATION_LLM_PARALLELISM = (
     4  # Max tag groups consolidated concurrently per op. Locks on overlapping write
     # scopes degrade to sequential automatically; matches retain_max_concurrent.
 )
+DEFAULT_CONSOLIDATION_FAIR_GROUP_SELECTION = False  # Per-bank opt-in; strict oldest-first by default.
 DEFAULT_CONSOLIDATION_MAX_TOKENS = 512  # Max tokens for recall when finding related observations
 # Unset by default: the key is omitted from the LLM call so every provider keeps its current implicit output
 # budget — 100% backwards compatible. Operators on providers with a low hidden default (notably Bedrock imported
@@ -3374,6 +3376,7 @@ class HindsightConfig:
     consolidation_max_memories_per_round: int
     consolidation_llm_batch_size: int
     consolidation_llm_parallelism: int
+    consolidation_fair_group_selection: bool
     consolidation_max_tokens: int
     consolidation_max_completion_tokens: int | None
     consolidation_recall_budget: str
@@ -3729,6 +3732,7 @@ class HindsightConfig:
         "enable_auto_consolidation",
         "consolidation_llm_batch_size",
         "consolidation_llm_parallelism",
+        "consolidation_fair_group_selection",
         "consolidation_max_memories_per_round",
         "consolidation_source_facts_max_tokens",
         "consolidation_source_facts_max_tokens_per_observation",
@@ -5017,6 +5021,9 @@ class HindsightConfig:
                         str(DEFAULT_CONSOLIDATION_LLM_PARALLELISM),
                     )
                 ),
+            ),
+            consolidation_fair_group_selection=_parse_boolean_env(
+                ENV_CONSOLIDATION_FAIR_GROUP_SELECTION, DEFAULT_CONSOLIDATION_FAIR_GROUP_SELECTION
             ),
             consolidation_max_tokens=int(
                 os.getenv(ENV_CONSOLIDATION_MAX_TOKENS, str(DEFAULT_CONSOLIDATION_MAX_TOKENS))
