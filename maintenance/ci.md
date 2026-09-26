@@ -16,10 +16,16 @@ intentional fork infrastructure policy, not upstream deployment ownership.
   (`ci: run language integrity regressions`), and
   `d4060b4a6f4f3faa0b043adf9157af332b0b94a1`
   (`Guard upstream recovery paths in fork CI (#9)`).
-- **Surfaces:** `.github/workflows/`, `scripts/ci/validate_fork_workflows.py`
-- **Behavior:** The exact four-workflow inventory uses only read-only permissions
+- **Surfaces:** `.github/workflows/`, `scripts/ci/validate_fork_workflows.py`,
+  `bin/ci`, `.githooks/pre-push`
+- **Behavior:** The exact six-workflow inventory uses only read-only permissions
   and standard runners. Automatic CI covers active patch regressions, lint, types,
   and package/import smoke tests; Windows and performance checks are manual-only.
+  The repository CI contract lives in `bin/ci`: `gate.yml` runs `./bin/ci gate`
+  on the exact PR head and its `qualification` job is the only required status
+  check on `main`; `nightly.yml` runs `./bin/ci nightly` (the full offline suite)
+  on a fixed daily schedule; `.githooks/pre-push` runs the bypassable
+  `./bin/ci preflight`. The validator pins both trigger sets exactly.
   `fork-policy.yml` uses `pull_request_target` only to run default-branch policy
   code against an immutable candidate checkout, without persisted credentials or
   candidate actions, scripts, manifests, or hooks.

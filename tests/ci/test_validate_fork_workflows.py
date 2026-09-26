@@ -35,6 +35,10 @@ class ForkWorkflowPolicyTests(unittest.TestCase):
                 trigger = (
                     "on:\n  push:\n    branches: [main]\n  pull_request:\n    branches: [main]\n  workflow_dispatch:\n"
                 )
+            elif name == "gate.yml":
+                trigger = "on:\n  pull_request:\n    branches: [main]\n"
+            elif name == "nightly.yml":
+                trigger = "on:\n  schedule:\n    - cron: '53 6 * * *'\n  workflow_dispatch:\n"
             else:
                 inline_events = ", ".join(sorted(events))
                 trigger = f"on: [{inline_events}]\n"
@@ -129,6 +133,45 @@ class ForkWorkflowPolicyTests(unittest.TestCase):
         )
         errors = POLICY.validate(root)
         self.assertTrue(any("trigger configuration" in error for error in errors))
+
+    def test_gate_branch_broadening_fails(self) -> None:
+        root = self.make_root()
+        workflow = root / ".github" / "workflows" / "gate.yml"
+        workflow.write_text(
+            workflow.read_text(encoding="utf-8").replace("branches: [main]", "branches: [main, develop]", 1),
+            encoding="utf-8",
+        )
+        errors = POLICY.validate(root)
+        self.assertTrue(any("gate.yml: trigger configuration" in error for error in errors))
+
+    def test_gate_push_trigger_fails(self) -> None:
+        root = self.make_root()
+        workflow = root / ".github" / "workflows" / "gate.yml"
+        workflow.write_text(
+            workflow.read_text(encoding="utf-8").replace("on:\n", "on:\n  push:\n", 1),
+            encoding="utf-8",
+        )
+        errors = POLICY.validate(root)
+        self.assertTrue(any("gate.yml: events" in error for error in errors))
+
+    def test_nightly_schedule_change_fails(self) -> None:
+        root = self.make_root()
+        workflow = root / ".github" / "workflows" / "nightly.yml"
+        workflow.write_text(
+            workflow.read_text(encoding="utf-8").replace("53 6 * * *", "*/5 * * * *", 1),
+            encoding="utf-8",
+        )
+        errors = POLICY.validate(root)
+        self.assertTrue(any("nightly.yml: trigger configuration" in error for error in errors))
+
+    def test_repository_workflows_pass_policy(self) -> None:
+        repo_root = SCRIPT.parents[2]
+        errors = [
+            error
+            for error in POLICY.validate(repo_root)
+            if error.startswith(("gate.yml", "nightly.yml"))
+        ]
+        self.assertEqual(errors, [])
 
     def test_candidate_cannot_select_executed_policy_code(self) -> None:
         root = self.make_root()
