@@ -5590,6 +5590,9 @@ components:
         consolidation_fair_group_selection:
           nullable: true
           type: boolean
+        consolidation_max_context_tokens:
+          nullable: true
+          type: integer
         recall_include_chunks:
           nullable: true
           type: boolean

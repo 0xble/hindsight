@@ -78,6 +78,11 @@ def test_every_network_provider_receives_the_resolved_timeout(provider, extra, m
 
     from hindsight_api.engine.providers.codex_llm import CodexLLM
 
+    if provider == "github-copilot":
+        # Headless token auth (as in CI), so construction does not depend on a
+        # signed-in Copilot CLI account on the machine running the tests.
+        monkeypatch.setenv("COPILOT_GITHUB_TOKEN", "test-token")
+
     with (
         patch.object(CodexLLM, "_load_codex_auth", return_value=("token", "account")),
         patch.object(CodexLLM, "_load_codex_refresh_token", return_value=None),

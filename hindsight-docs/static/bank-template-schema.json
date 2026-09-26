@@ -621,6 +621,19 @@
           "description": "Fetch the oldest facts of many observation-scope groups per consolidation round instead of the oldest facts overall, so parallel lanes are not left idle behind one large group",
           "title": "Consolidation Fair Group Selection"
         },
+        "consolidation_max_context_tokens": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Hard input-token budget for one consolidation LLM call; oversized prompts are split before they are sent. Keep below the provider context limit",
+          "title": "Consolidation Max Context Tokens"
+        },
         "recall_include_chunks": {
           "anyOf": [
             {

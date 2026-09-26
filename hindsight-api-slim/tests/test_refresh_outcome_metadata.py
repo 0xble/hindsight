@@ -574,10 +574,15 @@ async def test_refresh_outcome_matrix(case: _OutcomeCase, memory: MemoryEngine, 
     submit = memory.submit_async_refresh_mental_model(
         bank_id=bank_id, mental_model_id=mm["id"], request_context=request_context
     )
-    if case.expect_outcome.startswith("refresh_failed"):
-        # A failed refresh is retryable, so the task layer re-raises it as
-        # RetryTaskAt. The metadata is written before that, on the attempt that
-        # failed — which is the whole point of recording it there.
+    deterministic_failure = case.expect_outcome.startswith("refresh_failed") and case.reflect_raises != "unexpected"
+    if deterministic_failure:
+        # Fork HINDSIGHT-002: a MentalModelRefreshError is a deterministic task
+        # failure, so the task layer fails the operation on this attempt instead of
+        # re-queueing the same guarded refresh. The metadata is written first.
+        await submit
+    elif case.expect_outcome.startswith("refresh_failed"):
+        # Anything else that escapes the refresh is re-raised unchanged and keeps
+        # the worker's generic retry, so the task layer raises RetryTaskAt.
         with pytest.raises(RetryTaskAt):
             await submit
     else:
@@ -587,6 +592,8 @@ async def test_refresh_outcome_matrix(case: _OutcomeCase, memory: MemoryEngine, 
     views = await _refresh_operation_views(memory, bank_id, request_context)
     details = views.status_model.details
     assert details is not None, f"{case.id}: no details recorded ({case.why})"
+    if deterministic_failure:
+        assert views.status["status"] == "failed", f"{case.id}: a deterministic refresh failure is terminal"
     assert details.outcome == case.expect_outcome, f"{case.id}: {case.why}"
     assert details.failure_reason == case.expect_failure_reason, f"{case.id}: {case.why}"
 

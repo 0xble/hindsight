@@ -365,21 +365,20 @@ class TestConsolidationLanguageIntegrity:
     )
 
     @staticmethod
-    def _response(text: str):
+    def _batch(text: str):
         from hindsight_api.engine.consolidation.consolidator import _ConsolidationBatchResponse, _CreateAction
 
-        return LLMCallResult(
-            content=_ConsolidationBatchResponse(
-                creates=[_CreateAction(text=text, source_fact_ids=["m1"])],
-            ),
-            usage=TokenUsage(),
-        )
+        return _ConsolidationBatchResponse(creates=[_CreateAction(text=text, source_fact_ids=["m1"])])
+
+    @classmethod
+    def _response(cls, text: str):
+        return LLMCallResult(content=cls._batch(text), usage=TokenUsage())
 
     @pytest.mark.asyncio
     async def test_observe_mode_does_not_mutate_the_prompt(self, mock_llm_config, mock_config):
         mock_config.llm_language_integrity = "observe"
         mock_config.llm_output_language = None
-        mock_llm_config.call.return_value = self._response(self.spanish)
+        mock_llm_config.call.return_value = LLMCallResult(content=self._batch(self.spanish), usage=TokenUsage())
 
         result = await _consolidate_batch_with_llm(
             llm_config=mock_llm_config,

@@ -3671,6 +3671,11 @@ class BankTemplateConfig(BaseModel):
         description="Fetch the oldest facts of many observation-scope groups per consolidation round "
         "instead of the oldest facts overall, so parallel lanes are not left idle behind one large group",
     )
+    consolidation_max_context_tokens: int | None = Field(
+        default=None,
+        description="Hard input-token budget for one consolidation LLM call; oversized prompts are split "
+        "before they are sent. Keep below the provider context limit",
+    )
     recall_include_chunks: bool | None = Field(default=None, description="Include raw chunks in recall results")
     recall_max_tokens: int | None = Field(default=None, description="Max tokens of results returned by recall")
     recall_chunks_max_tokens: int | None = Field(
