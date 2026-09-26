@@ -16,7 +16,12 @@ in the root contract.
   monitoring documentation, and their focused tests
 - **Upstream issue:** None after checked 2026-09-11
 - **Upstream PR:** None after checked 2026-09-11
-- **Regression:** `uv run --frozen --extra all pytest tests/test_consolidation_failure_isolation.py tests/test_consolidation_prompt_budget.py tests/test_db_abstraction.py tests/test_response_schema_validation.py`
+- **Regression:** `uv run --frozen --extra all pytest tests/test_consolidation_failure_isolation.py tests/test_consolidation_prompt_budget.py tests/test_db_abstraction.py tests/test_response_schema_validation.py tests/test_refresh_outcome_metadata.py tests/test_bank_template_full_roundtrip.py`
+- **Upstream test alignment:** Upstream's refresh-outcome matrix expects a
+  `MentalModelRefreshError` to be retried; the fork's copy expects the terminal
+  failure instead, while other escaped refresh errors keep the generic retry.
+  `consolidation_max_context_tokens` is bank-configurable, so it is also declared
+  on `BankTemplateConfig` and exported with bank templates.
 - **Rollback:** Revert the listed commits; do not alter production data during source rollback.
 - **Retire when:** Released upstream passes the focused regressions without these commits.
 - **Component assessment:** None of the remaining safeguards is replaced by quota

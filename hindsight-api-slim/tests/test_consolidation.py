@@ -2426,7 +2426,9 @@ class TestBuildResponseModel:
             _CreateAction,
         )
 
-        creates = [_CreateAction(text=f"observation {index}", source_fact_ids=[f"fact-{index}"]) for index in range(3)]
+        # Every create cites the batch's one fact: the reference validator rejects any
+        # response naming a fact outside the batch before truncation is reached.
+        creates = [_CreateAction(text=f"observation {index}", source_fact_ids=["fact-0"]) for index in range(3)]
         llm_config = SimpleNamespace(
             _provider_impl=None,
             call=AsyncMock(

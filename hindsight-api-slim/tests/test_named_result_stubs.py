@@ -184,6 +184,20 @@ def test_the_scan_finds_doubles_at_all():
     assert total >= 5, f"only found {total} doubles — the recognisers have probably stopped matching"
 
 
+def _double_label(fn: ast.AST) -> str:
+    """Name a double in an offender message: a stub function, or an assignment target."""
+    if isinstance(fn, ast.Assign):
+        return ast.unparse(fn.targets[0])
+    return f"{fn.name}()"
+
+
+def test_double_label_names_assignment_doubles():
+    assign = ast.parse("llm.call.return_value = payload").body[0]
+    stub = ast.parse("def fake_call():\n    return payload").body[0]
+    assert _double_label(assign) == "llm.call.return_value"
+    assert _double_label(stub) == "fake_call()"
+
+
 @pytest.mark.parametrize("path", _test_modules(), ids=lambda p: p.stem)
 def test_doubles_return_the_named_result(path):
     try:
@@ -194,7 +208,7 @@ def test_doubles_return_the_named_result(path):
     for stands_for, fn in _doubles_in(tree):
         for lineno in _returns_bare_tuple(fn):
             offenders.append(
-                f"{path.name}:{lineno} {fn.name}() stands in for "
+                f"{path.name}:{lineno} {_double_label(fn)} stands in for "
                 f"{stands_for}() and must return {NAMED_RESULTS[stands_for]}, not a tuple"
             )
     assert not offenders, "\n".join(offenders)

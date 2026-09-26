@@ -749,6 +749,12 @@ export type BankTemplateConfig = {
    */
   consolidation_fair_group_selection?: boolean | null;
   /**
+   * Consolidation Max Context Tokens
+   *
+   * Hard input-token budget for one consolidation LLM call; oversized prompts are split before they are sent. Keep below the provider context limit
+   */
+  consolidation_max_context_tokens?: number | null;
+  /**
    * Recall Include Chunks
    *
    * Include raw chunks in recall results
