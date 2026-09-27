@@ -2573,11 +2573,17 @@ export type FileConvertRetainOperationDetails = {
    *
    * Stable failure class callers may use to decide whether the source artifact is retryable.
    */
-  failure_class: "low_quality_ocr";
+  failure_class: "low_quality_ocr" | "no_extractable_text";
   /**
-   * The OCR quality gate that rejected the converted image text.
+   * The OCR rejection reason, or empty_content when every parser extracted no text.
    */
-  failure_reason: OcrQualityReason;
+  failure_reason: OcrQualityReason | "empty_content";
+  /**
+   * Parsers
+   *
+   * Ordered parser chain tried when no extractable text was found.
+   */
+  parsers?: Array<string> | null;
 };
 
 /**

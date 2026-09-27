@@ -18,6 +18,11 @@ func TestOperationResponseDetailsUseDiscriminator(t *testing.T) {
 			fileDetail: true,
 		},
 		{
+			name:       "no extractable text",
+			payload:    `{"operation_type":"file_convert_retain","failure_class":"no_extractable_text","failure_reason":"empty_content","parsers":["markitdown"]}`,
+			fileDetail: true,
+		},
+		{
 			name:          "mental model refresh",
 			payload:       `{"operation_type":"refresh_mental_model","outcome":"content_written","failure_reason":null}`,
 			refreshDetail: true,

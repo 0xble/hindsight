@@ -18,7 +18,7 @@ import re  # noqa: F401
 import json
 
 from pydantic import BaseModel, ConfigDict, Field, StrictStr, field_validator
-from typing import Any, ClassVar, Dict, List, Optional
+from typing import Any, ClassVar, Dict, List, Literal, Optional
 from hindsight_client_api.models.ocr_quality_reason import OcrQualityReason
 from typing import Optional, Set
 from typing_extensions import Self
@@ -29,8 +29,9 @@ class FileConvertRetainOperationDetails(BaseModel):
     """ # noqa: E501
     operation_type: Optional[StrictStr] = Field(default='file_convert_retain', description="Discriminator: which operation type this detail describes.")
     failure_class: StrictStr = Field(description="Stable failure class callers may use to decide whether the source artifact is retryable.")
-    failure_reason: OcrQualityReason = Field(description="The OCR quality gate that rejected the converted image text.")
-    __properties: ClassVar[List[str]] = ["operation_type", "failure_class", "failure_reason"]
+    failure_reason: OcrQualityReason | Literal["empty_content"] = Field(description="The OCR rejection reason, or empty_content when every parser extracted no text.")
+    parsers: Optional[List[StrictStr]] = Field(default=None, description="Ordered parser chain tried when no extractable text was found.")
+    __properties: ClassVar[List[str]] = ["operation_type", "failure_class", "failure_reason", "parsers"]
 
     @field_validator('operation_type')
     def operation_type_validate_enum(cls, value):
@@ -45,8 +46,8 @@ class FileConvertRetainOperationDetails(BaseModel):
     @field_validator('failure_class')
     def failure_class_validate_enum(cls, value):
         """Validates the enum"""
-        if value not in set(['low_quality_ocr']):
-            raise ValueError("must be one of enum values ('low_quality_ocr')")
+        if value not in set(['low_quality_ocr', 'no_extractable_text']):
+            raise ValueError("must be one of enum values ('low_quality_ocr', 'no_extractable_text')")
         return value
 
     model_config = ConfigDict(
@@ -102,7 +103,8 @@ class FileConvertRetainOperationDetails(BaseModel):
         _obj = cls.model_validate({
             "operation_type": obj.get("operation_type") if obj.get("operation_type") is not None else 'file_convert_retain',
             "failure_class": obj.get("failure_class"),
-            "failure_reason": obj.get("failure_reason")
+            "failure_reason": obj.get("failure_reason"),
+            "parsers": obj.get("parsers")
         })
         return _obj
 

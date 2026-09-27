@@ -29,6 +29,15 @@ from hindsight_client_api.models.refresh_mental_model_operation_details import (
         ),
         (
             {
+                "operation_type": "file_convert_retain",
+                "failure_class": "no_extractable_text",
+                "failure_reason": "empty_content",
+                "parsers": ["markitdown"],
+            },
+            FileConvertRetainOperationDetails,
+        ),
+        (
+            {
                 "operation_type": "refresh_mental_model",
                 "outcome": "content_written",
                 "failure_reason": None,

@@ -3,7 +3,7 @@
 import logging
 from dataclasses import dataclass
 
-from .base import FileParser, UnsupportedFileTypeError
+from .base import FileParser, NoExtractableContentError, UnsupportedFileTypeError
 from .iris import IrisParser
 from .llama_parse import LlamaParseParser
 from .markitdown import MarkitdownParser
@@ -12,6 +12,7 @@ from .ocr_quality import LowQualityOcrError, evaluate_ocr_quality, is_image_inpu
 __all__ = [
     "FileParser",
     "UnsupportedFileTypeError",
+    "NoExtractableContentError",
     "IrisParser",
     "LlamaParseParser",
     "MarkitdownParser",
@@ -111,6 +112,9 @@ class FileParserRegistry:
             RuntimeError: If all parsers fail or return empty content
         """
         last_error: Exception | None = None
+        nonempty_error: Exception | None = None
+        empty_parsers: list[str] = []
+        all_empty = bool(parsers)
         for name in parsers:
             parser = self.get_parser(name, filename, content_type)
             try:
@@ -122,8 +126,14 @@ class FileParserRegistry:
                             raise LowQualityOcrError(name, filename, quality)
                     return ConvertResult(content=content, parser_name=name)
                 logger.warning(f"Parser '{name}' returned empty content for '{filename}', trying next")
-                last_error = RuntimeError(f"Parser '{name}' returned no content for '{filename}'")
+                empty_parsers.append(name)
+                last_error = NoExtractableContentError(f"Parser '{name}' returned no content for '{filename}'")
+            except NoExtractableContentError as e:
+                logger.warning("Parser '%s' extracted no text from '%s', trying next", name, filename)
+                empty_parsers.append(name)
+                last_error = e
             except LowQualityOcrError as e:
+                all_empty = False
                 features = e.features
                 logger.warning(
                     "Parser '%s' rejected low-quality OCR for '%s', trying next: "
@@ -141,14 +151,23 @@ class FileParserRegistry:
                     features.ui_chrome_ratio,
                 )
                 last_error = e
+                nonempty_error = e
             except UnsupportedFileTypeError as e:
+                all_empty = False
                 logger.warning(f"Parser '{name}' does not support '{filename}', trying next: {e}")
                 last_error = e
+                nonempty_error = e
             except Exception as e:
+                all_empty = False
                 logger.warning(f"Parser '{name}' failed for '{filename}', trying next: {e}")
                 last_error = e
+                nonempty_error = e
 
-        raise last_error or RuntimeError(f"No parsers available for '{filename}'")
+        # Only a chain whose every outcome is empty can be a terminal no-text result.
+        # An earlier provider/transport failure must not be hidden by a later empty parser.
+        if all_empty:
+            raise NoExtractableContentError(f"No content extracted from '{filename}'", parsers=empty_parsers)
+        raise nonempty_error or last_error or RuntimeError(f"No parsers available for '{filename}'")
 
     def list_parsers(self) -> list[str]:
         """Get list of registered parser names."""

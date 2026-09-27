@@ -97,6 +97,7 @@ async def test_low_quality_ocr_failure_exposes_stable_terminal_details(api_clien
         "operation_type": "file_convert_retain",
         "failure_class": "low_quality_ocr",
         "failure_reason": "refusal_or_no_text_response",
+        "parsers": None,
     }
 
 

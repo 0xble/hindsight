@@ -25,8 +25,10 @@ type FileConvertRetainOperationDetails struct {
 	OperationType *string `json:"operation_type,omitempty"`
 	// Stable failure class callers may use to decide whether the source artifact is retryable.
 	FailureClass string `json:"failure_class"`
-	// The OCR quality gate that rejected the converted image text.
-	FailureReason OcrQualityReason `json:"failure_reason"`
+	// The OCR rejection reason, or empty_content when every parser extracted no text.
+	FailureReason string `json:"failure_reason"`
+	// Ordered parser chain tried when no extractable text was found.
+	Parsers []string `json:"parsers,omitempty"`
 }
 
 type _FileConvertRetainOperationDetails FileConvertRetainOperationDetails
@@ -35,7 +37,7 @@ type _FileConvertRetainOperationDetails FileConvertRetainOperationDetails
 // This constructor will assign default values to properties that have it defined,
 // and makes sure properties required by API are set, but the set of arguments
 // will change when the set of required properties is changed
-func NewFileConvertRetainOperationDetails(failureClass string, failureReason OcrQualityReason) *FileConvertRetainOperationDetails {
+func NewFileConvertRetainOperationDetails(failureClass string, failureReason string) *FileConvertRetainOperationDetails {
 	this := FileConvertRetainOperationDetails{}
 	var operationType string = "file_convert_retain"
 	this.OperationType = &operationType
@@ -111,9 +113,9 @@ func (o *FileConvertRetainOperationDetails) SetFailureClass(v string) {
 }
 
 // GetFailureReason returns the FailureReason field value
-func (o *FileConvertRetainOperationDetails) GetFailureReason() OcrQualityReason {
+func (o *FileConvertRetainOperationDetails) GetFailureReason() string {
 	if o == nil {
-		var ret OcrQualityReason
+		var ret string
 		return ret
 	}
 
@@ -122,7 +124,7 @@ func (o *FileConvertRetainOperationDetails) GetFailureReason() OcrQualityReason 
 
 // GetFailureReasonOk returns a tuple with the FailureReason field value
 // and a boolean to check if the value has been set.
-func (o *FileConvertRetainOperationDetails) GetFailureReasonOk() (*OcrQualityReason, bool) {
+func (o *FileConvertRetainOperationDetails) GetFailureReasonOk() (*string, bool) {
 	if o == nil {
 		return nil, false
 	}
@@ -130,8 +132,21 @@ func (o *FileConvertRetainOperationDetails) GetFailureReasonOk() (*OcrQualityRea
 }
 
 // SetFailureReason sets field value
-func (o *FileConvertRetainOperationDetails) SetFailureReason(v OcrQualityReason) {
+func (o *FileConvertRetainOperationDetails) SetFailureReason(v string) {
 	o.FailureReason = v
+}
+
+// GetParsers returns the ordered parser chain when present.
+func (o *FileConvertRetainOperationDetails) GetParsers() []string {
+	if o == nil {
+		return nil
+	}
+	return o.Parsers
+}
+
+// SetParsers sets the ordered parser chain.
+func (o *FileConvertRetainOperationDetails) SetParsers(v []string) {
+	o.Parsers = v
 }
 
 func (o FileConvertRetainOperationDetails) MarshalJSON() ([]byte, error) {
@@ -149,6 +164,9 @@ func (o FileConvertRetainOperationDetails) ToMap() (map[string]interface{}, erro
 	}
 	toSerialize["failure_class"] = o.FailureClass
 	toSerialize["failure_reason"] = o.FailureReason
+	if o.Parsers != nil {
+		toSerialize["parsers"] = o.Parsers
+	}
 	return toSerialize, nil
 }
 

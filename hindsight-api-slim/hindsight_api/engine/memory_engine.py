@@ -86,6 +86,7 @@ from .operation_metadata import (
     RetainOutcomeAggregate,
     RetainOutcomeMetadata,
 )
+from .parsers.base import NoExtractableContentError
 from .parsers.ocr_quality import LowQualityOcrError
 from .sql import SQLDialect, create_sql_dialect
 from .sql.postgresql import knowledge_bm25_arm
@@ -1858,7 +1859,7 @@ def _summarize_refresh_tool_calls(
     return summaries
 
 
-def _file_convert_failure_metadata(error: BaseException) -> dict[str, str]:
+def _file_convert_failure_metadata(error: BaseException) -> dict[str, Any]:
     """Return stable metadata for a deterministic file-conversion failure.
 
     File parsing adds filename context by wrapping the parser exception, so walk
@@ -1868,6 +1869,12 @@ def _file_convert_failure_metadata(error: BaseException) -> dict[str, str]:
     current: BaseException | None = error
     while current is not None and id(current) not in seen:
         seen.add(id(current))
+        if isinstance(current, NoExtractableContentError) and current.parsers:
+            return {
+                "failure_class": "no_extractable_text",
+                "failure_reason": "empty_content",
+                "parsers": current.parsers,
+            }
         if isinstance(current, LowQualityOcrError):
             return {
                 "failure_class": "low_quality_ocr",
@@ -1880,6 +1887,7 @@ def _file_convert_failure_metadata(error: BaseException) -> dict[str, str]:
 _CLEARED_FILE_CONVERT_FAILURE_METADATA: dict[str, None] = {
     "failure_class": None,
     "failure_reason": None,
+    "parsers": None,
 }
 
 
@@ -1906,7 +1914,8 @@ def _operation_details(operation_type: str, result_metadata: dict[str, Any]) -> 
             return FileConvertRetainOperationDetails(
                 failure_class=failure_class,
                 failure_reason=failure_reason,
-            ).model_dump(mode="json")
+                parsers=result_metadata.get("parsers"),
+            ).model_dump(mode="json", exclude_none=True)
         except ValidationError:
             logger.warning("Unrecognized file conversion failure details on an operation; reporting no details")
             return None

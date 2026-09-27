@@ -615,6 +615,19 @@ async def update_memory_units_metadata_and_tags(
             await store.mark_consolidated(conn=conn, fq_table=fq_table, bank_id=bank_id, unit_ids=rescoped, when=None)
         return len(patches)
 
+    # Retain's caller holds a transaction around this document-wide update. Lock
+    # survivors in the same id order as consolidation's source-row FOR SHARE guard;
+    # an unordered UPDATE may otherwise acquire tuple locks opposite to that guard.
+    await conn.fetch(
+        f"""
+        SELECT id FROM {fq_table("memory_units")}
+        WHERE bank_id = $1 AND document_id = $2
+        ORDER BY id FOR UPDATE
+        """,
+        bank_id,
+        document_id,
+    )
+
     # Read the scoping the survivors carry BEFORE overwriting it — the cascade below has to
     # know which units actually moved, and after the UPDATE that is no longer answerable.
     prior = await conn.fetch(
