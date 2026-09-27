@@ -574,7 +574,7 @@ async def test_batch_api_crash_recovery(mock_llm_config, test_contents, hindsigh
 
     try:
         # Ensure bank exists
-        await memory.get_bank_profile(bank_id, request_context=request_context)
+        await memory.ensure_bank_profile(bank_id, request_context=request_context)
 
         # Setup: Store batch_id in async_operations table (simulates partial execution)
         batch_id = "batch_recovered_456"
@@ -686,6 +686,8 @@ async def test_batch_api_crash_recovery(mock_llm_config, test_contents, hindsigh
             schema=schema,
         )
         facts = extraction.facts
+        chunks = extraction.chunks
+        usage = extraction.usage
 
         # Verify results
         assert len(facts) == 2, "Should extract 2 facts after recovery"
@@ -718,7 +720,7 @@ async def test_batch_api_records_non_fatal_extraction_errors(
     operation_id = str(uuid.uuid4())
 
     try:
-        await memory.get_bank_profile(bank_id, request_context=request_context)
+        await memory.ensure_bank_profile(bank_id, request_context=request_context)
         pool = memory._pool
         schema = request_context.tenant_id
 
@@ -844,7 +846,7 @@ async def test_worker_batch_recovery(memory, request_context):
 
     try:
         # Ensure bank exists
-        await memory.get_bank_profile(bank_id, request_context=request_context)
+        await memory.ensure_bank_profile(bank_id, request_context=request_context)
 
         pool = memory._pool
         schema = request_context.tenant_id

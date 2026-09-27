@@ -164,6 +164,21 @@ class MentalModelTriggerInput(BaseModel):
         default=None,
         description="Override the token budget for raw chunks from the refresh's internal recall. null = bank/global default.",
     )
+    reflect_search_observations_max_tokens: int | None = Field(
+        default=None,
+        ge=1,
+        description=(
+            "Override the token budget for the refresh's search_observations calls. Lowering it drops the "
+            "lowest-ranked observations and shrinks the reflect context. null = bank default (5000)."
+        ),
+    )
+    reflect_search_observations_include_entities: bool | None = Field(
+        default=None,
+        description=(
+            "Override whether search_observations attaches resolved entity names, which can be over half the "
+            "tool payload. null = bank default (enabled)."
+        ),
+    )
     response_schema: dict | None = Field(
         default=None,
         description=(
@@ -1631,7 +1646,7 @@ def _register_create_bank(mcp: FastMCP, memory: MemoryEngine, config: MCPToolsCo
             else:
                 # The public profile API owns bank creation and its lifecycle
                 # validation when no profile fields need updating.
-                profile = await memory.get_bank_profile(bank_id, request_context=request_context)
+                profile = await memory.ensure_bank_profile(bank_id, request_context=request_context)
 
             # Serialize disposition if it's a Pydantic model
             if "disposition" in profile and hasattr(profile["disposition"], "model_dump"):
@@ -4185,7 +4200,6 @@ def _register_get_bank(mcp: FastMCP, memory: MemoryEngine, config: MCPToolsConfi
         profile = await memory.get_bank_profile(
             target_bank,
             request_context=_get_request_context(config),
-            create_if_missing=False,
         )
         if profile is None:
             raise _ToolError(f"Bank '{target_bank}' not found")

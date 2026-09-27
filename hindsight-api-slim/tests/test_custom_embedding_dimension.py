@@ -167,24 +167,24 @@ def get_column_dimension(db_url: str, schema: str = "public", table: str = "memo
 def get_vector_index_names(db_url: str, schema: str, table: str) -> list[str]:
     """Names of the vector indexes on ``table.embedding``.
 
-    Reads the catalogs directly instead of ``pg_indexes``: that view renders
-    ``pg_get_indexdef()`` for rows the planner has not yet filtered by schema, so
-    another xdist worker's ``DROP SCHEMA ... CASCADE`` can fail this lookup with
-    "could not open relation with OID". Matching on the access method and the
-    indexed column never opens another schema's index.
+    Reads the catalog directly rather than ``pg_indexes``: that view renders
+    every row through ``pg_get_indexdef()``, including indexes in schemas other
+    xdist workers are dropping right now, and a vanished relation fails the whole
+    statement with "cache lookup failed for attribute N of relation OID".
     """
     engine = create_engine(db_url)
     with engine.connect() as conn:
         rows = conn.execute(
             text("""
-                SELECT DISTINCT ic.relname
-                FROM pg_index i
-                JOIN pg_class ic ON ic.oid = i.indexrelid
-                JOIN pg_class tc ON tc.oid = i.indrelid
-                JOIN pg_namespace n ON n.oid = tc.relnamespace
-                JOIN pg_am am ON am.oid = ic.relam
-                JOIN pg_attribute a ON a.attrelid = tc.oid AND a.attnum = ANY(i.indkey)
-                WHERE n.nspname = :schema AND tc.relname = :table
+                SELECT i.relname
+                FROM pg_class t
+                JOIN pg_namespace n ON n.oid = t.relnamespace
+                JOIN pg_index x ON x.indrelid = t.oid
+                JOIN pg_class i ON i.oid = x.indexrelid
+                JOIN pg_am am ON am.oid = i.relam
+                JOIN pg_attribute a ON a.attrelid = t.oid AND a.attnum = ANY(x.indkey)
+                WHERE n.nspname = :schema
+                  AND t.relname = :table
                   AND a.attname = 'embedding'
                   AND am.amname IN ('hnsw', 'vchordrq', 'diskann', 'scann')
             """),

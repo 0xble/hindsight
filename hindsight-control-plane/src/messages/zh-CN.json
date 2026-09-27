@@ -120,7 +120,7 @@
     "clearObservationsWarning": "这会删除所有已整合的知识。下次运行整合时会重新生成观察。",
     "clearing": "正在清除...",
     "bankDeleted": "记忆库已删除",
-    "bankDeletedDescription": "记忆库 '{bankName}' 已永久删除。",
+    "bankDeletedDescription": "记忆库 {bankName} 已永久删除。",
     "failedToDeleteBank": "删除记忆库失败",
     "observationsCleared": "观察已清除",
     "observationsClearedDefault": "观察已成功清除",
@@ -166,7 +166,24 @@
     "memoryDefense": "记忆防护",
     "knowledge": "知识",
     "knowledgeDescription": "由该记忆库的记忆综合沉淀出的知识页与心智模型。",
-    "pages": "知识页"
+    "pages": "知识页",
+    "cloneBank": "克隆记忆库",
+    "cloneBankTitle": "克隆记忆库",
+    "cloneBankDescription": "把当前记忆库复制成一个新的。副本从相同的记忆开始，之后各自独立演进。",
+    "cloneTargetLabel": "新记忆库 ID",
+    "cloneTargetPlaceholder": "my-bank-copy",
+    "cloning": "克隆中…",
+    "cloneStarted": "已开始克隆",
+    "cloneSucceeded": "记忆库已克隆为“{bankName}”",
+    "cloneFailed": "克隆记忆库失败",
+    "cloneWhatToCopy": "复制哪些内容",
+    "cloneIncludeData": "记忆",
+    "cloneIncludeDataHint": "文档、事实、观察、附件、整理归档、操作日志，以及由它们合成的心智模型和知识页。",
+    "cloneIncludeBankConfig": "记忆库配置",
+    "cloneIncludeBankConfigHint": "配置覆盖、指令和 Webhook——副本会调用相同的 Webhook 端点。",
+    "cloneIncludeHistory": "历史",
+    "cloneIncludeHistoryHint": "审计日志和 LLM 请求追踪。",
+    "cloneNothingSelected": "请至少选择一项要复制的内容。"
   },
   "bankProfile": {
     "noBankSelected": "未选择记忆库",
@@ -386,6 +403,18 @@
     "reflectFailedToSave": "无法保存反思设置",
     "reflectMissionDescription": "代理身份和目标。作为反思时的框架上下文使用。",
     "reflectMissionPlaceholder": "例如：你是一名资深工程助手。回答必须基于已记录的决策和理由。忽略猜测。直接且精准。",
+    "reflectObservationsMaxTokensLabel": "观察最大令牌数",
+    "reflectObservationsMaxTokensDescription": "模型未自行指定预算时，反思中观察检索使用的令牌预算。心智模型的触发器可覆盖它。",
+    "reflectObservationsEntitiesLabel": "观察实体",
+    "reflectObservationsEntitiesDescription": "附加在每条观察上的规范实体名称。文本使用别名时很有用，但可能占载荷一半以上。",
+    "reflectObservationsEntitiesOn": "包含实体名称",
+    "reflectObservationsEntitiesOff": "跳过实体（更小的上下文）",
+    "reflectDefaultOptionsLabel": "反思默认选项",
+    "reflectDefaultOptionsDescription": "当请求（或心智模型的触发器）未设置该选项时，本记忆库每次反思所使用的值。显式指定的值仍然优先。",
+    "reflectDefaultOptionsDialogTitle": "反思的默认选项",
+    "reflectDefaultOptionsDialogHint": "适用于本记忆库的每次反思：API、MCP 和心智模型刷新。",
+    "reflectObservationsMaxTokensChip": "{tokens} 观察令牌",
+    "reflectObservationsMaxTokensChipDefault": "默认观察令牌",
     "skepticismLabel": "怀疑度",
     "skepticismDescription": "评估主张时的怀疑程度与信任程度",
     "skepticismLowLabel": "信任",
@@ -587,7 +616,10 @@
       "graphMaintenance": "图谱维护",
       "vectorIndexMaintenance": "向量索引维护",
       "exportDocuments": "导出文档",
-      "importDocuments": "导入文档"
+      "importDocuments": "导入文档",
+      "exportBank": "导出记忆库",
+      "importBank": "导入记忆库",
+      "cloneBank": "克隆记忆库"
     },
     "table": {
       "id": "操作 ID",
@@ -811,7 +843,20 @@
     "invalidatedFactsTitle": "已失效的事实",
     "documentUpdating": "更新中",
     "lastRefreshed": "已刷新 {time}",
-    "attachmentEditHint": "This document has {count} attachment(s). They appear above as ⟦hs-att:…⟧ tokens — keep a token to keep its attachment; deleting one removes it from the document."
+    "attachmentEditHint": "This document has {count} attachment(s). They appear above as ⟦hs-att:…⟧ tokens — keep a token to keep its attachment; deleting one removes it from the document.",
+    "dateRangeAll": "全部时间",
+    "dateRangeLastHour": "最近 1 小时",
+    "dateRangeLast24Hours": "最近 24 小时",
+    "dateRangeLast7Days": "最近 7 天",
+    "dateRangeLast30Days": "最近 30 天",
+    "dateRangeAriaLabel": "按时间筛选",
+    "timeFieldAriaLabel": "时间轴",
+    "timeFieldUpdated": "最后更新",
+    "timeFieldCreated": "首次添加",
+    "dateRangeCustom": "自定义范围",
+    "dateRangeFrom": "从",
+    "dateRangeTo": "至",
+    "dateRangeReversed": "结束时间必须晚于开始时间"
   },
   "entitiesView": {
     "viewRelations": "关系",
@@ -937,6 +982,12 @@
     "optionsRecallChunksMaxTokensLabel": "召回分块最大 token 数",
     "optionsRecallChunksMaxTokensPlaceholder": "默认（继承）",
     "optionsRecallChunksMaxTokensDescription": "Recall 返回原始片段文本的令牌预算。",
+    "optionsObservationsMaxTokensLabel": "观察最大令牌数",
+    "optionsObservationsMaxTokensDescription": "刷新时观察检索的令牌预算。调低可缩小反思上下文。",
+    "optionsObservationsEntitiesLabel": "观察实体",
+    "optionsObservationsEntitiesDescription": "附加在每条观察上的规范实体名称，可能占载荷一半以上。",
+    "optionsObservationsEntitiesYes": "是 — 包含实体名称",
+    "optionsObservationsEntitiesNo": "否 — 跳过实体（减小提示词大小）",
     "optionsExcludeAllLabel": "排除所有心智模型",
     "optionsExcludeIdsLabel": "排除心智模型 ID",
     "optionsExcludeIdsPlaceholder": "例如：model-a, model-b（逗号分隔）",
@@ -1808,7 +1859,8 @@
         "operationIdRequired": "operation_id 为必填项",
         "missingRequestData": "缺少请求数据",
         "missingBankId": "缺少 bank_id",
-        "fileRequired": "需要文件"
+        "fileRequired": "需要文件",
+        "targetBankIdRequired": "必须提供 target_bank_id"
       },
       "generic": {
         "failed": "失败",
@@ -1821,7 +1873,8 @@
         "update": "更新记忆库失败",
         "delete": "删除记忆库失败",
         "exportTemplate": "导出记忆库模板失败",
-        "importTemplate": "导入记忆库模板失败"
+        "importTemplate": "导入记忆库模板失败",
+        "clone": "克隆记忆库失败"
       },
       "bankConfig": {
         "fetch": "获取记忆库配置失败",
@@ -1981,7 +2034,16 @@
     "editPageTitle": "编辑知识页",
     "editPageDescription": "修改页面名称以及驱动其内容重构的源查询。",
     "editSourceQueryHint": "更改此项会根据你的记忆重建页面内容。",
-    "saveChanges": "保存更改"
+    "saveChanges": "保存更改",
+    "advancedSearchTitle": "高级搜索",
+    "advancedSearchDescription": "在服务器上运行混合搜索（BM25 + 向量），查看排序后的页面和原始响应。",
+    "advancedQuery": "查询",
+    "advancedLimit": "数量上限",
+    "advancedRun": "搜索",
+    "advancedResults": "结果",
+    "advancedJson": "原始 JSON",
+    "advancedMeta": "{total} 条结果 · {ms} 毫秒",
+    "advancedIdle": "运行搜索即可查看排序后的页面和原始响应。"
   },
   "home": {
     "title": "Home",
