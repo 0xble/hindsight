@@ -324,17 +324,20 @@ queries. Enable `HINDSIGHT_API_METRICS_BACKLOG_ENABLED=true` when operators need
 queue visibility. These PromQL examples are intentionally bank-agnostic because the
 standard gauge set does not include `bank_id`.
 
-Alert when any async work is stuck or failed:
+Dashboard queries for work in progress and consolidation backlog. Nonzero values
+are normal during healthy processing and are not stuck-work alerts. To detect a
+stall, combine sustained backlog with evidence that completions have stopped,
+using a window appropriate to the deployment's expected processing time.
 
 ```promql
 hindsight_async_operations{status=~"pending|processing"} > 0
-hindsight_async_operations{status="failed"} > 0
+hindsight_consolidation_backlog > 0
 ```
 
-Alert when consolidation has accumulated an actionable backlog:
+Alert on failed async operations and failed consolidation:
 
 ```promql
-hindsight_consolidation_backlog > 0
+hindsight_async_operations{status="failed"} > 0
 hindsight_consolidation_failed > 0
 ```
 

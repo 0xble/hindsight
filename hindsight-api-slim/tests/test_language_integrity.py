@@ -185,6 +185,33 @@ async def test_abstains_for_materially_multilingual_source() -> None:
 
 
 @pytest.mark.asyncio
+async def test_source_clause_supports_spanish_paraphrase_after_english_prose() -> None:
+    source = (
+        ENGLISH_SOURCE + "; el equipo de soporte trabaja en la oficina de Madrid y los clientes "
+        "reciben ayuda en español durante toda la semana."
+    )
+    output = "Los clientes reciben asistencia en español y el equipo de soporte está en Madrid"
+    context = await prepare_context({"source": source})
+
+    assert "es" in context.supported_languages["source"]
+    assert await find_mismatches(context, [GeneratedText("fact:0", output, ("source",))]) == ()
+
+
+@pytest.mark.asyncio
+async def test_short_spanish_sentences_remain_supported_in_mixed_source() -> None:
+    source = (
+        ENGLISH_SOURCE + " Los clientes reciben ayuda todos los días."
+        " El equipo trabaja en la oficina de Madrid."
+        " Los empleados ayudan a todos los clientes."
+    )
+    output = "El equipo ayuda a los clientes todos los días desde su oficina en Madrid."
+    context = await prepare_context({"source": source})
+
+    assert "es" in context.supported_languages["source"]
+    assert await find_mismatches(context, [GeneratedText("fact:0", output, ("source",))]) == ()
+
+
+@pytest.mark.asyncio
 async def test_abstains_when_consolidation_sources_disagree() -> None:
     context = await prepare_context({"en": ENGLISH_SOURCE, "es": SPANISH_DRIFT})
 
