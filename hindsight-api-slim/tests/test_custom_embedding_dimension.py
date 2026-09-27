@@ -165,16 +165,28 @@ def get_column_dimension(db_url: str, schema: str = "public", table: str = "memo
 
 
 def get_vector_index_names(db_url: str, schema: str, table: str) -> list[str]:
-    """Names of the vector indexes on ``table.embedding``."""
+    """Names of the vector indexes on ``table.embedding``.
+
+    Reads the catalogs directly instead of ``pg_indexes``: that view renders
+    ``pg_get_indexdef()`` for rows the planner has not yet filtered by schema, so
+    another xdist worker's ``DROP SCHEMA ... CASCADE`` can fail this lookup with
+    "could not open relation with OID". Matching on the access method and the
+    indexed column never opens another schema's index.
+    """
     engine = create_engine(db_url)
     with engine.connect() as conn:
         rows = conn.execute(
             text("""
-                SELECT indexname FROM pg_indexes
-                WHERE schemaname = :schema AND tablename = :table
-                  AND indexdef LIKE '%embedding%'
-                  AND (indexdef LIKE '%hnsw%' OR indexdef LIKE '%vchordrq%'
-                       OR indexdef LIKE '%diskann%' OR indexdef LIKE '%scann%')
+                SELECT DISTINCT ic.relname
+                FROM pg_index i
+                JOIN pg_class ic ON ic.oid = i.indexrelid
+                JOIN pg_class tc ON tc.oid = i.indrelid
+                JOIN pg_namespace n ON n.oid = tc.relnamespace
+                JOIN pg_am am ON am.oid = ic.relam
+                JOIN pg_attribute a ON a.attrelid = tc.oid AND a.attnum = ANY(i.indkey)
+                WHERE n.nspname = :schema AND tc.relname = :table
+                  AND a.attname = 'embedding'
+                  AND am.amname IN ('hnsw', 'vchordrq', 'diskann', 'scann')
             """),
             {"schema": schema, "table": table},
         ).fetchall()
