@@ -75,7 +75,7 @@ PYTHON_CLIENT_DIR="$CLIENTS_DIR/python"
 
 # Backup the maintained wrapper file
 WRAPPER_FILE="$PYTHON_CLIENT_DIR/hindsight_client/hindsight_client.py"
-WRAPPER_BACKUP="/tmp/hindsight_client_backup.py"
+WRAPPER_BACKUP="${TMPDIR:-/tmp}/hindsight_client_backup_$$.py"
 if [ -f "$WRAPPER_FILE" ]; then
     echo "📦 Backing up maintained wrapper: hindsight_client.py"
     cp "$WRAPPER_FILE" "$WRAPPER_BACKUP"
@@ -83,7 +83,7 @@ fi
 
 # Backup the README.md
 README_FILE="$PYTHON_CLIENT_DIR/README.md"
-README_BACKUP="/tmp/hindsight_python_readme_backup.md"
+README_BACKUP="${TMPDIR:-/tmp}/hindsight_python_readme_backup_$$.md"
 if [ -f "$README_FILE" ]; then
     echo "📦 Backing up README.md"
     cp "$README_FILE" "$README_BACKUP"
@@ -155,6 +155,9 @@ fi
 # preserved.
 echo "Syncing generated tree into $PYTHON_CLIENT_DIR..."
 cp -R "$GEN_TMP_DIR/hindsight_client_api" "$PYTHON_CLIENT_DIR/"
+# OpenAPI Generator's oneOf Pydantic wrapper ignores raw operation detail JSON.
+# Apply the checked-in discriminator patch to the freshly generated output.
+python3 "$PROJECT_ROOT/scripts/patch-operation-details-client.py"
 if [ -d "$GEN_TMP_DIR/.openapi-generator" ]; then
     rm -rf "$PYTHON_CLIENT_DIR/.openapi-generator"
     cp -R "$GEN_TMP_DIR/.openapi-generator" "$PYTHON_CLIENT_DIR/"

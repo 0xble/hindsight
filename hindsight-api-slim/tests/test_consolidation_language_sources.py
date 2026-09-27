@@ -254,6 +254,24 @@ def test_filter_reports_each_rule_and_keeps_valid_actions() -> None:
     assert result.must_reject
 
 
+def test_filter_rejects_unknown_only_sources_amid_valid_siblings() -> None:
+    response = consolidator._ConsolidationBatchResponse.model_construct(
+        creates=[
+            SimpleNamespace(text="valid", source_fact_ids=["A"]),
+            SimpleNamespace(text="unknown source", source_fact_ids=["hallucinated-B"]),
+        ],
+        updates=[],
+        deletes=[],
+    )
+    result = consolidator._filter_unpersistable_references(
+        response,
+        memories=[{"id": "A"}, {"id": "B"}],
+        union_observations=[],
+    )
+    assert result.dropped == {"create_cites_fact_outside_batch": 1}
+    assert result.must_reject
+
+
 def test_filter_keeps_deletes_when_nothing_was_dropped() -> None:
     response = consolidator._ConsolidationBatchResponse.model_construct(
         creates=[SimpleNamespace(text="merged", source_fact_ids=["A"])],

@@ -922,6 +922,8 @@ export class HindsightClient {
       consolidationFairGroupSelection?: boolean;
       /** Memories consolidated per round. */
       consolidationMaxMemoriesPerRound?: number;
+      /** Pre-call input budget before adaptive splitting. */
+      consolidationMaxContextTokens?: number;
       /** Max tokens for source facts across all observations in a pass. */
       consolidationSourceFactsMaxTokens?: number;
       /** Max tokens of source facts per observation in the prompt. */
@@ -1023,6 +1025,8 @@ export class HindsightClient {
       updates.consolidation_fair_group_selection = options.consolidationFairGroupSelection;
     if (options.consolidationMaxMemoriesPerRound !== undefined)
       updates.consolidation_max_memories_per_round = options.consolidationMaxMemoriesPerRound;
+    if (options.consolidationMaxContextTokens !== undefined)
+      updates.consolidation_max_context_tokens = options.consolidationMaxContextTokens;
     if (options.consolidationSourceFactsMaxTokens !== undefined)
       updates.consolidation_source_facts_max_tokens = options.consolidationSourceFactsMaxTokens;
     if (options.consolidationSourceFactsMaxTokensPerObservation !== undefined)

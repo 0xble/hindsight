@@ -27,7 +27,9 @@ in the root contract.
 - **Component assessment:** None of the remaining safeguards is replaced by quota
   deferral or cancellation at the accepted baseline:
   - Prompt budget: upstream lacks `consolidation_max_context_tokens` and the
-    pre-call token check that triggers adaptive splitting.
+    pre-call token check that triggers adaptive splitting. Both convenience
+    clients map the bank override. A dropped model action citing only invented
+    fact IDs must reject the batch rather than silently losing output.
   - Deterministic failures: upstream lacks the context-limit marker classifier
     and does not classify `MentalModelRefreshError` as non-retryable.
   - Scoring fence: upstream lacks the materialized candidate-source boundary
