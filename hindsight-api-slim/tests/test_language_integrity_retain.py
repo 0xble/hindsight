@@ -9,6 +9,7 @@ from hindsight_api.engine.language_integrity import GeneratedLanguageMismatch
 from hindsight_api.engine.llm_wrapper import LLMProvider
 from hindsight_api.engine.response_models import LLMCallResult, TokenUsage
 from hindsight_api.engine.retain.fact_extraction import (
+    ExtractionPrompt,
     RetainContent,
     _extract_facts_from_chunk,
     extract_facts_from_contents_batch_api,
@@ -75,7 +76,7 @@ def _llm(*texts: str):
 async def _extract(mode: str, llm, *, content_retries: int = 0, source: str = ENGLISH_SOURCE):
     with patch(
         "hindsight_api.engine.retain.fact_extraction._build_extraction_prompt_and_schema",
-        return_value=("system prompt", MagicMock()),
+        return_value=ExtractionPrompt(system_prompt="system prompt", response_schema=MagicMock()),
     ):
         return await _extract_facts_from_chunk(
             chunk=source,
@@ -173,7 +174,7 @@ async def test_batch_retry_mode_reaches_real_live_path_without_recursing() -> No
 
     with patch(
         "hindsight_api.engine.retain.fact_extraction._build_extraction_prompt_and_schema",
-        return_value=("system prompt", MagicMock()),
+        return_value=ExtractionPrompt(system_prompt="system prompt", response_schema=MagicMock()),
     ):
         result = await extract_facts_from_contents_batch_api(
             contents=[

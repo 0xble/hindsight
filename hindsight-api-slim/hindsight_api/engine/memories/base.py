@@ -140,7 +140,8 @@ DOC_META_RETAIN_PARAMS = "retain_params"
 #: The names the caller gave this document's attachments, as a JSON object of short id ->
 #: filename. On the document rather than the fact because a filename describes the reference,
 #: not the bytes: the same image can be "diagram.png" in one document and "fig-2.png" in another.
-#: It is what `document_attachments.filename` holds for a bank whose documents live in SQL.
+#: The authority is `attachments.filename`, written at the ingress on every backend; this is the
+#: store's own copy, which the paths that replay stored text restate their names from.
 DOC_META_ATTACHMENT_FILENAMES = "attachment_filenames"
 #: Where the document's original upload lives in Hindsight's ``file_storage`` — the key
 #: ``documents.file_storage_key`` holds for a bank whose documents live in SQL. The upload's name
@@ -1157,6 +1158,9 @@ class MemoriesExtension(Extension, ABC):
         search_query: "str | None" = None,
         tags: "list[str] | None" = None,
         tags_match: str = "any_strict",
+        time_field: str | None = None,
+        start_date: "datetime | None" = None,
+        end_date: "datetime | None" = None,
         limit: int = 100,
         offset: int = 0,
     ) -> dict:
@@ -1168,7 +1172,11 @@ class MemoriesExtension(Extension, ABC):
 
         ``tags``/``tags_match`` filter by the documents' tags with the same modes and meanings as
         anywhere else, and ``total`` must count what MATCHES — a page filtered after the fact would
-        report the unfiltered total and drop every match past the window."""
+        report the unfiltered total and drop every match past the window.
+
+        ``time_field`` (``created_at`` / ``updated_at``) with ``start_date``/``end_date`` is the
+        same window the SQL branch applies: half-open ``[start, end)`` on the named axis, which also
+        becomes the ordering. ``total`` counts the window, on the same terms as tags above."""
         raise NotImplementedError
 
     async def count_documents(self, *, bank_id: str) -> int:
@@ -1769,6 +1777,9 @@ class MemoriesExtension(Extension, ABC):
         tags: list[str] | None = None,
         tags_match: str = "any",
         created_before: "datetime | None" = None,
+        time_field: str | None = None,
+        start_date: "datetime | None" = None,
+        end_date: "datetime | None" = None,
         limit: int = 100,
         offset: int = 0,
     ) -> dict[str, Any]:
@@ -1776,6 +1787,12 @@ class MemoriesExtension(Extension, ABC):
 
         ``total`` is the count matching the filters, not the page size, because
         the UI pages on it.
+
+        ``time_field`` / ``start_date`` / ``end_date`` are one time window: the
+        named axis filters AND orders, and memories with no value on it are left
+        out — so ``total`` can legitimately be 0 on a bank full of memories none
+        of which carry that timestamp. See :mod:`hindsight_api.engine.time_filter`
+        for the full contract a store must honour.
 
         A store that owns its rows puts each memory's attachment ids on its item as
         ``"attachment_ids": list[str]`` (see :data:`META_ATTACHMENT_IDS`). The HTTP

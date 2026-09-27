@@ -61,9 +61,10 @@ from .tools_schema import get_reflect_tools
 _TOOL_ARG_MIN_TOKENS = 1000
 _TOOL_ARG_MAX_TOKENS = 16000
 
-#: Default budget for ``search_observations``. Unlike recall's budgets this has no
-#: env/bank knob behind it, so it lives here rather than in ``config``; it is the
-#: value the tool schema advertises to the model.
+#: Default budget for ``search_observations``: the value the tool schema advertises
+#: to the model. It is the floor of the chain a bank can raise or lower through
+#: ``reflect_default_options.reflect_search_observations_max_tokens`` (or a mental model's trigger),
+#: which is why it stays a plain constant here rather than a ``config`` field.
 DEFAULT_OBSERVATIONS_TOOL_MAX_TOKENS = 5000
 
 
@@ -1059,6 +1060,11 @@ async def _run_reflect_agent_inner(
                 scope="reflect_tool_call",
                 tool_choice=iter_tool_choice,
                 temperature=get_config().llm_temperature_reflect,
+                # Same uncapped-by-default ceiling the synthesis calls use. Left
+                # unset this fell through to the provider's own default, which on
+                # Anthropic truncated long ``done`` payloads before the answer
+                # field was written (#4437).
+                max_completion_tokens=synthesis_max_completion_tokens,
             )
             if incremental_caching and iter_tool_choice is LLM_TOOL_CHOICE_AUTO and rolling_cache_name is not None:
                 ct_kwargs["cached_prefix"] = rolling_cache_name

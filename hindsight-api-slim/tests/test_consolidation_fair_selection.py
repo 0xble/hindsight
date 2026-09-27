@@ -130,7 +130,7 @@ def test_fair_group_selection_is_off_by_default():
 async def test_strict_fetch_starves_tagged_groups_behind_shared(memory: MemoryEngine, request_context):
     """The problem, pinned: the strict fetch returns only the shared group."""
     bank_id = f"test-fair-strict-{uuid.uuid4().hex[:8]}"
-    await memory.get_bank_profile(bank_id=bank_id, request_context=request_context)
+    await memory.ensure_bank_profile(bank_id=bank_id, request_context=request_context)
     try:
         async with memory._pool.acquire() as conn:
             ids = await _seed_skewed_backlog(conn, bank_id)
@@ -145,7 +145,7 @@ async def test_strict_fetch_starves_tagged_groups_behind_shared(memory: MemoryEn
 async def test_fair_fetch_mixes_groups_and_keeps_group_order(memory: MemoryEngine, request_context):
     """Each group contributes at most ``cap`` facts, oldest first, groups by oldest fact."""
     bank_id = f"test-fair-mix-{uuid.uuid4().hex[:8]}"
-    await memory.get_bank_profile(bank_id=bank_id, request_context=request_context)
+    await memory.ensure_bank_profile(bank_id=bank_id, request_context=request_context)
     try:
         async with memory._pool.acquire() as conn:
             ids = await _seed_skewed_backlog(conn, bank_id)
@@ -169,7 +169,7 @@ async def test_fair_fetch_mixes_groups_and_keeps_group_order(memory: MemoryEngin
 @pytest.mark.memory_backend_incompatible
 async def test_fair_fetch_skips_consolidated_and_failed(memory: MemoryEngine, request_context):
     bank_id = f"test-fair-skip-{uuid.uuid4().hex[:8]}"
-    await memory.get_bank_profile(bank_id=bank_id, request_context=request_context)
+    await memory.ensure_bank_profile(bank_id=bank_id, request_context=request_context)
     try:
         async with memory._pool.acquire() as conn:
             done = await _insert(conn, bank_id, "done", ["user:a"], None, 0)
@@ -192,7 +192,7 @@ async def test_fair_fetch_groups_by_the_dispatcher_key(memory: MemoryEngine, req
     cap), and a combined fact with the same tags as a per_tag fact is a separate one.
     """
     bank_id = f"test-fair-key-{uuid.uuid4().hex[:8]}"
-    await memory.get_bank_profile(bank_id=bank_id, request_context=request_context)
+    await memory.ensure_bank_profile(bank_id=bank_id, request_context=request_context)
     try:
         async with memory._pool.acquire() as conn:
             s1 = await _insert(conn, bank_id, "s1", ["session:1"], "shared", 0)
@@ -218,7 +218,7 @@ async def test_fair_selection_runs_groups_concurrently_without_same_scope_overla
     - no scope ever has two recalls in flight (the upstream invariant).
     """
     bank_id = f"test-fair-e2e-{uuid.uuid4().hex[:8]}"
-    await memory.get_bank_profile(bank_id=bank_id, request_context=request_context)
+    await memory.ensure_bank_profile(bank_id=bank_id, request_context=request_context)
 
     in_flight: dict[frozenset[str], int] = defaultdict(int)
     peak: dict[frozenset[str], int] = defaultdict(int)
@@ -310,7 +310,7 @@ async def test_fair_selection_runs_groups_concurrently_without_same_scope_overla
 async def test_scoped_job_keeps_strict_fetch(memory: MemoryEngine, request_context):
     """A job restricted to observation scopes keeps its existing fetch even when on."""
     bank_id = f"test-fair-scoped-{uuid.uuid4().hex[:8]}"
-    await memory.get_bank_profile(bank_id=bank_id, request_context=request_context)
+    await memory.ensure_bank_profile(bank_id=bank_id, request_context=request_context)
     try:
         async with memory._pool.acquire() as conn:
             await _seed_skewed_backlog(conn, bank_id)
