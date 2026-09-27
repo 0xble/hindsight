@@ -128,29 +128,34 @@ async def test_missing_original_source_text_does_not_fall_back_to_fact_text(
 
 
 @pytest.mark.asyncio
-async def test_unpersistable_recalled_citation_rejects_the_whole_response_before_language_check(
+async def test_unpersistable_recalled_citation_drops_only_that_action_before_language_check(
     monkeypatch: pytest.MonkeyPatch, config: SimpleNamespace
 ) -> None:
-    """A recalled-only citation cannot authorize a sibling action that is written."""
+    """A recalled-only citation is dropped as a whole action and never reaches language authority.
+
+    The valid sibling keeps writing, because every source it cites is persisted as validated.
+    """
     llm = AsyncMock()
     llm._provider_impl = None
     llm.call.return_value = LLMCallResult(
         content=SimpleNamespace(
             creates=[
                 SimpleNamespace(text="valid sibling", source_fact_ids=["new-source"]),
-                SimpleNamespace(text="invalid citation", source_fact_ids=["recalled-only"]),
+                SimpleNamespace(text="invalid citation", source_fact_ids=["new-source", "recalled-only"]),
             ],
             updates=[],
             deletes=[],
         ),
         usage=TokenUsage(),
     )
+    seen: list[tuple[str, tuple[str, ...]]] = []
 
     async def prepare(*_args: object, **_kwargs: object) -> object:
         return object()
 
-    async def evaluate(*_args: object, **_kwargs: object) -> LanguageCheckResult:
-        raise AssertionError("invalid response must be rejected before language authority is evaluated")
+    async def evaluate(_context: object, generated, **_kwargs: object) -> LanguageCheckResult:
+        seen.extend((item.text, item.source_keys) for item in generated)
+        return LanguageCheckResult(mismatches=(), checked=1, abstained=0)
 
     monkeypatch.setattr(consolidator, "prepare_context_safely", prepare)
     monkeypatch.setattr(consolidator, "evaluate_language_integrity_safely", evaluate)
@@ -164,9 +169,107 @@ async def test_unpersistable_recalled_citation_rejects_the_whole_response_before
         config=config,
     )
 
+    assert not result.failed
+    assert [create.text for create in result.creates] == ["valid sibling"]
+    assert seen == [("valid sibling", ("new-source",))]
+    assert llm.call.await_count == 1
+
+
+@pytest.mark.asyncio
+async def test_fact_cited_only_by_dropped_actions_rejects_the_response(
+    monkeypatch: pytest.MonkeyPatch, config: SimpleNamespace
+) -> None:
+    """A batch fact whose only citing action is dropped must not be stamped into nothing."""
+    llm = AsyncMock()
+    llm._provider_impl = None
+    llm.call.return_value = LLMCallResult(
+        content=SimpleNamespace(
+            creates=[
+                SimpleNamespace(text="valid sibling", source_fact_ids=["A"]),
+                SimpleNamespace(text="invalid citation", source_fact_ids=["B", "recalled-only"]),
+            ],
+            updates=[],
+            deletes=[],
+        ),
+        usage=TokenUsage(),
+    )
+
+    async def prepare(*_args: object, **_kwargs: object) -> object:
+        return object()
+
+    async def evaluate(*_args: object, **_kwargs: object) -> LanguageCheckResult:
+        raise AssertionError("a rejected response must not reach language evaluation")
+
+    monkeypatch.setattr(consolidator, "prepare_context_safely", prepare)
+    monkeypatch.setattr(consolidator, "evaluate_language_integrity_safely", evaluate)
+
+    result = await _consolidate_batch_with_llm(
+        llm_config=llm,
+        memories=[{"id": "A", "text": "fact A"}, {"id": "B", "text": "fact B"}],
+        union_observations=[],
+        union_source_facts={},
+        original_source_text_by_id={"A": "original A", "B": "original B"},
+        config=config,
+    )
+
     assert result.failed
     assert not result.creates
     assert llm.call.await_count == 1
+
+
+def test_filter_reports_each_rule_and_keeps_valid_actions() -> None:
+    response = consolidator._ConsolidationBatchResponse.model_construct(
+        creates=[
+            SimpleNamespace(text="ok", source_fact_ids=["A"]),
+            SimpleNamespace(text="no sources", source_fact_ids=[]),
+            SimpleNamespace(text="outside", source_fact_ids=["A", "X"]),
+        ],
+        updates=[
+            SimpleNamespace(text="ok", observation_id="O", source_fact_ids=["B"]),
+            SimpleNamespace(text="unknown target", observation_id="Z", source_fact_ids=["A"]),
+            SimpleNamespace(text="wrong topology", observation_id="O", source_fact_ids=["A"]),
+        ],
+        deletes=[SimpleNamespace(observation_id="O"), SimpleNamespace(observation_id="Z")],
+    )
+
+    result = consolidator._filter_unpersistable_references(
+        response,
+        memories=[{"id": "A"}, {"id": "B"}],
+        union_observations=[MemoryFact(id="O", text="observation", fact_type="observation", source_fact_ids=[])],
+        per_fact_observation_ids={"A": set(), "B": {"O"}},
+    )
+
+    assert [a.text for a in result.response.creates] == ["ok"]
+    assert [a.text for a in result.response.updates] == ["ok"]
+    assert [a.observation_id for a in result.response.deletes] == ["O"]
+    assert result.dropped == {
+        "create_without_sources": 1,
+        "create_cites_fact_outside_batch": 1,
+        "update_target_not_recalled": 1,
+        "update_target_not_recalled_for_its_sources": 1,
+        "delete_target_not_recalled": 1,
+    }
+    assert result.orphaned_fact_ids == set()
+    assert result.unsafe_delete
+    assert result.must_reject
+
+
+def test_filter_keeps_deletes_when_nothing_was_dropped() -> None:
+    response = consolidator._ConsolidationBatchResponse.model_construct(
+        creates=[SimpleNamespace(text="merged", source_fact_ids=["A"])],
+        updates=[],
+        deletes=[SimpleNamespace(observation_id="O")],
+    )
+
+    result = consolidator._filter_unpersistable_references(
+        response,
+        memories=[{"id": "A"}],
+        union_observations=[MemoryFact(id="O", text="observation", fact_type="observation", source_fact_ids=[])],
+    )
+
+    assert not result.dropped
+    assert not result.must_reject
+    assert [a.observation_id for a in result.response.deletes] == ["O"]
 
 
 @pytest.mark.asyncio
