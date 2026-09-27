@@ -226,6 +226,63 @@ async def test_cross_recall_update_response_rejects_whole_real_pg_batch_without_
 
 @pytest.mark.asyncio
 @pytest.mark.memory_backend_incompatible
+async def test_invalid_citation_drops_only_its_action_and_valid_sibling_commits_real_pg(memory, request_context):
+    """Without deletes, an action citing a non-batch fact is dropped and its sibling writes and stamps."""
+    bank = "language-drop-" + uuid.uuid4().hex[:8]
+    await memory.get_bank_profile(bank, request_context=request_context)
+    try:
+        async with memory._pool.acquire() as conn:
+            fact_a = await _insert_memory(conn, bank, "Fact A is about the garden.", [])
+            fact_b = await _insert_memory(conn, bank, "Fact B is about the kitchen.", [])
+        outsider = str(uuid.uuid4())
+
+        def response(_messages, scope):
+            assert scope == "consolidation"
+            return _ConsolidationBatchResponse(
+                creates=[
+                    _CreateAction(
+                        text="The garden and kitchen were both renovated.", source_fact_ids=[str(fact_a), str(fact_b)]
+                    ),
+                    _CreateAction(
+                        text="Cites a fact that is not in this batch.", source_fact_ids=[str(fact_a), outsider]
+                    ),
+                ],
+            )
+
+        with (
+            patch.object(memory, "_consolidation_llm_config", _llm(response)),
+            patch.object(memory, "submit_async_consolidation"),
+            patch(
+                "hindsight_api.engine.consolidation.consolidator._find_related_observations",
+                new=AsyncMock(return_value=SimpleNamespace(results=[], source_facts={})),
+            ),
+            _override_config(
+                memory,
+                enable_observations=True,
+                llm_language_integrity="off",
+                consolidation_batch_size=2,
+                consolidation_llm_batch_size=2,
+                consolidation_llm_parallelism=1,
+            ),
+        ):
+            result = await run_consolidation_job(memory_engine=memory, bank_id=bank, request_context=request_context)
+
+        assert result["memories_failed"] == 0
+        assert await _observations(memory, bank) == ["The garden and kitchen were both renovated."]
+        assert await _pending_facts(memory, bank) == []
+        async with memory._pool.acquire() as conn:
+            stamps = await conn.fetch(
+                "SELECT consolidated_at, consolidation_failed_at FROM memory_units WHERE bank_id=$1 AND id = ANY($2)",
+                bank,
+                [fact_a, fact_b],
+            )
+        assert all(row["consolidated_at"] is not None and row["consolidation_failed_at"] is None for row in stamps)
+    finally:
+        await memory.delete_bank(bank, request_context=request_context)
+
+
+@pytest.mark.asyncio
+@pytest.mark.memory_backend_incompatible
 async def test_retain_rejection_does_not_replace_stored_source(memory, request_context, monkeypatch):
     from tests.test_language_integrity_retain import _llm as extraction_llm
 

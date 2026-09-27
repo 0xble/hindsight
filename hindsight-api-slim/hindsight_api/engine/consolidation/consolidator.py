@@ -994,37 +994,95 @@ class _InvalidConsolidationReferences(ValueError):
     """The model named an action reference unavailable to this batch."""
 
 
-def _response_references_are_valid(
+@dataclass
+class _ReferenceFilterResult:
+    """A response with every unpersistable action removed, plus what was removed."""
+
+    response: _ConsolidationBatchResponse
+    #: Rule name -> number of actions dropped for it.
+    dropped: dict[str, int] = field(default_factory=dict)
+    #: Batch facts cited only by dropped actions: stamping them would consolidate
+    #: them into nothing, so the caller must reject the response instead.
+    orphaned_fact_ids: set[str] = field(default_factory=set)
+    #: A response that lost any action and still deletes something. A delete is
+    #: often half of a replace (UPDATE or CREATE the merged text, DELETE the old),
+    #: so keeping it after its partner was dropped could erase knowledge.
+    unsafe_delete: bool = False
+
+    @property
+    def must_reject(self) -> bool:
+        return bool(self.orphaned_fact_ids) or self.unsafe_delete
+
+
+def _filter_unpersistable_references(
     response: _ConsolidationBatchResponse,
     *,
     memories: list[dict[str, Any]],
     union_observations: list["MemoryFact"],
     per_fact_observation_ids: dict[str, set[str]] | None = None,
-) -> bool:
-    """Reject an entire response whose citations cannot be persisted as shown.
+) -> _ReferenceFilterResult:
+    """Drop whole actions whose references cannot be persisted as shown.
 
     CREATE/UPDATE source ids must be facts in this batch, and UPDATE/DELETE targets
-    must be observations actually recalled for it.  An UPDATE's target must be in
+    must be observations actually recalled for it. An UPDATE's target must be in
     the recall set for at least one fact it cites, exactly mirroring write
-    preparation. Silently dropping an unknown citation later would make language
-    validation authorize text using evidence that never reaches the stored
-    observation, while allowing sibling actions to write.
+    preparation.
+
+    An invalid action is removed as a unit, never trimmed to its valid citations:
+    trimming would let language validation authorize text using evidence that never
+    reaches the stored observation. Valid sibling actions are kept, because every
+    source they cite is persisted exactly as validated. Batch facts that only
+    dropped actions cited are reported as orphaned so the caller can reject the
+    response rather than stamp them consolidated with no observation.
     """
     valid_fact_ids = {str(memory["id"]) for memory in memories}
     valid_observation_ids = {str(observation.id) for observation in union_observations}
-    for action in response.creates:
-        if not action.source_fact_ids or not set(action.source_fact_ids).issubset(valid_fact_ids):
-            return False
     topology = per_fact_observation_ids or {fact_id: valid_observation_ids for fact_id in valid_fact_ids}
+    dropped: dict[str, int] = {}
+    kept_sources: set[str] = set()
+    dropped_sources: set[str] = set()
+
+    def _drop(rule: str, source_ids: list[str] | None) -> None:
+        dropped[rule] = dropped.get(rule, 0) + 1
+        dropped_sources.update(str(fid) for fid in (source_ids or []) if str(fid) in valid_fact_ids)
+
+    creates = []
+    for action in response.creates:
+        if not action.source_fact_ids:
+            _drop("create_without_sources", action.source_fact_ids)
+        elif not set(action.source_fact_ids).issubset(valid_fact_ids):
+            _drop("create_cites_fact_outside_batch", action.source_fact_ids)
+        else:
+            creates.append(action)
+            kept_sources.update(str(fid) for fid in action.source_fact_ids)
+
+    updates = []
     for action in response.updates:
-        if (
-            action.observation_id not in valid_observation_ids
-            or not action.source_fact_ids
-            or not set(action.source_fact_ids).issubset(valid_fact_ids)
-            or not any(action.observation_id in topology.get(fact_id, set()) for fact_id in action.source_fact_ids)
-        ):
-            return False
-    return all(action.observation_id in valid_observation_ids for action in response.deletes)
+        if action.observation_id not in valid_observation_ids:
+            _drop("update_target_not_recalled", action.source_fact_ids)
+        elif not action.source_fact_ids:
+            _drop("update_without_sources", action.source_fact_ids)
+        elif not set(action.source_fact_ids).issubset(valid_fact_ids):
+            _drop("update_cites_fact_outside_batch", action.source_fact_ids)
+        elif not any(action.observation_id in topology.get(fact_id, set()) for fact_id in action.source_fact_ids):
+            _drop("update_target_not_recalled_for_its_sources", action.source_fact_ids)
+        else:
+            updates.append(action)
+            kept_sources.update(str(fid) for fid in action.source_fact_ids)
+
+    deletes = []
+    for action in response.deletes:
+        if action.observation_id in valid_observation_ids:
+            deletes.append(action)
+        else:
+            _drop("delete_target_not_recalled", None)
+
+    return _ReferenceFilterResult(
+        response=_ConsolidationBatchResponse.model_construct(creates=creates, updates=updates, deletes=deletes),
+        dropped=dropped,
+        orphaned_fact_ids=dropped_sources - kept_sources,
+        unsafe_delete=bool(dropped) and bool(deletes),
+    )
 
 
 @dataclass
@@ -3627,19 +3685,34 @@ async def _consolidate_batch_with_llm(
                 call_kwargs["cached_prefix"] = cached_prefix_name
             batch_call = await llm_config.call(**call_kwargs)
             response: _ConsolidationBatchResponse = batch_call.content
-            if not _response_references_are_valid(
+            # Validate before deduplication, truncation, language checks, or
+            # preparation, so every action that reaches them cites exactly the
+            # sources that will be persisted.
+            reference_filter = _filter_unpersistable_references(
                 response,
                 memories=memories,
                 union_observations=union_observations,
                 per_fact_observation_ids=per_fact_observation_ids,
-            ):
-                # Validate before deduplication, truncation, language checks, or
-                # preparation.  Otherwise an invalid sibling can be discarded while
-                # the remaining actions commit, and their language authority no
-                # longer corresponds exactly to the persisted source ids.
-                raise _InvalidConsolidationReferences(
-                    "consolidation response contains unpersistable source or observation reference"
+            )
+            if reference_filter.dropped:
+                logger.warning(
+                    "[CONSOLIDATION] dropped %d unpersistable action(s) for %s: %s; orphaned_facts=%d",
+                    sum(reference_filter.dropped.values()),
+                    batch_label,
+                    ", ".join(f"{rule}={count}" for rule, count in sorted(reference_filter.dropped.items())),
+                    len(reference_filter.orphaned_fact_ids),
                 )
+            if reference_filter.must_reject:
+                # A batch fact cited only by dropped actions would be stamped
+                # consolidated into nothing, and a delete whose replacing sibling was
+                # dropped could erase knowledge. Reject so the caller bisects.
+                raise _InvalidConsolidationReferences(
+                    "consolidation response contains unpersistable source or observation reference "
+                    f"(rules: {', '.join(sorted(reference_filter.dropped))}; "
+                    f"{len(reference_filter.orphaned_fact_ids)} fact(s) cited only by dropped actions; "
+                    f"delete_with_dropped_sibling={reference_filter.unsafe_delete})"
+                )
+            response = reference_filter.response
             # Defensive truncation: some LLM providers may not enforce JSON schema max_length
             creates = response.creates
             if remaining_observation_slots is not None and remaining_observation_slots >= 0:
