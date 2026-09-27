@@ -31,7 +31,7 @@ from tests.test_language_prevention import ENGLISH, SPANISH
 @pytest.mark.parametrize("corrected", [False, True])
 async def test_original_source_rejection_preserves_document_fact_and_observation(memory, request_context, corrected):
     bank = "language-atomic-" + uuid.uuid4().hex[:8]
-    await memory.get_bank_profile(bank, request_context=request_context)
+    await memory.ensure_bank_profile(bank, request_context=request_context)
     chunk = build_chunk_id(bank, "document", 0)
     old_obs = uuid.uuid4()
     try:
@@ -148,7 +148,7 @@ async def test_cross_recall_update_response_rejects_whole_real_pg_batch_without_
 ):
     """A union-visible target is not writable through an unrelated cited fact."""
     bank = "language-topology-" + uuid.uuid4().hex[:8]
-    await memory.get_bank_profile(bank, request_context=request_context)
+    await memory.ensure_bank_profile(bank, request_context=request_context)
     target = uuid.uuid4()
     try:
         async with memory._pool.acquire() as conn:
@@ -229,7 +229,7 @@ async def test_cross_recall_update_response_rejects_whole_real_pg_batch_without_
 async def test_invalid_citation_drops_only_its_action_and_valid_sibling_commits_real_pg(memory, request_context):
     """Without deletes, an action citing a non-batch fact is dropped and its sibling writes and stamps."""
     bank = "language-drop-" + uuid.uuid4().hex[:8]
-    await memory.get_bank_profile(bank, request_context=request_context)
+    await memory.ensure_bank_profile(bank, request_context=request_context)
     try:
         async with memory._pool.acquire() as conn:
             fact_a = await _insert_memory(conn, bank, "Fact A is about the garden.", [])
@@ -287,7 +287,7 @@ async def test_retain_rejection_does_not_replace_stored_source(memory, request_c
     from tests.test_language_integrity_retain import _llm as extraction_llm
 
     bank = "language-retain-" + uuid.uuid4().hex[:8]
-    await memory.get_bank_profile(bank, request_context=request_context)
+    await memory.ensure_bank_profile(bank, request_context=request_context)
     try:
         with _override_config(memory, enable_observations=False, llm_language_integrity="off"):
             await memory.retain_async(

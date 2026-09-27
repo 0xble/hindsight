@@ -66,7 +66,7 @@ async def observation(conn, bank, text, fact):
 @pytest.mark.parametrize("corrected", [False, True])
 async def test_dedup_final_text_is_checked_before_any_write(memory, request_context, action, corrected):
     bank = "language-dedup-" + uuid.uuid4().hex[:8]
-    await memory.get_bank_profile(bank, request_context=request_context)
+    await memory.ensure_bank_profile(bank, request_context=request_context)
     try:
         async with memory._pool.acquire() as conn:
             fresh = await source_fact(conn, bank, ENGLISH)
@@ -179,7 +179,7 @@ async def test_dedup_uses_twin_original_not_its_generated_language(memory, reque
     from tests.test_language_prevention import FRENCH
 
     bank = "language-lineage-" + uuid.uuid4().hex[:8]
-    await memory.get_bank_profile(bank, request_context=request_context)
+    await memory.ensure_bank_profile(bank, request_context=request_context)
     try:
         async with memory._pool.acquire() as conn:
             fresh = await source_fact(conn, bank, ENGLISH)
@@ -241,7 +241,7 @@ async def test_dedup_uses_twin_original_not_its_generated_language(memory, reque
 @pytest.mark.parametrize("batch_size", [1, 2])
 async def test_language_failure_is_held_and_later_healthy_work_drains(memory, request_context, batch_size):
     bank = "language-held-" + uuid.uuid4().hex[:8]
-    await memory.get_bank_profile(bank, request_context=request_context)
+    await memory.ensure_bank_profile(bank, request_context=request_context)
     try:
         async with memory._pool.acquire() as conn:
             bad = await source_fact(conn, bank, ENGLISH)
