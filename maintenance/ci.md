@@ -26,6 +26,8 @@ intentional fork infrastructure policy, not upstream deployment ownership.
   check on `main`; `nightly.yml` runs `./bin/ci nightly` (the full offline suite)
   on a fixed daily schedule; `.githooks/pre-push` runs the bypassable
   `./bin/ci preflight`. The validator pins both trigger sets exactly.
+  The patch-regression gate includes refresh-outcome and bank-template
+  roundtrip tests alongside the other active service-hardening suites.
   `fork-policy.yml` uses `pull_request_target` only to run default-branch policy
   code against an immutable candidate checkout, without persisted credentials or
   candidate actions, scripts, manifests, or hooks. `qualification` is the sole

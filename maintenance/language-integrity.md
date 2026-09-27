@@ -35,6 +35,11 @@ use the configurable policy below without destructive changes to source facts.
   available as evidence when a generated fact restates their values in prose.
   Bounded source-backed affix matching preserves word-script name inflections
   without raising the prose threshold or applying stem matching to CJK.
+  Substantive semicolon-delimited foreign-language clauses also contribute
+  source evidence when the whole document has a confident primary language;
+  same-script clauses require independent marker corroboration to avoid
+  admitting classifier noise from technical prose. Short independently
+  classified segments retain their evidence when the aggregate is ambiguous.
   The source-relative prevention stack replaces aggregate checked/abstained
   counters with per-output `copied`/`preserved`/`mismatch`/`unchecked` verdicts,
   fails closed on detector failure, checks retain dimensions separately from

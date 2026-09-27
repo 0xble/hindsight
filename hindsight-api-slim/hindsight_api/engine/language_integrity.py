@@ -29,7 +29,7 @@ _MIXED_MIN_LETTERS = 100
 _MIXED_MIN_FOREIGN_LETTERS = 40
 _MIXED_MIN_FOREIGN_SHARE = 0.20
 _ABSTAIN_LANGUAGES = frozenset({"zxx"})
-_SEGMENT_BOUNDARY = re.compile(r"(?:\n+|(?<=[.!?。！？])\s+)")
+_SEGMENT_BOUNDARY = re.compile(r"(?:\n+|(?<=[.!?。！？;])\s+)")
 _LITERAL_CODE = re.compile(r"```.*?```|`[^`]*`", re.DOTALL)
 _QUOTED_SPAN = re.compile(
     r"\"[^\"]*\"|“[^”]*”|«[^»]*»|(?<!\w)'[^']+'(?!\w)|(?<!\w)‘[^’]+’(?!\w)|^\s*>[^\n]*(?:\n\s*>[^\n]*)*",
@@ -515,8 +515,24 @@ def _prepare_context_sync(source_texts: Mapping[str, str]) -> LanguageContext:
         supported_by_text = {}
         for text, profile in profiles_by_text.items():
             evidence = [profile]
-            if not profile.actionable:
-                evidence.extend(_profile(part, source=False) for part in _SEGMENT_BOUNDARY.split(prose_by_text[text]))
+            for part in _SEGMENT_BOUNDARY.split(prose_by_text[text]):
+                if profile.actionable and _letter_count(part) < _MIXED_MIN_FOREIGN_LETTERS:
+                    continue
+                segment = _profile(part, source=False)
+                if not segment.actionable:
+                    continue
+                # A confident whole-document profile can hide a substantial
+                # same-script clause. Admit only independently corroborated
+                # foreign-language evidence, not a technical-prose classifier error.
+                if profile.actionable and segment.language != profile.language:
+                    if not _same_script_mismatch_confirmed(
+                        source_text=prose_by_text[text],
+                        generated_text=part,
+                        source_language=profile.language,
+                        generated_language=segment.language,
+                    ):
+                        continue
+                evidence.append(segment)
             supported_by_text[text] = frozenset(p.language for p in evidence if p.actionable)
     return LanguageContext(
         copied_texts,
