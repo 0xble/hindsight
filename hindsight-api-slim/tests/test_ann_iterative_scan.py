@@ -29,6 +29,7 @@ from types import SimpleNamespace
 import pytest
 
 from hindsight_api._vector_index import ann_max_scan_tuples, ann_search_tuning_settings
+from hindsight_api.engine.db_utils import retry_with_backoff
 from hindsight_api.engine.memories.postgres import PostgresMemories
 from hindsight_api.engine.search import bm25_term_selection as bm25_mod
 from hindsight_api.engine.search import retrieval as retrieval_mod
@@ -249,7 +250,12 @@ async def test_the_kill_switch_flips_real_retrieval_depth(memory, request_contex
                 f"INSERT INTO {table} (bank_id, text, fact_type, embedding) VALUES ($1, $2, 'world', $3::vector)",
                 [(bank_id, f"filler fact {i}", _near_query_vector(i)) for i in range(_ROWS)],
             )
-            await conn.execute(f"ANALYZE {table}")
+            # ANALYZE takes ShareUpdateExclusive on the shared memory_units table, the
+            # same lock another xdist worker's CREATE/DROP INDEX CONCURRENTLY holds while
+            # it waits out every open transaction, including this session's. Postgres
+            # breaks that cycle by killing one side (40P01, seen in the hosted nightly),
+            # so retry it exactly as the index DDL in tests/test_hnsw_indexes.py does.
+            await retry_with_backoff(lambda: conn.execute(f"ANALYZE {table}"))
 
         async def semantic_rows(iterative: bool) -> int:
             ann_config("ann_iterative_scan", iterative)
