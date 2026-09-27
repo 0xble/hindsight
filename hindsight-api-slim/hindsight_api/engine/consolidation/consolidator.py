@@ -22,12 +22,12 @@ import time
 import uuid
 from collections import defaultdict
 from contextlib import AsyncExitStack
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, replace
 from datetime import datetime, timezone
 from enum import StrEnum
 from fnmatch import fnmatchcase
 from itertools import combinations
-from typing import TYPE_CHECKING, Any, Literal
+from typing import TYPE_CHECKING, Any, Awaitable, Callable, Literal
 
 import asyncpg
 from pydantic import AliasChoices, BaseModel, ConfigDict, Field, ValidationError, field_validator
@@ -37,7 +37,7 @@ from ...metrics import get_metrics_collector
 from ...worker.stage import set_stage
 from ..chunk_ids import resolve_chunk_id_in
 from ..db import DatabaseBackend
-from ..db_utils import acquire_with_retry
+from ..db_utils import DEFAULT_BASE_DELAY, DEFAULT_MAX_DELAY, DEFAULT_MAX_RETRIES, _backoff_delay, acquire_with_retry
 from ..language_integrity import (
     GeneratedLanguageMismatch,
     GeneratedText,
@@ -54,6 +54,7 @@ from ..language_integrity import (
 )
 from ..llm_interface import OutputTooLongError, ProviderRateLimitResetError
 from ..llm_trace import (
+    current_trace_context,
     record_created_memory_ids,
     record_source_memory_ids,
     reset_trace_context,
@@ -79,6 +80,36 @@ if TYPE_CHECKING:
     from ..response_models import MemoryFact, RecallResult
 
 logger = logging.getLogger(__name__)
+
+
+async def _retry_deadlocked_apply(action: Callable[[], Awaitable[None]]) -> None:
+    """Replay a complete consolidation apply transaction after a PG deadlock.
+
+    The action owns its connection and transaction: a 40P01 rolls back before
+    this function invokes it again. Do not retry arbitrary integrity failures.
+    """
+    for attempt in range(DEFAULT_MAX_RETRIES + 1):
+        # DB writes can append trace IDs before commit. Isolate each attempt so a
+        # rolled-back CREATE never appears as a produced memory in the operation trace.
+        parent_trace = current_trace_context()
+        attempt_trace = (
+            replace(parent_trace, created_memory_ids=[], source_memory_ids=[]) if parent_trace is not None else None
+        )
+        token = set_trace_context(attempt_trace)
+        try:
+            await action()
+            if parent_trace is not None and attempt_trace is not None:
+                parent_trace.created_memory_ids.extend(attempt_trace.created_memory_ids)
+                parent_trace.source_memory_ids.extend(attempt_trace.source_memory_ids)
+            return
+        except asyncpg.DeadlockDetectedError:
+            if attempt == DEFAULT_MAX_RETRIES:
+                raise
+            delay = _backoff_delay(attempt, DEFAULT_BASE_DELAY, DEFAULT_MAX_DELAY)
+            logger.warning("Consolidation apply deadlocked; retrying whole transaction in %.1fs", delay)
+            await asyncio.sleep(delay)
+        finally:
+            reset_trace_context(token)
 
 
 async def _gather_or_cancel(coros: list[Any]) -> list[Any]:
@@ -812,7 +843,7 @@ async def _filter_live_source_memories(
     store = get_memories()
     if not store.store_owned_for(bank_id):
         rows = await conn.fetch(
-            f"SELECT id FROM {fq_table('memory_units')} WHERE id = ANY($1::uuid[]) AND bank_id = $2 FOR SHARE",
+            f"SELECT id FROM {fq_table('memory_units')} WHERE id = ANY($1::uuid[]) AND bank_id = $2 ORDER BY id FOR SHARE",
             source_memory_ids,
             bank_id,
         )
@@ -2843,84 +2874,95 @@ async def _process_memory_batch(
     # for good. With neither writes nor stamps there is nothing to open a transaction for.
     stamp_ids = list(mark_consolidated_ids or []) if not llm_result.failed else []
     if prepared_deletes or prepared_updates or prepared_creates or stamp_ids:
-        async with acquire_with_retry(pool) as conn:
-            async with conn.transaction():
-                for observation_id in prepared_deletes:
-                    await _execute_delete_action(conn=conn, bank_id=bank_id, observation_id=observation_id)
-                    deleted_count += 1
 
-                for prepared in prepared_updates:
-                    updated_emb_str = await _apply_update_action(
-                        conn=conn,
-                        memory_engine=memory_engine,
-                        bank_id=bank_id,
-                        prepared=prepared,
-                        perf=perf,
-                    )
-                    if updated_emb_str is None:
-                        # Skipped inside the write (sources or the observation vanished).
-                        continue
-                    for m in prepared.source_mems:
-                        per_memory_updated.add(str(m["id"]))
-                    if prepared.dedup is not None:
-                        await _apply_dedup_update_fold(
-                            conn,
-                            memory_engine,
-                            bank_id,
-                            config,
-                            prepared.dedup,
-                            prepared.update.observation_id,
-                            prepared.update.text,
-                        )
+        async def apply_transaction() -> None:
+            nonlocal deleted_count, per_memory_created, per_memory_updated
+            deleted_count = 0
+            per_memory_created = set()
+            per_memory_updated = set()
+            async with acquire_with_retry(pool) as conn:
+                async with conn.transaction():
+                    for observation_id in prepared_deletes:
+                        await _execute_delete_action(conn=conn, bank_id=bank_id, observation_id=observation_id)
+                        deleted_count += 1
 
-                for prepared_create in prepared_creates:
-                    if prepared_create.dedup is not None:
-                        merged_into = await _apply_dedup_create_fold(
-                            conn,
-                            memory_engine,
-                            bank_id,
-                            config,
-                            prepared_create.dedup,
-                            prepared_create.source_memory_ids,
-                            _TemporalBounds.of(prepared_create.agg),
+                    for prepared in prepared_updates:
+                        updated_emb_str = await _apply_update_action(
+                            conn=conn,
+                            memory_engine=memory_engine,
+                            bank_id=bank_id,
+                            prepared=prepared,
+                            perf=None,  # account once after commit, not per rolled-back attempt
                         )
-                        if merged_into is not None:
-                            logger.info(
-                                "[CONSOLIDATION] dedup-merged observation CREATE into %s (cosine>=%.2f)",
-                                merged_into[:8],
-                                config.consolidation_dedup_threshold,
+                        if updated_emb_str is None:
+                            # Skipped inside the write (sources or the observation vanished).
+                            continue
+                        for m in prepared.source_mems:
+                            per_memory_updated.add(str(m["id"]))
+                        if prepared.dedup is not None:
+                            await _apply_dedup_update_fold(
+                                conn,
+                                memory_engine,
+                                bank_id,
+                                config,
+                                prepared.dedup,
+                                prepared.update.observation_id,
+                                prepared.update.text,
                             )
+
+                    for prepared_create in prepared_creates:
+                        if prepared_create.dedup is not None:
+                            merged_into = await _apply_dedup_create_fold(
+                                conn,
+                                memory_engine,
+                                bank_id,
+                                config,
+                                prepared_create.dedup,
+                                prepared_create.source_memory_ids,
+                                _TemporalBounds.of(prepared_create.agg),
+                            )
+                            if merged_into is not None:
+                                logger.info(
+                                    "[CONSOLIDATION] dedup-merged observation CREATE into %s (cosine>=%.2f)",
+                                    merged_into[:8],
+                                    config.consolidation_dedup_threshold,
+                                )
+                                for m in prepared_create.source_mems:
+                                    per_memory_created.add(str(m["id"]))
+                                continue
+
+                        action = await _apply_create_action(
+                            conn=conn,
+                            memory_engine=memory_engine,
+                            bank_id=bank_id,
+                            prepared=prepared_create,
+                            perf=None,  # account once after commit, not per rolled-back attempt
+                        )
+                        # Count a memory as created only when an observation was actually written (the
+                        # source-liveness recheck inside the write can skip it).
+                        if action == "created":
                             for m in prepared_create.source_mems:
                                 per_memory_created.add(str(m["id"]))
-                            continue
 
-                    action = await _apply_create_action(
-                        conn=conn,
-                        memory_engine=memory_engine,
-                        bank_id=bank_id,
-                        prepared=prepared_create,
-                        perf=perf,
-                    )
-                    # Count a memory as created only when an observation was actually written (the
-                    # source-liveness recheck inside the write can skip it).
-                    if action == "created":
-                        for m in prepared_create.source_mems:
-                            per_memory_created.add(str(m["id"]))
+                    # The facts this response consumed are marked consolidated in the SAME transaction
+                    # as the observations that now carry them. Stamping them separately is what let a
+                    # half-applied batch orphan its sources forever: the pending-consolidation predicate
+                    # excludes a stamped fact, so nothing would ever rebuild what the batch failed to
+                    # write (#3876).
+                    if stamp_ids:
+                        await get_memories().mark_consolidated(
+                            conn=conn,
+                            fq_table=fq_table,
+                            bank_id=bank_id,
+                            unit_ids=[str(mem_id) for mem_id in stamp_ids],
+                            when=datetime.now(timezone.utc),
+                            failed=False,
+                        )
 
-                # The facts this response consumed are marked consolidated in the SAME transaction
-                # as the observations that now carry them. Stamping them separately is what let a
-                # half-applied batch orphan its sources forever: the pending-consolidation predicate
-                # excludes a stamped fact, so nothing would ever rebuild what the batch failed to
-                # write (#3876).
-                if stamp_ids:
-                    await get_memories().mark_consolidated(
-                        conn=conn,
-                        fq_table=fq_table,
-                        bank_id=bank_id,
-                        unit_ids=[str(mem_id) for mem_id in stamp_ids],
-                        when=datetime.now(timezone.utc),
-                        failed=False,
-                    )
+        write_started = time.time()
+        await _retry_deadlocked_apply(apply_transaction)
+        if perf:
+            perf.record_timing("db_write", time.time() - write_started)
 
     # Build per-memory result dicts for the stats tracker in the outer loop
     results: list[dict[str, Any]] = []

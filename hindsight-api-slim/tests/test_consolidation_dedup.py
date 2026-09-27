@@ -714,13 +714,14 @@ def _batch_engine():
     return types.SimpleNamespace(_consolidation_llm_config=types.SimpleNamespace(with_config=lambda *a, **k: object()))
 
 
-async def _run_create_batch(create_action_result: str):
+async def _run_create_batch(create_action_result: str, deadlock_first: bool = False):
     from hindsight_api.engine.consolidation import consolidator as C
 
     mem_id = str(uuid.uuid4())
     memories = [{"id": mem_id, "text": "Uzbek YouTube content is very rich.", "tags": []}]
     create = C._CreateAction(text="Uzbek YouTube content is very rich.", source_fact_ids=[mem_id])
     llm_result = C._BatchLLMResult(creates=[create])
+    create_outcome = [C.asyncpg.DeadlockDetectedError("deadlock"), create_action_result] if deadlock_first else None
     with (
         patch.object(
             C,
@@ -739,7 +740,10 @@ async def _run_create_batch(create_action_result: str):
             "_dedup_adjudicate",
             new=AsyncMock(return_value=_DedupOutcome(best_id=None, merged_text="", should_merge=False)),
         ),
-        patch.object(C, "_apply_create_action", new=AsyncMock(return_value=create_action_result)) as create_action,
+        patch.object(
+            C, "_apply_create_action", new=AsyncMock(side_effect=create_outcome, return_value=create_action_result)
+        ) as create_action,
+        patch.object(C.asyncio, "sleep", new=AsyncMock()),
     ):
         result = await C._process_memory_batch(
             pool=_DedupBackend(_DedupConn()),
@@ -762,6 +766,14 @@ async def test_process_batch_creates_when_dedup_target_vanished() -> None:
     assert prepared.text == "Uzbek YouTube content is very rich."
     assert prepared.source_memory_ids == [mem_id]
     assert result == ([{"action": "created"}], 0, False)
+
+
+async def test_process_batch_retries_entire_apply_after_deadlock() -> None:
+    result, create_action, mem_id = await _run_create_batch("created", deadlock_first=True)
+    assert create_action.await_count == 2
+    assert result == ([{"action": "created"}], 0, False)
+    assert create_action.await_args is not None
+    assert create_action.await_args.kwargs["prepared"].source_memory_ids == [mem_id]
 
 
 async def test_process_batch_reports_skipped_when_create_skipped() -> None:

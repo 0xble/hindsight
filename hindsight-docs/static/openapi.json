@@ -11657,13 +11657,40 @@
           },
           "failure_class": {
             "type": "string",
-            "const": "low_quality_ocr",
+            "enum": [
+              "low_quality_ocr",
+              "no_extractable_text"
+            ],
             "title": "Failure Class",
             "description": "Stable failure class callers may use to decide whether the source artifact is retryable."
           },
           "failure_reason": {
-            "$ref": "#/components/schemas/OcrQualityReason",
-            "description": "The OCR quality gate that rejected the converted image text."
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/OcrQualityReason"
+              },
+              {
+                "type": "string",
+                "const": "empty_content"
+              }
+            ],
+            "title": "Failure Reason",
+            "description": "The OCR rejection reason, or empty_content when every parser extracted no text."
+          },
+          "parsers": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Parsers",
+            "description": "Ordered parser chain tried when no extractable text was found."
           }
         },
         "type": "object",

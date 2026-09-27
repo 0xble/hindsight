@@ -10,7 +10,7 @@ from typing import TYPE_CHECKING
 
 from hindsight_api.config import DEFAULT_FILE_PARSER_MARKITDOWN_OCR_PROMPT
 
-from .base import FileParser
+from .base import FileParser, NoExtractableContentError
 
 if TYPE_CHECKING:
     from markitdown import MarkItDown, StreamInfo
@@ -211,11 +211,13 @@ class MarkitdownParser(FileParser):
             # files to avoid markitdown's sample-based (and crash-prone) detection.
             result = self._get_markitdown().convert(tmp_path, stream_info=self._utf8_stream_info(file_data, filename))
 
-            if not result or not result.text_content:
-                raise RuntimeError(f"No content extracted from '{filename}'")
+            if not result or not result.text_content or not result.text_content.strip():
+                raise NoExtractableContentError(f"No content extracted from '{filename}'")
 
             return result.text_content
 
+        except NoExtractableContentError:
+            raise
         except Exception as e:
             logger.error(f"Markitdown parsing failed for {filename}: {e}")
             raise RuntimeError(f"Failed to parse '{filename}': {e}") from e
