@@ -50,8 +50,11 @@ and operation-status regressions alongside retained-patch regressions.
 ## Update and verify
 
 Every maintenance run fetches `origin` and `upstream` separately and reconciles
-`main` with the latest upstream default (`upstream/main`), preserving each
-intentional registered patch. Evaluate all support-file adoption and retirement
+`main` with the latest stable upstream release (the GitHub latest release,
+excluding drafts and prereleases) by merging its tag, preserving each
+intentional registered patch. Unreleased `upstream/main` commits are never a
+sync target. When `main` already contains that release tag, source sync is
+current. Evaluate all support-file adoption and retirement
 conditions; update the responsible record in the same delivery as any patch
 addition, change, or retirement. Missing or stale patch coverage blocks publication.
 
@@ -62,7 +65,7 @@ run the HINDSIGHT-003 regression from the repository root.
 
 Publish to owned `origin` when authorized, or report `Blocked` with the exact
 failed stage, refs, and evidence. Before `Updated` or `Already current`, fetch
-upstream again and require zero upstream-only commits with
-`git rev-list --left-right --count upstream/main...main`, then read back
+upstream tags again and require zero release-only commits with
+`git rev-list --left-right --count <latest-release-tag>...main`, then read back
 local/`origin/main` SHA parity. Require exact installed/runtime SHA proof only
 when those separately authorized stages are in scope.
