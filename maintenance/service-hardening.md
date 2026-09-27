@@ -38,5 +38,24 @@ in the root contract.
     rejecting non-string values first, allowing unhashable types to escape as
     `TypeError` instead of validation errors.
 
+## HINDSIGHT-007: Consolidation lock ordering and deadlock retry
+
+- **Status:** Active
+- **Commits:** `27fcb7b`
+- **Surfaces:** `engine/consolidation/consolidator.py` (ordered `FOR SHARE` source
+  check and bounded whole-transaction retry of the apply step on deadlock),
+  `engine/retain/fact_storage.py` (document-wide metadata update locks rows in
+  `ORDER BY id` first), and `tests/test_consolidation_deadlock_order.py`
+- **Behavior:** Consolidation's source-liveness check and retain's document-wide
+  tag/scope update acquire `memory_units` row locks in the same order, so they no
+  longer deadlock. The apply transaction retries a residual PostgreSQL deadlock and
+  discards rolled-back results rather than failing the operation.
+- **Upstream issue:** None after checked 2026-09-27
+- **Upstream PR:** None after checked 2026-09-27
+- **Regression:** `uv run --frozen pytest tests/test_consolidation_deadlock_order.py tests/test_consolidation_dedup.py`
+- **Rollback:** Revert the listed commit; do not alter production data during source rollback.
+- **Retire when:** Released upstream orders both lock paths or retries consolidation
+  deadlocks, and passes this regression.
+
 
 Run the API-local regression commands from `hindsight-api-slim`.

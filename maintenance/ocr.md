@@ -39,6 +39,28 @@ remain compatible for callers.
 - **Retire when:** A released upstream build exposes an equivalent stable typed
   terminal failure contract for low-quality OCR.
 
+## HINDSIGHT-006: Typed no-extractable-text failures
+
+- **Status:** Active
+- **Commits:** `27fcb7b`
+- **Surfaces:** `engine/parsers/{__init__,base,markitdown}.py`, `engine/memory_engine.py`,
+  `engine/operation_details.py`, checked-in OpenAPI contracts, generated
+  Python/TypeScript/Go clients, and `tests/test_no_extractable_text.py`
+- **Behavior:** When every parser in the chain returns empty content, the failed
+  `file_convert_retain` operation exposes `failure_class=no_extractable_text`,
+  `failure_reason=empty_content`, and the ordered `parsers` chain it tried. Mixed
+  chains and transient errors stay unclassified. Callers can settle image-only PDFs
+  without resubmitting them, and re-probe when the parser chain changes.
+- **Upstream issue:** https://github.com/vectorize-io/hindsight/issues/3255 (scanned
+  PDFs; the typed failure is fork-only)
+- **Upstream PR:** None. Upstream closed PDF OCR in #3442 pending a better parser.
+- **Regression:** `uv run --frozen pytest tests/test_no_extractable_text.py tests/test_operation_status.py`
+  and the generated client discriminator tests in `hindsight-clients/{python,go}`.
+- **Rollback:** Revert the listed commit; callers fall back to treating the failure
+  as transient.
+- **Retire when:** A released upstream build extracts image-only PDFs or exposes an
+  equivalent typed empty-content failure.
+
 
 Run API-local pytest commands from `hindsight-api-slim`; run generation from
 the repository root.
