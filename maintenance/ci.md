@@ -28,7 +28,12 @@ intentional fork infrastructure policy, not upstream deployment ownership.
   `./bin/ci preflight`. The validator pins both trigger sets exactly.
   `fork-policy.yml` uses `pull_request_target` only to run default-branch policy
   code against an immutable candidate checkout, without persisted credentials or
-  candidate actions, scripts, manifests, or hooks.
+  candidate actions, scripts, manifests, or hooks. `qualification` is the sole
+  branch-protection required check. This sync job must verify that the trusted
+  `Fork Workflow Policy` `policy` check succeeded for the exact PR head SHA
+  before every merge. A manual merge could omit that check: this is an accepted
+  residual risk of the qualification-only protection boundary, not a claim that
+  branch protection independently enforces the trusted policy.
 - **Upstream issue:** None after checked 2026-09-11
 - **Upstream PR:** None after checked 2026-09-11
 - **Regression:** `uv run --directory hindsight-api-slim --frozen python ../tests/ci/test_validate_fork_workflows.py && uv run --directory hindsight-api-slim --frozen python ../scripts/ci/validate_fork_workflows.py`

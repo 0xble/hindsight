@@ -2760,6 +2760,7 @@ class Hindsight:
         consolidation_llm_parallelism: int | None = None,
         consolidation_fair_group_selection: bool | None = None,
         consolidation_max_memories_per_round: int | None = None,
+        consolidation_max_context_tokens: int | None = None,
         mental_model_min_refresh_interval_seconds: int | None = None,
         knowledge_page_default_trigger: dict[str, Any] | None = None,
         reflect_default_options: dict[str, Any] | None = None,
@@ -2825,6 +2826,7 @@ class Hindsight:
                 consolidation_llm_parallelism=consolidation_llm_parallelism,
                 consolidation_fair_group_selection=consolidation_fair_group_selection,
                 consolidation_max_memories_per_round=consolidation_max_memories_per_round,
+                consolidation_max_context_tokens=consolidation_max_context_tokens,
                 mental_model_min_refresh_interval_seconds=mental_model_min_refresh_interval_seconds,
                 knowledge_page_default_trigger=knowledge_page_default_trigger,
                 reflect_default_options=reflect_default_options,
@@ -2887,6 +2889,7 @@ class Hindsight:
         consolidation_llm_parallelism: int | None = None,
         consolidation_fair_group_selection: bool | None = None,
         consolidation_max_memories_per_round: int | None = None,
+        consolidation_max_context_tokens: int | None = None,
         mental_model_min_refresh_interval_seconds: int | None = None,
         knowledge_page_default_trigger: dict[str, Any] | None = None,
         reflect_default_options: dict[str, Any] | None = None,
@@ -2960,6 +2963,7 @@ class Hindsight:
             consolidation_fair_group_selection: Fetch the oldest facts of many observation-scope groups
                 per consolidation round instead of the oldest facts overall.
             consolidation_max_memories_per_round: Memories consolidated per round.
+            consolidation_max_context_tokens: Pre-call input budget before adaptive splitting.
             mental_model_min_refresh_interval_seconds: Debounce between mental-model refreshes.
             reflect_default_options: Default reflect options for this bank, applied whenever a
                 reflect request (or a mental model's trigger) leaves the option unset:
@@ -3028,6 +3032,7 @@ class Hindsight:
                 "consolidation_llm_parallelism": consolidation_llm_parallelism,
                 "consolidation_fair_group_selection": consolidation_fair_group_selection,
                 "consolidation_max_memories_per_round": consolidation_max_memories_per_round,
+                "consolidation_max_context_tokens": consolidation_max_context_tokens,
                 "mental_model_min_refresh_interval_seconds": mental_model_min_refresh_interval_seconds,
                 "knowledge_page_default_trigger": knowledge_page_default_trigger,
                 "reflect_default_options": reflect_default_options,

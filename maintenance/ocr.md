@@ -27,7 +27,8 @@ remain compatible for callers.
 - **Behavior:** Failed `file_convert_retain` operations expose a stable, discriminated
   `low_quality_ocr` detail with the OCR quality reason, so callers can settle
   deterministic evidence exclusions without parsing error prose. Retries clear
-  stale terminal details, and generated clients accept both supported detail types.
+  stale terminal details, and generated clients accept both supported detail types,
+  including raw dictionary and JSON Pydantic validation nested in operation responses.
 - **Upstream issue:** None after checked 2026-09-11
 - **Upstream PR:** None after checked 2026-09-11
 - **Regression:** `uv run --frozen pytest tests/test_operation_status.py`; generated

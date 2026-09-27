@@ -1008,10 +1008,13 @@ class _ReferenceFilterResult:
     #: often half of a replace (UPDATE or CREATE the merged text, DELETE the old),
     #: so keeping it after its partner was dropped could erase knowledge.
     unsafe_delete: bool = False
+    #: A dropped action citing only invented IDs has no known source to orphan,
+    #: but accepting its valid sibling would still silently lose model output.
+    unknown_only_sources: bool = False
 
     @property
     def must_reject(self) -> bool:
-        return bool(self.orphaned_fact_ids) or self.unsafe_delete
+        return bool(self.orphaned_fact_ids) or self.unsafe_delete or self.unknown_only_sources
 
 
 def _filter_unpersistable_references(
@@ -1041,10 +1044,15 @@ def _filter_unpersistable_references(
     dropped: dict[str, int] = {}
     kept_sources: set[str] = set()
     dropped_sources: set[str] = set()
+    unknown_only_sources = False
 
     def _drop(rule: str, source_ids: list[str] | None) -> None:
+        nonlocal unknown_only_sources
         dropped[rule] = dropped.get(rule, 0) + 1
-        dropped_sources.update(str(fid) for fid in (source_ids or []) if str(fid) in valid_fact_ids)
+        known_sources = {str(fid) for fid in (source_ids or []) if str(fid) in valid_fact_ids}
+        dropped_sources.update(known_sources)
+        if source_ids and not known_sources:
+            unknown_only_sources = True
 
     creates = []
     for action in response.creates:
@@ -1082,6 +1090,7 @@ def _filter_unpersistable_references(
         dropped=dropped,
         orphaned_fact_ids=dropped_sources - kept_sources,
         unsafe_delete=bool(dropped) and bool(deletes),
+        unknown_only_sources=unknown_only_sources,
     )
 
 
