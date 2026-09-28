@@ -421,10 +421,12 @@ def _usage_from_openai_response(response: Any) -> LLMResponseUsage:
     cached_tokens = 0
     if usage and getattr(usage, "prompt_tokens_details", None):
         cached_tokens = getattr(usage.prompt_tokens_details, "cached_tokens", 0) or 0
+    upstream = _response_get(response, "provider")
     return LLMResponseUsage(
         input_tokens=input_tokens,
         output_tokens=output_tokens,
         cached_tokens=cached_tokens,
+        upstream=upstream if isinstance(upstream, str) and upstream else None,
     )
 
 

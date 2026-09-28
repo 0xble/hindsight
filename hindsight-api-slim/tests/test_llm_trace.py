@@ -159,6 +159,58 @@ def test_record_llm_call_success_with_context_and_tokens():
     assert r.llm_info["finish_reason"] == "stop"
 
 
+def test_record_llm_call_attaches_served_upstream_to_success_and_error_rows():
+    """Both outcomes carry the serving upstream, so per-upstream failure rates have a denominator."""
+    rec = _CapturingRecorder()
+    token = llm_trace.set_response_usage(llm_trace.LLMResponseUsage(input_tokens=10, upstream="DeepInfra"))
+    try:
+        rec.record_llm_call(
+            provider="openai",
+            model="openai/gpt-oss-20b",
+            scope="consolidation",
+            messages=[],
+            response_content="{}",
+            duration=0.1,
+            finish_reason="stop",
+        )
+        rec.record_llm_call(
+            provider="openai",
+            model="openai/gpt-oss-20b",
+            scope="consolidation",
+            messages=[],
+            error=RuntimeError("empty"),
+            duration=0.1,
+        )
+    finally:
+        llm_trace.reset_response_usage(token)
+    assert [r.llm_info.get("upstream") for r in rec.records] == ["DeepInfra", "DeepInfra"]
+
+    rec.records.clear()
+    rec.record_llm_call(provider="openai", model="m", scope="memory", messages=[], duration=0.1)
+    assert "upstream" not in rec.records[0].llm_info
+
+
+def test_openai_usage_reads_gateway_served_upstream():
+    from openai.types.chat import ChatCompletion
+
+    from hindsight_api.engine.providers.openai_compatible_llm import _usage_from_openai_response
+
+    body = {
+        "id": "gen-1",
+        "object": "chat.completion",
+        "created": 0,
+        "model": "openai/gpt-oss-20b",
+        "choices": [
+            {"index": 0, "finish_reason": "stop", "message": {"role": "assistant", "content": "{}"}},
+        ],
+        "usage": {"prompt_tokens": 5, "completion_tokens": 2, "total_tokens": 7},
+    }
+    assert _usage_from_openai_response(ChatCompletion.model_validate({**body, "provider": "Darkbloom"})).upstream == (
+        "Darkbloom"
+    )
+    assert _usage_from_openai_response(ChatCompletion.model_validate(body)).upstream is None
+
+
 def test_record_llm_call_error_record():
     rec = _CapturingRecorder()
     rec.record_llm_call(

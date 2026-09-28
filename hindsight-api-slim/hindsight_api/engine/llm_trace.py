@@ -106,6 +106,10 @@ class LLMResponseUsage:
     input_tokens: int = 0
     output_tokens: int = 0
     cached_tokens: int = 0
+    # Upstream that actually served the call, when a gateway reports one
+    # (OpenRouter's top-level ``provider``). Recorded on success and error rows
+    # alike, so per-upstream failure rates have a denominator.
+    upstream: str | None = None
 
 
 # Per-call provider usage, set by providers right after a response is received.
@@ -508,6 +512,9 @@ class LLMTraceRecorder:
             llm_info["request"] = dict(request_params)
         if finish_reason:
             llm_info["finish_reason"] = finish_reason
+        response_usage = current_response_usage()
+        if response_usage is not None and response_usage.upstream:
+            llm_info["upstream"] = response_usage.upstream
         if tool_calls:
             llm_info["tool_calls"] = [tc.get("name", "") for tc in tool_calls]
 
