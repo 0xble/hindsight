@@ -87,6 +87,36 @@ async def test_null_content_raises_after_retries_exhausted():
 
 
 @pytest.mark.asyncio
+async def test_empty_content_error_names_the_serving_upstream():
+    """An empty answer from a reasoning model says which upstream served it, never what it thought."""
+    llm = _make_llm()
+    thought = "The new fact matches an existing observation, so update it."
+    response = _make_chat_response("")
+    response.provider = "Darkbloom"
+    response.id = "gen-123"
+    response.choices[0].message.reasoning = thought
+
+    with patch.object(llm._client.chat.completions, "create", new_callable=AsyncMock) as mock_create:
+        mock_create.return_value = response
+
+        with pytest.raises(ProviderResponseError) as raised:
+            await llm.call(
+                messages=[{"role": "user", "content": "extract facts"}],
+                response_format=_Response,
+                max_retries=0,
+                initial_backoff=0.0,
+                max_backoff=0.0,
+            )
+
+    message = str(raised.value)
+    assert "empty message content" in message
+    assert "upstream=Darkbloom" in message
+    assert "generation_id=gen-123" in message
+    assert f"reasoning_chars={len(thought)}" in message
+    assert thought not in message
+
+
+@pytest.mark.asyncio
 async def test_null_content_recovers_on_retry():
     """Provider returns null on first call, valid JSON on second -> request succeeds."""
     llm = _make_llm()
