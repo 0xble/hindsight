@@ -24,6 +24,7 @@ import hashlib
 import json
 import logging
 import re
+import time
 import uuid
 from collections import defaultdict
 from unittest.mock import MagicMock, patch
@@ -35,6 +36,7 @@ from hindsight_api.engine.consolidation.consolidator import (
     _ConsolidationBatchResponse,
     _CreateAction,
     _UpdateAction,
+    _effective_lane_parallelism,
     run_consolidation_job,
 )
 from hindsight_api.engine.memory_engine import MemoryEngine
@@ -652,7 +654,7 @@ async def test_observation_md5_index_matches_python_unicode_whitespace(memory: M
         assert await conn.fetchval("SHOW server_encoding") == "UTF8"
         for char in whitespace:
             value = f"\tÅ{char}{char}BASiL{char}"
-            expected = hashlib.md5(_norm_obs_text(value).encode("utf-8")).hexdigest()
+            expected = hashlib.md5(_norm_obs_text(value).encode("utf-8"), usedforsecurity=False).hexdigest()
             assert await conn.fetchval(f"SELECT md5({expr})", value) == expected, hex(ord(char))
 
 
@@ -1048,6 +1050,140 @@ async def test_same_lane_stale_update_retries_fresh_recall(memory: MemoryEngine,
         assert all(state["consolidation_failed_at"] is None for state in states)
         assert sum(state["consolidated_at"] is not None for state in states) == 2
     finally:
+        await memory.delete_bank(bank_id, request_context=request_context)
+
+
+@pytest.mark.asyncio
+@pytest.mark.memory_backend_incompatible
+@pytest.mark.parametrize("invalidate", [False, True], ids=["delete", "invalidate"])
+async def test_lane_apply_waits_for_source_before_observation_during_delete_sweep(
+    memory: MemoryEngine, request_context, invalidate: bool
+):
+    """PG deletion/invalidation can sweep while lane apply waits on its source.
+
+    With the old observation-first validator, the sweep's observation lock waited
+    on apply while apply waited on the outgoing source: a lock-order inversion.
+    """
+    from hindsight_api.engine.consolidation import consolidator as mod
+
+    bank_id = f"test-lane-sweep-{uuid.uuid4().hex[:8]}"
+    await memory.ensure_bank_profile(bank_id=bank_id, request_context=request_context)
+    # Force the sweep's UUID ordering to acquire the outgoing fact before the
+    # observation, so the old observation-first apply reliably exposes the cycle.
+    fact_id = uuid.UUID(int=uuid.uuid4().int & ((1 << 120) - 1))
+    obs_id = uuid.uuid4()
+    job = None
+    try:
+        async with memory._pool.acquire() as conn:
+            await conn.execute(
+                "INSERT INTO memory_units (id, bank_id, text, fact_type, tags, created_at) "
+                "VALUES ($1,$2,'Outgoing source','experience',$3,now())",
+                fact_id,
+                bank_id,
+                ["shared"],
+            )
+            await conn.execute(
+                "INSERT INTO memory_units (id, bank_id, text, fact_type, tags, source_memory_ids, created_at) "
+                "VALUES ($1,$2,'Original observation','observation',$3,$4,now())",
+                obs_id,
+                bank_id,
+                ["shared"],
+                [str(fact_id)],
+            )
+
+        async def recalled(**kwargs):
+            async with memory._pool.acquire() as conn:
+                row = await conn.fetchrow("SELECT text, source_memory_ids FROM memory_units WHERE id=$1", obs_id)
+            return RecallResult.model_construct(
+                results=[
+                    MemoryFact.model_construct(
+                        id=str(obs_id),
+                        text=row["text"],
+                        fact_type="observation",
+                        tags=["shared"],
+                        source_fact_ids=list(row["source_memory_ids"]),
+                    )
+                ]
+                if row
+                else []
+            )
+
+        wrapper = MagicMock()
+        llm = MockLLM(provider="mock", api_key="", base_url="", model="mock-model")
+        llm.set_response_callback(
+            lambda messages, scope: _ConsolidationBatchResponse(
+                updates=[
+                    _UpdateAction(
+                        observation_id=str(obs_id),
+                        text="Should not survive deletion",
+                        source_fact_ids=[str(fact_id)],
+                    )
+                ]
+            )
+            if scope == "consolidation"
+            else _ConsolidationBatchResponse()
+        )
+        wrapper.with_config.return_value = llm
+        with (
+            patch.object(memory, "_consolidation_llm_config", wrapper),
+            patch.object(memory, "submit_async_consolidation"),
+            patch.object(mod, "_find_related_observations", recalled),
+            _override_config(
+                memory,
+                consolidation_llm_parallelism=2,
+                consolidation_lane_llm_parallelism=2,
+                consolidation_llm_batch_size=1,
+                consolidation_dedup_threshold=1.0,
+            ),
+        ):
+            async with memory._pool.acquire() as deleting_conn:
+                async with deleting_conn.transaction():
+                    holder_pid = await deleting_conn.fetchval("SELECT pg_backend_pid()")
+                    await deleting_conn.execute("SET LOCAL lock_timeout = '1000ms'")
+                    await deleting_conn.fetchrow("SELECT id FROM memory_units WHERE id=$1 FOR UPDATE", fact_id)
+                    job = asyncio.create_task(
+                        run_consolidation_job(memory_engine=memory, bank_id=bank_id, request_context=request_context)
+                    )
+                    # Wait for real PG lock contention, not a timing guess. The
+                    # blocked backend belongs to apply, which has finished recall.
+                    deadline = time.monotonic() + 10
+                    while True:
+                        async with memory._pool.acquire() as observer:
+                            blocked = await observer.fetchval(
+                                "SELECT EXISTS (SELECT 1 FROM pg_stat_activity "
+                                "WHERE $1 = ANY(pg_blocking_pids(pid)) "
+                                "AND query LIKE '%memory_units%')",
+                                holder_pid,
+                            )
+                        if blocked:
+                            break
+                        assert not job.done(), "lane job ended before the source lock was contested"
+                        assert time.monotonic() < deadline, "lane apply did not reach PG source lock"
+                        await asyncio.sleep(0.02)
+                    # The same transaction owns the source lock, so the sweep
+                    # must reach the observation without waiting for lane apply.
+                    await memory._delete_stale_observations_for_memories(deleting_conn, bank_id, [str(fact_id)])
+                    if invalidate:
+                        assert await mod.get_memories().invalidate_memory(
+                            conn=deleting_conn,
+                            fq_table=mod.fq_table,
+                            bank_id=bank_id,
+                            unit_id=str(fact_id),
+                            reason="concurrent invalidation",
+                        )
+                    else:
+                        await deleting_conn.execute("DELETE FROM memory_units WHERE id=$1", fact_id)
+            result = await asyncio.wait_for(job, timeout=15)
+        assert result["status"] == "completed"
+        async with memory._pool.acquire() as conn:
+            assert await conn.fetchval("SELECT id FROM memory_units WHERE id=$1", obs_id) is None
+            assert await conn.fetchval("SELECT id FROM memory_units WHERE id=$1", fact_id) is None
+            if invalidate:
+                assert await conn.fetchval("SELECT id FROM invalidated_memory_units WHERE id=$1", fact_id) == fact_id
+    finally:
+        if job is not None and not job.done():
+            job.cancel()
+            await asyncio.gather(job, return_exceptions=True)
         await memory.delete_bank(bank_id, request_context=request_context)
 
 
@@ -1646,6 +1782,19 @@ async def test_default_lane_does_not_validate_recalled_targets(memory: MemoryEng
         assert str(fact) in [str(source_id) for source_id in row["source_memory_ids"]]
     finally:
         await memory.delete_bank(bank_id, request_context=request_context)
+
+
+def test_oracle_connection_forces_serial_lane_apply(caplog):
+    from hindsight_api.engine.consolidation import consolidator as mod
+
+    with (
+        patch.object(mod.get_memories(), "store_owned_for") as store_owned,
+        caplog.at_level(logging.WARNING, logger=mod.__name__),
+    ):
+        assert _effective_lane_parallelism(4, MagicMock(backend_type="oracle"), "bank") == 1
+        assert _effective_lane_parallelism(1, MagicMock(backend_type="oracle"), "bank") == 1
+        store_owned.assert_not_called()
+    assert "lane apply requires PostgreSQL" in caplog.text
 
 
 @pytest.mark.asyncio

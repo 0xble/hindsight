@@ -207,7 +207,7 @@ async def _fetch_exact_observation_candidates(
     if not normalized_texts:
         return []
     wanted = set(normalized_texts)
-    hashes = list({hashlib.md5(value.encode("utf-8")).hexdigest() for value in wanted})
+    hashes = list({hashlib.md5(value.encode("utf-8"), usedforsecurity=False).hexdigest() for value in wanted})
     rows = await conn.fetch(
         f"SELECT id, text FROM {fq_table('memory_units')} "
         "WHERE bank_id = $1 AND fact_type = 'observation' "
@@ -1653,6 +1653,23 @@ def _fair_group_cap(fetch_limit: int, llm_parallelism: int) -> int:
     return max(1, -(-fetch_limit // max(1, llm_parallelism)))
 
 
+def _effective_lane_parallelism(configured: int, conn, bank_id: str) -> int:
+    """Restrict SQL-only lane apply to PostgreSQL and database-owned banks."""
+    if configured > 1 and getattr(conn, "backend_type", "postgresql") != "postgresql":
+        logger.warning(
+            "[CONSOLIDATION] bank=%s keeps lane LLM parallelism at 1 because lane apply requires PostgreSQL",
+            bank_id,
+        )
+        return 1
+    if configured > 1 and get_memories().store_owned_for(bank_id):
+        logger.warning(
+            "[CONSOLIDATION] bank=%s keeps lane LLM parallelism at 1 because observations are store-owned",
+            bank_id,
+        )
+        return 1
+    return configured
+
+
 async def _fetch_fair_unconsolidated_rows(
     conn,
     bank_id: str,
@@ -2008,6 +2025,9 @@ async def _run_consolidation_job(
         # job-level scope filter), the fetch spreads across scope groups instead of taking
         # the oldest facts overall; it falls back to the strict fetch where unsupported.
         async with acquire_with_retry(pool) as conn:
+            lane_parallelism = _effective_lane_parallelism(
+                max(1, getattr(config, "consolidation_lane_llm_parallelism", 1)), conn, bank_id
+            )
             t0 = time.time()
             memories = None
             if fair_group_selection and not observation_scopes:
@@ -2083,6 +2103,7 @@ async def _run_consolidation_job(
             """
             llm_batch_start = time.time()
             batch_perf = ConsolidationPerfLog(bank_id)
+            stale_retry_count = 0
 
             local_tags: set[str] = set()
             for memory in llm_batch_local:
@@ -2099,6 +2120,9 @@ async def _run_consolidation_job(
                 # The lane turn remains owned by this batch until the caller's
                 # finally block advances it, so every retry recalls and prepares
                 # against the state committed by the preceding lane batch.
+                # Timings accumulate across attempts; identify stale replays in
+                # the batch log rather than presenting their cost as one attempt.
+                nonlocal stale_retry_count
                 for attempt in range(3):
                     try:
                         return await _process_memory_batch(
@@ -2118,6 +2142,7 @@ async def _run_consolidation_job(
                     except _StaleConsolidationReference:
                         if attempt == 2:
                             raise
+                        stale_retry_count += 1
                         logger.warning(
                             "[CONSOLIDATION] stale prepared reference for batch %s; recalling and retrying (%s/2)",
                             batch_num_local,
@@ -2402,7 +2427,8 @@ async def _run_consolidation_job(
                 f" ({len(llm_batch_local)} memories, {batch_perf.llm_calls} llm calls)"
                 f" | processed={cum_processed}/{total_count}"
                 f" | {', '.join(timing_parts)}"
-                f" | created={local_stats['observations_created']}"
+                + (f" stale_retries={stale_retry_count}" if stale_retry_count else "")
+                + f" | created={local_stats['observations_created']}"
                 f" updated={local_stats['observations_updated']}"
                 f" skipped={local_stats['skipped']} deferred={local_stats['memories_deferred']}"
                 + (f" failed={local_stats['memories_failed']}" if local_stats["memories_failed"] else "")
@@ -2467,13 +2493,6 @@ async def _run_consolidation_job(
             return deltas
 
         llm_parallelism = max(1, config.consolidation_llm_parallelism)
-        lane_parallelism = max(1, getattr(config, "consolidation_lane_llm_parallelism", 1))
-        if lane_parallelism > 1 and get_memories().store_owned_for(bank_id):
-            logger.warning(
-                "[CONSOLIDATION] bank=%s keeps lane LLM parallelism at 1 because observations are store-owned",
-                bank_id,
-            )
-            lane_parallelism = 1
 
         if lane_parallelism > 1:
             # One lock per write scope serializes only the DB apply transaction. LLM
@@ -3184,14 +3203,35 @@ async def _process_memory_batch(
         observation or delete it after its replacement was applied. The caller
         re-recalls and re-prepares while owning this batch's ordered lane turn.
         """
-        for observation_id in prepared_deletes:
-            recalled = next(obs for obs in union_observations if str(obs.id) == observation_id)
-            row = await conn.fetchrow(
-                f"SELECT text, source_memory_ids FROM {fq_table('memory_units')} "
-                "WHERE bank_id = $1 AND id = $2 FOR UPDATE",
-                bank_id,
-                uuid.UUID(observation_id),
-            )
+        # The deletion/invalidation sweep locks outgoing facts, observations and
+        # surviving co-sources together in UUID order. Locking an observation first
+        # here and its source later in _apply_update_action inverts that order and
+        # deadlocks against a concurrent sweep. Include every source we may touch
+        # (including stamps and CREATEs) before taking any locks, then use the same
+        # ordered acquisition as the sweep. Keep these locks through validation and
+        # the entire apply transaction so a source cannot disappear after checking.
+        recalled_deletes = {
+            observation_id: next(obs for obs in union_observations if str(obs.id) == observation_id)
+            for observation_id in prepared_deletes
+        }
+        target_ids = {*recalled_deletes, *(prepared.update.observation_id for prepared in prepared_updates)}
+        lock_ids = {uuid.UUID(observation_id) for observation_id in target_ids}
+        for model in [*recalled_deletes.values(), *(prepared.model for prepared in prepared_updates)]:
+            lock_ids.update(uuid.UUID(str(source_id)) for source_id in (model.source_fact_ids or []))
+        for prepared in prepared_updates:
+            lock_ids.update(uuid.UUID(str(source_id)) for source_id in prepared.source_memory_ids)
+        for prepared in prepared_creates:
+            lock_ids.update(uuid.UUID(str(source_id)) for source_id in prepared.source_memory_ids)
+        lock_ids.update(uuid.UUID(str(source_id)) for source_id in stamp_ids)
+        locked_rows = await conn.fetch(
+            f"SELECT id, text, source_memory_ids FROM {fq_table('memory_units')} "
+            "WHERE bank_id = $1 AND id = ANY($2::uuid[]) ORDER BY id FOR UPDATE",
+            bank_id,
+            sorted(lock_ids),
+        )
+        current_by_id = {str(row["id"]): row for row in locked_rows}
+        for observation_id, recalled in recalled_deletes.items():
+            row = current_by_id.get(observation_id)
             if (
                 row is None
                 or row["text"] != recalled.text
@@ -3200,12 +3240,7 @@ async def _process_memory_batch(
             ):
                 raise _StaleConsolidationReference(f"delete target {observation_id} changed before serialized apply")
         for prepared in prepared_updates:
-            row = await conn.fetchrow(
-                f"SELECT text, source_memory_ids FROM {fq_table('memory_units')} "
-                "WHERE bank_id = $1 AND id = $2 FOR UPDATE",
-                bank_id,
-                uuid.UUID(prepared.update.observation_id),
-            )
+            row = current_by_id.get(prepared.update.observation_id)
             if row is None:
                 raise _StaleConsolidationReference(
                     f"update target {prepared.update.observation_id} disappeared before serialized apply"

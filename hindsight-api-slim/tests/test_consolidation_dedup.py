@@ -113,7 +113,7 @@ async def test_exact_probe_confirms_text_after_hash_candidate() -> None:
     args = conn.fetch.await_args.args
     assert "md5(" in args[0] and "tags @>" in args[0]
     assert args[1:3] == ("bank", ["scope"])
-    assert args[3] == [hashlib.md5(b"Same text").hexdigest()]
+    assert args[3] == [hashlib.md5(b"Same text", usedforsecurity=False).hexdigest()]
 
 
 def test_create_matching_shown_observation_is_duplicate() -> None:

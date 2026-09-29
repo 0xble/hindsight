@@ -5,8 +5,8 @@ Revises: a7c2e9f41b60
 Create Date: 2026-09-28
 
 The serialized lane apply path compares prepared CREATE texts with committed
-observations using the same whitespace normalization as the Python guard. An
-A fixed-size hash expression index keeps that probe selective even when
+observations using the same whitespace normalization as the Python guard. A
+fixed-size hash expression index keeps that probe selective even when
 observation text exceeds the btree tuple limit. The reader confirms normalized
 text after the hash lookup to guard against collisions.
 """
@@ -44,7 +44,7 @@ def _pg_upgrade() -> None:
     # The largest table can be written throughout the build. Recover an invalid
     # index left by an interrupted concurrent attempt before IF NOT EXISTS.
     with op.get_context().autocommit_block():
-        # A test database may have applied the earlier form of this revision.
+        # Only clean up the old index name in pre-release test databases.
         op.execute(f"DROP INDEX CONCURRENTLY IF EXISTS {schema}{_OLD_INDEX_NAME}")
         leftover_invalid = bind.execute(
             text(
