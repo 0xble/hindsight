@@ -2478,25 +2478,35 @@ async def _run_consolidation_job(
                 lane_sem: asyncio.Semaphore,
                 admission_turn: tuple[asyncio.Event, asyncio.Event],
             ) -> _BatchDeltas:
-                # Admit contenders in batch order. Otherwise a later task could
-                # occupy both lane slots waiting for its apply turn while an
-                # earlier task still waits for a slot, deadlocking the lane.
-                await admission_turn[0].wait()
-                async with lane_sem:
-                    admission_turn[1].set()
-                    # Waiting on a busy lane never holds a global slot.
-                    async with sem:
-                        try:
+                try:
+                    # Admit contenders in batch order. Otherwise a later task could
+                    # occupy both lane slots waiting for its apply turn while an
+                    # earlier task still waits for a slot, deadlocking the lane.
+                    await admission_turn[0].wait()
+                    async with lane_sem:
+                        admission_turn[1].set()
+                        # Waiting on a busy lane never holds a global slot.
+                        async with sem:
                             return await _process_one_llm_batch(
                                 batch,
                                 batch_num,
                                 [scope_locks[scope] for scope in scopes],
                                 apply_turn,
                             )
-                        finally:
-                            # A failed or action-free batch must still advance the lane.
-                            # Hold the turn for *all* sub-batches and retry passes.
+                finally:
+                    # A failed/action-free batch (including bisections and retries)
+                    # may finish preparation before its predecessor has applied.
+                    # Chain its successor to the predecessor even on cancellation:
+                    # awaiting here in a cancelled task would break the chain.
+                    if apply_turn[0].is_set():
+                        apply_turn[1].set()
+                    else:
+
+                        async def release_after_predecessor() -> None:
+                            await apply_turn[0].wait()
                             apply_turn[1].set()
+
+                        asyncio.create_task(release_after_predecessor())
 
             group_results = await _gather_or_cancel(
                 [_run_lane_batch(group, scopes) for group, scopes in zip(numbered_groups, group_scopes)]
@@ -3222,10 +3232,13 @@ async def _process_memory_batch(
                                     max_obs,
                                 )
 
+                        # Probe ALL CREATEs before inserting any of this response's rows.
+                        # A stale retry must be resolvable by fresh recall: a near-twin
+                        # inserted by this very transaction is invisible to preparation
+                        # on every retry, so treating it as a stale predecessor livelocks.
+                        # This preserves lane=1's intra-response near-twin behavior.
+                        apply_dedups = []
                         for prepared_create in prepared_creates:
-                            # Preparation probes a snapshot from before earlier lane batches
-                            # committed. Re-probe current committed state under the scope lock
-                            # so a newly committed twin is folded without another LLM call.
                             apply_dedup = prepared_create.dedup
                             if apply_turn is not None and dedup_enabled:
                                 current_dedup = await _dedup_probe(
@@ -3246,11 +3259,14 @@ async def _process_memory_batch(
                                             current_dedup.best_id[:8],
                                         )
                                     elif apply_dedup is None or apply_dedup.best_id != current_dedup.best_id:
-                                        # A semantic near-twin needs the normal off-connection
-                                        # LLM adjudication, never a blind merge inside a transaction.
+                                        # Only a predecessor's new semantic twin needs
+                                        # off-connection LLM adjudication on fresh recall.
                                         raise _StaleConsolidationReference(
                                             "new semantic CREATE twin before serialized apply"
                                         )
+                            apply_dedups.append(apply_dedup)
+
+                        for prepared_create, apply_dedup in zip(prepared_creates, apply_dedups):
                             if apply_dedup is not None:
                                 merged_into = await _apply_dedup_create_fold(
                                     conn,
