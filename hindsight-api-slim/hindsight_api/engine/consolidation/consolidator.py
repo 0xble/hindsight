@@ -180,6 +180,42 @@ def _norm_obs_text(text: str) -> str:
     return " ".join((text or "").split()).strip()
 
 
+# Python's str.split() treats Unicode whitespace (including C0 separators and
+# NEL) as delimiters. PostgreSQL's \\s misses several of those. Enumerate the
+# Python 3.11 whitespace set so the indexed SQL predicate has the same semantics.
+_NORMALIZED_OBS_SQL = (
+    "btrim(regexp_replace(text, "
+    "E'[\\\\x09-\\\\x0d\\\\x1c-\\\\x20\\\\x85\\\\xa0\\\\x1680"
+    "\\\\x2000-\\\\x200a\\\\x2028\\\\x2029\\\\x202f\\\\x205f\\\\x3000]+', ' ', 'g'))"
+)
+
+
+async def _fetch_exact_observation_candidates(
+    conn: Any,
+    bank_id: str,
+    scope: tuple[str, ...],
+    normalized_texts: list[str],
+) -> list[Any]:
+    """Fetch only in-scope observations matching prepared normalized CREATE texts.
+
+    The expression is the SQL equivalent of ``_norm_obs_text``. The matching
+    expression has a partial PostgreSQL index; tags remains a separate GIN
+    predicate, preserving the existing scope semantics without fetching the
+    entire shared scope into Python.
+    """
+    if not normalized_texts:
+        return []
+    return await conn.fetch(
+        f"SELECT id, text FROM {fq_table('memory_units')} "
+        "WHERE bank_id = $1 AND fact_type = 'observation' "
+        "AND tags @> $2::varchar[] "
+        f"AND {_NORMALIZED_OBS_SQL} = ANY($3::text[])",
+        bank_id,
+        list(scope),
+        normalized_texts,
+    )
+
+
 def _duplicate_create_target(
     create_text: str,
     shown_obs_by_text: "dict[str, MemoryFact]",
@@ -3236,30 +3272,24 @@ async def _process_memory_batch(
                                     max_obs,
                                 )
 
-                        # Probe ALL CREATEs before inserting any of this response's rows.
-                        # A stale retry must be resolvable by fresh recall: a near-twin
-                        # inserted by this very transaction is invisible to preparation
-                        # on every retry, so treating it as a stale predecessor livelocks.
-                        # This preserves lane=1's intra-response near-twin behavior.
-                        # Exact-text reconciliation is independent of semantic dedup.
-                        # The predecessor may have committed after this batch's recall;
-                        # compare every in-scope committed observation (not just the
-                        # semantic top-K) using the same normalization as preparation.
-                        # Probe before this response's CREATEs so its own siblings keep
-                        # the lane=1 intra-response behavior.
+                        # Probe only prepared normalized CREATE texts before inserting any
+                        # response rows. The indexed SQL expression preserves the old
+                        # whitespace-normalized, case-sensitive semantics while avoiding a
+                        # materialization of every observation in a shared scope.
                         exact_by_scope: dict[tuple[str, ...], dict[str, Any]] = {}
                         if apply_turn is not None:
+                            normalized_by_scope: dict[tuple[str, ...], list[str]] = {}
                             for prepared_create in prepared_creates:
                                 scope = tuple(sorted(prepared_create.source_fact_tags or []))
-                                if scope not in exact_by_scope:
-                                    rows = await conn.fetch(
-                                        f"SELECT id, text FROM {fq_table('memory_units')} "
-                                        "WHERE bank_id = $1 AND fact_type = 'observation' "
-                                        "AND tags @> $2::varchar[]",
-                                        bank_id,
-                                        list(scope),
-                                    )
-                                    exact_by_scope[scope] = {_norm_obs_text(row["text"]): row for row in rows}
+                                normalized_by_scope.setdefault(scope, []).append(_norm_obs_text(prepared_create.text))
+                            for scope, normalized_texts in normalized_by_scope.items():
+                                rows = await _fetch_exact_observation_candidates(
+                                    conn,
+                                    bank_id,
+                                    scope,
+                                    list(dict.fromkeys(normalized_texts)),
+                                )
+                                exact_by_scope[scope] = {_norm_obs_text(row["text"]): row for row in rows}
                         apply_dedups = []
                         for prepared_create in prepared_creates:
                             scope = tuple(sorted(prepared_create.source_fact_tags or []))
@@ -3279,13 +3309,7 @@ async def _process_memory_batch(
                                     None,
                                 )
                                 if current_dedup.best_id is not None:
-                                    if _norm_obs_text(current_dedup.best_text) == _norm_obs_text(prepared_create.text):
-                                        apply_dedup = current_dedup
-                                        logger.info(
-                                            "[CONSOLIDATION] dedup-folded CREATE at apply time into %s",
-                                            current_dedup.best_id[:8],
-                                        )
-                                    elif apply_dedup is None or apply_dedup.best_id != current_dedup.best_id:
+                                    if apply_dedup is None or apply_dedup.best_id != current_dedup.best_id:
                                         # Only a predecessor's new semantic twin needs
                                         # off-connection LLM adjudication on fresh recall.
                                         raise _StaleConsolidationReference(

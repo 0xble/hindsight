@@ -649,8 +649,15 @@ async def test_lane_exact_duplicate_create_without_semantic_dedup(
     bank_id = f"test-lane-exact-{uuid.uuid4().hex[:8]}"
     await memory.ensure_bank_profile(bank_id=bank_id, request_context=request_context)
     original_find = mod._find_related_observations
+    original_exact_probe = mod._fetch_exact_observation_candidates
+    fetched_candidate_counts: list[int] = []
     recalls = 0
     both_recalled = asyncio.Event()
+
+    async def tracked_exact_probe(*args, **kwargs):
+        rows = await original_exact_probe(*args, **kwargs)
+        fetched_candidate_counts.append(len(rows))
+        return rows
 
     async def synchronized_find(**kwargs):
         nonlocal recalls
@@ -686,10 +693,19 @@ async def test_lane_exact_duplicate_create_without_semantic_dedup(
         async with memory._pool.acquire() as conn:
             for index in range(2):
                 fact_ids.append(await _insert_memory(conn, bank_id, f"Source fact {index}", ["same"], "shared"))
+            await conn.executemany(
+                """
+                INSERT INTO memory_units
+                    (id, bank_id, text, fact_type, tags, source_memory_ids, consolidated_at, created_at)
+                VALUES ($1, $2, $3, 'observation', $4, '{}', now(), now())
+                """,
+                [(uuid.uuid4(), bank_id, f"Unrelated observation {index}", ["same"]) for index in range(2000)],
+            )
         with (
             patch.object(memory, "_consolidation_llm_config", wrapper),
             patch.object(memory, "submit_async_consolidation"),
             patch.object(mod, "_find_related_observations", synchronized_find),
+            patch.object(mod, "_fetch_exact_observation_candidates", tracked_exact_probe),
             _override_config(
                 memory,
                 consolidation_llm_parallelism=2,
@@ -709,8 +725,12 @@ async def test_lane_exact_duplicate_create_without_semantic_dedup(
             )
         assert result["status"] == "completed"
         assert recalls >= 2
-        assert len(rows) == 1
-        assert rows[0]["text"] == "Identical   observation"
+        assert len(rows) == 2001
+        assert sum(row["text"] == "Identical   observation" for row in rows) == 1
+        if lane_parallelism == 1:
+            assert fetched_candidate_counts == []
+        else:
+            assert fetched_candidate_counts and max(fetched_candidate_counts) <= 1
     finally:
         await memory.delete_bank(bank_id, request_context=request_context)
 
