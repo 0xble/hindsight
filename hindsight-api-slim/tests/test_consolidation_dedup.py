@@ -6,6 +6,7 @@ the path stochastically.
 """
 
 from hindsight_api.engine.response_models import LLMCallResult, TokenUsage
+import hashlib
 import logging
 import types
 import uuid
@@ -26,6 +27,7 @@ from hindsight_api.engine.consolidation.consolidator import (
     _DedupDecision,
     _DedupOutcome,
     _duplicate_create_target,
+    _fetch_exact_observation_candidates,
     _norm_obs_text,
     _TemporalBounds,
 )
@@ -96,6 +98,22 @@ def test_norm_obs_text_collapses_whitespace_preserves_case() -> None:
     # Whitespace (incl. newlines) collapses; case is preserved.
     assert _norm_obs_text("  The  User  likes BASIL.\n") == "The User likes BASIL."
     assert _norm_obs_text(None) == ""
+
+
+@pytest.mark.asyncio
+async def test_exact_probe_confirms_text_after_hash_candidate() -> None:
+    """Even a hash-collision candidate cannot silently fold different text."""
+    conn = AsyncMock()
+    conn.fetch.return_value = [
+        {"id": "collision", "text": "Different case"},
+        {"id": "exact", "text": "Same   text"},
+    ]
+    rows = await _fetch_exact_observation_candidates(conn, "bank", ("scope",), ["Same text"])
+    assert rows == [{"id": "exact", "text": "Same   text"}]
+    args = conn.fetch.await_args.args
+    assert "md5(" in args[0] and "tags @>" in args[0]
+    assert args[1:3] == ("bank", ["scope"])
+    assert args[3] == [hashlib.md5(b"Same text").hexdigest()]
 
 
 def test_create_matching_shown_observation_is_duplicate() -> None:

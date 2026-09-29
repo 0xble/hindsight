@@ -16,6 +16,7 @@ NOTE: Observations are distinct from mental models (pinned reflections).
 """
 
 import asyncio
+import hashlib
 import json
 import logging
 import time
@@ -198,22 +199,25 @@ async def _fetch_exact_observation_candidates(
 ) -> list[Any]:
     """Fetch only in-scope observations matching prepared normalized CREATE texts.
 
-    The expression is the SQL equivalent of ``_norm_obs_text``. The matching
-    expression has a partial PostgreSQL index; tags remains a separate GIN
-    predicate, preserving the existing scope semantics without fetching the
-    entire shared scope into Python.
+    The SQL predicate indexes a fixed-size hash of the normalized text;
+    fetched rows are confirmed against the original normalized values so even
+    a hash collision cannot fold a different observation. Tags remains a
+    separate GIN predicate to preserve the existing scope semantics.
     """
     if not normalized_texts:
         return []
-    return await conn.fetch(
+    wanted = set(normalized_texts)
+    hashes = list({hashlib.md5(value.encode("utf-8")).hexdigest() for value in wanted})
+    rows = await conn.fetch(
         f"SELECT id, text FROM {fq_table('memory_units')} "
         "WHERE bank_id = $1 AND fact_type = 'observation' "
         "AND tags @> $2::varchar[] "
-        f"AND {_NORMALIZED_OBS_SQL} = ANY($3::text[])",
+        f"AND md5({_NORMALIZED_OBS_SQL}) = ANY($3::text[])",
         bank_id,
         list(scope),
-        normalized_texts,
+        hashes,
     )
+    return [row for row in rows if _norm_obs_text(row["text"]) in wanted]
 
 
 def _duplicate_create_target(

@@ -20,6 +20,7 @@ parallelism levels used here).
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import logging
 import re
@@ -639,14 +640,37 @@ async def test_overlapping_scopes_serialise_under_parallelism(memory: MemoryEngi
 
 @pytest.mark.asyncio
 @pytest.mark.memory_backend_incompatible
-@pytest.mark.parametrize("lane_parallelism", [1, 2])
+async def test_observation_md5_index_matches_python_unicode_whitespace(memory: MemoryEngine):
+    """SQL index hash and Python normalization agree on all 29 whitespace codepoints."""
+    from hindsight_api.engine.consolidation.consolidator import _NORMALIZED_OBS_SQL, _norm_obs_text
+
+    whitespace = [chr(i) for i in range(0x110000) if chr(i).isspace()]
+    assert len(whitespace) == 29
+    expr = _NORMALIZED_OBS_SQL.replace("text,", "$1::text,")
+    assert memory._pool is not None
+    async with memory._pool.acquire() as conn:
+        assert await conn.fetchval("SHOW server_encoding") == "UTF8"
+        for char in whitespace:
+            value = f"\tÅ{char}{char}BASiL{char}"
+            expected = hashlib.md5(_norm_obs_text(value).encode("utf-8")).hexdigest()
+            assert await conn.fetchval(f"SELECT md5({expr})", value) == expected, hex(ord(char))
+
+
+@pytest.mark.asyncio
+@pytest.mark.memory_backend_incompatible
+@pytest.mark.parametrize("lane_parallelism,long_text", [(1, False), (2, False), (2, True)])
 async def test_lane_exact_duplicate_create_without_semantic_dedup(
-    memory: MemoryEngine, request_context, lane_parallelism: int
+    memory: MemoryEngine, request_context, lane_parallelism: int, long_text: bool
 ):
     """A predecessor's verbatim CREATE cannot be repeated by a prepared sibling."""
     from hindsight_api.engine.consolidation import consolidator as mod
 
     bank_id = f"test-lane-exact-{uuid.uuid4().hex[:8]}"
+    # Poorly compressible >10KB text used to exceed PostgreSQL's btree tuple limit.
+    tail = " ".join(uuid.uuid4().hex for _ in range(400)) if long_text else ""
+    first_text = "Identical   observation" + ("  " + tail if tail else "")
+    second_text = "Identical observation" + (" " + tail if tail else "")
+    assert not long_text or len(first_text.encode("utf-8")) > 10_000
     await memory.ensure_bank_profile(bank_id=bank_id, request_context=request_context)
     original_find = mod._find_related_observations
     original_exact_probe = mod._fetch_exact_observation_candidates
@@ -679,7 +703,7 @@ async def test_lane_exact_duplicate_create_without_semantic_dedup(
         return _ConsolidationBatchResponse(
             creates=[
                 _CreateAction(
-                    text="Identical   observation" if fact_id == str(fact_ids[0]) else "Identical observation",
+                    text=first_text if fact_id == str(fact_ids[0]) else second_text,
                     source_fact_ids=[fact_id],
                 )
             ]
@@ -691,6 +715,13 @@ async def test_lane_exact_duplicate_create_without_semantic_dedup(
     fact_ids = []
     try:
         async with memory._pool.acquire() as conn:
+            if long_text:
+                assert await conn.fetchval("SHOW server_encoding") == "UTF8"
+                index_def = await conn.fetchval(
+                    "SELECT indexdef FROM pg_indexes WHERE schemaname = current_schema() "
+                    "AND indexname = 'idx_memory_units_observation_norm_text_md5'"
+                )
+                assert index_def and "md5(" in index_def
             for index in range(2):
                 fact_ids.append(await _insert_memory(conn, bank_id, f"Source fact {index}", ["same"], "shared"))
             await conn.executemany(
@@ -726,7 +757,7 @@ async def test_lane_exact_duplicate_create_without_semantic_dedup(
         assert result["status"] == "completed"
         assert recalls >= 2
         assert len(rows) == 2001
-        assert sum(row["text"] == "Identical   observation" for row in rows) == 1
+        assert sum(row["text"] == first_text for row in rows) == 1
         if lane_parallelism == 1:
             assert fetched_candidate_counts == []
         else:

@@ -1,13 +1,14 @@
 """Index normalized observation text for exact consolidation reconciliation.
 
 Revision ID: e6f7a8b9c0d1
-Revises: d9f6a3b4c5e2
+Revises: a7c2e9f41b60
 Create Date: 2026-09-28
 
 The serialized lane apply path compares prepared CREATE texts with committed
 observations using the same whitespace normalization as the Python guard. An
-expression index keeps that exact probe selective without materializing every
-observation in a shared scope.
+A fixed-size hash expression index keeps that probe selective even when
+observation text exceeds the btree tuple limit. The reader confirms normalized
+text after the hash lookup to guard against collisions.
 """
 
 from collections.abc import Sequence
@@ -18,11 +19,12 @@ from sqlalchemy import text
 from hindsight_api.alembic._dialect import run_for_dialect
 
 revision: str = "e6f7a8b9c0d1"
-down_revision: str | Sequence[str] | None = "d9f6a3b4c5e2"
+down_revision: str | Sequence[str] | None = "a7c2e9f41b60"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
-_INDEX_NAME = "idx_memory_units_observation_norm_text"
+_OLD_INDEX_NAME = "idx_memory_units_observation_norm_text"
+_INDEX_NAME = "idx_memory_units_observation_norm_text_md5"
 _NORM_EXPR = (
     "btrim(regexp_replace(text, "
     "E'[\\\\x09-\\\\x0d\\\\x1c-\\\\x20\\\\x85\\\\xa0\\\\x1680"
@@ -42,6 +44,8 @@ def _pg_upgrade() -> None:
     # The largest table can be written throughout the build. Recover an invalid
     # index left by an interrupted concurrent attempt before IF NOT EXISTS.
     with op.get_context().autocommit_block():
+        # A test database may have applied the earlier form of this revision.
+        op.execute(f"DROP INDEX CONCURRENTLY IF EXISTS {schema}{_OLD_INDEX_NAME}")
         leftover_invalid = bind.execute(
             text(
                 "SELECT NOT i.indisvalid FROM pg_class c "
@@ -56,7 +60,7 @@ def _pg_upgrade() -> None:
             op.execute(f"DROP INDEX CONCURRENTLY IF EXISTS {schema}{_INDEX_NAME}")
         op.execute(
             f"CREATE INDEX CONCURRENTLY IF NOT EXISTS {_INDEX_NAME} ON {schema}memory_units "
-            f"(bank_id, ({_NORM_EXPR})) WHERE fact_type = 'observation'"
+            f"(bank_id, md5({_NORM_EXPR})) WHERE fact_type = 'observation'"
         )
 
 
