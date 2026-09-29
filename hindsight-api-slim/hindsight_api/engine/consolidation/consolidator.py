@@ -2470,6 +2470,8 @@ async def _run_consolidation_job(
                     )
                 return await _gather_or_cancel(tasks)
 
+            release_tasks: set[asyncio.Task[None]] = set()
+
             async def _run_lane_batch_item(
                 batch: list[dict[str, Any]],
                 batch_num: int,
@@ -2506,7 +2508,9 @@ async def _run_consolidation_job(
                             await apply_turn[0].wait()
                             apply_turn[1].set()
 
-                        asyncio.create_task(release_after_predecessor())
+                        release_task = asyncio.create_task(release_after_predecessor())
+                        release_tasks.add(release_task)
+                        release_task.add_done_callback(release_tasks.discard)
 
             group_results = await _gather_or_cancel(
                 [_run_lane_batch(group, scopes) for group, scopes in zip(numbered_groups, group_scopes)]
@@ -3237,8 +3241,31 @@ async def _process_memory_batch(
                         # inserted by this very transaction is invisible to preparation
                         # on every retry, so treating it as a stale predecessor livelocks.
                         # This preserves lane=1's intra-response near-twin behavior.
+                        # Exact-text reconciliation is independent of semantic dedup.
+                        # The predecessor may have committed after this batch's recall;
+                        # compare every in-scope committed observation (not just the
+                        # semantic top-K) using the same normalization as preparation.
+                        # Probe before this response's CREATEs so its own siblings keep
+                        # the lane=1 intra-response behavior.
+                        exact_by_scope: dict[tuple[str, ...], dict[str, Any]] = {}
+                        if apply_turn is not None:
+                            for prepared_create in prepared_creates:
+                                scope = tuple(sorted(prepared_create.source_fact_tags or []))
+                                if scope not in exact_by_scope:
+                                    rows = await conn.fetch(
+                                        f"SELECT id, text FROM {fq_table('memory_units')} "
+                                        "WHERE bank_id = $1 AND fact_type = 'observation' "
+                                        "AND tags @> $2::varchar[]",
+                                        bank_id,
+                                        list(scope),
+                                    )
+                                    exact_by_scope[scope] = {_norm_obs_text(row["text"]): row for row in rows}
                         apply_dedups = []
                         for prepared_create in prepared_creates:
+                            scope = tuple(sorted(prepared_create.source_fact_tags or []))
+                            if _norm_obs_text(prepared_create.text) in exact_by_scope.get(scope, {}):
+                                apply_dedups.append(None)
+                                continue
                             apply_dedup = prepared_create.dedup
                             if apply_turn is not None and dedup_enabled:
                                 current_dedup = await _dedup_probe(
@@ -3267,6 +3294,29 @@ async def _process_memory_batch(
                             apply_dedups.append(apply_dedup)
 
                         for prepared_create, apply_dedup in zip(prepared_creates, apply_dedups):
+                            scope = tuple(sorted(prepared_create.source_fact_tags or []))
+                            exact_row = exact_by_scope.get(scope, {}).get(_norm_obs_text(prepared_create.text))
+                            if exact_row is not None:
+                                exact_fold = _DedupOutcome(
+                                    best_id=str(exact_row["id"]),
+                                    merged_text=exact_row["text"],
+                                    should_merge=True,
+                                    best_text=exact_row["text"],
+                                )
+                                merged_into = await _apply_dedup_create_fold(
+                                    conn,
+                                    memory_engine,
+                                    bank_id,
+                                    config,
+                                    exact_fold,
+                                    prepared_create.source_memory_ids,
+                                    _TemporalBounds.of(prepared_create.agg),
+                                )
+                                if merged_into is not None:
+                                    logger.info("[CONSOLIDATION] folded exact duplicate CREATE during serialized apply")
+                                    for m in prepared_create.source_mems:
+                                        per_memory_created.add(str(m["id"]))
+                                continue
                             if apply_dedup is not None:
                                 merged_into = await _apply_dedup_create_fold(
                                     conn,

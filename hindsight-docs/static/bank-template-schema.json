@@ -622,6 +622,19 @@
           "description": "Number of consolidation LLM batches processed concurrently",
           "title": "Consolidation Llm Parallelism"
         },
+        "consolidation_lane_llm_parallelism": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Number of LLM batches prepared concurrently within one observation-scope lane; DB applies remain serialized",
+          "title": "Consolidation Lane Llm Parallelism"
+        },
         "consolidation_fair_group_selection": {
           "anyOf": [
             {

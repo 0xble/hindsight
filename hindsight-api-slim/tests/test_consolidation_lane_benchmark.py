@@ -20,6 +20,7 @@ from hindsight_api.engine.response_models import MemoryFact, RecallResult
 from tests.test_consolidation_scope_parallelism import _insert_memory, _override_config
 
 
+@pytest.mark.slow
 @pytest.mark.parametrize("near_identical", [False, True], ids=["distinct", "near-identical"])
 @pytest.mark.asyncio
 @pytest.mark.memory_backend_incompatible
@@ -140,9 +141,13 @@ async def test_single_lane_benchmark(memory: MemoryEngine, request_context, capl
                 )
             retries = sum("stale prepared reference" in rec.message for rec in caplog.records)
             folds = sum("dedup-folded CREATE at apply time" in rec.message for rec in caplog.records)
+            exact_drops = sum(
+                "folded exact duplicate CREATE during serialized apply" in rec.message for rec in caplog.records
+            )
             print(
                 f"BENCH near_identical={near_identical} lane={lane_parallelism} facts={len(facts)} elapsed={elapsed:.3f}s "
-                f"facts_per_sec={len(facts) / elapsed:.2f} retries={retries} apply_dedup_folds={folds} duplicates={duplicates} "
+                f"facts_per_sec={len(facts) / elapsed:.2f} retries={retries} apply_dedup_folds={folds} "
+                f"exact_drops={exact_drops} duplicates={duplicates} "
                 f"consolidated={sum(s['consolidated_at'] is not None for s in states)} "
                 f"failed={sum(s['consolidation_failed_at'] is not None for s in states)}"
             )
@@ -150,7 +155,7 @@ async def test_single_lane_benchmark(memory: MemoryEngine, request_context, capl
             assert all(s["consolidated_at"] is not None for s in states)
             assert duplicates == 0
             if near_identical and lane_parallelism == 8:
-                assert folds > 0, "near-identical variant must exercise apply-time CREATE dedup"
+                assert folds + exact_drops > 0, "near-identical variant must exercise apply-time CREATE reconciliation"
             caplog.clear()
         finally:
             await memory.delete_bank(bank_id, request_context=request_context)

@@ -639,6 +639,84 @@ async def test_overlapping_scopes_serialise_under_parallelism(memory: MemoryEngi
 
 @pytest.mark.asyncio
 @pytest.mark.memory_backend_incompatible
+@pytest.mark.parametrize("lane_parallelism", [1, 2])
+async def test_lane_exact_duplicate_create_without_semantic_dedup(
+    memory: MemoryEngine, request_context, lane_parallelism: int
+):
+    """A predecessor's verbatim CREATE cannot be repeated by a prepared sibling."""
+    from hindsight_api.engine.consolidation import consolidator as mod
+
+    bank_id = f"test-lane-exact-{uuid.uuid4().hex[:8]}"
+    await memory.ensure_bank_profile(bank_id=bank_id, request_context=request_context)
+    original_find = mod._find_related_observations
+    recalls = 0
+    both_recalled = asyncio.Event()
+
+    async def synchronized_find(**kwargs):
+        nonlocal recalls
+        result = await original_find(**kwargs)
+        recalls += 1
+        if lane_parallelism == 2 and recalls <= 2:
+            if recalls == 2:
+                both_recalled.set()
+            await asyncio.wait_for(both_recalled.wait(), timeout=10)
+        return result
+
+    mock_llm = MockLLM(provider="mock", api_key="", base_url="", model="mock-model")
+
+    def response(messages, scope):
+        if scope != "consolidation":
+            return _ConsolidationBatchResponse()
+        prompt = "\n".join(m.get("content", "") for m in messages if m.get("role") == "user")
+        fact_id = next(str(fid) for fid in fact_ids if str(fid) in prompt)
+        return _ConsolidationBatchResponse(
+            creates=[
+                _CreateAction(
+                    text="Identical   observation" if fact_id == str(fact_ids[0]) else "Identical observation",
+                    source_fact_ids=[fact_id],
+                )
+            ]
+        )
+
+    mock_llm.set_response_callback(response)
+    wrapper = MagicMock()
+    wrapper.with_config.return_value = mock_llm
+    fact_ids = []
+    try:
+        async with memory._pool.acquire() as conn:
+            for index in range(2):
+                fact_ids.append(await _insert_memory(conn, bank_id, f"Source fact {index}", ["same"], "shared"))
+        with (
+            patch.object(memory, "_consolidation_llm_config", wrapper),
+            patch.object(memory, "submit_async_consolidation"),
+            patch.object(mod, "_find_related_observations", synchronized_find),
+            _override_config(
+                memory,
+                consolidation_llm_parallelism=2,
+                consolidation_lane_llm_parallelism=lane_parallelism,
+                consolidation_llm_batch_size=1,
+                consolidation_batch_size=2,
+                consolidation_dedup_threshold=1.0,
+            ),
+        ):
+            result = await asyncio.wait_for(
+                run_consolidation_job(memory_engine=memory, bank_id=bank_id, request_context=request_context),
+                timeout=20,
+            )
+        async with memory._pool.acquire() as conn:
+            rows = await conn.fetch(
+                "SELECT text FROM memory_units WHERE bank_id=$1 AND fact_type='observation'", bank_id
+            )
+        assert result["status"] == "completed"
+        assert recalls >= 2
+        assert len(rows) == 1
+        assert rows[0]["text"] == "Identical   observation"
+    finally:
+        await memory.delete_bank(bank_id, request_context=request_context)
+
+
+@pytest.mark.asyncio
+@pytest.mark.memory_backend_incompatible
 async def test_same_lane_parallelizes_llm_but_serializes_apply(memory: MemoryEngine, request_context):
     """Batches in one shared lane overlap in LLM time but never overlap DB apply."""
     bank_id = f"test-lane-parallel-{uuid.uuid4().hex[:8]}"
@@ -1520,6 +1598,7 @@ async def test_default_lane_does_not_validate_recalled_targets(memory: MemoryEng
 
 
 @pytest.mark.asyncio
+@pytest.mark.memory_backend_incompatible
 async def test_store_owned_bank_disables_lane_parallelism(memory: MemoryEngine, request_context, caplog):
     """Store-owned observations never pass the SQL-only lane reference validator."""
     from hindsight_api.engine.consolidation import consolidator as mod
