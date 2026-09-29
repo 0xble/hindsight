@@ -1046,7 +1046,13 @@ class _ReferenceFilterResult:
 
     @property
     def must_reject(self) -> bool:
-        return self.unsafe_delete or self.unknown_only_sources
+        # No fact has a durable action: splitting is the only bounded path to
+        # either a valid leaf reply or consolidation_failed_at.
+        return (
+            self.unsafe_delete
+            or self.unknown_only_sources
+            or (bool(self.dropped) and not (self.response.creates or self.response.updates))
+        )
 
 
 def _filter_unpersistable_references(
@@ -1067,8 +1073,9 @@ def _filter_unpersistable_references(
     trimming would let language validation authorize text using evidence that never
     reaches the stored observation. Valid sibling actions are kept, because every
     source they cite is persisted exactly as validated. Batch facts that only
-    dropped actions cited remain pending while valid siblings commit. Unknown-only
-    citations and unsafe target actions still reject the whole response.
+    dropped actions cited are retried by the caller's bounded sub-batch loop
+    after valid siblings commit. Unknown-only citations and unsafe target actions
+    still reject the whole response.
     """
     valid_fact_ids = {str(memory["id"]) for memory in memories}
     valid_observation_ids = {str(observation.id) for observation in union_observations}
@@ -1885,7 +1892,6 @@ async def _run_consolidation_job(
     hit_round_limit = False
 
     llm_batch_num = 0
-    deferred_this_job: set[str] = set()
     # Cumulative counters across the whole job, shared by the per-batch log and the
     # durable progress snapshot so both report processed/total (and observation
     # tallies) under parallelism. Mutable container so the inner closure can update
@@ -1918,11 +1924,10 @@ async def _run_consolidation_job(
                     ["experience", "world"],
                     fetch_limit,
                     _fair_group_cap(fetch_limit, config.consolidation_llm_parallelism),
-                    deferred_this_job,
                 )
             if memories is None:
                 memories = await _fetch_unconsolidated_rows(
-                    conn, bank_id, ["experience", "world"], fetch_limit, observation_scopes, deferred_this_job
+                    conn, bank_id, ["experience", "world"], fetch_limit, observation_scopes
                 )
             perf.record_timing("fetch_memories", time.time() - t0)
 
@@ -2124,26 +2129,32 @@ async def _run_consolidation_job(
                         f" {sub_batch[0]['id']}, marking consolidation_failed_at"
                     )
                 else:
-                    # At the indivisible leaf an uncovered fact cannot be rescued by
-                    # another split. Use the existing failed-at lifecycle instead of
-                    # leaving an oldest-first pending row to stall every future job.
-                    if len(sub_batch) == 1 and (
-                        sub_results[0].get("reason") == "invalid_references_pending"
-                        or (obs_tags_list and str(sub_batch[0]["id"]) in pending_pass_ids)
-                    ):
-                        failed_ids.append(sub_batch[0]["id"])
-                        all_results.append({"action": "failed"})
-                        continue
+                    # Preserve the valid siblings, then retry only uncovered facts
+                    # within this job. Otherwise an endless stream of new siblings
+                    # can pair with a persistently mis-cited fact on every job and
+                    # keep it pending forever. The retry subset shrinks unless an
+                    # earlier scope wrote valid actions while a later scope left
+                    # every fact uncovered; that case is bisected as well.
+                    uncovered = []
                     for memory, result in zip(sub_batch, sub_results):
                         mid = str(memory["id"])
                         if result.get("reason") == "invalid_references_pending" or (
                             obs_tags_list and mid in pending_pass_ids
                         ):
-                            deferred_this_job.add(mid)
-                            all_results.append({"action": "skipped", "reason": "invalid_references_pending"})
+                            uncovered.append(memory)
                         else:
                             succeeded_ids.append(memory["id"])
                             all_results.append(result)
+                    if len(sub_batch) == 1 and uncovered:
+                        # Indivisible, persistently mis-cited leaf.
+                        failed_ids.append(sub_batch[0]["id"])
+                        all_results.append({"action": "failed"})
+                    elif uncovered:
+                        if len(uncovered) == len(sub_batch):
+                            midpoint = len(uncovered) // 2
+                            pending[0:0] = [uncovered[:midpoint], uncovered[midpoint:]]
+                        else:
+                            pending.insert(0, uncovered)
 
             # The successful sub-batches stamped their own ``consolidated_at`` inside the
             # transaction that wrote their observations (#3876) — a stamp and the writes it
@@ -2360,9 +2371,6 @@ async def _run_consolidation_job(
         if any_cancelled:
             return {"status": "cancelled", "bank_id": bank_id, **stats}
 
-        # Deferred facts stay pending for a later job. Fetches within this job
-        # exclude them so later backlog batches still make progress.
-
         # Update round budget after processing this DB fetch batch
         if round_limit_enabled:
             round_remaining -= len(memories)
@@ -2401,11 +2409,6 @@ async def _run_consolidation_job(
             request_context=request_context,
             observation_scopes=observation_scopes,
             pending_refresh_tags=sorted(all_refresh_tags) or None,
-        )
-
-    if deferred_this_job:
-        logger.warning(
-            "[CONSOLIDATION] bank=%s deferred %d uncovered memories to a later job", bank_id, len(deferred_this_job)
         )
 
     # Build summary

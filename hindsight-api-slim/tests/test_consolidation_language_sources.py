@@ -227,6 +227,8 @@ def test_filter_reports_each_rule_and_keeps_valid_actions() -> None:
         ],
         updates=[
             SimpleNamespace(text="ok", observation_id="O", source_fact_ids=["B"]),
+            SimpleNamespace(text="no source", observation_id="O", source_fact_ids=[]),
+            SimpleNamespace(text="outside", observation_id="O", source_fact_ids=["B", "X"]),
         ],
         deletes=[SimpleNamespace(observation_id="O")],
     )
@@ -243,6 +245,8 @@ def test_filter_reports_each_rule_and_keeps_valid_actions() -> None:
     assert [a.observation_id for a in result.response.deletes] == ["O"]
     assert result.dropped == {
         "create_cites_fact_outside_batch": 1,
+        "update_without_sources": 1,
+        "update_cites_fact_outside_batch": 1,
     }
     assert result.pending_fact_ids == set()
     assert result.unsafe_delete
