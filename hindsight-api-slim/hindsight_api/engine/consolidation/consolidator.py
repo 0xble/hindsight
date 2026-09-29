@@ -1032,20 +1032,27 @@ class _ReferenceFilterResult:
     response: _ConsolidationBatchResponse
     #: Rule name -> number of actions dropped for it.
     dropped: dict[str, int] = field(default_factory=dict)
-    #: Batch facts cited only by dropped actions: stamping them would consolidate
-    #: them into nothing, so the caller must reject the response instead.
-    orphaned_fact_ids: set[str] = field(default_factory=set)
+    #: Facts with no valid CREATE/UPDATE after filtering. They remain pending
+    #: rather than being stamped alongside the valid sibling actions.
+    pending_fact_ids: set[str] = field(default_factory=set)
     #: A response that lost any action and still deletes something. A delete is
     #: often half of a replace (UPDATE or CREATE the merged text, DELETE the old),
     #: so keeping it after its partner was dropped could erase knowledge.
     unsafe_delete: bool = False
-    #: A dropped action citing only invented IDs has no known source to orphan,
-    #: but accepting its valid sibling would still silently lose model output.
+    #: A dropped action citing only invented IDs cannot be attributed to a batch
+    #: fact, so we cannot prove which memory should remain pending. Sourceless
+    #: actions are simply dropped as before; they cite no invented fact.
     unknown_only_sources: bool = False
 
     @property
     def must_reject(self) -> bool:
-        return bool(self.orphaned_fact_ids) or self.unsafe_delete or self.unknown_only_sources
+        # No fact has a durable action: splitting is the only bounded path to
+        # either a valid leaf reply or consolidation_failed_at.
+        return (
+            self.unsafe_delete
+            or self.unknown_only_sources
+            or (bool(self.dropped) and not (self.response.creates or self.response.updates))
+        )
 
 
 def _filter_unpersistable_references(
@@ -1066,22 +1073,21 @@ def _filter_unpersistable_references(
     trimming would let language validation authorize text using evidence that never
     reaches the stored observation. Valid sibling actions are kept, because every
     source they cite is persisted exactly as validated. Batch facts that only
-    dropped actions cited are reported as orphaned so the caller can reject the
-    response rather than stamp them consolidated with no observation.
+    dropped actions cited are retried by the caller's bounded sub-batch loop
+    after valid siblings commit. Unknown-only citations and unsafe target actions
+    still reject the whole response.
     """
     valid_fact_ids = {str(memory["id"]) for memory in memories}
     valid_observation_ids = {str(observation.id) for observation in union_observations}
     topology = per_fact_observation_ids or {fact_id: valid_observation_ids for fact_id in valid_fact_ids}
     dropped: dict[str, int] = {}
     kept_sources: set[str] = set()
-    dropped_sources: set[str] = set()
     unknown_only_sources = False
 
     def _drop(rule: str, source_ids: list[str] | None) -> None:
         nonlocal unknown_only_sources
         dropped[rule] = dropped.get(rule, 0) + 1
         known_sources = {str(fid) for fid in (source_ids or []) if str(fid) in valid_fact_ids}
-        dropped_sources.update(known_sources)
         if source_ids and not known_sources:
             unknown_only_sources = True
 
@@ -1098,13 +1104,13 @@ def _filter_unpersistable_references(
     updates = []
     for action in response.updates:
         if action.observation_id not in valid_observation_ids:
-            _drop("update_target_not_recalled", action.source_fact_ids)
+            raise _InvalidConsolidationReferences("update target not recalled for this batch")
         elif not action.source_fact_ids:
             _drop("update_without_sources", action.source_fact_ids)
         elif not set(action.source_fact_ids).issubset(valid_fact_ids):
             _drop("update_cites_fact_outside_batch", action.source_fact_ids)
         elif not any(action.observation_id in topology.get(fact_id, set()) for fact_id in action.source_fact_ids):
-            _drop("update_target_not_recalled_for_its_sources", action.source_fact_ids)
+            raise _InvalidConsolidationReferences("update target not recalled for its sources")
         else:
             updates.append(action)
             kept_sources.update(str(fid) for fid in action.source_fact_ids)
@@ -1114,12 +1120,12 @@ def _filter_unpersistable_references(
         if action.observation_id in valid_observation_ids:
             deletes.append(action)
         else:
-            _drop("delete_target_not_recalled", None)
+            raise _InvalidConsolidationReferences("delete target not recalled for this batch")
 
     return _ReferenceFilterResult(
         response=_ConsolidationBatchResponse.model_construct(creates=creates, updates=updates, deletes=deletes),
         dropped=dropped,
-        orphaned_fact_ids=dropped_sources - kept_sources,
+        pending_fact_ids=(valid_fact_ids - kept_sources) if dropped else set(),
         unsafe_delete=bool(dropped) and bool(deletes),
         unknown_only_sources=unknown_only_sources,
     )
@@ -1174,6 +1180,9 @@ class _BatchLLMResult:
     obs_count: int = 0
     prompt_chars: int = 0
     failed: bool = False
+    #: Only set on a filtered reply: facts with no valid action must be retried.
+    pending_fact_ids: set[str] = field(default_factory=set)
+    filtered_references: bool = False
     #: How many attempts inside this batch call raised. Non-zero even when a later
     #: attempt succeeded, so the run summary can report calls that were retried out
     #: of existence — `failed` alone hides them (#4151).
@@ -1497,6 +1506,7 @@ async def _fetch_unconsolidated_rows(
     fact_types: list[str],
     limit: int,
     observation_scopes: list[list[str]] | None,
+    exclude_ids: set[str] | None = None,
 ) -> list[dict[str, Any]]:
     """Unconsolidated candidate facts, read through the memories store.
 
@@ -1511,9 +1521,15 @@ async def _fetch_unconsolidated_rows(
     by_id: dict[str, Any] = {}
     for scope in scopes:
         for m in await store.find_unconsolidated(
-            conn=conn, fq_table=fq_table, bank_id=bank_id, fact_types=fact_types, limit=limit, scope_tags=scope
+            conn=conn,
+            fq_table=fq_table,
+            bank_id=bank_id,
+            fact_types=fact_types,
+            limit=limit + len(exclude_ids or ()),
+            scope_tags=scope,
         ):
-            by_id.setdefault(m.unit_id, m)
+            if m.unit_id not in (exclude_ids or ()):
+                by_id.setdefault(m.unit_id, m)
     ordered = sorted(by_id.values(), key=lambda m: (m.created_at is None, m.created_at))[:limit]
     return [
         {
@@ -1555,6 +1571,7 @@ async def _fetch_fair_unconsolidated_rows(
     fact_types: list[str],
     limit: int,
     group_cap: int,
+    exclude_ids: set[str] | None = None,
 ) -> list[dict[str, Any]] | None:
     """Unconsolidated candidates chosen fairly across scope groups, or ``None`` if unsupported.
 
@@ -1591,7 +1608,7 @@ async def _fetch_fair_unconsolidated_rows(
         """,
         bank_id,
         list(fact_types),
-        _FAIR_SCAN_LIMIT,
+        _FAIR_SCAN_LIMIT + len(exclude_ids or ()),
     )
     if not candidates:
         return []
@@ -1600,6 +1617,8 @@ async def _fetch_fair_unconsolidated_rows(
     # order is "group whose oldest fact is oldest" first.
     groups: dict[tuple[str, ...], list[Any]] = {}
     for row in candidates:
+        if str(row["id"]) in (exclude_ids or ()):
+            continue
         key = _consolidation_batch_key({"tags": row["tags"], "observation_scopes": row["observation_scopes"]})
         members = groups.setdefault(key, [])
         if len(members) < group_cap:
@@ -1856,6 +1875,7 @@ async def _run_consolidation_job(
         "observations_deleted": 0,
         "actions_executed": 0,
         "skipped": 0,
+        "memories_deferred": 0,
         "memories_failed": 0,
         # LLM batch attempts that raised, including those a retry or the adaptive bisection
         # later rescued. `memories_failed` counts only facts left stuck, so it reads 0 for
@@ -2012,6 +2032,7 @@ async def _run_consolidation_job(
                 try:
                     if obs_tags_list:
                         sub_results: list[dict[str, Any]] = []
+                        pending_pass_ids: set[str] = set()
                         for pass_index, obs_tags in enumerate(obs_tags_list):
                             # A memory consolidated at several tag scopes gets one LLM call per
                             # scope; the ``consolidated_at`` stamp belongs to the last of them, so
@@ -2027,15 +2048,26 @@ async def _run_consolidation_job(
                                 perf=batch_perf,
                                 config=config,
                                 obs_tags_override=obs_tags,
-                                mark_consolidated_ids=sub_ids if is_final_pass else None,
+                                mark_consolidated_ids=(
+                                    [mid for mid in sub_ids if str(mid) not in pending_pass_ids]
+                                    if is_final_pass
+                                    else None
+                                ),
                             )
                             sub_deleted += pass_deleted
+                            pending_pass_ids.update(
+                                str(mid)
+                                for mid, result in zip(sub_ids, pass_results)
+                                if result.get("reason") == "invalid_references_pending"
+                            )
                             if pass_failed:
                                 # Stop the remaining scopes: the sub-batch is going to be bisected
                                 # and re-run in full, and every write this pass made is already
                                 # committed. Running the rest would only add writes to discard.
                                 sub_llm_failed = True
                                 break
+                            # An earlier scope whose action was dropped remains pending even
+                            # when a later scope writes: stamping would permanently skip that scope.
                             if not sub_results:
                                 sub_results = pass_results
                             else:
@@ -2097,8 +2129,32 @@ async def _run_consolidation_job(
                         f" {sub_batch[0]['id']}, marking consolidation_failed_at"
                     )
                 else:
-                    succeeded_ids.extend(m["id"] for m in sub_batch)
-                    all_results.extend(sub_results)
+                    # Preserve the valid siblings, then retry only uncovered facts
+                    # within this job. Otherwise an endless stream of new siblings
+                    # can pair with a persistently mis-cited fact on every job and
+                    # keep it pending forever. The retry subset shrinks unless an
+                    # earlier scope wrote valid actions while a later scope left
+                    # every fact uncovered; that case is bisected as well.
+                    uncovered = []
+                    for memory, result in zip(sub_batch, sub_results):
+                        mid = str(memory["id"])
+                        if result.get("reason") == "invalid_references_pending" or (
+                            obs_tags_list and mid in pending_pass_ids
+                        ):
+                            uncovered.append(memory)
+                        else:
+                            succeeded_ids.append(memory["id"])
+                            all_results.append(result)
+                    if len(sub_batch) == 1 and uncovered:
+                        # Indivisible, persistently mis-cited leaf.
+                        failed_ids.append(sub_batch[0]["id"])
+                        all_results.append({"action": "failed"})
+                    elif uncovered:
+                        if len(uncovered) == len(sub_batch):
+                            midpoint = len(uncovered) // 2
+                            pending[0:0] = [uncovered[:midpoint], uncovered[midpoint:]]
+                        else:
+                            pending.insert(0, uncovered)
 
             # The successful sub-batches stamped their own ``consolidated_at`` inside the
             # transaction that wrote their observations (#3876) — a stamp and the writes it
@@ -2148,9 +2204,13 @@ async def _run_consolidation_job(
                 "observations_deleted": all_deleted,
                 "actions_executed": 0,
                 "skipped": 0,
+                "memories_deferred": 0,
                 "memories_failed": 0,
             }
             for result in all_results:
+                if result.get("reason") == "invalid_references_pending":
+                    local_stats["memories_deferred"] += 1
+                    continue
                 local_stats["memories_processed"] += 1
                 action = result.get("action")
                 if action == "created":
@@ -2206,7 +2266,7 @@ async def _run_consolidation_job(
                 f" | {', '.join(timing_parts)}"
                 f" | created={local_stats['observations_created']}"
                 f" updated={local_stats['observations_updated']}"
-                f" skipped={local_stats['skipped']}"
+                f" skipped={local_stats['skipped']} deferred={local_stats['memories_deferred']}"
                 + (f" failed={local_stats['memories_failed']}" if local_stats["memories_failed"] else "")
                 + f" | input_tokens=~{input_tokens}"
                 f" | avg={llm_batch_time / max(1, len(llm_batch_local)):.3f}s/memory"
@@ -2339,7 +2399,7 @@ async def _run_consolidation_job(
         all_refresh_tags |= await _read_pending_refresh_tags(pool, operation_id)
 
     if hit_round_limit:
-        remaining = total_count - stats["memories_processed"]
+        remaining = max(0, await _count_unconsolidated())
         logger.info(
             f"[CONSOLIDATION] bank={bank_id} hit round limit of {max_memories_per_round} memories,"
             f" ~{remaining} remaining. Re-queuing consolidation."
@@ -2810,6 +2870,7 @@ async def _process_memory_batch(
     update_texts = {_norm_obs_text(u.text) for u in llm_result.updates if u.text}
 
     prepared_creates: list[_PreparedCreate] = []
+    duplicate_create_sources: set[str] = set()
     for create in llm_result.creates:
         source_mems = [mem_by_id[fid] for fid in create.source_fact_ids if fid in mem_by_id]
         if not source_mems:
@@ -2825,6 +2886,11 @@ async def _process_memory_batch(
         # would run off the pre-LLM snapshot and clobber that change (see _dedupe_updates).
         duplicate_of = _duplicate_create_target(create.text, shown_obs_by_text, update_texts)
         if duplicate_of is not None:
+            # Only an already-stored observation proves coverage without a write.
+            # A duplicate of an UPDATE in this reply must wait for that UPDATE's
+            # successful write (and its own source citation) instead.
+            if _norm_obs_text(create.text) in shown_obs_by_text:
+                duplicate_create_sources.update(str(m["id"]) for m in source_mems)
             logger.warning(
                 "[CONSOLIDATION] dropped duplicate observation CREATE — verbatim match of %s; llm_reason=%r",
                 duplicate_of,
@@ -2872,7 +2938,11 @@ async def _process_memory_batch(
     # A failed LLM call yields no actions, and its memories must NOT be stamped: the caller
     # bisects and retries them, and a stamp would exclude them from pending consolidation
     # for good. With neither writes nor stamps there is nothing to open a transaction for.
-    stamp_ids = list(mark_consolidated_ids or []) if not llm_result.failed else []
+    stamp_ids = (
+        [mid for mid in (mark_consolidated_ids or []) if str(mid) not in llm_result.pending_fact_ids]
+        if not llm_result.failed
+        else []
+    )
     if prepared_deletes or prepared_updates or prepared_creates or stamp_ids:
 
         async def apply_transaction() -> None:
@@ -2950,14 +3020,24 @@ async def _process_memory_batch(
                     # excludes a stamped fact, so nothing would ever rebuild what the batch failed to
                     # write (#3876).
                     if stamp_ids:
-                        await get_memories().mark_consolidated(
-                            conn=conn,
-                            fq_table=fq_table,
-                            bank_id=bank_id,
-                            unit_ids=[str(mem_id) for mem_id in stamp_ids],
-                            when=datetime.now(timezone.utc),
-                            failed=False,
+                        # A filtered response may have an action discarded at preparation
+                        # or write time. Stamp only facts with a durable observation, not
+                        # merely facts whose citation appeared in the LLM response.
+                        durable_ids = per_memory_created | per_memory_updated | duplicate_create_sources
+                        safe_stamp_ids = (
+                            [mid for mid in stamp_ids if str(mid) in durable_ids]
+                            if llm_result.filtered_references
+                            else stamp_ids
                         )
+                        if safe_stamp_ids:
+                            await get_memories().mark_consolidated(
+                                conn=conn,
+                                fq_table=fq_table,
+                                bank_id=bank_id,
+                                unit_ids=[str(mem_id) for mem_id in safe_stamp_ids],
+                                when=datetime.now(timezone.utc),
+                                failed=False,
+                            )
 
         write_started = time.time()
         await _retry_deadlocked_apply(apply_transaction)
@@ -2977,7 +3057,12 @@ async def _process_memory_batch(
         elif updated:
             results.append({"action": "updated"})
         else:
-            results.append({"action": "skipped", "reason": "no_durable_knowledge"})
+            reason = (
+                "invalid_references_pending"
+                if llm_result.filtered_references and mid not in duplicate_create_sources
+                else "no_durable_knowledge"
+            )
+            results.append({"action": "skipped", "reason": reason})
 
     return results, deleted_count, llm_result.failed
 
@@ -3747,20 +3832,19 @@ async def _consolidate_batch_with_llm(
             )
             if reference_filter.dropped:
                 logger.warning(
-                    "[CONSOLIDATION] dropped %d unpersistable action(s) for %s: %s; orphaned_facts=%d",
+                    "[CONSOLIDATION] dropped %d unpersistable action(s) for %s: %s; pending_facts=%d",
                     sum(reference_filter.dropped.values()),
                     batch_label,
                     ", ".join(f"{rule}={count}" for rule, count in sorted(reference_filter.dropped.items())),
-                    len(reference_filter.orphaned_fact_ids),
+                    len(reference_filter.pending_fact_ids),
                 )
             if reference_filter.must_reject:
-                # A batch fact cited only by dropped actions would be stamped
-                # consolidated into nothing, and a delete whose replacing sibling was
+                # An unattributable action or a delete whose replacing sibling was
                 # dropped could erase knowledge. Reject so the caller bisects.
                 raise _InvalidConsolidationReferences(
                     "consolidation response contains unpersistable source or observation reference "
                     f"(rules: {', '.join(sorted(reference_filter.dropped))}; "
-                    f"{len(reference_filter.orphaned_fact_ids)} fact(s) cited only by dropped actions; "
+                    f"{len(reference_filter.pending_fact_ids)} fact(s) pending; "
                     f"delete_with_dropped_sibling={reference_filter.unsafe_delete})"
                 )
             response = reference_filter.response
@@ -3838,6 +3922,8 @@ async def _consolidate_batch_with_llm(
                     + len(language_retry_instruction)
                 ),
                 failed_attempts=failed_attempts,
+                pending_fact_ids=reference_filter.pending_fact_ids,
+                filtered_references=bool(reference_filter.dropped),
             )
         except Exception as exc:
             failure_class = _classify_batch_failure(exc)
