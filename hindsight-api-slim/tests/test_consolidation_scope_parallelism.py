@@ -821,6 +821,138 @@ async def test_same_lane_stale_update_retries_fresh_recall(memory: MemoryEngine,
 
 @pytest.mark.asyncio
 @pytest.mark.memory_backend_incompatible
+async def test_lane_partial_invalid_reply_and_stale_sibling_retry(memory: MemoryEngine, request_context):
+    """A partially accepted batch drains its uncovered fact before its stale sibling applies."""
+    bank_id = f"test-lane-partial-stale-{uuid.uuid4().hex[:8]}"
+    await memory.ensure_bank_profile(bank_id=bank_id, request_context=request_context)
+    from hindsight_api.engine.consolidation import consolidator as consolidator_mod
+
+    fact_ids: list[uuid.UUID] = []
+    observation_id = uuid.uuid4()
+    outsider = str(uuid.uuid4())
+    from tests.test_consolidation_batch_atomicity import _llm
+
+    try:
+        async with memory._pool.acquire() as conn:
+            for index in range(3):
+                fact_ids.append(await _insert_memory(conn, bank_id, f"Lane partial fact {index}", ["shared"], "shared"))
+            await conn.execute(
+                """INSERT INTO memory_units (id, bank_id, text, fact_type, tags, source_memory_ids, created_at)
+                   VALUES ($1, $2, 'Original observation', 'observation', '{}', $3, now())""",
+                observation_id,
+                bank_id,
+                [str(fact_ids[0])],
+            )
+
+        calls: list[str] = []
+
+        def response(messages, scope):
+            assert scope == "consolidation"
+            prompt = "\n".join(m.get("content", "") for m in messages if m.get("role") == "user")
+            calls.append(prompt)
+            if "Lane partial fact 0" in prompt and "Lane partial fact 1" in prompt:
+                return _ConsolidationBatchResponse(
+                    updates=[
+                        _UpdateAction(
+                            observation_id=str(observation_id),
+                            text="Updated by first fact",
+                            source_fact_ids=[str(fact_ids[0])],
+                        )
+                    ],
+                    creates=[
+                        _CreateAction(
+                            text="Invalid citation",
+                            source_fact_ids=[str(fact_ids[1]), outsider],
+                        )
+                    ],
+                )
+            if "Lane partial fact 1" in prompt:
+                return _ConsolidationBatchResponse(
+                    creates=[
+                        _CreateAction(
+                            text="Covered second fact",
+                            source_fact_ids=[str(fact_ids[1])],
+                        )
+                    ]
+                )
+            assert "Lane partial fact 2" in prompt
+            return _ConsolidationBatchResponse(
+                updates=[
+                    _UpdateAction(
+                        observation_id=str(observation_id),
+                        text="Updated by third fact",
+                        source_fact_ids=[str(fact_ids[2])],
+                    )
+                ]
+            )
+
+        initial_recalls = 0
+        both_recalled = asyncio.Event()
+
+        async def fake_find(*, memory_engine, bank_id, query, request_context, tags=None):
+            nonlocal initial_recalls
+            initial_recalls += 1
+            if initial_recalls == 2:
+                both_recalled.set()
+            async with memory._pool.acquire() as conn:
+                row = await conn.fetchrow(
+                    "SELECT text, source_memory_ids FROM memory_units WHERE id = $1", observation_id
+                )
+            if initial_recalls <= 2:
+                await both_recalled.wait()
+            return RecallResult.model_construct(
+                results=[
+                    MemoryFact.model_construct(
+                        id=str(observation_id),
+                        text=row["text"],
+                        fact_type="observation",
+                        tags=[],
+                        source_fact_ids=list(row["source_memory_ids"]),
+                    )
+                ]
+            )
+
+        with (
+            patch.object(memory, "_consolidation_llm_config", _llm(response)),
+            patch.object(memory, "submit_async_consolidation"),
+            patch.object(consolidator_mod, "_find_related_observations", fake_find),
+            _override_config(
+                memory,
+                consolidation_llm_parallelism=2,
+                consolidation_lane_llm_parallelism=2,
+                consolidation_llm_batch_size=2,
+                consolidation_batch_size=3,
+                consolidation_dedup_threshold=1.0,
+                llm_language_integrity="off",
+            ),
+        ):
+            result = await asyncio.wait_for(
+                run_consolidation_job(memory_engine=memory, bank_id=bank_id, request_context=request_context),
+                timeout=15,
+            )
+        assert result["status"] == "completed"
+        assert result["memories_failed"] == 0
+        assert len(calls) == 4  # partial first reply, B-only retry, stale C reply, fresh C retry
+        async with memory._pool.acquire() as conn:
+            observation = await conn.fetchrow("SELECT text FROM memory_units WHERE id=$1", observation_id)
+            covered = await conn.fetchrow(
+                "SELECT source_memory_ids FROM memory_units WHERE bank_id=$1 AND text='Covered second fact'", bank_id
+            )
+            states = await conn.fetch(
+                "SELECT id, consolidated_at, consolidation_failed_at FROM memory_units WHERE id = ANY($1::uuid[])",
+                fact_ids,
+            )
+        assert observation["text"] == "Updated by third fact"
+        assert covered["source_memory_ids"] == [fact_ids[1]]
+        assert all(
+            state["consolidated_at"] is not None and state["consolidation_failed_at"] is None for state in states
+        )
+    finally:
+        await memory.delete_bank(bank_id, request_context=request_context)
+
+
+@pytest.mark.asyncio
+@pytest.mark.memory_backend_incompatible
 async def test_lane_limit_is_independent_of_global_limit(memory: MemoryEngine, request_context):
     """Two lanes each stay at two LLM calls, yet together use more than two."""
     bank_id = f"test-lane-limit-{uuid.uuid4().hex[:8]}"
