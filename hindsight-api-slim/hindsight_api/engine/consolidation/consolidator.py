@@ -665,6 +665,7 @@ class _BatchDeltas:
     stats: dict[str, int]
     tags: set[str]
     cancelled: bool
+    pending_ids: set[str] = field(default_factory=set)
 
 
 def _parse_observation_scopes(memory: dict[str, Any]) -> Any:
@@ -1023,6 +1024,10 @@ class _ConsolidationBatchResponse(BaseModel):
 
 class _InvalidConsolidationReferences(ValueError):
     """The model named an action reference unavailable to this batch."""
+
+
+class _StaleConsolidationReference(RuntimeError):
+    """Prepared action state changed while a lane batch waited to apply."""
 
 
 @dataclass
@@ -1497,6 +1502,7 @@ async def _fetch_unconsolidated_rows(
     fact_types: list[str],
     limit: int,
     observation_scopes: list[list[str]] | None,
+    exclude_ids: set[str] | None = None,
 ) -> list[dict[str, Any]]:
     """Unconsolidated candidate facts, read through the memories store.
 
@@ -1511,9 +1517,15 @@ async def _fetch_unconsolidated_rows(
     by_id: dict[str, Any] = {}
     for scope in scopes:
         for m in await store.find_unconsolidated(
-            conn=conn, fq_table=fq_table, bank_id=bank_id, fact_types=fact_types, limit=limit, scope_tags=scope
+            conn=conn,
+            fq_table=fq_table,
+            bank_id=bank_id,
+            fact_types=fact_types,
+            limit=limit + len(exclude_ids or ()),
+            scope_tags=scope,
         ):
-            by_id.setdefault(m.unit_id, m)
+            if m.unit_id not in (exclude_ids or ()):
+                by_id.setdefault(m.unit_id, m)
     ordered = sorted(by_id.values(), key=lambda m: (m.created_at is None, m.created_at))[:limit]
     return [
         {
@@ -1555,6 +1567,7 @@ async def _fetch_fair_unconsolidated_rows(
     fact_types: list[str],
     limit: int,
     group_cap: int,
+    exclude_ids: set[str] | None = None,
 ) -> list[dict[str, Any]] | None:
     """Unconsolidated candidates chosen fairly across scope groups, or ``None`` if unsupported.
 
@@ -1586,12 +1599,14 @@ async def _fetch_fair_unconsolidated_rows(
           AND consolidated_at IS NULL
           AND consolidation_failed_at IS NULL
           AND fact_type = ANY($2)
+          AND NOT (id = ANY($4::uuid[]))
         ORDER BY created_at ASC, id ASC
         LIMIT $3
         """,
         bank_id,
         list(fact_types),
         _FAIR_SCAN_LIMIT,
+        [uuid.UUID(i) for i in (exclude_ids or ())],
     )
     if not candidates:
         return []
@@ -1884,6 +1899,9 @@ async def _run_consolidation_job(
         "observations_deleted": 0,
         "memories_failed": 0,
     }
+    # Facts whose lane conflict retries were exhausted remain eligible for a later
+    # job, but must not be fetched repeatedly by this job.
+    deferred_memory_ids: set[str] = set()
     while True:
         # Cap fetch size by remaining round budget
         fetch_limit = (
@@ -1904,15 +1922,23 @@ async def _run_consolidation_job(
                     ["experience", "world"],
                     fetch_limit,
                     _fair_group_cap(fetch_limit, config.consolidation_llm_parallelism),
+                    deferred_memory_ids,
                 )
             if memories is None:
                 memories = await _fetch_unconsolidated_rows(
-                    conn, bank_id, ["experience", "world"], fetch_limit, observation_scopes
+                    conn, bank_id, ["experience", "world"], fetch_limit, observation_scopes, deferred_memory_ids
                 )
             perf.record_timing("fetch_memories", time.time() - t0)
 
         if not memories:
             break  # No more unconsolidated memories
+        if deferred_memory_ids:
+            memories = [m for m in memories if str(m["id"]) not in deferred_memory_ids]
+            if not memories:
+                # The fetch predicate intentionally remains unchanged so deferred
+                # facts stay eligible for a later job; stop this job once its current
+                # fetch contains no new work.
+                break
 
         # Group memories by target observation scope before batching — security
         # requirement: memories targeting different scopes must never share an
@@ -1969,6 +1995,40 @@ async def _run_consolidation_job(
                 if memory_tags:
                     local_tags.update(memory_tags)
 
+            async def _process_with_stale_retries(
+                sub_batch: list[dict[str, Any]],
+                *,
+                mark_ids: list[Any] | None,
+                tags_override: list[str] | None = None,
+            ) -> tuple[list[dict[str, Any]], int, bool]:
+                # The lane turn remains owned by this batch until the caller's
+                # finally block advances it, so every retry recalls and prepares
+                # against the state committed by the preceding lane batch.
+                for attempt in range(3):
+                    try:
+                        return await _process_memory_batch(
+                            pool=pool,
+                            memory_engine=memory_engine,
+                            llm_config=llm_config,
+                            bank_id=bank_id,
+                            memories=sub_batch,
+                            request_context=request_context,
+                            perf=batch_perf,
+                            config=config,
+                            obs_tags_override=tags_override,
+                            mark_consolidated_ids=mark_ids,
+                            apply_locks=apply_locks,
+                            apply_turn=apply_turn,
+                        )
+                    except _StaleConsolidationReference:
+                        if attempt == 2:
+                            raise
+                        logger.warning(
+                            "[CONSOLIDATION] stale prepared reference for batch %s; recalling and retrying (%s/2)",
+                            batch_num_local,
+                            attempt + 1,
+                        )
+
             # Adaptive splitting: on LLM failure, halve the sub-batch and retry,
             # down to batch_size=1. Only if a single-memory batch still fails is
             # the memory marked with consolidation_failed_at.
@@ -1976,6 +2036,7 @@ async def _run_consolidation_job(
             all_deleted = 0
             succeeded_ids: list[Any] = []
             failed_ids: list[Any] = []
+            pending_conflicts: set[str] = set()
 
             pending: list[list[dict[str, Any]]] = [llm_batch_local]
             while pending:
@@ -2022,19 +2083,10 @@ async def _run_consolidation_job(
                             # scope; the ``consolidated_at`` stamp belongs to the last of them, so
                             # an earlier scope's write and the stamp never commit apart (#3876).
                             is_final_pass = pass_index == len(obs_tags_list) - 1
-                            pass_results, pass_deleted, pass_failed = await _process_memory_batch(
-                                pool=pool,
-                                memory_engine=memory_engine,
-                                llm_config=llm_config,
-                                bank_id=bank_id,
-                                memories=sub_batch,
-                                request_context=request_context,
-                                perf=batch_perf,
-                                config=config,
-                                obs_tags_override=obs_tags,
-                                mark_consolidated_ids=sub_ids if is_final_pass else None,
-                                apply_locks=apply_locks,
-                                apply_turn=apply_turn,
+                            pass_results, pass_deleted, pass_failed = await _process_with_stale_retries(
+                                sub_batch,
+                                mark_ids=sub_ids if is_final_pass else None,
+                                tags_override=obs_tags,
                             )
                             sub_deleted += pass_deleted
                             if pass_failed:
@@ -2067,20 +2119,22 @@ async def _run_consolidation_job(
                                             "total_actions": total,
                                         }
                     else:
-                        sub_results, sub_deleted, sub_llm_failed = await _process_memory_batch(
-                            pool=pool,
-                            memory_engine=memory_engine,
-                            llm_config=llm_config,
-                            bank_id=bank_id,
-                            memories=sub_batch,
-                            request_context=request_context,
-                            perf=batch_perf,
-                            config=config,
-                            mark_consolidated_ids=sub_ids,
-                            apply_locks=apply_locks,
-                            apply_turn=apply_turn,
+                        sub_results, sub_deleted, sub_llm_failed = await _process_with_stale_retries(
+                            sub_batch, mark_ids=sub_ids
                         )
 
+                except _StaleConsolidationReference:
+                    # No stamp or failure marker: leave these facts for a later job.
+                    # This batch's ordered apply turn still advances in the dispatch
+                    # finally block, allowing the remaining batches to drain.
+                    pending_conflicts.update(str(mem_id) for mem_id in sub_ids)
+                    logger.warning(
+                        "[CONSOLIDATION] bank=%s batch=%s stale conflict retries exhausted; leaving %s facts pending",
+                        bank_id,
+                        batch_num_local,
+                        len(sub_ids),
+                    )
+                    continue
                 except (GeneratedLanguageMismatch, _InvalidConsolidationReferences):
                     # Deterministic rejection is content-local, not an outage. Reuse
                     # bounded bisection and the existing durable failed-fact lifecycle:
@@ -2249,7 +2303,9 @@ async def _run_consolidation_job(
             # gives us atomicity.
             perf.merge_from(batch_perf)
 
-            return _BatchDeltas(stats=local_stats, tags=local_tags, cancelled=cancelled_local)
+            return _BatchDeltas(
+                stats=local_stats, tags=local_tags, cancelled=cancelled_local, pending_ids=pending_conflicts
+            )
 
         # Number every batch up front so log line numbering is deterministic
         # regardless of dispatch order under parallelism. Each group keeps its own
@@ -2289,9 +2345,12 @@ async def _run_consolidation_job(
                 group: list[tuple[list[dict[str, Any]], int]],
                 scopes: list[frozenset[str]],
             ) -> list[_BatchDeltas]:
+                lane_sem = asyncio.Semaphore(lane_parallelism)
                 ready_events = [asyncio.Event() for _ in group]
+                admission_events = [asyncio.Event() for _ in group]
                 if ready_events:
                     ready_events[0].set()
+                    admission_events[0].set()
                 tasks = []
                 for index, (batch, batch_num) in enumerate(group):
                     next_event = ready_events[index + 1] if index + 1 < len(ready_events) else asyncio.Event()
@@ -2301,6 +2360,11 @@ async def _run_consolidation_job(
                             batch_num,
                             scopes,
                             (ready_events[index], next_event),
+                            lane_sem,
+                            (
+                                admission_events[index],
+                                admission_events[index + 1] if index + 1 < len(admission_events) else asyncio.Event(),
+                            ),
                         )
                     )
                 return await _gather_or_cancel(tasks)
@@ -2310,19 +2374,28 @@ async def _run_consolidation_job(
                 batch_num: int,
                 scopes: list[frozenset[str]],
                 apply_turn: tuple[asyncio.Event, asyncio.Event],
+                lane_sem: asyncio.Semaphore,
+                admission_turn: tuple[asyncio.Event, asyncio.Event],
             ) -> _BatchDeltas:
-                async with sem:
-                    try:
-                        return await _process_one_llm_batch(
-                            batch,
-                            batch_num,
-                            [scope_locks[scope] for scope in scopes],
-                            apply_turn,
-                        )
-                    finally:
-                        # A failed or action-free batch must still advance the lane.
-                        # Hold the turn for *all* sub-batches and retry passes.
-                        apply_turn[1].set()
+                # Admit contenders in batch order. Otherwise a later task could
+                # occupy both lane slots waiting for its apply turn while an
+                # earlier task still waits for a slot, deadlocking the lane.
+                await admission_turn[0].wait()
+                async with lane_sem:
+                    admission_turn[1].set()
+                    # Waiting on a busy lane never holds a global slot.
+                    async with sem:
+                        try:
+                            return await _process_one_llm_batch(
+                                batch,
+                                batch_num,
+                                [scope_locks[scope] for scope in scopes],
+                                apply_turn,
+                            )
+                        finally:
+                            # A failed or action-free batch must still advance the lane.
+                            # Hold the turn for *all* sub-batches and retry passes.
+                            apply_turn[1].set()
 
             group_results = await _gather_or_cancel(
                 [_run_lane_batch(group, scopes) for group, scopes in zip(numbered_groups, group_scopes)]
@@ -2368,6 +2441,7 @@ async def _run_consolidation_job(
             for k, v in d.stats.items():
                 stats[k] = stats.get(k, 0) + v
             consolidated_tags.update(d.tags)
+            deferred_memory_ids.update(d.pending_ids)
 
         if any_cancelled:
             return {"status": "cancelled", "bank_id": bank_id, **stats}
@@ -2942,8 +3016,8 @@ async def _process_memory_batch(
 
         Another batch in the same lane may have committed while this batch was waiting
         on the LLM. Reusing that batch's stale UPDATE/DELETE decision can clobber a newer
-        observation or delete it after its replacement was applied. Raising the existing
-        invalid-reference error sends the batch through adaptive split/retry instead.
+        observation or delete it after its replacement was applied. The caller
+        re-recalls and re-prepares while owning this batch's ordered lane turn.
         """
         for observation_id in prepared_deletes:
             recalled = next(obs for obs in union_observations if str(obs.id) == observation_id)
@@ -2959,7 +3033,7 @@ async def _process_memory_batch(
                 or {str(source_id) for source_id in (row["source_memory_ids"] or [])}
                 != {str(source_id) for source_id in (recalled.source_fact_ids or [])}
             ):
-                raise _InvalidConsolidationReferences(f"delete target {observation_id} changed before serialized apply")
+                raise _StaleConsolidationReference(f"delete target {observation_id} changed before serialized apply")
         for prepared in prepared_updates:
             row = await conn.fetchrow(
                 f"SELECT text, source_memory_ids FROM {fq_table('memory_units')} "
@@ -2968,13 +3042,13 @@ async def _process_memory_batch(
                 uuid.UUID(prepared.update.observation_id),
             )
             if row is None:
-                raise _InvalidConsolidationReferences(
+                raise _StaleConsolidationReference(
                     f"update target {prepared.update.observation_id} disappeared before serialized apply"
                 )
             current_sources = {str(source_id) for source_id in (row["source_memory_ids"] or [])}
             recalled_sources = {str(source_id) for source_id in (prepared.model.source_fact_ids or [])}
             if row["text"] != prepared.model.text or current_sources != recalled_sources:
-                raise _InvalidConsolidationReferences(
+                raise _StaleConsolidationReference(
                     f"update target {prepared.update.observation_id} changed before serialized apply"
                 )
 

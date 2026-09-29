@@ -711,8 +711,8 @@ async def test_same_lane_parallelizes_llm_but_serializes_apply(memory: MemoryEng
 
 @pytest.mark.asyncio
 @pytest.mark.memory_backend_incompatible
-async def test_same_lane_stale_update_is_split_and_marked_failed(memory: MemoryEngine, request_context):
-    """A later batch cannot apply an UPDATE against an observation changed earlier."""
+async def test_same_lane_stale_update_retries_fresh_recall(memory: MemoryEngine, request_context):
+    """Both singleton updates commit; the second re-recalls after the first apply."""
     bank_id = f"test-lane-stale-{uuid.uuid4().hex[:8]}"
     await memory.ensure_bank_profile(bank_id=bank_id, request_context=request_context)
     from hindsight_api.engine.consolidation import consolidator as consolidator_mod
@@ -757,18 +757,32 @@ async def test_same_lane_stale_update_is_split_and_marked_failed(memory: MemoryE
         mock_llm.set_response_callback(update_callback)
         wrapper.with_config.return_value = mock_llm
 
+        recall_count = 0
+        initial_recalls_ready = asyncio.Event()
+
         async def fake_find(*, memory_engine, bank_id, query, request_context, tags=None):
-            return RecallResult.model_construct(
+            nonlocal recall_count
+            recall_count += 1
+            if recall_count == 2:
+                initial_recalls_ready.set()
+            async with memory._pool.acquire() as conn:
+                row = await conn.fetchrow(
+                    "SELECT text, source_memory_ids FROM memory_units WHERE id = $1", observation_id
+                )
+            observed = RecallResult.model_construct(
                 results=[
                     MemoryFact.model_construct(
                         id=str(observation_id),
-                        text="Original observation",
+                        text=row["text"],
                         fact_type="observation",
                         tags=[],
-                        source_fact_ids=[str(fact_ids[0])],
+                        source_fact_ids=list(row["source_memory_ids"]),
                     )
                 ]
             )
+            if recall_count <= 2:
+                await initial_recalls_ready.wait()
+            return observed
 
         original_config_llm = memory._consolidation_llm_config
         memory._consolidation_llm_config = wrapper
@@ -797,9 +811,139 @@ async def test_same_lane_stale_update_is_split_and_marked_failed(memory: MemoryE
                 "SELECT consolidated_at, consolidation_failed_at FROM memory_units WHERE id = ANY($1::uuid[])",
                 fact_ids,
             )
-        assert row["text"] == f"Updated from {str(fact_ids[0])[:8]}"
-        assert any(state["consolidation_failed_at"] is not None for state in states)
-        assert sum(state["consolidated_at"] is not None for state in states) == 1
+        assert row["text"] == f"Updated from {str(fact_ids[1])[:8]}"
+        assert recall_count >= 3
+        assert all(state["consolidation_failed_at"] is None for state in states)
+        assert sum(state["consolidated_at"] is not None for state in states) == 2
+    finally:
+        await memory.delete_bank(bank_id, request_context=request_context)
+
+
+@pytest.mark.asyncio
+@pytest.mark.memory_backend_incompatible
+async def test_lane_limit_is_independent_of_global_limit(memory: MemoryEngine, request_context):
+    """Two lanes each stay at two LLM calls, yet together use more than two."""
+    bank_id = f"test-lane-limit-{uuid.uuid4().hex[:8]}"
+    await memory.ensure_bank_profile(bank_id=bank_id, request_context=request_context)
+    from hindsight_api.engine.consolidation import consolidator as consolidator_mod
+
+    in_flight = {"a": 0, "b": 0}
+    peak = {"a": 0, "b": 0}
+    global_peak = 0
+    original = consolidator_mod._consolidate_batch_with_llm
+
+    async def tracked(*args, **kwargs):
+        nonlocal global_peak
+        lane = kwargs["memories"][0]["tags"][0]
+        in_flight[lane] += 1
+        peak[lane] = max(peak[lane], in_flight[lane])
+        global_peak = max(global_peak, sum(in_flight.values()))
+        try:
+            await asyncio.sleep(0.08)
+            return await original(*args, **kwargs)
+        finally:
+            in_flight[lane] -= 1
+
+    try:
+        async with memory._pool.acquire() as conn:
+            for lane in ("a", "b"):
+                for index in range(4):
+                    await _insert_memory(conn, bank_id, f"{lane} fact {index}", [lane], None)
+        wrapper, _ = _mock_llm_one_obs_per_fact()
+        previous = memory._consolidation_llm_config
+        memory._consolidation_llm_config = wrapper
+        try:
+            with (
+                _override_config(
+                    memory,
+                    consolidation_llm_parallelism=4,
+                    consolidation_lane_llm_parallelism=2,
+                    consolidation_llm_batch_size=1,
+                    consolidation_dedup_threshold=1.0,
+                ),
+                patch.object(memory, "submit_async_consolidation"),
+                patch.object(consolidator_mod, "_consolidate_batch_with_llm", tracked),
+            ):
+                result = await run_consolidation_job(
+                    memory_engine=memory, bank_id=bank_id, request_context=request_context
+                )
+        finally:
+            memory._consolidation_llm_config = previous
+        assert result["status"] == "completed"
+        assert all(1 < value <= 2 for value in peak.values()), peak
+        assert global_peak > 2
+    finally:
+        await memory.delete_bank(bank_id, request_context=request_context)
+
+
+@pytest.mark.asyncio
+@pytest.mark.memory_backend_incompatible
+@pytest.mark.parametrize(
+    "error,failed",
+    [
+        ("stale", False),
+        ("invalid", True),
+    ],
+)
+async def test_reference_failure_lifecycle(memory: MemoryEngine, request_context, error, failed):
+    """Exhausted conflicts stay pending; genuine invalid content is marked failed."""
+    bank_id = f"test-reference-failure-{uuid.uuid4().hex[:8]}"
+    await memory.ensure_bank_profile(bank_id=bank_id, request_context=request_context)
+    from hindsight_api.engine.consolidation import consolidator as consolidator_mod
+
+    try:
+        async with memory._pool.acquire() as conn:
+            fact_id = await _insert_memory(conn, bank_id, "Reference failure fact", ["a"], "shared")
+            healthy_id = await _insert_memory(conn, bank_id, "Healthy fact", ["b"], "shared")
+        wrapper, _ = _mock_llm_one_obs_per_fact()
+        previous = memory._consolidation_llm_config
+        memory._consolidation_llm_config = wrapper
+        original = consolidator_mod._process_memory_batch
+        attempts = 0
+
+        async def simulated(*args, **kwargs):
+            nonlocal attempts
+            if kwargs["memories"][0]["id"] == fact_id:
+                attempts += 1
+                exception = (
+                    consolidator_mod._InvalidConsolidationReferences
+                    if failed
+                    else consolidator_mod._StaleConsolidationReference
+                )
+                raise exception("simulated reference mismatch")
+            return await original(*args, **kwargs)
+
+        try:
+            with (
+                _override_config(
+                    memory,
+                    consolidation_llm_parallelism=2,
+                    consolidation_lane_llm_parallelism=2,
+                    consolidation_llm_batch_size=1,
+                    consolidation_batch_size=1,
+                    consolidation_dedup_threshold=1.0,
+                ),
+                patch.object(memory, "submit_async_consolidation"),
+                patch.object(consolidator_mod, "_process_memory_batch", simulated),
+            ):
+                result = await asyncio.wait_for(
+                    run_consolidation_job(memory_engine=memory, bank_id=bank_id, request_context=request_context),
+                    timeout=15,
+                )
+        finally:
+            memory._consolidation_llm_config = previous
+        assert result["status"] == "completed"
+        assert attempts == (1 if failed else 3)
+        async with memory._pool.acquire() as conn:
+            rows = await conn.fetch(
+                "SELECT id, consolidated_at, consolidation_failed_at FROM memory_units WHERE id = ANY($1::uuid[])",
+                [fact_id, healthy_id],
+            )
+        states = {row["id"]: row for row in rows}
+        assert (states[fact_id]["consolidation_failed_at"] is not None) == failed
+        assert states[fact_id]["consolidated_at"] is None
+        assert states[healthy_id]["consolidated_at"] is not None
+        assert states[healthy_id]["consolidation_failed_at"] is None
     finally:
         await memory.delete_bank(bank_id, request_context=request_context)
 
