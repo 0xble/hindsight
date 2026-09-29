@@ -20,9 +20,10 @@ from hindsight_api.engine.response_models import MemoryFact, RecallResult
 from tests.test_consolidation_scope_parallelism import _insert_memory, _override_config
 
 
+@pytest.mark.parametrize("near_identical", [False, True], ids=["distinct", "near-identical"])
 @pytest.mark.asyncio
 @pytest.mark.memory_backend_incompatible
-async def test_single_lane_benchmark(memory: MemoryEngine, request_context, caplog):
+async def test_single_lane_benchmark(memory: MemoryEngine, request_context, caplog, near_identical):
     from hindsight_api.engine.consolidation import consolidator as mod
 
     for lane_parallelism in (1, 8):
@@ -66,6 +67,10 @@ async def test_single_lane_benchmark(memory: MemoryEngine, request_context, capl
             mock_llm = MockLLM(provider="mock", api_key="", base_url="", model="mock-model")
 
             def response(messages, scope):
+                if scope == "consolidation_dedup":
+                    prompt = "\n".join(m.get("content", "") for m in messages if m.get("role") == "user")
+                    new_text = prompt.split("[NEW] ", 1)[1].split("\n", 1)[0]
+                    return {"action": "merge", "text": new_text, "reason": "same observation"}
                 if scope != "consolidation":
                     return _ConsolidationBatchResponse()
                 prompt = "\n".join(m.get("content", "") for m in messages if m.get("role") == "user")
@@ -82,7 +87,14 @@ async def test_single_lane_benchmark(memory: MemoryEngine, request_context, capl
                         ]
                     )
                 return _ConsolidationBatchResponse(
-                    creates=[_CreateAction(text=f"Unique observation {index}", source_fact_ids=[fact_id])]
+                    creates=[
+                        _CreateAction(
+                            text=(
+                                f"Shared observation {index // 2}" if near_identical else f"Unique observation {index}"
+                            ),
+                            source_fact_ids=[fact_id],
+                        )
+                    ]
                 )
 
             mock_llm.set_response_callback(response)
@@ -103,12 +115,12 @@ async def test_single_lane_benchmark(memory: MemoryEngine, request_context, capl
                         consolidation_llm_parallelism=8,
                         consolidation_lane_llm_parallelism=lane_parallelism,
                         consolidation_llm_batch_size=1,
-                        consolidation_dedup_threshold=1.0,
+                        consolidation_dedup_threshold=0.97 if near_identical else 1.0,
                     ),
                     patch.object(memory, "submit_async_consolidation"),
                     patch.object(mod, "_find_related_observations", find),
                     patch.object(mod, "_consolidate_batch_with_llm", delayed),
-                    caplog.at_level(logging.WARNING, logger=mod.__name__),
+                    caplog.at_level(logging.INFO, logger=mod.__name__),
                 ):
                     start = time.perf_counter()
                     result = await run_consolidation_job(
@@ -127,15 +139,18 @@ async def test_single_lane_benchmark(memory: MemoryEngine, request_context, capl
                     bank_id,
                 )
             retries = sum("stale prepared reference" in rec.message for rec in caplog.records)
+            folds = sum("dedup-folded CREATE at apply time" in rec.message for rec in caplog.records)
             print(
-                f"BENCH lane={lane_parallelism} facts={len(facts)} elapsed={elapsed:.3f}s "
-                f"facts_per_sec={len(facts) / elapsed:.2f} retries={retries} duplicates={duplicates} "
+                f"BENCH near_identical={near_identical} lane={lane_parallelism} facts={len(facts)} elapsed={elapsed:.3f}s "
+                f"facts_per_sec={len(facts) / elapsed:.2f} retries={retries} apply_dedup_folds={folds} duplicates={duplicates} "
                 f"consolidated={sum(s['consolidated_at'] is not None for s in states)} "
                 f"failed={sum(s['consolidation_failed_at'] is not None for s in states)}"
             )
             assert result["status"] == "completed"
             assert all(s["consolidated_at"] is not None for s in states)
             assert duplicates == 0
+            if near_identical and lane_parallelism == 8:
+                assert folds > 0, "near-identical variant must exercise apply-time CREATE dedup"
             caplog.clear()
         finally:
             await memory.delete_bank(bank_id, request_context=request_context)

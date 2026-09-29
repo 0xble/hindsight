@@ -1036,6 +1036,232 @@ async def test_per_batch_log_line_attributes_only_own_work(memory: MemoryEngine,
 
 @pytest.mark.asyncio
 @pytest.mark.memory_backend_incompatible
+async def test_same_lane_apply_rechecks_create_dedup(memory: MemoryEngine, request_context):
+    """Concurrent CREATE preparation must not duplicate an identical committed observation."""
+    bank_id = f"test-lane-create-dedup-{uuid.uuid4().hex[:8]}"
+    await memory.ensure_bank_profile(bank_id=bank_id, request_context=request_context)
+    try:
+        async with memory._pool.acquire() as conn:
+            facts = [
+                await _insert_memory(conn, bank_id, "Fact one", ["shared"], "shared"),
+                await _insert_memory(conn, bank_id, "Fact two", ["shared"], "shared"),
+            ]
+
+        mock_llm = MockLLM(provider="mock", api_key="", base_url="", model="mock-model")
+
+        def callback(messages, scope):
+            if scope != "consolidation":
+                return _ConsolidationBatchResponse()
+            prompt = "\n".join(m.get("content", "") for m in messages if m.get("role") == "user")
+            fact_id = re.search(r"\[([0-9a-f-]{36})\]", prompt).group(1)
+            return _ConsolidationBatchResponse(
+                creates=[_CreateAction(text="The same shared observation", source_fact_ids=[fact_id])]
+            )
+
+        mock_llm.set_response_callback(callback)
+        wrapper = MagicMock()
+        wrapper.with_config.return_value = mock_llm
+        original_llm = memory._consolidation_llm_config
+        memory._consolidation_llm_config = wrapper
+        try:
+            with (
+                _override_config(
+                    memory,
+                    consolidation_llm_parallelism=2,
+                    consolidation_lane_llm_parallelism=2,
+                    consolidation_llm_batch_size=1,
+                    consolidation_dedup_threshold=0.97,
+                ),
+                patch.object(memory, "submit_async_consolidation"),
+            ):
+                result = await run_consolidation_job(
+                    memory_engine=memory, bank_id=bank_id, request_context=request_context
+                )
+        finally:
+            memory._consolidation_llm_config = original_llm
+
+        assert result["status"] == "completed"
+        async with memory._pool.acquire() as conn:
+            observations = await conn.fetch(
+                "SELECT text, source_memory_ids FROM memory_units WHERE bank_id=$1 AND fact_type='observation'",
+                bank_id,
+            )
+        assert len(observations) == 1
+        assert set(observations[0]["source_memory_ids"]) == set(facts)
+    finally:
+        await memory.delete_bank(bank_id, request_context=request_context)
+
+
+@pytest.mark.asyncio
+@pytest.mark.memory_backend_incompatible
+async def test_same_lane_apply_rechecks_observation_capacity(memory: MemoryEngine, request_context):
+    """Concurrent CREATE preparation must never exceed a scope's observation cap."""
+    bank_id = f"test-lane-capacity-{uuid.uuid4().hex[:8]}"
+    await memory.ensure_bank_profile(bank_id=bank_id, request_context=request_context)
+    try:
+        async with memory._pool.acquire() as conn:
+            facts = [
+                await _insert_memory(conn, bank_id, "Capacity fact one", ["shared"], None),
+                await _insert_memory(conn, bank_id, "Capacity fact two", ["shared"], None),
+            ]
+
+        wrapper, _ = _mock_llm_one_obs_per_fact()
+        original_llm = memory._consolidation_llm_config
+        memory._consolidation_llm_config = wrapper
+        try:
+            with (
+                _override_config(
+                    memory,
+                    consolidation_llm_parallelism=2,
+                    consolidation_lane_llm_parallelism=2,
+                    consolidation_llm_batch_size=1,
+                    consolidation_dedup_threshold=1.0,
+                    max_observations_per_scope=1,
+                ),
+                patch.object(memory, "submit_async_consolidation"),
+            ):
+                result = await run_consolidation_job(
+                    memory_engine=memory, bank_id=bank_id, request_context=request_context
+                )
+        finally:
+            memory._consolidation_llm_config = original_llm
+
+        assert result["status"] == "completed"
+        async with memory._pool.acquire() as conn:
+            observation_count = await conn.fetchval(
+                "SELECT count(*) FROM memory_units WHERE bank_id=$1 AND fact_type='observation' AND tags @> ARRAY['shared']::varchar[]",
+                bank_id,
+            )
+            states = await conn.fetch("SELECT consolidated_at FROM memory_units WHERE id=ANY($1::uuid[])", facts)
+        assert observation_count == 1
+        assert all(row["consolidated_at"] is not None for row in states)
+    finally:
+        await memory.delete_bank(bank_id, request_context=request_context)
+
+
+@pytest.mark.asyncio
+@pytest.mark.memory_backend_incompatible
+async def test_default_lane_does_not_validate_recalled_targets(memory: MemoryEngine, request_context):
+    """The lane=1 path retains base behavior: no SQL stale check or retries."""
+    from hindsight_api.engine.consolidation import consolidator as mod
+
+    bank_id = f"test-default-lane-{uuid.uuid4().hex[:8]}"
+    await memory.ensure_bank_profile(bank_id=bank_id, request_context=request_context)
+    try:
+        async with memory._pool.acquire() as conn:
+            fact = await _insert_memory(conn, bank_id, "Default update fact", ["default"], None)
+            obs_id = uuid.uuid4()
+            await conn.execute(
+                "INSERT INTO memory_units (id, bank_id, text, fact_type, tags, source_memory_ids, created_at) "
+                "VALUES ($1,$2,'Original','observation',$3,$4,now())",
+                obs_id,
+                bank_id,
+                ["default"],
+                [str(fact)],
+            )
+
+        async def recalled(**kwargs):
+            return RecallResult.model_construct(
+                results=[
+                    MemoryFact.model_construct(
+                        id=str(obs_id),
+                        text="Outdated recalled text",
+                        fact_type="observation",
+                        tags=["default"],
+                        source_fact_ids=[str(fact)],
+                    )
+                ]
+            )
+
+        mock_llm = MockLLM(provider="mock", api_key="", base_url="", model="mock-model")
+        calls = 0
+
+        def callback(messages, scope):
+            nonlocal calls
+            if scope != "consolidation":
+                return _ConsolidationBatchResponse()
+            calls += 1
+            return _ConsolidationBatchResponse(
+                updates=[
+                    _UpdateAction(
+                        observation_id=str(obs_id),
+                        text="Updated",
+                        source_fact_ids=[str(fact)],
+                    )
+                ]
+            )
+
+        mock_llm.set_response_callback(callback)
+        wrapper = MagicMock()
+        wrapper.with_config.return_value = mock_llm
+        original_llm = memory._consolidation_llm_config
+        memory._consolidation_llm_config = wrapper
+        try:
+            with (
+                _override_config(memory, consolidation_lane_llm_parallelism=1, consolidation_dedup_threshold=1.0),
+                patch.object(memory, "submit_async_consolidation"),
+                patch.object(mod, "_find_related_observations", recalled),
+            ):
+                result = await run_consolidation_job(
+                    memory_engine=memory, bank_id=bank_id, request_context=request_context
+                )
+        finally:
+            memory._consolidation_llm_config = original_llm
+        assert result["status"] == "completed" and calls == 1
+        async with memory._pool.acquire() as conn:
+            row = await conn.fetchrow("SELECT text, source_memory_ids FROM memory_units WHERE id=$1", obs_id)
+        assert row["text"] == "Updated"
+        assert str(fact) in [str(source_id) for source_id in row["source_memory_ids"]]
+    finally:
+        await memory.delete_bank(bank_id, request_context=request_context)
+
+
+@pytest.mark.asyncio
+async def test_store_owned_bank_disables_lane_parallelism(memory: MemoryEngine, request_context, caplog):
+    """Store-owned observations never pass the SQL-only lane reference validator."""
+    from hindsight_api.engine.consolidation import consolidator as mod
+
+    bank_id = f"test-store-lane-{uuid.uuid4().hex[:8]}"
+    await memory.ensure_bank_profile(bank_id=bank_id, request_context=request_context)
+    try:
+        async with memory._pool.acquire() as conn:
+            await _insert_memory(conn, bank_id, "Store fact one", ["store"], None)
+            await _insert_memory(conn, bank_id, "Store fact two", ["store"], None)
+        wrapper, _ = _mock_llm_one_obs_per_fact()
+        original_llm = memory._consolidation_llm_config
+        memory._consolidation_llm_config = wrapper
+        store = mod.get_memories()
+        original_owned = store.store_owned_for
+        owned_checks = 0
+
+        def owned_at_dispatch(bank):
+            nonlocal owned_checks
+            owned_checks += 1
+            # The actual Postgres store is SQL-backed. Simulate ownership only at
+            # dispatch, and retain its real SQL-backed behavior for reads/writes.
+            return owned_checks == 1 or original_owned(bank)
+
+        try:
+            with (
+                _override_config(memory, consolidation_lane_llm_parallelism=4, consolidation_llm_batch_size=1),
+                patch.object(memory, "submit_async_consolidation"),
+                patch.object(store, "store_owned_for", side_effect=owned_at_dispatch),
+                caplog.at_level(logging.WARNING, logger=mod.__name__),
+            ):
+                result = await run_consolidation_job(
+                    memory_engine=memory, bank_id=bank_id, request_context=request_context
+                )
+        finally:
+            memory._consolidation_llm_config = original_llm
+        assert result["status"] == "completed"
+        assert "observations are store-owned" in caplog.text
+        assert "stale prepared reference" not in caplog.text
+    finally:
+        await memory.delete_bank(bank_id, request_context=request_context)
+
+
+@pytest.mark.asyncio
+@pytest.mark.memory_backend_incompatible
 async def test_disjoint_scopes_run_concurrently(memory: MemoryEngine, request_context):
     """When write-scope sets are pairwise disjoint, the dispatcher must let
     groups run in parallel — we should observe simultaneous in-flight recalls

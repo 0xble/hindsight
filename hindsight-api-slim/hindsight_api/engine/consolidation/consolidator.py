@@ -334,6 +334,71 @@ class _DedupOutcome:
     best_text: str = ""
 
 
+async def _dedup_probe(
+    pool: DatabaseBackend,
+    memory_engine: "MemoryEngine",
+    bank_id: str,
+    config: Any,
+    anchor_text: str,
+    anchor_emb_str: str | None,
+    tags: list[str] | None,
+    exclude_id: str | None,
+) -> _DedupOutcome:
+    """Find the current nearest in-scope observation without an LLM call."""
+    from ..memories import get_memories
+
+    threshold = config.consolidation_dedup_threshold
+    if anchor_emb_str is None:
+        embs = await embedding_utils.generate_embeddings_batch(memory_engine.embeddings, [anchor_text])
+        if not embs:
+            return _DedupOutcome(best_id=None, merged_text="", should_merge=False)
+        anchor_emb_str = str(embs[0])
+    if hasattr(pool, "acquire"):
+        grouped = await get_memories().recall_unified(
+            conn=pool,
+            bank_id=bank_id,
+            fact_types=["observation"],
+            query_embedding=anchor_emb_str,
+            query_text=anchor_text,
+            limit=_DEDUP_TOP_K,
+            tags=tags,
+            tags_match="all_strict" if tags else "any",
+            enable_graph=False,
+            temporal_window=None,
+        )
+        candidates = grouped["observation"].semantic
+    else:
+        tag_clause = " AND tags @> $3::varchar[]" if tags else ""
+        params: list[Any] = [anchor_emb_str, bank_id]
+        if tags:
+            params.append(tags)
+        candidates = await pool.fetch(
+            f"""
+            SELECT id, text, 1 - (embedding <=> $1::vector) AS similarity
+            FROM {fq_table("memory_units")}
+            WHERE bank_id = $2 AND fact_type = 'observation' AND embedding IS NOT NULL{tag_clause}
+            ORDER BY embedding <=> $1::vector
+            LIMIT {_DEDUP_TOP_K}
+            """,
+            *params,
+        )
+    best_id: str | None = None
+    best_text = ""
+    best_sim = threshold
+    for result in candidates:
+        result_id = str(result["id"] if isinstance(result, dict) or hasattr(result, "keys") else result.id)
+        result_text = result["text"] if isinstance(result, dict) or hasattr(result, "keys") else result.text
+        similarity = result["similarity"] if isinstance(result, dict) or hasattr(result, "keys") else result.similarity
+        if exclude_id is not None and result_id == exclude_id:
+            continue
+        similarity = similarity or 0.0
+        if similarity >= best_sim:
+            best_id, best_text, best_sim = result_id, result_text, similarity
+    if best_id is None:
+        return _DedupOutcome(best_id=None, merged_text="", should_merge=False)
+    return _DedupOutcome(best_id=best_id, merged_text=best_text, should_merge=True, best_text=best_text)
+
+
 async def _dedup_adjudicate(
     pool: DatabaseBackend,
     memory_engine: "MemoryEngine",
@@ -361,42 +426,20 @@ async def _dedup_adjudicate(
     The embedder and the LLM both run with NO connection held; only the semantic+BM25 probe
     briefly borrows a short-lived connection.
     """
-    from ..memories import get_memories
-
-    threshold = config.consolidation_dedup_threshold
-    if anchor_emb_str is None:
-        embs = await embedding_utils.generate_embeddings_batch(memory_engine.embeddings, [anchor_text])
-        if not embs:
-            return _DedupOutcome(best_id=None, merged_text="", should_merge=False)
-        anchor_emb_str = str(embs[0])
-    tags_match = "all_strict" if tags else "any"
-    # Dedup only needs the dense/keyword arms over observations — no graph, no temporal window.
-    grouped = await get_memories().recall_unified(
-        conn=pool,
-        bank_id=bank_id,
-        fact_types=["observation"],
-        query_embedding=anchor_emb_str,
-        query_text=anchor_text,
-        limit=_DEDUP_TOP_K,
-        tags=tags,
-        tags_match=tags_match,
-        enable_graph=False,
-        temporal_window=None,
+    probe = await _dedup_probe(
+        pool,
+        memory_engine,
+        bank_id,
+        config,
+        anchor_text,
+        anchor_emb_str,
+        tags,
+        exclude_id,
     )
-    results = grouped["observation"].semantic
-    best_id: str | None = None
-    best_text = ""
-    best_sim = threshold  # only candidates at/above the threshold are considered
-    for r in results:
-        rid = str(r.id)
-        if exclude_id is not None and rid == exclude_id:
-            continue  # never match the anchor observation against itself
-        sim = r.similarity or 0.0
-        if sim >= best_sim:
-            best_id, best_text, best_sim = rid, r.text, sim
-
+    best_id = probe.best_id
+    best_text = probe.best_text
     if best_id is None:
-        return _DedupOutcome(best_id=None, merged_text="", should_merge=False)
+        return probe
 
     language_context = None
     language_mode = configured_mode(config)
@@ -2333,6 +2376,12 @@ async def _run_consolidation_job(
 
         llm_parallelism = max(1, config.consolidation_llm_parallelism)
         lane_parallelism = max(1, getattr(config, "consolidation_lane_llm_parallelism", 1))
+        if lane_parallelism > 1 and get_memories().store_owned_for(bank_id):
+            logger.warning(
+                "[CONSOLIDATION] bank=%s keeps lane LLM parallelism at 1 because observations are store-owned",
+                bank_id,
+            )
+            lane_parallelism = 1
 
         if lane_parallelism > 1:
             # One lock per write scope serializes only the DB apply transaction. LLM
@@ -3064,7 +3113,11 @@ async def _process_memory_batch(
                     await lock_stack.enter_async_context(lock)
                 async with acquire_with_retry(pool) as conn:
                     async with conn.transaction():
-                        await _validate_current_action_references(conn)
+                        # Stale action validation is only part of the opt-in lane path.
+                        # The default path must remain byte-for-byte equivalent in behavior,
+                        # and store-owned banks are explicitly kept on that path below.
+                        if apply_turn is not None:
+                            await _validate_current_action_references(conn)
                         for observation_id in prepared_deletes:
                             await _execute_delete_action(conn=conn, bank_id=bank_id, observation_id=observation_id)
                             deleted_count += 1
@@ -3093,14 +3146,56 @@ async def _process_memory_batch(
                                     prepared.update.text,
                                 )
 
+                        apply_remaining_slots: int | None = None
+                        if apply_turn is not None and max_obs >= 0 and fact_tags:
+                            current_count = (
+                                await _count_observations_for_scope(conn, bank_id, fact_tags) if max_obs > 0 else 0
+                            )
+                            apply_remaining_slots = max(max_obs - current_count, 0)
+                            if apply_remaining_slots == 0:
+                                logger.info(
+                                    "[CONSOLIDATION] bank=%s scope=%s at observation limit during apply (%s); skipping CREATEs",
+                                    bank_id,
+                                    fact_tags,
+                                    max_obs,
+                                )
+
                         for prepared_create in prepared_creates:
-                            if prepared_create.dedup is not None:
+                            # Preparation probes a snapshot from before earlier lane batches
+                            # committed. Re-probe current committed state under the scope lock
+                            # so a newly committed twin is folded without another LLM call.
+                            apply_dedup = prepared_create.dedup
+                            if apply_turn is not None and dedup_enabled:
+                                current_dedup = await _dedup_probe(
+                                    conn,
+                                    memory_engine,
+                                    bank_id,
+                                    config,
+                                    prepared_create.text,
+                                    prepared_create.embedding_str,
+                                    prepared_create.source_fact_tags,
+                                    None,
+                                )
+                                if current_dedup.best_id is not None:
+                                    if _norm_obs_text(current_dedup.best_text) == _norm_obs_text(prepared_create.text):
+                                        apply_dedup = current_dedup
+                                        logger.info(
+                                            "[CONSOLIDATION] dedup-folded CREATE at apply time into %s",
+                                            current_dedup.best_id[:8],
+                                        )
+                                    elif apply_dedup is None or apply_dedup.best_id != current_dedup.best_id:
+                                        # A semantic near-twin needs the normal off-connection
+                                        # LLM adjudication, never a blind merge inside a transaction.
+                                        raise _StaleConsolidationReference(
+                                            "new semantic CREATE twin before serialized apply"
+                                        )
+                            if apply_dedup is not None:
                                 merged_into = await _apply_dedup_create_fold(
                                     conn,
                                     memory_engine,
                                     bank_id,
                                     config,
-                                    prepared_create.dedup,
+                                    apply_dedup,
                                     prepared_create.source_memory_ids,
                                     _TemporalBounds.of(prepared_create.agg),
                                 )
@@ -3114,6 +3209,12 @@ async def _process_memory_batch(
                                         per_memory_created.add(str(m["id"]))
                                     continue
 
+                            if apply_remaining_slots is not None and apply_remaining_slots <= 0:
+                                if remaining_observation_slots:
+                                    raise _StaleConsolidationReference(
+                                        "observation capacity changed before serialized apply"
+                                    )
+                                continue
                             action = await _apply_create_action(
                                 conn=conn,
                                 memory_engine=memory_engine,
@@ -3124,6 +3225,8 @@ async def _process_memory_batch(
                             # Count a memory as created only when an observation was actually written (the
                             # source-liveness recheck inside the write can skip it).
                             if action == "created":
+                                if apply_remaining_slots is not None:
+                                    apply_remaining_slots -= 1
                                 for m in prepared_create.source_mems:
                                     per_memory_created.add(str(m["id"]))
 
