@@ -249,6 +249,21 @@ def test_filter_reports_each_rule_and_keeps_valid_actions() -> None:
     assert result.must_reject
 
 
+def test_filter_drops_sourceless_create_without_rejecting_valid_sibling() -> None:
+    response = consolidator._ConsolidationBatchResponse.model_construct(
+        creates=[
+            SimpleNamespace(text="valid", source_fact_ids=["A"]),
+            SimpleNamespace(text="no source", source_fact_ids=[]),
+        ],
+        updates=[],
+        deletes=[],
+    )
+    result = consolidator._filter_unpersistable_references(response, memories=[{"id": "A"}], union_observations=[])
+    assert result.dropped == {"create_without_sources": 1}
+    assert not result.must_reject
+    assert [action.text for action in result.response.creates] == ["valid"]
+
+
 def test_filter_rejects_unknown_only_sources_amid_valid_siblings() -> None:
     response = consolidator._ConsolidationBatchResponse.model_construct(
         creates=[

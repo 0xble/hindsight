@@ -350,7 +350,228 @@ async def test_partial_invalid_citation_commits_covered_fact_and_retries_only_pe
 
 @pytest.mark.asyncio
 @pytest.mark.memory_backend_incompatible
-async def test_filtered_reply_does_not_stamp_when_valid_action_is_duplicate_real_pg(memory, request_context):
+async def test_persistently_miscited_single_fact_is_failed_real_pg(memory, request_context):
+    bank = "language-leaf-" + uuid.uuid4().hex[:8]
+    await memory.ensure_bank_profile(bank, request_context=request_context)
+    try:
+        async with memory._pool.acquire() as conn:
+            fact = await _insert_memory(conn, bank, "Persistently mis-cited fact.", [])
+        calls = []
+
+        def response(_messages, _scope):
+            calls.append(1)
+            return _ConsolidationBatchResponse(
+                creates=[_CreateAction(text="Invalid.", source_fact_ids=[str(fact), str(uuid.uuid4())])]
+            )
+
+        with (
+            patch.object(memory, "_consolidation_llm_config", _llm(response)),
+            patch(
+                "hindsight_api.engine.consolidation.consolidator._find_related_observations",
+                new=AsyncMock(return_value=SimpleNamespace(results=[], source_facts={})),
+            ),
+            _override_config(
+                memory,
+                enable_observations=True,
+                llm_language_integrity="off",
+                consolidation_batch_size=1,
+                consolidation_llm_batch_size=1,
+            ),
+        ):
+            result = await run_consolidation_job(memory_engine=memory, bank_id=bank, request_context=request_context)
+            assert result["memories_failed"] == 1
+            assert result["memories_processed"] == 1
+            assert result["memories_deferred"] == 0
+            assert len(calls) == 1
+            again = await run_consolidation_job(memory_engine=memory, bank_id=bank, request_context=request_context)
+            assert again["memories_processed"] == 0
+        assert await _pending_facts(memory, bank) == []
+        async with memory._pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "SELECT consolidated_at, consolidation_failed_at FROM memory_units WHERE bank_id=$1 AND id=$2",
+                bank,
+                fact,
+            )
+        assert row["consolidated_at"] is None and row["consolidation_failed_at"] is not None
+    finally:
+        await memory.delete_bank(bank, request_context=request_context)
+
+
+@pytest.mark.asyncio
+@pytest.mark.memory_backend_incompatible
+async def test_deferred_fact_does_not_block_later_fetch_or_retry_in_same_job_real_pg(memory, request_context):
+    bank = "language-backlog-" + uuid.uuid4().hex[:8]
+    await memory.ensure_bank_profile(bank, request_context=request_context)
+    try:
+        async with memory._pool.acquire() as conn:
+            fact_a = await _insert_memory(conn, bank, "Garden was renovated.", [])
+            fact_b = await _insert_memory(conn, bank, "Kitchen was painted.", [])
+            fact_c = await _insert_memory(conn, bank, "Patio was cleaned.", [])
+        calls = []
+        outsider = str(uuid.uuid4())
+
+        def response(messages, _scope):
+            calls.append(messages)
+            if len(calls) == 1:
+                return _ConsolidationBatchResponse(
+                    creates=[
+                        _CreateAction(text="Garden was renovated.", source_fact_ids=[str(fact_a)]),
+                        _CreateAction(text="Invalid kitchen.", source_fact_ids=[str(fact_b), outsider]),
+                    ]
+                )
+            if len(calls) == 2:
+                return _ConsolidationBatchResponse(
+                    creates=[_CreateAction(text="Patio was cleaned.", source_fact_ids=[str(fact_c)])]
+                )
+            return _ConsolidationBatchResponse(
+                creates=[_CreateAction(text="Kitchen was painted.", source_fact_ids=[str(fact_b)])]
+            )
+
+        with (
+            patch.object(memory, "_consolidation_llm_config", _llm(response)),
+            patch(
+                "hindsight_api.engine.consolidation.consolidator._find_related_observations",
+                new=AsyncMock(return_value=SimpleNamespace(results=[], source_facts={})),
+            ),
+            _override_config(
+                memory,
+                enable_observations=True,
+                llm_language_integrity="off",
+                consolidation_batch_size=2,
+                consolidation_llm_batch_size=2,
+                consolidation_llm_parallelism=1,
+            ),
+        ):
+            first = await run_consolidation_job(memory_engine=memory, bank_id=bank, request_context=request_context)
+            assert len(calls) == 2  # B was excluded from the second fetch, not retried.
+            assert first["memories_processed"] == 2
+            assert first["memories_deferred"] == 1
+            assert first["skipped"] == 0
+            assert await _pending_facts(memory, bank) == ["Kitchen was painted."]
+            assert sorted(await _observations(memory, bank)) == ["Garden was renovated.", "Patio was cleaned."]
+            second = await run_consolidation_job(memory_engine=memory, bank_id=bank, request_context=request_context)
+            assert second["memories_processed"] == 1
+            assert len(calls) == 3
+            assert await _pending_facts(memory, bank) == []
+    finally:
+        await memory.delete_bank(bank, request_context=request_context)
+
+
+@pytest.mark.asyncio
+@pytest.mark.memory_backend_incompatible
+async def test_deferred_fact_round_limit_requeues_with_real_remaining_real_pg(memory, request_context):
+    bank = "language-requeue-" + uuid.uuid4().hex[:8]
+    await memory.ensure_bank_profile(bank, request_context=request_context)
+    try:
+        async with memory._pool.acquire() as conn:
+            fact_a = await _insert_memory(conn, bank, "Garden was renovated.", [])
+            fact_b = await _insert_memory(conn, bank, "Kitchen was painted.", [])
+            await _insert_memory(conn, bank, "Patio was cleaned.", [])
+        outsider = str(uuid.uuid4())
+
+        def response(_messages, _scope):
+            return _ConsolidationBatchResponse(
+                creates=[
+                    _CreateAction(text="Garden was renovated.", source_fact_ids=[str(fact_a)]),
+                    _CreateAction(text="Invalid kitchen.", source_fact_ids=[str(fact_b), outsider]),
+                ]
+            )
+
+        with (
+            patch.object(memory, "_consolidation_llm_config", _llm(response)),
+            patch.object(memory, "submit_async_consolidation", new_callable=AsyncMock) as requeue,
+            patch(
+                "hindsight_api.engine.consolidation.consolidator._find_related_observations",
+                new=AsyncMock(return_value=SimpleNamespace(results=[], source_facts={})),
+            ),
+            _override_config(
+                memory,
+                enable_observations=True,
+                llm_language_integrity="off",
+                consolidation_batch_size=2,
+                consolidation_llm_batch_size=2,
+                consolidation_llm_parallelism=1,
+                consolidation_max_memories_per_round=2,
+            ),
+        ):
+            result = await run_consolidation_job(memory_engine=memory, bank_id=bank, request_context=request_context)
+        assert result["memories_processed"] == 1
+        assert result["memories_deferred"] == 1
+        assert await _pending_facts(memory, bank) == ["Kitchen was painted.", "Patio was cleaned."]
+        requeue.assert_awaited_once()
+    finally:
+        await memory.delete_bank(bank, request_context=request_context)
+
+
+@pytest.mark.asyncio
+@pytest.mark.memory_backend_incompatible
+async def test_earlier_scope_pending_stays_unstamped_after_later_scope_write_real_pg(memory, request_context):
+    bank = "language-scopes-" + uuid.uuid4().hex[:8]
+    await memory.ensure_bank_profile(bank, request_context=request_context)
+    try:
+        async with memory._pool.acquire() as conn:
+            fact_a = await _insert_memory(conn, bank, "Garden was renovated.", ["garden", "shared"])
+            fact_b = await _insert_memory(conn, bank, "Kitchen was painted.", ["garden", "shared"])
+            await conn.execute(
+                "UPDATE memory_units SET observation_scopes=$1::jsonb WHERE id = ANY($2)",
+                '"per_tag"',
+                [fact_a, fact_b],
+            )
+        calls = []
+        outsider = str(uuid.uuid4())
+
+        def response(_messages, _scope):
+            calls.append(1)
+            if len(calls) == 1:
+                return _ConsolidationBatchResponse(
+                    creates=[
+                        _CreateAction(text="Garden was renovated.", source_fact_ids=[str(fact_a)]),
+                        _CreateAction(text="Invalid kitchen.", source_fact_ids=[str(fact_b), outsider]),
+                    ]
+                )
+            return _ConsolidationBatchResponse(
+                creates=[
+                    _CreateAction(text="Garden was renovated.", source_fact_ids=[str(fact_a)]),
+                    _CreateAction(text="Kitchen was painted.", source_fact_ids=[str(fact_b)]),
+                ]
+            )
+
+        with (
+            patch.object(memory, "_consolidation_llm_config", _llm(response)),
+            patch(
+                "hindsight_api.engine.consolidation.consolidator._find_related_observations",
+                new=AsyncMock(return_value=SimpleNamespace(results=[], source_facts={})),
+            ),
+            _override_config(
+                memory,
+                enable_observations=True,
+                llm_language_integrity="off",
+                consolidation_batch_size=2,
+                consolidation_llm_batch_size=2,
+                consolidation_llm_parallelism=1,
+            ),
+        ):
+            result = await run_consolidation_job(memory_engine=memory, bank_id=bank, request_context=request_context)
+        assert len(calls) == 2
+        assert result["memories_processed"] == 1
+        assert result["memories_deferred"] == 1
+        assert result["memories_failed"] == 0
+        assert await _pending_facts(memory, bank) == ["Kitchen was painted."]
+        async with memory._pool.acquire() as conn:
+            stamps = await conn.fetch(
+                "SELECT id, consolidated_at FROM memory_units WHERE bank_id=$1 AND id = ANY($2)",
+                bank,
+                [fact_a, fact_b],
+            )
+        by_id = {row["id"]: row["consolidated_at"] for row in stamps}
+        assert by_id[fact_a] is not None and by_id[fact_b] is None
+    finally:
+        await memory.delete_bank(bank, request_context=request_context)
+
+
+@pytest.mark.asyncio
+@pytest.mark.memory_backend_incompatible
+async def test_filtered_reply_stamps_valid_duplicate_create_real_pg(memory, request_context):
     bank = "language-no-coverage-" + uuid.uuid4().hex[:8]
     await memory.ensure_bank_profile(bank, request_context=request_context)
     try:
@@ -399,10 +620,14 @@ async def test_filtered_reply_does_not_stamp_when_valid_action_is_duplicate_real
         ):
             result = await run_consolidation_job(memory_engine=memory, bank_id=bank, request_context=request_context)
         assert result["memories_failed"] == 0
-        assert await _pending_facts(memory, bank) == ["Already known.", "Another fact."]
+        assert result["memories_processed"] == 1
+        assert result["memories_deferred"] == 1
+        assert await _pending_facts(memory, bank) == ["Another fact."]
         assert await _observations(memory, bank) == ["Already known."]
         units = (await memory.list_memory_units(bank, request_context=request_context))["items"]
-        assert all(unit["consolidated_at"] is None for unit in units if unit["fact_type"] != "observation")
+        by_id = {unit["id"]: unit for unit in units}
+        assert by_id[str(fact_a)]["consolidated_at"] is not None
+        assert by_id[str(fact_b)]["consolidated_at"] is None
     finally:
         await memory.delete_bank(bank, request_context=request_context)
 

@@ -1040,7 +1040,8 @@ class _ReferenceFilterResult:
     #: so keeping it after its partner was dropped could erase knowledge.
     unsafe_delete: bool = False
     #: A dropped action citing only invented IDs cannot be attributed to a batch
-    #: fact, so we cannot prove which memory should remain pending.
+    #: fact, so we cannot prove which memory should remain pending. Sourceless
+    #: actions are simply dropped as before; they cite no invented fact.
     unknown_only_sources: bool = False
 
     @property
@@ -1080,7 +1081,7 @@ def _filter_unpersistable_references(
         nonlocal unknown_only_sources
         dropped[rule] = dropped.get(rule, 0) + 1
         known_sources = {str(fid) for fid in (source_ids or []) if str(fid) in valid_fact_ids}
-        if not known_sources:
+        if source_ids and not known_sources:
             unknown_only_sources = True
 
     creates = []
@@ -1498,6 +1499,7 @@ async def _fetch_unconsolidated_rows(
     fact_types: list[str],
     limit: int,
     observation_scopes: list[list[str]] | None,
+    exclude_ids: set[str] | None = None,
 ) -> list[dict[str, Any]]:
     """Unconsolidated candidate facts, read through the memories store.
 
@@ -1512,9 +1514,15 @@ async def _fetch_unconsolidated_rows(
     by_id: dict[str, Any] = {}
     for scope in scopes:
         for m in await store.find_unconsolidated(
-            conn=conn, fq_table=fq_table, bank_id=bank_id, fact_types=fact_types, limit=limit, scope_tags=scope
+            conn=conn,
+            fq_table=fq_table,
+            bank_id=bank_id,
+            fact_types=fact_types,
+            limit=limit + len(exclude_ids or ()),
+            scope_tags=scope,
         ):
-            by_id.setdefault(m.unit_id, m)
+            if m.unit_id not in (exclude_ids or ()):
+                by_id.setdefault(m.unit_id, m)
     ordered = sorted(by_id.values(), key=lambda m: (m.created_at is None, m.created_at))[:limit]
     return [
         {
@@ -1556,6 +1564,7 @@ async def _fetch_fair_unconsolidated_rows(
     fact_types: list[str],
     limit: int,
     group_cap: int,
+    exclude_ids: set[str] | None = None,
 ) -> list[dict[str, Any]] | None:
     """Unconsolidated candidates chosen fairly across scope groups, or ``None`` if unsupported.
 
@@ -1592,7 +1601,7 @@ async def _fetch_fair_unconsolidated_rows(
         """,
         bank_id,
         list(fact_types),
-        _FAIR_SCAN_LIMIT,
+        _FAIR_SCAN_LIMIT + len(exclude_ids or ()),
     )
     if not candidates:
         return []
@@ -1601,6 +1610,8 @@ async def _fetch_fair_unconsolidated_rows(
     # order is "group whose oldest fact is oldest" first.
     groups: dict[tuple[str, ...], list[Any]] = {}
     for row in candidates:
+        if str(row["id"]) in (exclude_ids or ()):
+            continue
         key = _consolidation_batch_key({"tags": row["tags"], "observation_scopes": row["observation_scopes"]})
         members = groups.setdefault(key, [])
         if len(members) < group_cap:
@@ -1857,6 +1868,7 @@ async def _run_consolidation_job(
         "observations_deleted": 0,
         "actions_executed": 0,
         "skipped": 0,
+        "memories_deferred": 0,
         "memories_failed": 0,
         # LLM batch attempts that raised, including those a retry or the adaptive bisection
         # later rescued. `memories_failed` counts only facts left stuck, so it reads 0 for
@@ -1906,10 +1918,11 @@ async def _run_consolidation_job(
                     ["experience", "world"],
                     fetch_limit,
                     _fair_group_cap(fetch_limit, config.consolidation_llm_parallelism),
+                    deferred_this_job,
                 )
             if memories is None:
                 memories = await _fetch_unconsolidated_rows(
-                    conn, bank_id, ["experience", "world"], fetch_limit, observation_scopes
+                    conn, bank_id, ["experience", "world"], fetch_limit, observation_scopes, deferred_this_job
                 )
             perf.record_timing("fetch_memories", time.time() - t0)
 
@@ -2048,6 +2061,8 @@ async def _run_consolidation_job(
                                 # committed. Running the rest would only add writes to discard.
                                 sub_llm_failed = True
                                 break
+                            # An earlier scope whose action was dropped remains pending even
+                            # when a later scope writes: stamping would permanently skip that scope.
                             if not sub_results:
                                 sub_results = pass_results
                             else:
@@ -2109,6 +2124,16 @@ async def _run_consolidation_job(
                         f" {sub_batch[0]['id']}, marking consolidation_failed_at"
                     )
                 else:
+                    # At the indivisible leaf an uncovered fact cannot be rescued by
+                    # another split. Use the existing failed-at lifecycle instead of
+                    # leaving an oldest-first pending row to stall every future job.
+                    if len(sub_batch) == 1 and (
+                        sub_results[0].get("reason") == "invalid_references_pending"
+                        or (obs_tags_list and str(sub_batch[0]["id"]) in pending_pass_ids)
+                    ):
+                        failed_ids.append(sub_batch[0]["id"])
+                        all_results.append({"action": "failed"})
+                        continue
                     for memory, result in zip(sub_batch, sub_results):
                         mid = str(memory["id"])
                         if result.get("reason") == "invalid_references_pending" or (
@@ -2168,9 +2193,13 @@ async def _run_consolidation_job(
                 "observations_deleted": all_deleted,
                 "actions_executed": 0,
                 "skipped": 0,
+                "memories_deferred": 0,
                 "memories_failed": 0,
             }
             for result in all_results:
+                if result.get("reason") == "invalid_references_pending":
+                    local_stats["memories_deferred"] += 1
+                    continue
                 local_stats["memories_processed"] += 1
                 action = result.get("action")
                 if action == "created":
@@ -2226,7 +2255,7 @@ async def _run_consolidation_job(
                 f" | {', '.join(timing_parts)}"
                 f" | created={local_stats['observations_created']}"
                 f" updated={local_stats['observations_updated']}"
-                f" skipped={local_stats['skipped']}"
+                f" skipped={local_stats['skipped']} deferred={local_stats['memories_deferred']}"
                 + (f" failed={local_stats['memories_failed']}" if local_stats["memories_failed"] else "")
                 + f" | input_tokens=~{input_tokens}"
                 f" | avg={llm_batch_time / max(1, len(llm_batch_local)):.3f}s/memory"
@@ -2331,15 +2360,8 @@ async def _run_consolidation_job(
         if any_cancelled:
             return {"status": "cancelled", "bank_id": bank_id, **stats}
 
-        # Pending facts must be retried by a later job, not immediately fetched
-        # again with the identical batch (which could loop forever). The current
-        # fetch has already processed its other groups; leave the pending rows
-        # unstamped and visible for the next consolidation trigger.
-        if deferred_this_job:
-            logger.warning(
-                "[CONSOLIDATION] bank=%s deferred %d uncovered memories to a later job", bank_id, len(deferred_this_job)
-            )
-            break
+        # Deferred facts stay pending for a later job. Fetches within this job
+        # exclude them so later backlog batches still make progress.
 
         # Update round budget after processing this DB fetch batch
         if round_limit_enabled:
@@ -2369,7 +2391,7 @@ async def _run_consolidation_job(
         all_refresh_tags |= await _read_pending_refresh_tags(pool, operation_id)
 
     if hit_round_limit:
-        remaining = total_count - stats["memories_processed"]
+        remaining = max(0, await _count_unconsolidated())
         logger.info(
             f"[CONSOLIDATION] bank={bank_id} hit round limit of {max_memories_per_round} memories,"
             f" ~{remaining} remaining. Re-queuing consolidation."
@@ -2379,6 +2401,11 @@ async def _run_consolidation_job(
             request_context=request_context,
             observation_scopes=observation_scopes,
             pending_refresh_tags=sorted(all_refresh_tags) or None,
+        )
+
+    if deferred_this_job:
+        logger.warning(
+            "[CONSOLIDATION] bank=%s deferred %d uncovered memories to a later job", bank_id, len(deferred_this_job)
         )
 
     # Build summary
@@ -2840,6 +2867,7 @@ async def _process_memory_batch(
     update_texts = {_norm_obs_text(u.text) for u in llm_result.updates if u.text}
 
     prepared_creates: list[_PreparedCreate] = []
+    duplicate_create_sources: set[str] = set()
     for create in llm_result.creates:
         source_mems = [mem_by_id[fid] for fid in create.source_fact_ids if fid in mem_by_id]
         if not source_mems:
@@ -2855,6 +2883,11 @@ async def _process_memory_batch(
         # would run off the pre-LLM snapshot and clobber that change (see _dedupe_updates).
         duplicate_of = _duplicate_create_target(create.text, shown_obs_by_text, update_texts)
         if duplicate_of is not None:
+            # Only an already-stored observation proves coverage without a write.
+            # A duplicate of an UPDATE in this reply must wait for that UPDATE's
+            # successful write (and its own source citation) instead.
+            if _norm_obs_text(create.text) in shown_obs_by_text:
+                duplicate_create_sources.update(str(m["id"]) for m in source_mems)
             logger.warning(
                 "[CONSOLIDATION] dropped duplicate observation CREATE — verbatim match of %s; llm_reason=%r",
                 duplicate_of,
@@ -2987,7 +3020,7 @@ async def _process_memory_batch(
                         # A filtered response may have an action discarded at preparation
                         # or write time. Stamp only facts with a durable observation, not
                         # merely facts whose citation appeared in the LLM response.
-                        durable_ids = per_memory_created | per_memory_updated
+                        durable_ids = per_memory_created | per_memory_updated | duplicate_create_sources
                         safe_stamp_ids = (
                             [mid for mid in stamp_ids if str(mid) in durable_ids]
                             if llm_result.filtered_references
@@ -3021,7 +3054,11 @@ async def _process_memory_batch(
         elif updated:
             results.append({"action": "updated"})
         else:
-            reason = "invalid_references_pending" if llm_result.filtered_references else "no_durable_knowledge"
+            reason = (
+                "invalid_references_pending"
+                if llm_result.filtered_references and mid not in duplicate_create_sources
+                else "no_durable_knowledge"
+            )
             results.append({"action": "skipped", "reason": reason})
 
     return results, deleted_count, llm_result.failed
