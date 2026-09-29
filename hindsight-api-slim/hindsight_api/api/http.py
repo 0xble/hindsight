@@ -3779,6 +3779,10 @@ class BankTemplateConfig(BaseModel):
     consolidation_llm_parallelism: int | None = Field(
         default=None, description="Number of consolidation LLM batches processed concurrently"
     )
+    consolidation_lane_llm_parallelism: int | None = Field(
+        default=None,
+        description="Number of LLM batches prepared concurrently within one observation-scope lane; DB applies remain serialized",
+    )
     consolidation_fair_group_selection: bool | None = Field(
         default=None,
         description="Fetch the oldest facts of many observation-scope groups per consolidation round "
