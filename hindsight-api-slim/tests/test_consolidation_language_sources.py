@@ -176,7 +176,7 @@ async def test_unpersistable_recalled_citation_drops_only_that_action_before_lan
 
 
 @pytest.mark.asyncio
-async def test_fact_cited_only_by_dropped_actions_rejects_the_response(
+async def test_fact_cited_only_by_dropped_actions_remains_pending(
     monkeypatch: pytest.MonkeyPatch, config: SimpleNamespace
 ) -> None:
     """A batch fact whose only citing action is dropped must not be stamped into nothing."""
@@ -197,8 +197,9 @@ async def test_fact_cited_only_by_dropped_actions_rejects_the_response(
     async def prepare(*_args: object, **_kwargs: object) -> object:
         return object()
 
-    async def evaluate(*_args: object, **_kwargs: object) -> LanguageCheckResult:
-        raise AssertionError("a rejected response must not reach language evaluation")
+    async def evaluate(_context: object, generated, **_kwargs: object) -> LanguageCheckResult:
+        assert [item.text for item in generated] == ["valid sibling"]
+        return LanguageCheckResult(mismatches=(), checked=1, abstained=0)
 
     monkeypatch.setattr(consolidator, "prepare_context_safely", prepare)
     monkeypatch.setattr(consolidator, "evaluate_language_integrity_safely", evaluate)
@@ -212,8 +213,9 @@ async def test_fact_cited_only_by_dropped_actions_rejects_the_response(
         config=config,
     )
 
-    assert result.failed
-    assert not result.creates
+    assert not result.failed
+    assert [action.text for action in result.creates] == ["valid sibling"]
+    assert result.pending_fact_ids == {"B"}
     assert llm.call.await_count == 1
 
 
@@ -221,15 +223,12 @@ def test_filter_reports_each_rule_and_keeps_valid_actions() -> None:
     response = consolidator._ConsolidationBatchResponse.model_construct(
         creates=[
             SimpleNamespace(text="ok", source_fact_ids=["A"]),
-            SimpleNamespace(text="no sources", source_fact_ids=[]),
             SimpleNamespace(text="outside", source_fact_ids=["A", "X"]),
         ],
         updates=[
             SimpleNamespace(text="ok", observation_id="O", source_fact_ids=["B"]),
-            SimpleNamespace(text="unknown target", observation_id="Z", source_fact_ids=["A"]),
-            SimpleNamespace(text="wrong topology", observation_id="O", source_fact_ids=["A"]),
         ],
-        deletes=[SimpleNamespace(observation_id="O"), SimpleNamespace(observation_id="Z")],
+        deletes=[SimpleNamespace(observation_id="O")],
     )
 
     result = consolidator._filter_unpersistable_references(
@@ -243,13 +242,9 @@ def test_filter_reports_each_rule_and_keeps_valid_actions() -> None:
     assert [a.text for a in result.response.updates] == ["ok"]
     assert [a.observation_id for a in result.response.deletes] == ["O"]
     assert result.dropped == {
-        "create_without_sources": 1,
         "create_cites_fact_outside_batch": 1,
-        "update_target_not_recalled": 1,
-        "update_target_not_recalled_for_its_sources": 1,
-        "delete_target_not_recalled": 1,
     }
-    assert result.orphaned_fact_ids == set()
+    assert result.pending_fact_ids == set()
     assert result.unsafe_delete
     assert result.must_reject
 
@@ -270,6 +265,34 @@ def test_filter_rejects_unknown_only_sources_amid_valid_siblings() -> None:
     )
     assert result.dropped == {"create_cites_fact_outside_batch": 1}
     assert result.must_reject
+
+
+def test_invalid_update_and_delete_targets_reject_whole_reply() -> None:
+    observation = MemoryFact(id="O", text="old", fact_type="observation", source_fact_ids=[])
+    for response in (
+        consolidator._ConsolidationBatchResponse.model_construct(
+            creates=[SimpleNamespace(text="valid", source_fact_ids=["A"])],
+            updates=[SimpleNamespace(text="unsafe", observation_id="Z", source_fact_ids=["B"])],
+            deletes=[],
+        ),
+        consolidator._ConsolidationBatchResponse.model_construct(
+            creates=[SimpleNamespace(text="valid", source_fact_ids=["A"])],
+            updates=[SimpleNamespace(text="unsafe", observation_id="O", source_fact_ids=["B"])],
+            deletes=[],
+        ),
+        consolidator._ConsolidationBatchResponse.model_construct(
+            creates=[SimpleNamespace(text="valid", source_fact_ids=["A"])],
+            updates=[],
+            deletes=[SimpleNamespace(observation_id="Z")],
+        ),
+    ):
+        with pytest.raises(consolidator._InvalidConsolidationReferences):
+            consolidator._filter_unpersistable_references(
+                response,
+                memories=[{"id": "A"}, {"id": "B"}],
+                union_observations=[observation],
+                per_fact_observation_ids={"A": {"O"}, "B": set()},
+            )
 
 
 def test_filter_keeps_deletes_when_nothing_was_dropped() -> None:
