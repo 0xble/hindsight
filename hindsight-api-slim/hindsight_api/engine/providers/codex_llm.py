@@ -204,7 +204,11 @@ class CodexLLM(LLMInterface):
             {
                 "Authorization": f"Bearer {self.access_token}",
                 "Content-Type": "application/json",
-                "OpenAI-Account-ID": self.account_id,
+                # Matches the Codex CLI. The backend attributes usage to the
+                # workspace from this header; the older OpenAI-Account-ID name
+                # can be rejected with usage_limit_reached while the account
+                # still has quota.
+                "ChatGPT-Account-ID": self.account_id,
                 "User-Agent": _CODEX_USER_AGENT,
                 "Origin": "https://chatgpt.com",
                 "originator": _CODEX_ORIGINATOR,
