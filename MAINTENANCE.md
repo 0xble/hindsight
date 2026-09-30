@@ -24,6 +24,7 @@ runs; these extend this sole enrollment and scheduling unit:
 - [Service hardening](maintenance/service-hardening.md): HINDSIGHT-002 and HINDSIGHT-007.
 - [Fork CI governance](maintenance/ci.md): HINDSIGHT-003.
 - [Generated-language integrity](maintenance/language-integrity.md): HINDSIGHT-005.
+- [Bounded consolidation schema correction](maintenance/schema-correction.md): consolidation-only divergence.
 
 ## Upstream-owned recovery
 

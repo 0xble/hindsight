@@ -28,6 +28,7 @@ from datetime import datetime, timezone
 from enum import StrEnum
 from fnmatch import fnmatchcase
 from itertools import combinations
+from threading import Lock
 from typing import TYPE_CHECKING, Any, Awaitable, Callable, Literal
 
 import asyncpg
@@ -53,6 +54,7 @@ from ..language_integrity import (
     record_outcome,
     should_check,
 )
+from ..llm_attempt_limit import CompletionAttemptLimitError, single_completion
 from ..llm_interface import OutputTooLongError, ProviderRateLimitResetError
 from ..llm_trace import (
     current_trace_context,
@@ -66,6 +68,7 @@ from ..llm_wrapper import sanitize_llm_output
 from ..memories import FactRecord, get_memories
 from ..memory_engine import Budget, fq_table
 from ..retain import embedding_utils
+from ..structured_output import provider_json_schema, strict_json_schema
 from ..token_encoding import count_tokens
 from .prompts import (
     build_consolidation_input,
@@ -1907,6 +1910,7 @@ async def _run_consolidation_job(
 ) -> dict[str, Any]:
     """Core consolidation flow. See ``run_consolidation_job`` for the public entrypoint."""
     perf = ConsolidationPerfLog(bank_id)
+    schema_correction_budget = _SchemaCorrectionBudget()
     max_memories_per_batch = config.consolidation_batch_size
     max_memories_per_round = config.consolidation_max_memories_per_round
     llm_batch_size = max(1, config.consolidation_llm_batch_size)
@@ -2138,6 +2142,7 @@ async def _run_consolidation_job(
                             mark_consolidated_ids=mark_ids,
                             apply_locks=apply_locks,
                             apply_turn=apply_turn,
+                            schema_correction_budget=schema_correction_budget,
                         )
                     except _StaleConsolidationReference:
                         if attempt == 2:
@@ -2618,7 +2623,7 @@ async def _run_consolidation_job(
             deferred_memory_ids.update(d.pending_ids)
 
         if any_cancelled:
-            return {"status": "cancelled", "bank_id": bank_id, **stats}
+            return {"status": "cancelled", "bank_id": bank_id, **stats, **schema_correction_budget.result_stats()}
 
         # Update round budget after processing this DB fetch batch
         if round_limit_enabled:
@@ -2699,6 +2704,7 @@ async def _run_consolidation_job(
     # carrying `consolidation_failed_at`, while everything those responses would have done
     # -- notably their deletes -- was thrown away (#4151, #4152). Say so, loudly, and only
     # when it happened, so a healthy summary is unchanged.
+    stats.update(schema_correction_budget.result_stats())
     stats["llm_batch_failures"] = perf.llm_batch_failures
     if perf.llm_batch_failures:
         # Attempts, not batches: one batch call can burn up to `consolidation_max_attempts`
@@ -2880,6 +2886,7 @@ async def _process_memory_batch(
     mark_consolidated_ids: list[Any] | None = None,
     apply_locks: list[asyncio.Lock] | None = None,
     apply_turn: tuple[asyncio.Event, asyncio.Event] | None = None,
+    schema_correction_budget: "_SchemaCorrectionBudget | None" = None,
 ) -> tuple[list[dict[str, Any]], int, bool]:
     """
     Process a batch of memories in a single LLM call.
@@ -2998,6 +3005,7 @@ async def _process_memory_batch(
         config=config,
         remaining_observation_slots=remaining_observation_slots,
         max_observations_per_scope=max_obs,
+        schema_correction_budget=schema_correction_budget,
     )
     if perf:
         perf.record_timing("llm", time.time() - t0)
@@ -4042,6 +4050,88 @@ def _classify_batch_failure(exc: Exception) -> _BatchFailureClass:
     return _BatchFailureClass.RETRY
 
 
+@dataclass
+class _SchemaCorrectionStats:
+    initial_failures: int = 0
+    attempts: int = 0
+    successes: int = 0
+    failures: int = 0
+    budget_exhausted: int = 0
+    context_exhausted: int = 0
+
+
+class _SchemaCorrectionBudget:
+    """One job-round budget, shared by scopes, lanes and adaptive bisection.
+
+    Reserve at the provider attempt boundary, not at wrapper entry: unsupported
+    providers and locally rejected prompts must not consume completion credits.
+    The lock guards only await-free increments and is safe across event loops.
+    """
+
+    def __init__(self) -> None:
+        self.stats = _SchemaCorrectionStats()
+        self._lock = Lock()
+
+    def record(self, field_name: str) -> None:
+        with self._lock:
+            setattr(self.stats, field_name, getattr(self.stats, field_name) + 1)
+
+    def start(self) -> None:
+        with self._lock:
+            if self.stats.attempts >= 10:
+                self.stats.budget_exhausted += 1
+                raise CompletionAttemptLimitError("round schema correction budget exhausted")
+            self.stats.attempts += 1
+
+    def result_stats(self) -> dict[str, int]:
+        with self._lock:
+            return {f"schema_correction_{key}": value for key, value in asdict(self.stats).items()}
+
+
+def _schema_correction_feedback(exc: ValidationError, response_model: type[_ConsolidationBatchResponse]) -> str | None:
+    """Whitelist expected action-shape errors; never echo model-controlled values.
+
+    Pydantic exposes a title rather than model identity on ValidationError. Require
+    the exact expected response title AND only known action paths/types. All other
+    validation errors retain upstream fail-fast behavior.
+    """
+    if exc.title != response_model.__name__:
+        return None
+    fields = {
+        "creates": {"text", "source_fact_ids"},
+        "updates": {"text", "observation_id", "source_fact_ids"},
+        "deletes": {"observation_id"},
+    }
+    errors = exc.errors(include_url=False, include_context=False, include_input=False)
+    if not errors:
+        return None
+    locations: list[str] = []
+    for error in errors:
+        loc = error["loc"]
+        kind = error["type"]
+        if len(loc) not in (2, 3) or loc[0] not in fields or type(loc[1]) is not int or loc[1] < 0:
+            return None
+        if not (
+            (kind == "model_type" and len(loc) == 2)
+            or (kind == "missing" and len(loc) == 3 and loc[2] in fields[loc[0]])
+        ):
+            return None
+        # Bound both count and index rendering without copying arbitrary locations.
+        if len(locations) < 12:
+            index = str(loc[1]) if loc[1] < 1_000_000 else "large-index"
+            path = f"{loc[0]}.{index}" + (f".{loc[2]}" if len(loc) == 3 else "")
+            locations.append(f"{path}: {kind}")
+    return (
+        "\n\nReturn a COMPLETE replacement JSON response for the same facts and observations. "
+        "Do not return a patch or commentary. Every action must be an object with every required field. "
+        "Use only the supplied fact and observation IDs; all original processing and language rules still apply.\n"
+        "Schema failures (locations and types only):\n"
+        + "\n".join(locations)
+        + "\nFull response schema:\n"
+        + json.dumps(response_model.model_json_schema(), ensure_ascii=False)
+    )
+
+
 async def _consolidate_batch_with_llm(
     llm_config: Any,
     memories: list[dict[str, Any]],
@@ -4052,6 +4142,7 @@ async def _consolidate_batch_with_llm(
     per_fact_observation_ids: dict[str, set[str]] | None = None,
     remaining_observation_slots: int | None = None,
     max_observations_per_scope: int = -1,
+    schema_correction_budget: _SchemaCorrectionBudget | None = None,
 ) -> _BatchLLMResult:
     """Single LLM call for a batch of facts against a pooled set of observations."""
     if config is None:
@@ -4167,6 +4258,9 @@ async def _consolidate_batch_with_llm(
         supports_max_items=config.llm_supports_max_items,
     )
 
+    correction_budget = schema_correction_budget if schema_correction_budget is not None else _SchemaCorrectionBudget()
+    correction_used = False
+    correction_started = False
     max_attempts = config.consolidation_max_attempts
     inner_max_retries = config.consolidation_llm_max_retries
     language_retry_available = language_check_enabled and language_mode in {
@@ -4228,7 +4322,51 @@ async def _consolidate_batch_with_llm(
                 call_kwargs["max_retries"] = inner_max_retries
             if cached_prefix_name is not None:
                 call_kwargs["cached_prefix"] = cached_prefix_name
-            batch_call = await llm_config.call(**call_kwargs)
+            try:
+                batch_call = await llm_config.call(**call_kwargs)
+            except ValidationError as schema_exc:
+                feedback = _schema_correction_feedback(schema_exc, response_model)
+                if feedback is None or correction_used:
+                    raise
+                correction_used = True
+                correction_budget.record("initial_failures")
+                failed_attempts += 1
+                get_metrics_collector().record_consolidation_batch_failure(
+                    failure_class="fail_fast", error_type="ValidationError"
+                )
+                # Include the provider-injected schema as well as our full-schema
+                # feedback. Conservative over-counting is preferable to sending an
+                # oversized correction. Never include the malformed completion.
+                correction_content = user_content + language_source_instruction + language_retry_instruction + feedback
+                provider_schema = (
+                    strict_json_schema(response_model)
+                    if config.llm_strict_schema_consolidation
+                    else provider_json_schema(response_model)
+                )
+                schema_text = "\n\nYou must respond with valid JSON matching this schema:\n" + json.dumps(
+                    provider_schema, indent=2, ensure_ascii=False
+                )
+                correction_tokens = (
+                    count_tokens(system_prompt) + count_tokens(correction_content) + count_tokens(schema_text) + 32
+                )
+                if correction_tokens > max_context_tokens:
+                    correction_budget.record("context_exhausted")
+                    last_exc = CompletionAttemptLimitError(
+                        "schema correction would exceed the configured context limit"
+                    )
+                    break
+                call_kwargs["messages"][1]["content"] = correction_content
+                call_kwargs["max_retries"] = 0
+                # A provider may refresh OAuth credentials outside its retry count.
+                # Enforce a single actual completion, including those hidden paths.
+                with single_completion(correction_budget.start) as correction:
+                    try:
+                        batch_call = await llm_config.call(**call_kwargs)
+                        if not correction.started:
+                            raise CompletionAttemptLimitError("provider did not enforce a correction attempt boundary")
+                    finally:
+                        correction_started = correction.started
+                        attempts_made += int(correction_started)
             response: _ConsolidationBatchResponse = batch_call.content
             # Validate before deduplication, truncation, language checks, or
             # preparation, so every action that reaches them cites exactly the
@@ -4247,7 +4385,7 @@ async def _consolidate_batch_with_llm(
                     ", ".join(f"{rule}={count}" for rule, count in sorted(reference_filter.dropped.items())),
                     len(reference_filter.pending_fact_ids),
                 )
-            if reference_filter.must_reject:
+            if reference_filter.must_reject or (correction_used and reference_filter.dropped):
                 # An unattributable action or a delete whose replacing sibling was
                 # dropped could erase knowledge. Reject so the caller bisects.
                 raise _InvalidConsolidationReferences(
@@ -4298,6 +4436,13 @@ async def _consolidate_batch_with_llm(
                 if mismatches:
                     if language_mode is LanguageIntegrityMode.OBSERVE:
                         record_outcome(stage="consolidation", mode=language_mode, outcome="mismatch_observed")
+                    elif correction_used:
+                        # No third completion after schema correction. Keep strict
+                        # rejection propagation, and fail retry mode for bisection.
+                        if language_mode is LanguageIntegrityMode.REJECT:
+                            record_outcome(stage="consolidation", mode=language_mode, outcome="mismatch_rejected")
+                            raise GeneratedLanguageMismatch(mismatches)
+                        raise CompletionAttemptLimitError("schema-corrected response failed language validation")
                     elif not language_retry_used:
                         language_retry_used = True
                         language_retry_instruction = build_retry_instruction(mismatches)
@@ -4319,6 +4464,8 @@ async def _consolidate_batch_with_llm(
                     else:
                         outcome = "abstained"
                     record_outcome(stage="consolidation", mode=language_mode, outcome=outcome)
+            if correction_started:
+                correction_budget.record("successes")
             return _BatchLLMResult(
                 creates=creates,
                 updates=updates,
@@ -4334,8 +4481,17 @@ async def _consolidate_batch_with_llm(
                 pending_fact_ids=reference_filter.pending_fact_ids,
                 filtered_references=bool(reference_filter.dropped),
             )
+        except asyncio.CancelledError:
+            if correction_started:
+                correction_budget.record("failures")
+            raise
         except Exception as exc:
+            if correction_started:
+                correction_budget.record("failures")
             failure_class = _classify_batch_failure(exc)
+            # ValidationError messages embed raw completion values; feedback and
+            # operational logs must not leak those values, even on a failed repair.
+            error_label = "schema validation failed" if isinstance(exc, ValidationError) else str(exc)
             # Count every failed call, including the ones adaptive bisection goes on to
             # rescue. `failed_consolidation` cannot show those — it is a gauge over rows
             # still carrying `consolidation_failed_at` when the run ends — so without this
@@ -4351,12 +4507,12 @@ async def _consolidate_batch_with_llm(
                     f"({type(exc).__name__}); propagating to the caller for classification: {exc}"
                 )
                 raise
-            last_exc = exc
-            if failure_class is _BatchFailureClass.FAIL_FAST:
+            last_exc = RuntimeError(error_label) if isinstance(exc, ValidationError) else exc
+            if correction_used or failure_class is _BatchFailureClass.FAIL_FAST:
                 logger.warning(
                     f"[CONSOLIDATION] LLM batch call failed (request {request_attempt}/{max_requests}) for "
                     f"{batch_label} with a non-retryable {type(exc).__name__}; not re-sending the "
-                    f"identical payload: {exc}"
+                    f"identical payload: {error_label}"
                 )
                 break
             logger.warning(
