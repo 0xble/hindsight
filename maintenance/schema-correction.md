@@ -13,8 +13,11 @@ empty-response repair, routing changes, or fabricated references.
 
 - **Surfaces:** `consolidation/consolidator.py`, `llm_wrapper.py`,
   `llm_attempt_limit.py` under `hindsight-api-slim/hindsight_api/engine/`.
-- **Bounds:** Ten additional actual completions per consolidation job-round,
-  shared across fetches, scopes, lanes and bisection; one correction per subbatch.
+- **Bounds:** At most ten additional actual completions per 1000-fact job.
+  Each round gets one credit per complete 100 configured fact slots, capped at
+  ten, shared across fetches, scopes, lanes and bisection. Thus requeued default
+  100-fact rounds get one credit each, not ten. Unlimited and sub-100-fact rounds
+  fail closed. Allow at most one correction per subbatch.
   Keep model, schema, temperature, completion cap and validation unchanged.
   Reject oversized correction context before sending. Only audited OpenAI-compatible
   and Codex provider attempt boundaries support correction; others fail closed.

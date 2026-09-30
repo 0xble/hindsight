@@ -192,6 +192,107 @@ async def test_concurrent_round_budget_caps_extra_completions(provider, config):
     assert budget.stats.budget_exhausted == 14
 
 
+@pytest.mark.parametrize(
+    "round_size,credits",
+    [(-1, 0), (0, 0), (99, 0), (100, 1), (199, 1), (500, 5), (999, 9), (1000, 10), (2000, 10)],
+)
+def test_round_budget_scales_down_without_rounding_up(round_size, credits):
+    from hindsight_api.engine.llm_attempt_limit import CompletionAttemptLimitError
+
+    budget = c._SchemaCorrectionBudget(round_size)
+    for _ in range(credits):
+        budget.start()
+    with pytest.raises(CompletionAttemptLimitError):
+        budget.start()
+    assert budget.stats.attempts == credits
+    assert budget.stats.budget_exhausted == 1
+
+
+@pytest.mark.asyncio
+async def test_default_size_requeued_rounds_share_per_1000_fact_bound(provider, config, monkeypatch):
+    """Exercise real round/requeue and provider guards with in-memory store/apply seams."""
+    import uuid
+    from contextlib import asynccontextmanager
+
+    from hindsight_api.config import DEFAULT_CONSOLIDATION_MAX_MEMORIES_PER_ROUND
+
+    config.enable_observations = True
+    config.consolidation_batch_size = 100
+    config.consolidation_max_memories_per_round = DEFAULT_CONSOLIDATION_MAX_MEMORIES_PER_ROUND
+    config.consolidation_llm_batch_size = 10
+    config.consolidation_llm_parallelism = 1
+    config.consolidation_lane_llm_parallelism = 1
+    assert config.consolidation_max_memories_per_round == 100
+    pending = [{"id": uuid.UUID(int=index + 1), "text": f"Synthetic fact {index}", "tags": []} for index in range(1000)]
+    queued = [{"bank_id": "synthetic-budget-bank", "request_context": SimpleNamespace()}]
+    requests = []
+    conn = SimpleNamespace(fetchrow=AsyncMock(return_value={"bank_id": "synthetic-budget-bank", "name": "Test"}))
+
+    @asynccontextmanager
+    async def transaction():
+        yield
+
+    @asynccontextmanager
+    async def acquire(pool):
+        assert pool is engine._backend
+        yield conn
+
+    conn.transaction = transaction
+
+    async def fetch(conn, bank_id, fact_types, limit, scopes, deferred):
+        return list(pending[:limit])
+
+    async def count(*args, **kwargs):
+        return len(pending)
+
+    def remove(ids):
+        ids = {str(mid) for mid in ids}
+        pending[:] = [memory for memory in pending if str(memory["id"]) not in ids]
+
+    async def mark_failed(**kwargs):
+        assert kwargs["failed"]
+        remove(kwargs["unit_ids"])
+
+    async def process(**kwargs):
+        stub = install(provider, [MISSING, {}])
+        result = await c._consolidate_batch_with_llm(
+            provider, kwargs["memories"], [], {}, config, schema_correction_budget=kwargs["schema_correction_budget"]
+        )
+        requests.extend(stub.requests)
+        if result.failed:
+            return [], 0, True
+        remove(memory["id"] for memory in kwargs["memories"])
+        return [{"action": "skipped"} for _ in kwargs["memories"]], 0, False
+
+    async def requeue(**payload):
+        queued.append(payload)
+
+    engine = SimpleNamespace(
+        _backend=object(),
+        _write_operation_progress=AsyncMock(),
+        submit_async_consolidation=AsyncMock(side_effect=requeue),
+    )
+    monkeypatch.setattr(c, "acquire_with_retry", acquire)
+    monkeypatch.setattr(c, "_fetch_unconsolidated_rows", fetch)
+    monkeypatch.setattr(c, "_count_unconsolidated_rows", count)
+    monkeypatch.setattr(c, "_effective_lane_parallelism", lambda *args: 1)
+    monkeypatch.setattr(c, "_process_memory_batch", process)
+    monkeypatch.setattr(c, "get_memories", lambda: SimpleNamespace(mark_consolidated=mark_failed))
+    monkeypatch.setattr(c, "_trigger_mental_model_refreshes", AsyncMock(return_value=0))
+    results = []
+    while queued:
+        results.append(
+            await c._run_consolidation_job(memory_engine=engine, config=config, llm_config=provider, **queued.pop(0))
+        )
+    processed_rounds = [result for result in results if result["memories_processed"]]
+    assert len(processed_rounds) == 10
+    assert all(result["schema_correction_attempts"] == 1 for result in processed_rounds)
+    assert sum(result["memories_processed"] for result in processed_rounds) == 1000
+    assert sum("Return a COMPLETE replacement" in request["messages"][-1]["content"] for request in requests) == 10
+    assert engine.submit_async_consolidation.await_count == 10
+    assert not pending
+
+
 class AuthError(Exception):
     def __init__(self, status_code):
         self.status_code = status_code
@@ -372,6 +473,7 @@ def test_feedback_is_bounded_and_excludes_input_context_and_messages():
 async def test_job_budget_survives_scopes_lanes_fetches_bisection_and_isolates_banks(memory, request_context, provider):
     import re
     import uuid
+
     from hindsight_api.config import _get_raw_config
     from hindsight_api.engine.response_models import RecallResult
 
@@ -500,6 +602,7 @@ async def test_empty_response_classification_is_not_schema_correction(provider, 
 @pytest.mark.memory_backend_incompatible
 async def test_corrected_committed_scope_is_not_replayed_on_later_apply_failure(memory, request_context, provider):
     import uuid
+
     from hindsight_api.config import _get_raw_config
     from hindsight_api.engine.response_models import RecallResult
 
@@ -527,6 +630,7 @@ async def test_corrected_committed_scope_is_not_replayed_on_later_apply_failure(
                 **{name: getattr(raw, name) for name in raw.__dataclass_fields__},
                 "enable_observations": True,
                 "consolidation_llm_batch_size": 1,
+                "consolidation_max_memories_per_round": 1000,
                 "llm_language_integrity": "off",
                 "consolidation_dedup_threshold": 1.0,
             }

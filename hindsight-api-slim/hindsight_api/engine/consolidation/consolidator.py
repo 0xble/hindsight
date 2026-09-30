@@ -1910,9 +1910,9 @@ async def _run_consolidation_job(
 ) -> dict[str, Any]:
     """Core consolidation flow. See ``run_consolidation_job`` for the public entrypoint."""
     perf = ConsolidationPerfLog(bank_id)
-    schema_correction_budget = _SchemaCorrectionBudget()
     max_memories_per_batch = config.consolidation_batch_size
     max_memories_per_round = config.consolidation_max_memories_per_round
+    schema_correction_budget = _SchemaCorrectionBudget(max_memories_per_round)
     llm_batch_size = max(1, config.consolidation_llm_batch_size)
     fair_group_selection = bool(getattr(config, "consolidation_fair_group_selection", False))
 
@@ -4061,15 +4061,20 @@ class _SchemaCorrectionStats:
 
 
 class _SchemaCorrectionBudget:
-    """One job-round budget, shared by scopes, lanes and adaptive bisection.
+    """Round-size-scaled budget, shared by scopes, lanes and adaptive bisection.
+
+    Allocate one credit per complete 100 configured fact slots, capped at ten.
+    Requeued 100-fact rounds therefore cannot each receive ten credits. Unlimited
+    or sub-100-fact rounds fail closed rather than inventing a 1000-fact allowance.
 
     Reserve at the provider attempt boundary, not at wrapper entry: unsupported
     providers and locally rejected prompts must not consume completion credits.
     The lock guards only await-free increments and is safe across event loops.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, max_memories_per_round: int = 1000) -> None:
         self.stats = _SchemaCorrectionStats()
+        self._limit = min(10, max(0, max_memories_per_round) // 100)
         self._lock = Lock()
 
     def record(self, field_name: str) -> None:
@@ -4078,7 +4083,7 @@ class _SchemaCorrectionBudget:
 
     def start(self) -> None:
         with self._lock:
-            if self.stats.attempts >= 10:
+            if self.stats.attempts >= self._limit:
                 self.stats.budget_exhausted += 1
                 raise CompletionAttemptLimitError("round schema correction budget exhausted")
             self.stats.attempts += 1
