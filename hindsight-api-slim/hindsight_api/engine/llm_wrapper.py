@@ -170,8 +170,11 @@ async def _attempt_permits(scope: str):
 
     async with AsyncExitStack() as stack:
         await _acquire_permits(stack, scope)
+        from .llm_attempt_limit import completion_attempt
+
         try:
-            yield
+            with completion_attempt():
+                yield
         except BaseException:
             # A failed attempt exits here with its permits released while the
             # provider classifies the error and sleeps out its backoff. Suffix
@@ -1306,6 +1309,18 @@ class LLMProvider:
             # Providers that own retry loops acquire the shared permits for each
             # upstream attempt so backoff never occupies request capacity.
             attempt_gated = self._provider_impl.supports_attempt_scoped_concurrency()
+            from .llm_attempt_limit import CompletionAttemptLimitError, completion_limit_active
+
+            if completion_limit_active():
+                from .providers.codex_llm import CodexLLM
+                from .providers.openai_compatible_llm import OpenAICompatibleLLM
+
+                # Concurrency support alone does not prove SDK-internal retries
+                # are disabled. Only these audited implementations currently have
+                # a one-request attempt boundary (SDK retries=0 / direct aiohttp).
+                # Exact types deliberately exclude unverified subclasses/providers.
+                if not attempt_gated or type(self._provider_impl) not in {OpenAICompatibleLLM, CodexLLM}:
+                    raise CompletionAttemptLimitError("provider cannot enforce a single correction completion")
             async with AsyncExitStack() as stack:
                 if not attempt_gated:
                     await _acquire_permits(stack, scope)
