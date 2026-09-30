@@ -2758,6 +2758,7 @@ class Hindsight:
         observation_scope_limits: list[dict[str, Any]] | None = None,
         enable_auto_consolidation: bool | None = None,
         consolidation_llm_parallelism: int | None = None,
+        consolidation_lane_llm_parallelism: int | None = None,
         consolidation_fair_group_selection: bool | None = None,
         consolidation_max_memories_per_round: int | None = None,
         consolidation_max_context_tokens: int | None = None,
@@ -2824,6 +2825,7 @@ class Hindsight:
                 observation_scope_limits=observation_scope_limits,
                 enable_auto_consolidation=enable_auto_consolidation,
                 consolidation_llm_parallelism=consolidation_llm_parallelism,
+                consolidation_lane_llm_parallelism=consolidation_lane_llm_parallelism,
                 consolidation_fair_group_selection=consolidation_fair_group_selection,
                 consolidation_max_memories_per_round=consolidation_max_memories_per_round,
                 consolidation_max_context_tokens=consolidation_max_context_tokens,
@@ -2887,6 +2889,7 @@ class Hindsight:
         observation_scope_limits: list[dict[str, Any]] | None = None,
         enable_auto_consolidation: bool | None = None,
         consolidation_llm_parallelism: int | None = None,
+        consolidation_lane_llm_parallelism: int | None = None,
         consolidation_fair_group_selection: bool | None = None,
         consolidation_max_memories_per_round: int | None = None,
         consolidation_max_context_tokens: int | None = None,
@@ -2960,6 +2963,7 @@ class Hindsight:
             observation_scope_limits: Per-scope observation caps, overriding max_observations_per_scope.
             enable_auto_consolidation: Consolidate automatically after retain() rather than on demand.
             consolidation_llm_parallelism: Concurrent LLM calls during consolidation.
+            consolidation_lane_llm_parallelism: Concurrent LLM calls per consolidation lane.
             consolidation_fair_group_selection: Fetch the oldest facts of many observation-scope groups
                 per consolidation round instead of the oldest facts overall.
             consolidation_max_memories_per_round: Memories consolidated per round.
@@ -3030,6 +3034,7 @@ class Hindsight:
                 "observation_scope_limits": observation_scope_limits,
                 "enable_auto_consolidation": enable_auto_consolidation,
                 "consolidation_llm_parallelism": consolidation_llm_parallelism,
+                "consolidation_lane_llm_parallelism": consolidation_lane_llm_parallelism,
                 "consolidation_fair_group_selection": consolidation_fair_group_selection,
                 "consolidation_max_memories_per_round": consolidation_max_memories_per_round,
                 "consolidation_max_context_tokens": consolidation_max_context_tokens,

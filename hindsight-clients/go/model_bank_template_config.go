@@ -65,6 +65,7 @@ type BankTemplateConfig struct {
 	EnableAutoConsolidation NullableBool `json:"enable_auto_consolidation,omitempty"`
 	ConsolidationMaxMemoriesPerRound NullableInt32 `json:"consolidation_max_memories_per_round,omitempty"`
 	ConsolidationLlmParallelism NullableInt32 `json:"consolidation_llm_parallelism,omitempty"`
+	ConsolidationLaneLlmParallelism NullableInt32 `json:"consolidation_lane_llm_parallelism,omitempty"`
 	ConsolidationFairGroupSelection NullableBool `json:"consolidation_fair_group_selection,omitempty"`
 	ConsolidationMaxContextTokens NullableInt32 `json:"consolidation_max_context_tokens,omitempty"`
 	RecallIncludeChunks NullableBool `json:"recall_include_chunks,omitempty"`
@@ -1959,6 +1960,48 @@ func (o *BankTemplateConfig) UnsetConsolidationLlmParallelism() {
 	o.ConsolidationLlmParallelism.Unset()
 }
 
+// GetConsolidationLaneLlmParallelism returns the ConsolidationLaneLlmParallelism field value if set, zero value otherwise (both if not set or set to explicit null).
+func (o *BankTemplateConfig) GetConsolidationLaneLlmParallelism() int32 {
+	if o == nil || IsNil(o.ConsolidationLaneLlmParallelism.Get()) {
+		var ret int32
+		return ret
+	}
+	return *o.ConsolidationLaneLlmParallelism.Get()
+}
+
+// GetConsolidationLaneLlmParallelismOk returns a tuple with the ConsolidationLaneLlmParallelism field value if set, nil otherwise
+// and a boolean to check if the value has been set.
+// NOTE: If the value is an explicit nil, `nil, true` will be returned
+func (o *BankTemplateConfig) GetConsolidationLaneLlmParallelismOk() (*int32, bool) {
+	if o == nil {
+		return nil, false
+	}
+	return o.ConsolidationLaneLlmParallelism.Get(), o.ConsolidationLaneLlmParallelism.IsSet()
+}
+
+// HasConsolidationLaneLlmParallelism returns a boolean if a field has been set.
+func (o *BankTemplateConfig) HasConsolidationLaneLlmParallelism() bool {
+	if o != nil && o.ConsolidationLaneLlmParallelism.IsSet() {
+		return true
+	}
+
+	return false
+}
+
+// SetConsolidationLaneLlmParallelism gets a reference to the given NullableInt32 and assigns it to the ConsolidationLaneLlmParallelism field.
+func (o *BankTemplateConfig) SetConsolidationLaneLlmParallelism(v int32) {
+	o.ConsolidationLaneLlmParallelism.Set(&v)
+}
+// SetConsolidationLaneLlmParallelismNil sets the value for ConsolidationLaneLlmParallelism to be an explicit nil
+func (o *BankTemplateConfig) SetConsolidationLaneLlmParallelismNil() {
+	o.ConsolidationLaneLlmParallelism.Set(nil)
+}
+
+// UnsetConsolidationLaneLlmParallelism ensures that no value is present for ConsolidationLaneLlmParallelism, not even an explicit nil
+func (o *BankTemplateConfig) UnsetConsolidationLaneLlmParallelism() {
+	o.ConsolidationLaneLlmParallelism.Unset()
+}
+
 // GetConsolidationFairGroupSelection returns the ConsolidationFairGroupSelection field value if set, zero value otherwise (both if not set or set to explicit null).
 func (o *BankTemplateConfig) GetConsolidationFairGroupSelection() bool {
 	if o == nil || IsNil(o.ConsolidationFairGroupSelection.Get()) {
@@ -2349,6 +2392,9 @@ func (o BankTemplateConfig) ToMap() (map[string]interface{}, error) {
 	}
 	if o.ConsolidationLlmParallelism.IsSet() {
 		toSerialize["consolidation_llm_parallelism"] = o.ConsolidationLlmParallelism.Get()
+	}
+	if o.ConsolidationLaneLlmParallelism.IsSet() {
+		toSerialize["consolidation_lane_llm_parallelism"] = o.ConsolidationLaneLlmParallelism.Get()
 	}
 	if o.ConsolidationFairGroupSelection.IsSet() {
 		toSerialize["consolidation_fair_group_selection"] = o.ConsolidationFairGroupSelection.Get()

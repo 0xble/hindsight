@@ -751,6 +751,12 @@ export type BankTemplateConfig = {
    */
   consolidation_llm_parallelism?: number | null;
   /**
+   * Consolidation Lane Llm Parallelism
+   *
+   * Number of LLM batches prepared concurrently within one observation-scope lane; DB applies remain serialized
+   */
+  consolidation_lane_llm_parallelism?: number | null;
+  /**
    * Consolidation Fair Group Selection
    *
    * Fetch the oldest facts of many observation-scope groups per consolidation round instead of the oldest facts overall, so parallel lanes are not left idle behind one large group
