@@ -668,3 +668,126 @@ async def test_corrected_committed_scope_is_not_replayed_on_later_apply_failure(
     finally:
         memory._consolidation_llm_config = original
         await memory.delete_bank(bank_id, request_context=request_context)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("partial", [False, True])
+@pytest.mark.parametrize("correction_restores_text", [False, True])
+async def test_incomplete_recall_lineage_fails_closed(provider, config, partial, correction_restores_text):
+    from hindsight_api.engine.response_models import MemoryFact
+
+    omitted = "55555555-5555-4555-8555-555555555555"
+    observation = SimpleNamespace(
+        **{**vars(OBSERVATION), "text": "Timeout is 5 seconds.", "source_fact_ids": [UNKNOWN, omitted]}
+    )
+    # The omitted source is the only support for the numeric anchor. Recall's
+    # provenance token cap must not turn missing evidence into permission to erase.
+    sources = (
+        {UNKNOWN: MemoryFact(id=UNKNOWN, text="Timeout configuration exists.", fact_type="world")} if partial else {}
+    )
+    first = {"updates": [{"text": "Timeout configuration exists.", "observation_id": OBS_ID, "source_fact_ids": [F]}]}
+    corrected = copy.deepcopy(first)
+    if correction_restores_text:
+        corrected["updates"][0]["text"] = "Timeout is 5 seconds and configuration exists."
+    stub = install(provider, [first, corrected])
+    result = await c._consolidate_batch_with_llm(provider, MEMORIES, [observation], sources, config)
+    assert not result.failed and not result.updates
+    assert len(result.creates) == 1 and result.creates[0]._preserve_separate
+    assert result.creates[0].source_fact_ids == [F]
+    assert result.creates[0].text == first["updates"][0]["text"]
+    assert observation.text == "Timeout is 5 seconds."
+    assert len(stub.requests) <= 2
+
+
+@pytest.mark.asyncio
+@pytest.mark.memory_backend_incompatible
+@pytest.mark.parametrize("match", ["shown", "update"])
+@pytest.mark.parametrize("serialized", [False, True])
+async def test_fallback_exact_duplicate_persists_all_sources(memory, request_context, provider, match, serialized):
+    import uuid
+    from dataclasses import replace
+
+    from hindsight_api.config import _get_raw_config
+    from hindsight_api.engine.response_models import MemoryFact, RecallResult
+
+    bank_id = f"detail-exact-{uuid.uuid4().hex[:8]}"
+    await memory.ensure_bank_profile(bank_id=bank_id, request_context=request_context)
+    old_id, target_id, twin_id = [uuid.uuid4() for _ in range(3)]
+    new_ids = [uuid.uuid4(), uuid.uuid4()]
+    before = "Timeout is 5 seconds and must remain configured."
+    proposed = "Timeout remains configured."
+    twin_before = proposed if match == "shown" else "Timeout remains configured elsewhere."
+    old = MemoryFact(id=str(old_id), text=before, fact_type="world")
+    observations = [
+        MemoryFact(id=str(target_id), text=before, fact_type="observation", source_fact_ids=[str(old_id)]),
+        MemoryFact(id=str(twin_id), text=twin_before, fact_type="observation", source_fact_ids=[str(old_id)]),
+    ]
+    memories = [{"id": fid, "text": proposed, "tags": []} for fid in new_ids]
+    reply = {
+        "updates": [
+            {"text": proposed, "observation_id": str(target_id), "source_fact_ids": [str(fid) for fid in new_ids]}
+        ]
+    }
+    if match == "update":
+        reply["updates"].append(
+            {"text": proposed, "observation_id": str(twin_id), "source_fact_ids": [str(new_ids[0])]}
+        )
+    install(provider, [reply, reply])
+    try:
+        async with memory._pool.acquire() as conn:
+            for fid, text in [(old_id, before), *[(fid, proposed) for fid in new_ids]]:
+                await conn.execute(
+                    "INSERT INTO memory_units (id, bank_id, text, fact_type, tags, created_at) VALUES ($1, $2, $3, 'world', '{}', now())",
+                    fid,
+                    bank_id,
+                    text,
+                )
+            for obs in observations:
+                await conn.execute(
+                    "INSERT INTO memory_units (id, bank_id, text, fact_type, tags, source_memory_ids, created_at) VALUES ($1, $2, $3, 'observation', '{}', $4, now())",
+                    uuid.UUID(obs.id),
+                    bank_id,
+                    obs.text,
+                    [old_id],
+                )
+        config = replace(_get_raw_config(), llm_language_integrity="off", consolidation_dedup_threshold=1.0)
+        predecessor, successor = asyncio.Event(), asyncio.Event()
+        predecessor.set()
+        with (
+            patch.object(
+                c,
+                "_find_related_observations",
+                new=AsyncMock(return_value=RecallResult(results=observations, source_facts={str(old_id): old})),
+            ),
+            patch.object(c, "_embed_observation_text", new=AsyncMock(return_value=None)),
+        ):
+            await c._process_memory_batch(
+                pool=memory._backend,
+                memory_engine=memory,
+                llm_config=provider,
+                bank_id=bank_id,
+                memories=memories,
+                request_context=request_context,
+                config=config,
+                mark_consolidated_ids=new_ids,
+                apply_turn=(predecessor, successor) if serialized else None,
+            )
+        # Read the committed database rows, not mocked CREATE calls or stamps.
+        async with memory._pool.acquire() as conn:
+            rows = await conn.fetch(
+                "SELECT id, text, source_memory_ids FROM memory_units WHERE bank_id = $1 AND fact_type = 'observation'",
+                bank_id,
+            )
+            unchanged = next(row for row in rows if row["id"] == target_id)
+            assert unchanged["text"] == before and unchanged["source_memory_ids"] == [old_id]
+            fallback = [row for row in rows if row["id"] not in {target_id, twin_id}]
+            assert len(fallback) == 1 and fallback[0]["text"] == proposed
+            assert set(fallback[0]["source_memory_ids"]) == set(new_ids)
+            stamped = await conn.fetch(
+                "SELECT id FROM memory_units WHERE bank_id = $1 AND id = ANY($2::uuid[]) AND consolidated_at IS NOT NULL",
+                bank_id,
+                new_ids,
+            )
+            assert {row["id"] for row in stamped} == set(new_ids)
+    finally:
+        await memory.delete_bank(bank_id, request_context=request_context)

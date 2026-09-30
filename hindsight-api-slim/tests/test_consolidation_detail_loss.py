@@ -7,13 +7,16 @@ exercises real parsing and the single-completion attempt boundary.
 
 import json
 from pathlib import Path
+from time import perf_counter
 from types import SimpleNamespace
 
 import pytest
 
 from hindsight_api.engine.consolidation import consolidator as c
 from hindsight_api.engine.consolidation.detail_loss import (
+    Anchor,
     Evidence,
+    dropped_merge_anchors,
     dropped_supported_anchors,
     without_temporal_suffix,
 )
@@ -192,3 +195,92 @@ def test_rephrasing_literals_and_unicode_dates_retains_anchors():
         )
         == "A fact."
     )
+
+
+@pytest.mark.parametrize("guard", ["update", "merge"])
+@pytest.mark.parametrize(
+    "kind,first,second,value",
+    [
+        ("number", "The timeout is 5 seconds", "the retry limit is 5 attempts", "5"),
+        ("date", "Task alpha is due 2026-10-02", "task beta is due 2026-10-02", "2026-10-02"),
+        ("money", "The deposit is $500", "the fee is $500", "$500"),
+        ("version", "Alpha runs 1.2.3", "beta runs 1.2.3", "1.2.3"),
+        ("identifier", "Alpha uses abc1234", "beta uses abc1234", "abc1234"),
+        ("literal", 'Alpha has status "ready"', 'beta has status "ready"', "ready"),
+        ("marker", "Only alpha can run", "only beta can stop", "only"),
+    ],
+)
+def test_repeated_anchor_loss_is_rejected(guard, kind, first, second, value):
+    before, after = first + " and " + second + ".", first + "."
+    dropped = (
+        dropped_merge_anchors(before, after)
+        if guard == "merge"
+        else dropped_supported_anchors(before, after, [Evidence(before)], [])
+    )
+    assert Anchor(kind, value) in dropped
+
+
+@pytest.mark.parametrize("keep_retry", [True, False])
+def test_newer_same_slot_replacement_exempts_only_one_occurrence(keep_retry):
+    before = "The server timeout is 5 seconds and the retry limit is 5 attempts."
+    after = "The server timeout is 10 seconds" + (" and the retry limit is 5 attempts." if keep_retry else ".")
+    old = [Evidence(before, "2026-09-29T10:00:00Z")]
+    new = [Evidence("The server timeout is 10 seconds.", "2026-09-30T10:00:00Z")]
+    dropped = dropped_supported_anchors(before, after, old, new)
+    assert (Anchor("number", "5") in dropped) is not keep_retry
+
+
+@pytest.mark.parametrize("dense_citation", [False, True])
+def test_anchor_dense_update_finishes_under_one_second(dense_citation):
+    before = " ".join(f"Metric value {i}." for i in range(1000, 4000)).ljust(60000)
+    assert len(before) == 60000
+    start = perf_counter()
+    dropped = dropped_supported_anchors(
+        before,
+        "Metric values remain recorded.",
+        [Evidence(before, "2026-09-29T10:00:00Z")],
+        [Evidence(before if dense_citation else "Metric value 4000.", "2026-09-30T10:00:00Z")],
+    )
+    elapsed = perf_counter() - start
+    assert len([a for a in dropped if a.kind == "number"]) == 3000
+    assert elapsed < 1.0, f"anchor-dense update took {elapsed:.3f}s"
+    print(f"anchor-dense update: {len(before)} chars, 3000 anchors, dense_citation={dense_citation}, {elapsed:.3f}s")
+
+
+@pytest.mark.parametrize("guard", ["update", "merge"])
+def test_oversized_guard_fails_closed_even_without_lexical_anchors(guard):
+    before = "ordinary prose " * 100000
+    dropped = (
+        dropped_merge_anchors(before, "Short prose.")
+        if guard == "merge"
+        else dropped_supported_anchors(before, "Short prose.", [Evidence(before)], [])
+    )
+    assert dropped, "exhausting the work cap must preserve the original rather than authorize the rewrite"
+
+
+def test_slot_comparison_work_cap_fails_closed_below_input_size_cap():
+    before = " ".join(f"Alpha timeout {i}." for i in range(1000, 2000))
+    after = " ".join(f"Beta price {i}." for i in range(3000, 4000))
+    assert 2 * (len(before) + len(after)) < 262144
+    start = perf_counter()
+    dropped = dropped_supported_anchors(
+        before,
+        after,
+        [Evidence(before, "2026-09-29T10:00:00Z")],
+        [Evidence(after, "2026-09-30T10:00:00Z")],
+    )
+    assert dropped == [Anchor("budget", "detail-loss analysis limit exceeded")]
+    assert perf_counter() - start < 1.0
+
+
+def test_preprocessing_many_consumption_words_stays_bounded():
+    before = "used " * 20000 + "5"
+    start = perf_counter()
+    assert not dropped_supported_anchors(before, "5", [Evidence(before)], [])
+    assert perf_counter() - start < 1.0
+
+
+def test_excessive_source_count_fails_closed():
+    assert dropped_supported_anchors("Plain prose.", "Short prose.", [Evidence("Plain prose.")] * 257, []) == [
+        Anchor("budget", "detail-loss analysis limit exceeded")
+    ]

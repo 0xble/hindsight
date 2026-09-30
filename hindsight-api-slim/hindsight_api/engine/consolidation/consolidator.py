@@ -3169,7 +3169,14 @@ async def _process_memory_batch(
         # — no row is inserted, nothing is lost. We deliberately do NOT also UPDATE the twin
         # here: the LLM frequently UPDATEd it earlier in this same batch, and a second update
         # would run off the pre-LLM snapshot and clobber that change (see _dedupe_updates).
-        duplicate_of = _duplicate_create_target(create.text, shown_obs_by_text, update_texts)
+        # A no-loss fallback must persist its new lineage, even when another
+        # observation carries identical text. The ordinary prefilter only stamps
+        # sources and cannot prove that any stored observation attributes them.
+        duplicate_of = (
+            None
+            if create._preserve_separate
+            else _duplicate_create_target(create.text, shown_obs_by_text, update_texts)
+        )
         if duplicate_of is not None:
             # Only an already-stored observation proves coverage without a write.
             # A duplicate of an UPDATE in this reply must wait for that UPDATE's
@@ -3355,6 +3362,8 @@ async def _process_memory_batch(
                         if apply_turn is not None:
                             normalized_by_scope: dict[tuple[str, ...], list[str]] = {}
                             for prepared_create in prepared_creates:
+                                if prepared_create.preserve_separate:
+                                    continue
                                 scope = tuple(sorted(prepared_create.source_fact_tags or []))
                                 normalized_by_scope.setdefault(scope, []).append(_norm_obs_text(prepared_create.text))
                             for scope, normalized_texts in normalized_by_scope.items():
@@ -3368,7 +3377,9 @@ async def _process_memory_batch(
                         apply_dedups = []
                         for prepared_create in prepared_creates:
                             scope = tuple(sorted(prepared_create.source_fact_tags or []))
-                            if _norm_obs_text(prepared_create.text) in exact_by_scope.get(scope, {}):
+                            if not prepared_create.preserve_separate and _norm_obs_text(
+                                prepared_create.text
+                            ) in exact_by_scope.get(scope, {}):
                                 apply_dedups.append(None)
                                 continue
                             apply_dedup = prepared_create.dedup
@@ -3394,7 +3405,11 @@ async def _process_memory_batch(
 
                         for prepared_create, apply_dedup in zip(prepared_creates, apply_dedups):
                             scope = tuple(sorted(prepared_create.source_fact_tags or []))
-                            exact_row = exact_by_scope.get(scope, {}).get(_norm_obs_text(prepared_create.text))
+                            exact_row = (
+                                None
+                                if prepared_create.preserve_separate
+                                else exact_by_scope.get(scope, {}).get(_norm_obs_text(prepared_create.text))
+                            )
                             if exact_row is not None:
                                 exact_fold = _DedupOutcome(
                                     best_id=str(exact_row["id"]),
@@ -4228,6 +4243,13 @@ async def _guard_detail_loss_updates(
 
     def dropped(update: _UpdateAction) -> list[Anchor]:
         previous = by_observation[update.observation_id]
+        # Recall caps source-fact tokens per observation and for the entire batch.
+        # Fetching uncapped lineage here would add unbounded DB/context work. Fail
+        # closed instead: missing even one prior source vetoes every rewrite,
+        # including correction text, and keeps the old row unchanged. An empty
+        # lineage is genuinely unsupported, unlike a nonempty incomplete lineage.
+        if any(str(fid) not in sources for fid in previous.source_fact_ids or []):
+            return [Anchor("lineage", "incomplete prior source lineage")]
         existing = [
             Evidence(sources[str(fid)].text, sources[str(fid)].mentioned_at)
             for fid in previous.source_fact_ids or []
@@ -4313,7 +4335,8 @@ async def _guard_detail_loss_updates(
             # a separate observation with ONLY its new sources. Bypass semantic
             # reconciliation for this create and the soft cap (not transaction or
             # source/language checks), otherwise the fail-safe can silently undo
-            # itself. Exact-text dedup remains safe because it rewrites no text.
+            # itself. Bypass exact-text dedup too: stamping a duplicate's new
+            # sources without attaching them to a row would orphan its lineage.
             create = _CreateAction(text=original.text, source_fact_ids=original.source_fact_ids)
             create._preserve_separate = True
             creates.append(create)
