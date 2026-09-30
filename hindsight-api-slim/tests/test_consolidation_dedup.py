@@ -5,7 +5,6 @@ guard the fix in CI — unlike the real-LLM integration test, which only trigger
 the path stochastically.
 """
 
-from hindsight_api.engine.response_models import LLMCallResult, TokenUsage
 import hashlib
 import logging
 import types
@@ -33,6 +32,7 @@ from hindsight_api.engine.consolidation.consolidator import (
 )
 from hindsight_api.engine.db_utils import acquire_with_retry
 from hindsight_api.engine.memories import RecallArms
+from hindsight_api.engine.response_models import LLMCallResult, TokenUsage
 from hindsight_api.engine.search.types import RetrievalResult
 
 #: Dates the skipped CREATE would have been stamped with; the fold must carry them onto the twin.
@@ -324,6 +324,19 @@ async def test_dedup_llm_missing_action_defaults_to_keep() -> None:
     assert result is None
     llm.call.assert_awaited_once()
     conn.fetchval.assert_not_called()  # missing action is a conservative no-merge
+
+
+async def test_dedup_merge_that_drops_detail_is_kept_separate() -> None:
+    kwargs, conn, llm = _ctx()
+    kwargs["create_text"] = "Due 2026-10-02, the assistant must call update_goal."
+    llm.call.return_value = LLMCallResult(
+        content=_DedupDecision(action="merge", text="The task remains open."),
+        usage=TokenUsage(),
+    )
+    with _patch_embed(), _patch_probe([_obs("Due 2026-10-02, the assistant must call update_goal.", 0.98)]):
+        result = await _dedup_reconcile_create(**kwargs)
+    assert result is None
+    conn.fetchval.assert_not_called()
 
 
 def test_dedup_decision_accepts_exact_valid_actions() -> None:
