@@ -628,66 +628,69 @@ async def update_memory_units_metadata_and_tags(
         document_id,
     )
 
-    # Read the scoping the survivors carry BEFORE overwriting it — the cascade below has to
-    # know which units actually moved, and after the UPDATE that is no longer answerable.
+    # Read the values survivors carry BEFORE overwriting them — the cascade below has to
+    # know which units actually moved, and comparing in Python keeps this path portable across
+    # PostgreSQL JSONB and Oracle CLOB storage. It also lets us compare against each unit's FINAL
+    # label projection, avoiding a blanket write followed by a restoring write.
     prior = await conn.fetch(
         f"""
-        SELECT id, fact_type, tags, observation_scopes
+        SELECT id, fact_type, tags, metadata, observation_scopes
         FROM {fq_table("memory_units")}
         WHERE bank_id = $1 AND document_id = $2
         """,
         bank_id,
         document_id,
     )
-    new_tags_by_id = {row["id"]: _tags_for(row["tags"]) for row in prior}
-    # See the store-owned branch: the comparison is against what the unit ends with.
+    desired_metadata = drop_null_values(metadata)
+    desired_scopes = _normalize_scopes(observation_scopes)
+    new_tags_by_id = {}
+    existing_tags_by_id = {}
+    changed_by_final: dict[tuple[str, ...], list] = {}
+    for row in prior:
+        normalized_tags = _normalize_scopes(row["tags"])
+        existing_tags = normalized_tags if isinstance(normalized_tags, list) else []
+        existing_tags_by_id[row["id"]] = existing_tags
+        final_tags = _tags_for(existing_tags)
+        new_tags_by_id[row["id"]] = final_tags
+        if (
+            existing_tags != final_tags
+            or _normalize_scopes(row["metadata"]) != desired_metadata
+            or _normalize_scopes(row["observation_scopes"]) != desired_scopes
+        ):
+            changed_by_final.setdefault(tuple(final_tags), []).append(row["id"])
+
     rescoped_ids = [
         row["id"]
         for row in prior
         if row["fact_type"] in ("experience", "world")
         and (
-            set(row["tags"] or []) != set(new_tags_by_id[row["id"]])
-            or _normalize_scopes(row["observation_scopes"]) != _normalize_scopes(observation_scopes)
+            set(existing_tags_by_id[row["id"]]) != set(new_tags_by_id[row["id"]])
+            or _normalize_scopes(row["observation_scopes"]) != desired_scopes
         )
     ]
 
-    result = await conn.execute(
-        f"""
-        UPDATE {fq_table("memory_units")}
-        SET tags = $3, metadata = $4, observation_scopes = $5, updated_at = NOW()
-        WHERE bank_id = $1 AND document_id = $2
-        """,
-        bank_id,
-        document_id,
-        tags or [],
-        json.dumps(drop_null_values(metadata)),
-        json.dumps(observation_scopes) if observation_scopes is not None else None,
-    )
-
-    # Restore each survivor's label projection over the blanket write above. Done as a
-    # follow-up rather than folded into that statement so a row inserted concurrently
-    # still gets the document tags and metadata exactly as before — this pass only
-    # touches ids that were read, and a document carrying no label tags issues nothing.
-    # Grouped by the FINAL array `_tags_for` computed rather than by the projection
-    # alone, so the value written here is the one it already deduped — a unit whose
-    # label tag is also a document tag must not come back carrying it twice.
-    by_final: dict[tuple[str, ...], list] = {}
-    for row in prior:
-        final = new_tags_by_id[row["id"]]
-        if final != list(tags or []):
-            by_final.setdefault(tuple(final), []).append(row["id"])
-    for final, ids in by_final.items():
-        await conn.execute(
+    updated_count = 0
+    # Update only rows whose FINAL values differ. Grouping by final tags preserves one efficient
+    # statement per label projection while avoiding PostgreSQL-only comparison operators and
+    # CLOB comparisons that Oracle cannot execute.
+    for final, ids in changed_by_final.items():
+        result = await conn.execute(
             f"""
             UPDATE {fq_table("memory_units")}
-            SET tags = $3, updated_at = NOW()
-            WHERE bank_id = $1 AND document_id = $2 AND id = ANY($4::uuid[])
+            SET tags = $3, metadata = $4, observation_scopes = $5, updated_at = NOW()
+            WHERE bank_id = $1 AND document_id = $2 AND id = ANY($6::uuid[])
             """,
             bank_id,
             document_id,
             list(final),
+            json.dumps(desired_metadata),
+            json.dumps(observation_scopes) if observation_scopes is not None else None,
             ids,
         )
+        try:
+            updated_count += int(result.split()[-1])
+        except (ValueError, IndexError):
+            pass
 
     if rescoped_ids:
         await delete_stale_observations_for_memories(conn, bank_id, rescoped_ids, ops=ops)
@@ -701,8 +704,4 @@ async def update_memory_units_metadata_and_tags(
             conn=conn, fq_table=fq_table, bank_id=bank_id, unit_ids=[str(uid) for uid in rescoped_ids], when=None
         )
 
-    # result is a status string like "UPDATE 5"
-    try:
-        return int(result.split()[-1])
-    except (ValueError, IndexError):
-        return 0
+    return updated_count
