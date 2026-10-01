@@ -202,7 +202,20 @@ class MarkitdownParser(FileParser):
         if self._ocr_enabled and Path(filename).suffix.lower() == ".pdf":
             from .pdf_ocr import PDF_OCR_LIMITS, PdfOcrConfig, convert_pdf
 
-            return await convert_pdf(file_data, filename, PdfOcrConfig.model_validate(self._ocr_kwargs), PDF_OCR_LIMITS)
+            return await convert_pdf(
+                file_data,
+                filename,
+                PdfOcrConfig.model_validate(
+                    {
+                        "api_key": self._ocr_api_key,
+                        "base_url": self._ocr_base_url,
+                        "model": self._ocr_model,
+                        "prompt": self._ocr_prompt,
+                        "default_headers": self._ocr_default_headers,
+                    }
+                ),
+                PDF_OCR_LIMITS,
+            )
         # markitdown is synchronous, so we run it in executor to avoid blocking
         loop = asyncio.get_event_loop()
         return await loop.run_in_executor(None, self._convert_sync, file_data, filename)

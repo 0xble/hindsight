@@ -228,3 +228,23 @@ validation and preserves the reason value through serialization.
 
 Run API-local pytest commands from `hindsight-api-slim`; run generation from
 the repository root.
+## Linux Worker Import Boundary
+
+The PDF fallback's first hosted qualification failed before provider readiness in
+two timing cases and at its sampled RSS limit in a conversion story. A spawned
+parser import eagerly loaded engine exports, default configuration and the local
+machine-learning stack. Engine exports now resolve on access with their original
+identities, keeping a parser-only subprocess independent of application startup.
+The document deadline, RSS, CPU, cancellation and scratch limits are unchanged.
+
+Fresh-process import measurements on Linux ARM64 fell from 14.6 seconds and
+555 MiB to 0.295 seconds and 57.1 MiB. An emulated AMD64 baseline reproduced
+four provider-readiness/deadline failures and imported in 64.7 seconds with
+745 MiB, while the repaired import took 2.70 seconds and 98 MiB. These are
+isolated measurements, not native hosted or private-original fidelity proof.
+
+Regressions verify parser-only subprocess imports and all 24 public engine
+exports, their identity, cache, directory listing and missing-attribute behavior.
+The original OCR implementation rebased cleanly onto the qualified upstream sync.
+Keep prior compatibility review separate from the targeted import/base-interaction
+review and require a new exact gate before publication of the repaired head.
