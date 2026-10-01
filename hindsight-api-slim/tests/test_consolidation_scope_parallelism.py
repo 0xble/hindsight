@@ -782,20 +782,47 @@ async def test_same_lane_parallelizes_llm_but_serializes_apply(memory: MemoryEng
     apply_in_flight = 0
     max_apply_in_flight = 0
     tracker_lock = asyncio.Lock()
+    all_llm_entered = asyncio.Event()
+    all_apply_ready = asyncio.Event()
+    apply_ready: set[str] = set()
+    apply_order: list[str] = []
     original_llm = consolidator_mod._consolidate_batch_with_llm
     original_apply = consolidator_mod._apply_create_action
+    original_process = consolidator_mod._process_memory_batch
 
-    async def delayed_llm(*args, **kwargs):
+    async def synchronized_llm(*args, **kwargs):
         nonlocal llm_in_flight, max_llm_in_flight
         async with tracker_lock:
             llm_in_flight += 1
             max_llm_in_flight = max(max_llm_in_flight, llm_in_flight)
+            if llm_in_flight == 4:
+                all_llm_entered.set()
         try:
-            await asyncio.sleep(0.05)
+            # Hold actual LLM calls until all four preparations reach this
+            # boundary. Database/embedding latency cannot shorten the overlap.
+            await asyncio.wait_for(all_llm_entered.wait(), timeout=10)
             return await original_llm(*args, **kwargs)
         finally:
             async with tracker_lock:
                 llm_in_flight -= 1
+
+    async def tracked_process(*args, **kwargs):
+        if kwargs["apply_turn"] is None:
+            # A regression to the serial path must fail the LLM rendezvous,
+            # rather than failing solely because instrumentation requires a lane.
+            return await original_process(*args, **kwargs)
+        turn, successor = kwargs["apply_turn"]
+        text = kwargs["memories"][0]["text"]
+
+        class TrackedTurn:
+            async def wait(self):
+                apply_ready.add(text)
+                if len(apply_ready) == 4:
+                    all_apply_ready.set()
+                await turn.wait()
+
+        kwargs["apply_turn"] = (TrackedTurn(), successor)
+        return await original_process(*args, **kwargs)
 
     async def tracked_apply(*args, **kwargs):
         nonlocal apply_in_flight, max_apply_in_flight
@@ -803,7 +830,11 @@ async def test_same_lane_parallelizes_llm_but_serializes_apply(memory: MemoryEng
             apply_in_flight += 1
             max_apply_in_flight = max(max_apply_in_flight, apply_in_flight)
         try:
-            await asyncio.sleep(0.01)
+            # Keep the first transaction open until every contender reaches its
+            # apply turn. A missing serialization fence now overlaps or reorders
+            # these real writes instead of depending on a short sleep.
+            await asyncio.wait_for(all_apply_ready.wait(), timeout=10)
+            apply_order.append(kwargs["prepared"].source_mems[0]["text"])
             return await original_apply(*args, **kwargs)
         finally:
             async with tracker_lock:
@@ -826,17 +857,20 @@ async def test_same_lane_parallelizes_llm_but_serializes_apply(memory: MemoryEng
                     consolidation_dedup_threshold=1.0,
                 ),
                 patch.object(memory, "submit_async_consolidation"),
-                patch.object(consolidator_mod, "_consolidate_batch_with_llm", delayed_llm),
+                patch.object(consolidator_mod, "_consolidate_batch_with_llm", synchronized_llm),
+                patch.object(consolidator_mod, "_process_memory_batch", tracked_process),
                 patch.object(consolidator_mod, "_apply_create_action", tracked_apply),
             ):
-                result = await run_consolidation_job(
-                    memory_engine=memory, bank_id=bank_id, request_context=request_context
+                result = await asyncio.wait_for(
+                    run_consolidation_job(memory_engine=memory, bank_id=bank_id, request_context=request_context),
+                    timeout=30,
                 )
         finally:
             memory._consolidation_llm_config = original_config_llm
         assert result["status"] == "completed"
-        assert max_llm_in_flight > 1
+        assert max_llm_in_flight == 4
         assert max_apply_in_flight == 1
+        assert apply_order == [f"Shared fact {index}" for index in range(4)]
     finally:
         await memory.delete_bank(bank_id, request_context=request_context)
 
@@ -1862,6 +1896,7 @@ async def test_disjoint_scopes_run_concurrently(memory: MemoryEngine, request_co
     distinct_concurrent_scopes_seen = 0
     in_flight_scopes: set[frozenset[str]] = set()
     sample_lock = asyncio.Lock()
+    all_scopes_entered = asyncio.Event()
     orig_find = consolidator_mod._find_related_observations
 
     async def tracked_find(*, memory_engine, bank_id, query, request_context, tags=None, config=None):
@@ -1871,8 +1906,10 @@ async def test_disjoint_scopes_run_concurrently(memory: MemoryEngine, request_co
             in_flight_scopes.add(scope)
             if len(in_flight_scopes) > distinct_concurrent_scopes_seen:
                 distinct_concurrent_scopes_seen = len(in_flight_scopes)
+            if len(in_flight_scopes) == 3:
+                all_scopes_entered.set()
         try:
-            await asyncio.sleep(0.1)  # widen the window so concurrency is observable
+            await asyncio.wait_for(all_scopes_entered.wait(), timeout=10)
             return await orig_find(
                 memory_engine=memory_engine,
                 bank_id=bank_id,
