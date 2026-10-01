@@ -188,6 +188,10 @@ class MarkitdownParser(FileParser):
 
     async def convert(self, file_data: bytes, filename: str) -> str:
         """Parse file to markdown using markitdown."""
+        if self._ocr_enabled and Path(filename).suffix.lower() == ".pdf":
+            from .pdf_ocr import PDF_OCR_LIMITS, PdfOcrConfig, convert_pdf
+
+            return await convert_pdf(file_data, filename, PdfOcrConfig.model_validate(self._ocr_kwargs), PDF_OCR_LIMITS)
         # markitdown is synchronous, so we run it in executor to avoid blocking
         loop = asyncio.get_event_loop()
         return await loop.run_in_executor(None, self._convert_sync, file_data, filename)

@@ -88,6 +88,8 @@ dependencies = [
     # wheels (tracked upstream in BerriAI/litellm#31261).
     "litellm>=1.91.3,<1.92; sys_platform == 'darwin'",
     "markitdown[pdf,docx,pptx,xlsx,xls]>=0.1.4", # File to markdown conversion
+    "pypdfium2==5.4.0", # Bounded PDF page rendering, matches the existing locked dependency
+    "psutil==7.2.2", # Sampled RSS protection for the disposable PDF OCR process
     "obstore>=0.4.0", # S3/GCS/Azure object storage client (Rust-backed)
     "winloop>=0.1.0; sys_platform == 'win32'",
     "uvloop>=0.22.1; sys_platform != 'win32'",
