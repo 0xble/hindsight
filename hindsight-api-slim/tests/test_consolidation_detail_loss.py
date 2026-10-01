@@ -230,6 +230,111 @@ def test_newer_same_slot_replacement_exempts_only_one_occurrence(keep_retry):
     assert (Anchor("number", "5") in dropped) is not keep_retry
 
 
+def test_historical_timeout_does_not_excuse_lost_retry_occurrence():
+    before = "The server timeout is 5 seconds. The retry limit is 5 attempts."
+    after = "The server timeout changed from 5 seconds to 10 seconds."
+    old = [Evidence(before, "2026-09-29T10:00:00Z")]
+    new = [Evidence("The server timeout is 10 seconds.", "2026-09-30T10:00:00Z")]
+    assert Anchor("number", "5") in dropped_supported_anchors(before, after, old, new)
+
+
+@pytest.mark.asyncio
+async def test_historical_timeout_loss_is_flagged_at_update_boundary(provider, config):
+    before = "The server timeout is 5 seconds. The retry limit is 5 attempts."
+    after = "The server timeout changed from 5 seconds to 10 seconds."
+    case = {
+        "before": before,
+        "after": after,
+        "prior_source_facts": [
+            {"id": "11111111-1111-4111-8111-111111111111", "text": before, "mentioned_at": "2026-09-29T10:00:00Z"}
+        ],
+        "new_source_facts": [
+            {
+                "id": "22222222-2222-4222-8222-222222222222",
+                "text": "The server timeout is 10 seconds.",
+                "mentioned_at": "2026-09-30T10:00:00Z",
+            }
+        ],
+    }
+    stub = install(provider, [response(case), response(case)])
+    budget = c._SchemaCorrectionBudget()
+    result = await run_case(provider, config, case, schema_correction_budget=budget)
+    assert not result.failed and not result.updates
+    assert result.creates[0].text == after and result.creates[0]._preserve_separate
+    assert budget.result_stats()["detail_loss_flagged"] == 1
+    assert len(stub.requests) == 2
+
+
+@pytest.mark.parametrize(
+    "kind,value,replacement",
+    [
+        ("number", "5", "10"),
+        ("date", "2026-10-02", "2026-10-03"),
+        ("money", "$500", "$600"),
+        ("version", "1.2.3", "2.3.4"),
+        ("identifier", "abc1234", "def5678"),
+        ("literal", "ready", "active"),
+    ],
+)
+def test_historical_same_value_cannot_excuse_another_slot(kind, value, replacement):
+    old_value = f'"{value}"' if kind == "literal" else value
+    new_value = f'"{replacement}"' if kind == "literal" else replacement
+    before = f"The alpha server setting is {old_value}. The beta server setting is {old_value}."
+    after = f"The alpha server setting changed from {old_value} to {new_value}."
+    old = [Evidence(before, "2026-09-29T10:00:00Z")]
+    new = [Evidence(f"The alpha server setting is {new_value}.", "2026-09-30T10:00:00Z")]
+    assert Anchor(kind, value) in dropped_supported_anchors(before, after, old, new)
+
+
+@pytest.mark.parametrize(
+    "after",
+    [
+        "The server timeout is 10 seconds. The retry limit is 5 attempts.",
+        "The server timeout changed from 5 seconds to 10 seconds. The retry limit is 5 attempts.",
+        "The retry limit is 5 attempts. The server timeout is 10 seconds.",
+    ],
+    ids=["retry-preserved", "historical-timeout-and-retry-preserved", "reordered-slots"],
+)
+def test_per_occurrence_supersession_preserves_other_slots(after):
+    before = "The server timeout is 5 seconds. The retry limit is 5 attempts."
+    old = [Evidence(before, "2026-09-29T10:00:00Z")]
+    new = [Evidence("The server timeout is 10 seconds.", "2026-09-30T10:00:00Z")]
+    assert not dropped_supported_anchors(before, after, old, new)
+
+
+def test_equal_multiplicity_of_historical_timeout_cannot_hide_lost_retry():
+    before = "The server timeout is 5 seconds. The retry limit is 5 attempts."
+    after = "The server timeout changed from 5 seconds to 10 seconds. Previously the server timeout was 5 seconds."
+    old = [Evidence(before, "2026-09-29T10:00:00Z")]
+    new = [Evidence("The server timeout is 10 seconds.", "2026-09-30T10:00:00Z")]
+    assert Anchor("number", "5") in dropped_supported_anchors(before, after, old, new)
+
+
+@pytest.mark.parametrize("add_note", [False, True], ids=["unchanged", "additive-note"])
+def test_many_identical_preserved_occurrences_remain_bounded(add_note):
+    before = "The server timeout is 5 seconds. " * 2000
+    after = before + ("A plain additive note." if add_note else "")
+    start = perf_counter()
+    assert not dropped_supported_anchors(before, after, [Evidence(before)], [])
+    assert perf_counter() - start < 1.0
+
+
+def test_ambiguous_repeated_slot_replacement_fails_closed():
+    before = "The primary server timeout is 5 seconds. The backup server timeout is 5 seconds."
+    after = "The server timeout changed from 5 seconds to 10 seconds."
+    old = [Evidence(before, "2026-09-29T10:00:00Z")]
+    new = [Evidence("The server timeout is 10 seconds.", "2026-09-30T10:00:00Z")]
+    assert Anchor("number", "5") in dropped_supported_anchors(before, after, old, new)
+
+
+def test_replacement_in_wrong_output_slot_does_not_excuse_missing_timeout():
+    before = "The server timeout is 5 seconds. The retry limit is 5 attempts."
+    after = "The retry limit changed from 5 attempts to 10 attempts."
+    old = [Evidence(before, "2026-09-29T10:00:00Z")]
+    new = [Evidence("The server timeout is 10 seconds.", "2026-09-30T10:00:00Z")]
+    assert Anchor("number", "5") in dropped_supported_anchors(before, after, old, new)
+
+
 @pytest.mark.parametrize("dense_citation", [False, True])
 def test_anchor_dense_update_finishes_under_one_second(dense_citation):
     before = " ".join(f"Metric value {i}." for i in range(1000, 4000)).ljust(60000)

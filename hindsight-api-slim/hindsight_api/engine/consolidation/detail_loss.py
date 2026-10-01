@@ -125,7 +125,7 @@ class _TextIndex:
     normalized: str
     counts: Counter[Anchor]
     occurrences: Counter[str] = field(default_factory=Counter)
-    contexts: dict[str, set[str]] = field(default_factory=dict)
+    contexts: dict[str, list[set[str]]] = field(default_factory=dict)
     snapshot_labels: set[str] = field(default_factory=set)
     available: bool = False
     consumed_last: bool = False
@@ -140,10 +140,15 @@ class _SourceIndex:
     when: datetime | None
 
 
-def _context_at(words: list[re.Match[str]], starts: list[int], ends: list[int], pos: int, end: int) -> set[str]:
+def _context_at(
+    words: list[re.Match[str]], starts: list[int], ends: list[int], pos: int, end: int, boundaries: list[int]
+) -> set[str]:
     before = bisect_right(ends, pos)
     after = bisect_left(starts, end)
-    nearby = words[max(0, before - 6) : before] + words[after : after + 6]
+    clause = bisect_right(boundaries, pos)
+    lower = bisect_left(starts, boundaries[clause - 1]) if clause else 0
+    upper = bisect_left(starts, boundaries[clause]) if clause < len(boundaries) else len(words)
+    nearby = words[max(lower, before - 6) : before] + words[after : min(upper, after + 6)]
     return {m[0].removesuffix("s") for m in nearby if m[0] not in _STOP}
 
 
@@ -159,6 +164,9 @@ def _index_occurrences(index: _TextIndex, trie: _ValueTrie, budget: _Budget) -> 
     main_end = len(text) if main_end < 0 else main_end
     words = list(re.compile(r"[a-z]+").finditer(text, endpos=main_end))
     starts, ends = [m.start() for m in words], [m.end() for m in words]
+    # Do not borrow another slot's labels across a sentence or coordinated clause.
+    # Decimal/version dots are not sentence boundaries.
+    boundaries = [m.end() for m in re.finditer(r"[.;!?](?=\s|$)|\band\b", text[:main_end])]
     last_end: dict[str, int] = {}
     for pos, char in enumerate(text):
         if pos and (text[pos - 1].isalnum() or text[pos - 1] == "_"):
@@ -173,8 +181,9 @@ def _index_occurrences(index: _TextIndex, trie: _ValueTrie, budget: _Budget) -> 
                 if pos >= last_end.get(value, 0):
                     index.occurrences[value] += 1
                     last_end[value] = end
-                if value not in index.contexts and end <= main_end:
-                    index.contexts[value] = _context_at(words, starts, ends, pos, end)
+                    index.contexts.setdefault(value, []).append(
+                        _context_at(words, starts, ends, pos, end, boundaries) if end <= main_end else set()
+                    )
             if end == len(text):
                 break
             node = node.children.get(text[end])
@@ -228,10 +237,45 @@ def _prepare(texts: list[str], budget: _Budget) -> dict[str, _TextIndex]:
     return indexes
 
 
+def _unmatched_occurrences(anchor: Anchor, before: _TextIndex, after: _TextIndex, budget: _Budget) -> list[int]:
+    """Match repeated values by slot, never by order or by global counts alone."""
+    contexts = before.contexts[anchor.value]
+    if before.normalized == after.normalized:
+        return []
+    remaining = set(range(len(contexts)))
+    exact_by_context: dict[frozenset[str], list[int]] = {}
+    for i, context in enumerate(contexts):
+        budget.spend()
+        if context:
+            exact_by_context.setdefault(frozenset(context), []).append(i)
+    unpaired: list[set[str]] = []
+    for context in after.contexts.get(anchor.value, []):
+        budget.spend()
+        exact = exact_by_context.get(frozenset(context), [])
+        if exact:
+            # Exact equivalent slots preserve multiplicity in linear work. Tied
+            # replacement attribution still cannot supersede any remaining copy.
+            remaining.remove(exact.pop())
+        else:
+            unpaired.append(context)
+    for context in unpaired:
+        budget.spend(len(contexts))
+        scores = [len(context & old) for old in contexts]
+        best = max(scores, default=0)
+        candidates = [i for i, score in enumerate(scores) if score == best]
+        if best >= 2 and len(candidates) == 1 and candidates[0] in remaining:
+            remaining.remove(candidates[0])
+        # A tied/weak match is not evidence of preservation. Compare against ALL
+        # old slots, so two copies of a preserved timeout cannot stand in for retry.
+    return sorted(remaining)
+
+
 def _superseded(
     anchor: Anchor,
     missing: int,
     before: _TextIndex,
+    after: _TextIndex,
+    unmatched: list[int],
     supporters: list[_SourceIndex],
     cited: list[_SourceIndex],
     budget: _Budget,
@@ -240,10 +284,7 @@ def _superseded(
     if not support_times or any(t is None for t in support_times):
         return 0
     newest_support = max(t for t in support_times if t is not None)
-    context: set[str] = set()
-    for source in supporters:
-        budget.spend()
-        context.update(source.text.contexts.get(anchor.value, set()))
+    contexts = before.contexts[anchor.value]
     for source in cited:
         budget.spend()
         when, new = source.when, source.text
@@ -270,19 +311,37 @@ def _superseded(
             budget.spend()
             if replacement.value == anchor.value:
                 continue
-            overlap = context & new.contexts.get(replacement.value, set())
-            if len(overlap) >= 2:
-                return 1
-            if anchor.kind == "identifier" and "commit" in overlap:
+            for replacement_context in new.contexts.get(replacement.value, []):
+                budget.spend(len(contexts))
+                scores = [len(context & replacement_context) for context in contexts]
+                best = max(scores, default=0)
+                candidates = [i for i, score in enumerate(scores) if score == best]
+                # Attribute the replacement against every old occurrence first.
+                # A preserved/historical timeout cannot excuse a missing retry,
+                # and tied slot attribution must fail closed.
+                if not best or len(candidates) != 1 or candidates[0] not in unmatched:
+                    continue
+                context = contexts[candidates[0]]
                 for supporter in supporters:
-                    for other in supporter.text.counts:
+                    for supported_context in supporter.text.contexts.get(anchor.value, []):
                         budget.spend()
-                        if (
-                            other.value != anchor.value
-                            and other.kind in {"identifier", "number"}
-                            and new.occurrences[other.value]
-                        ):
-                            return 1
+                        overlap = context & supported_context & replacement_context
+                        for output_context in after.contexts.get(replacement.value, []):
+                            budget.spend()
+                            # A cited replacement merely appearing elsewhere in
+                            # the output does not mean this slot was replaced.
+                            output_overlap = overlap & output_context
+                            if len(output_overlap) >= 2:
+                                return 1
+                            if anchor.kind == "identifier" and "commit" in output_overlap:
+                                for other in supporter.text.counts:
+                                    budget.spend()
+                                    if (
+                                        other.value != anchor.value
+                                        and other.kind in {"identifier", "number"}
+                                        and new.occurrences[other.value]
+                                    ):
+                                        return 1
     return 0
 
 
@@ -291,8 +350,9 @@ def dropped_supported_anchors(before: str, after: str, existing: list[Evidence],
 
     Timestamp authority is mentioned_at, never ingestion/updated_at or a future
     deadline's occurred_start. A missing/older/tied timestamp cannot authorize a
-    different value. A same-slot replacement exempts at most ONE occurrence;
-    other occurrences of that value must survive. Snapshot/credit transitions
+    different value. A same-slot replacement exempts at most ONE unmatched
+    occurrence; preservation and replacement attribution must be unambiguous.
+    Other occurrences of that value must survive. Snapshot/credit transitions
     remain explicit whole-state exceptions, not ordinary slot replacements.
     """
     try:
@@ -323,10 +383,18 @@ def dropped_supported_anchors(before: str, after: str, existing: list[Evidence],
         for anchor, needed in old.counts.items():
             budget.spend()
             missing = needed - new.occurrences[anchor.value]
+            if needed > 1:
+                unmatched = _unmatched_occurrences(anchor, old, new, budget)
+                missing = max(missing, len(unmatched))
+            else:
+                unmatched = list(range(len(old.contexts[anchor.value])))
             if missing <= 0:
                 continue
             supporters = supporters_by_value.get(anchor.value, [])
-            if supporters and _superseded(anchor, missing, old, supporters, cited_indexes, budget) < missing:
+            if (
+                supporters
+                and _superseded(anchor, missing, old, new, unmatched, supporters, cited_indexes, budget) < missing
+            ):
                 dropped.append(anchor)
         return dropped
     except _WorkLimit:

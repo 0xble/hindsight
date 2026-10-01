@@ -696,7 +696,34 @@ async def test_incomplete_recall_lineage_fails_closed(provider, config, partial,
     assert result.creates[0].source_fact_ids == [F]
     assert result.creates[0].text == first["updates"][0]["text"]
     assert observation.text == "Timeout is 5 seconds."
-    assert len(stub.requests) <= 2
+    assert len(stub.requests) == 1  # No completion can repair unavailable lineage.
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failure", [RuntimeError("synthetic detail transport failure"), MISSING])
+async def test_failed_detail_correction_language_mismatch_has_no_third_request(provider, config, failure):
+    from hindsight_api.engine.language_integrity import LanguageCheckResult, LanguageMismatch
+    from hindsight_api.engine.response_models import MemoryFact
+
+    config.llm_language_integrity = "retry"
+    before = "The timeout is 5 seconds."
+    observation = SimpleNamespace(**{**vars(OBSERVATION), "text": before, "source_fact_ids": [UNKNOWN]})
+    sources = {UNKNOWN: MemoryFact(id=UNKNOWN, text=before, fact_type="world")}
+    lossy = {"updates": [{"text": "The timeout is configured.", "observation_id": OBS_ID, "source_fact_ids": [F]}]}
+    stub = install(provider, [lossy, failure, VALID])
+    evaluation = LanguageCheckResult(mismatches=(LanguageMismatch("create:0", "en", "fr"),), checked=1, abstained=0)
+    budget = c._SchemaCorrectionBudget()
+    with (
+        patch.object(c, "prepare_context_safely", new=AsyncMock(return_value=object())),
+        patch.object(c, "build_source_instruction", return_value=""),
+        patch.object(c, "evaluate_language_integrity_safely", new=AsyncMock(return_value=evaluation)),
+    ):
+        result = await c._consolidate_batch_with_llm(
+            provider, MEMORIES, [observation], sources, config, schema_correction_budget=budget
+        )
+    assert len(stub.requests) == 2
+    assert result.failed
+    assert budget.detail_stats.attempts == budget.detail_stats.correction_failed == 1
 
 
 @pytest.mark.asyncio
@@ -791,3 +818,240 @@ async def test_fallback_exact_duplicate_persists_all_sources(memory, request_con
             assert {row["id"] for row in stamped} == set(new_ids)
     finally:
         await memory.delete_bank(bank_id, request_context=request_context)
+
+
+@pytest.mark.asyncio
+@pytest.mark.memory_backend_incompatible
+@pytest.mark.parametrize("mode", ["legitimate", "lossy", "repaired", "chars", "count", "missing", "foreign"])
+async def test_guard_hydrates_capped_provenance_without_prompt_or_row_growth(memory, request_context, provider, mode):
+    import uuid
+    from dataclasses import replace
+
+    from hindsight_api.config import _get_raw_config
+    from hindsight_api.engine.response_models import MemoryFact, RecallResult
+
+    bank_id = f"detail-hydration-{uuid.uuid4().hex[:8]}"
+    foreign_bank = f"detail-foreign-{uuid.uuid4().hex[:8]}"
+    await memory.ensure_bank_profile(bank_id=bank_id, request_context=request_context)
+    await memory.ensure_bank_profile(bank_id=foreign_bank, request_context=request_context)
+    old_id, target_id = uuid.uuid4(), uuid.uuid4()
+    before = "The server timeout is 5 seconds."
+    private_text = "GUARD_ONLY_PROVENANCE " + "supporting context " * 300 + before
+    assert c.count_tokens(private_text) > 256
+    if mode == "chars":
+        private_text += "x" * 131073
+    prior_ids = [old_id]
+    if mode == "count":
+        prior_ids += [uuid.uuid4() for _ in range(128)]
+    config = replace(_get_raw_config(), llm_language_integrity="off", consolidation_dedup_threshold=1.0)
+    rounds = 3 if mode == "legitimate" else 1
+    before_hydration_reads = []
+    store = c.get_memories()
+    original_read = store.get_memories
+
+    async def traced_read(**kwargs):
+        if str(old_id) in {str(fid) for fid in kwargs["unit_ids"]}:
+            before_hydration_reads.append(kwargs["unit_ids"])
+        return await original_read(**kwargs)
+
+    try:
+        async with memory._pool.acquire() as conn:
+            if mode != "missing":
+                await conn.execute(
+                    "INSERT INTO memory_units (id, bank_id, text, fact_type, tags, created_at) VALUES ($1, $2, $3, 'world', '{}', now())",
+                    old_id,
+                    foreign_bank if mode == "foreign" else bank_id,
+                    private_text,
+                )
+            await conn.execute(
+                "INSERT INTO memory_units (id, bank_id, text, fact_type, tags, source_memory_ids, created_at) VALUES ($1, $2, $3, 'observation', '{}', $4, now())",
+                target_id,
+                bank_id,
+                before,
+                prior_ids,
+            )
+        stub = install(provider, [])
+        for index in range(rounds):
+            fact_id = uuid.uuid4()
+            good_text = before + " Configuration remains active." * (index + 1)
+            proposed = "The server timeout remains active." if mode in {"lossy", "repaired"} else good_text
+            reply = {
+                "updates": [{"text": proposed, "observation_id": str(target_id), "source_fact_ids": [str(fact_id)]}]
+            }
+            corrected = copy.deepcopy(reply)
+            if mode == "repaired":
+                corrected["updates"][0]["text"] = good_text
+            stub.responses += [reply, corrected] if mode in {"lossy", "repaired"} else [reply]
+            async with memory._pool.acquire() as conn:
+                await conn.execute(
+                    "INSERT INTO memory_units (id, bank_id, text, fact_type, tags, created_at) VALUES ($1, $2, $3, 'world', '{}', now())",
+                    fact_id,
+                    bank_id,
+                    "The server configuration remains active.",
+                )
+                # Recall's source budget deliberately omits the old, >256-token
+                # fact. Query only fixture lineage, which the read API does not expose.
+                row = await conn.fetchrow(
+                    "SELECT text, source_memory_ids FROM memory_units WHERE bank_id = $1 AND id = $2",
+                    bank_id,
+                    target_id,
+                )
+            obs = MemoryFact(
+                id=str(target_id),
+                text=row["text"],
+                fact_type="observation",
+                source_fact_ids=[str(fid) for fid in row["source_memory_ids"]],
+            )
+            with (
+                patch.object(
+                    c,
+                    "_find_related_observations",
+                    new=AsyncMock(return_value=RecallResult(results=[obs], source_facts={})),
+                ),
+                patch.object(c, "_embed_observation_text", new=AsyncMock(return_value=None)),
+                patch.object(store, "get_memories", new=traced_read),
+            ):
+                await c._process_memory_batch(
+                    pool=memory._backend,
+                    memory_engine=memory,
+                    llm_config=provider,
+                    bank_id=bank_id,
+                    memories=[{"id": fact_id, "text": "The server configuration remains active.", "tags": []}],
+                    request_context=request_context,
+                    config=config,
+                )
+            observations = await memory.list_memory_units(
+                bank_id, fact_type="observation", limit=100, request_context=request_context
+            )
+            if mode in {"legitimate", "repaired"}:
+                assert observations["total"] == 1
+                assert observations["items"][0]["text"] == good_text
+            else:
+                assert observations["total"] == 2
+                assert next(item for item in observations["items"] if item["id"] == str(target_id))["text"] == before
+        assert all("GUARD_ONLY_PROVENANCE" not in json.dumps(request["messages"]) for request in stub.requests)
+        if mode in {"lossy", "repaired"}:
+            assert len(stub.requests) == 2
+            feedback = stub.requests[1]["messages"][-1]["content"]
+            assert '"5"' in feedback and "incomplete prior source lineage" not in feedback
+        else:
+            assert len(stub.requests) == rounds
+        assert len(before_hydration_reads) == (0 if mode == "count" else rounds)
+    finally:
+        await memory.delete_bank(bank_id, request_context=request_context)
+        await memory.delete_bank(foreign_bank, request_context=request_context)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("store_owned", [False, True])
+async def test_guard_hydration_is_one_batched_read_and_target_local(provider, config, store_owned):
+    import uuid
+    from contextlib import asynccontextmanager
+
+    from hindsight_api.engine.response_models import MemoryFact
+
+    char_target = "66666666-6666-4666-8666-666666666666"
+    count_target = "77777777-7777-4777-8777-777777777777"
+    char_source = "88888888-8888-4888-8888-888888888888"
+    good_source = UNKNOWN
+    observations = [
+        MemoryFact(id=OBS_ID, text="Timeout is 5 seconds.", fact_type="observation", source_fact_ids=[good_source]),
+        MemoryFact(
+            id=char_target, text="Other timeout is 5 seconds.", fact_type="observation", source_fact_ids=[char_source]
+        ),
+        MemoryFact(
+            id=count_target,
+            text="Third timeout is 5 seconds.",
+            fact_type="observation",
+            source_fact_ids=[str(uuid.UUID(int=index + 1)) for index in range(129)],
+        ),
+    ]
+    loaded = [
+        SimpleNamespace(unit_id=good_source, text=observations[0].text, mentioned_at=None),
+        SimpleNamespace(unit_id=char_source, text="x" * 131073, mentioned_at=None),
+    ]
+    store = SimpleNamespace(store_owned_for=lambda bank_id: store_owned, get_memories=AsyncMock(return_value=loaded))
+    connection = object()
+
+    @asynccontextmanager
+    async def acquire(pool):
+        yield connection
+
+    reply = {
+        "updates": [
+            {"text": obs.text + " Configuration active.", "observation_id": obs.id, "source_fact_ids": [F]}
+            for obs in observations
+        ]
+    }
+    stub = install(provider, [reply])
+    with patch.object(c, "get_memories", return_value=store), patch.object(c, "acquire_with_retry", new=acquire):
+        result = await c._consolidate_batch_with_llm(
+            provider,
+            MEMORIES,
+            observations,
+            {},
+            config,
+            detail_guard_pool=object(),
+            detail_guard_bank_id="synthetic-bank",
+        )
+    assert not result.failed
+    assert [update.observation_id for update in result.updates] == [OBS_ID]
+    assert len(result.creates) == 2 and all(create._preserve_separate for create in result.creates)
+    assert len(stub.requests) == 1
+    store.get_memories.assert_awaited_once()
+    assert set(store.get_memories.await_args.kwargs["unit_ids"]) == {good_source, char_source}
+    assert store.get_memories.await_args.kwargs["bank_id"] == "synthetic-bank"
+    assert store.get_memories.await_args.kwargs["conn"] is (None if store_owned else connection)
+
+
+@pytest.mark.asyncio
+async def test_guard_hydration_is_reused_after_language_retry(provider, config):
+    from contextlib import asynccontextmanager
+
+    from hindsight_api.engine.language_integrity import LanguageCheckResult, LanguageMismatch
+    from hindsight_api.engine.response_models import MemoryFact
+
+    config.llm_language_integrity = "retry"
+    observation = MemoryFact(
+        id=OBS_ID, text="Timeout is 5 seconds.", fact_type="observation", source_fact_ids=[UNKNOWN]
+    )
+    store = SimpleNamespace(
+        store_owned_for=lambda bank_id: False,
+        get_memories=AsyncMock(
+            return_value=[SimpleNamespace(unit_id=UNKNOWN, text=observation.text, mentioned_at=None)]
+        ),
+    )
+
+    @asynccontextmanager
+    async def acquire(pool):
+        yield object()
+
+    reply = {
+        "updates": [
+            {"text": observation.text + " Configuration active.", "observation_id": OBS_ID, "source_fact_ids": [F]}
+        ]
+    }
+    stub = install(provider, [reply, reply])
+    evaluations = [
+        LanguageCheckResult(mismatches=(LanguageMismatch("update:0", "en", "fr"),), checked=1, abstained=0),
+        LanguageCheckResult(mismatches=(), checked=1, abstained=0),
+    ]
+    with (
+        patch.object(c, "get_memories", return_value=store),
+        patch.object(c, "acquire_with_retry", new=acquire),
+        patch.object(c, "prepare_context_safely", new=AsyncMock(return_value=object())),
+        patch.object(c, "build_source_instruction", return_value=""),
+        patch.object(c, "evaluate_language_integrity_safely", new=AsyncMock(side_effect=evaluations)),
+    ):
+        result = await c._consolidate_batch_with_llm(
+            provider,
+            MEMORIES,
+            [observation],
+            {},
+            config,
+            detail_guard_pool=object(),
+            detail_guard_bank_id="synthetic-bank",
+        )
+    assert not result.failed and len(result.updates) == 1
+    assert len(stub.requests) == 2
+    store.get_memories.assert_awaited_once()

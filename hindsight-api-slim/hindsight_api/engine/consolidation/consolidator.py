@@ -3031,6 +3031,8 @@ async def _process_memory_batch(
         remaining_observation_slots=remaining_observation_slots,
         max_observations_per_scope=max_obs,
         schema_correction_budget=schema_correction_budget,
+        detail_guard_pool=pool,
+        detail_guard_bank_id=bank_id,
     )
     if perf:
         perf.record_timing("llm", time.time() - t0)
@@ -4225,12 +4227,76 @@ def _record_detail_loss(budget: "_SchemaCorrectionBudget | None", outcome: str, 
     logger.warning("consolidation_detail_loss outcome=%s stage=%s dropped_anchors=%d", outcome, stage, anchor_count)
 
 
+_DETAIL_GUARD_MAX_SOURCE_FACTS = 128
+_DETAIL_GUARD_MAX_SOURCE_CHARS = 131072
+
+
+@dataclass
+class _DetailGuardEvidence:
+    sources: dict[str, Evidence] = field(default_factory=dict)
+    unavailable: set[str] = field(default_factory=set)
+
+
+async def _hydrate_detail_guard_evidence(
+    observations: list["MemoryFact"],
+    recalled_sources: dict[str, "MemoryFact"],
+    pool: DatabaseBackend | None,
+    bank_id: str | None,
+) -> _DetailGuardEvidence:
+    """One bank-scoped addressed read per batch, private to the deterministic gate.
+
+    Recall's display budget intentionally omits complete facts. It must not make
+    an otherwise legitimate observation permanently CREATE-only. Bound each
+    target independently; an excessive or absent source fails that target closed
+    without poisoning its siblings or increasing the LLM's context.
+    """
+    result = _DetailGuardEvidence()
+    ids_by_observation: dict[str, list[str]] = {}
+    missing_ids: set[str] = set()
+    for observation in observations:
+        oid = str(observation.id)
+        ids = list(dict.fromkeys(str(fid) for fid in observation.source_fact_ids or []))
+        if len(ids) > _DETAIL_GUARD_MAX_SOURCE_FACTS:
+            result.unavailable.add(oid)
+            continue
+        ids_by_observation[oid] = ids
+        for fid in ids:
+            if fid in recalled_sources:
+                source = recalled_sources[fid]
+                result.sources[fid] = Evidence(source.text, source.mentioned_at)
+            else:
+                missing_ids.add(fid)
+    if missing_ids and pool is not None and bank_id is not None:
+        store = get_memories()
+        if store.store_owned_for(bank_id):
+            loaded = await store.get_memories(conn=None, fq_table=fq_table, bank_id=bank_id, unit_ids=list(missing_ids))
+        else:
+            async with acquire_with_retry(pool) as conn:
+                loaded = await store.get_memories(
+                    conn=conn, fq_table=fq_table, bank_id=bank_id, unit_ids=list(missing_ids)
+                )
+        for source in loaded:
+            result.sources[str(source.unit_id)] = Evidence(source.text, source.mentioned_at)
+    for oid, ids in ids_by_observation.items():
+        if (
+            any(fid not in result.sources for fid in ids)
+            or sum(len(result.sources[fid].text) for fid in ids if fid in result.sources)
+            > _DETAIL_GUARD_MAX_SOURCE_CHARS
+        ):
+            result.unavailable.add(oid)
+    # Do not retain excessive text throughout subsequent completions. Shared
+    # evidence stays cached only when at least one eligible target needs it.
+    eligible_ids = {fid for oid, ids in ids_by_observation.items() if oid not in result.unavailable for fid in ids}
+    result.sources = {fid: source for fid, source in result.sources.items() if fid in eligible_ids}
+    return result
+
+
 async def _guard_detail_loss_updates(
     response: _ConsolidationBatchResponse,
     *,
     memories: list[dict[str, Any]],
     observations: list["MemoryFact"],
-    sources: dict[str, "MemoryFact"],
+    evidence: _DetailGuardEvidence,
     llm_config: Any,
     call_kwargs: dict[str, Any],
     config: Any,
@@ -4243,18 +4309,9 @@ async def _guard_detail_loss_updates(
 
     def dropped(update: _UpdateAction) -> list[Anchor]:
         previous = by_observation[update.observation_id]
-        # Recall caps source-fact tokens per observation and for the entire batch.
-        # Fetching uncapped lineage here would add unbounded DB/context work. Fail
-        # closed instead: missing even one prior source vetoes every rewrite,
-        # including correction text, and keeps the old row unchanged. An empty
-        # lineage is genuinely unsupported, unlike a nonempty incomplete lineage.
-        if any(str(fid) not in sources for fid in previous.source_fact_ids or []):
-            return [Anchor("lineage", "incomplete prior source lineage")]
-        existing = [
-            Evidence(sources[str(fid)].text, sources[str(fid)].mentioned_at)
-            for fid in previous.source_fact_ids or []
-            if str(fid) in sources
-        ]
+        if update.observation_id in evidence.unavailable:
+            return [Anchor("lineage", "unavailable or excessive prior source lineage")]
+        existing = [evidence.sources[str(fid)] for fid in previous.source_fact_ids or []]
         cited = [by_fact[fid] for fid in update.source_fact_ids]
         return dropped_supported_anchors(previous.text, update.text, existing, cited)
 
@@ -4266,7 +4323,9 @@ async def _guard_detail_loss_updates(
         _record_detail_loss(budget, "flagged", len(missing), "update")
     repaired: dict[str, _UpdateAction] = {}
     correction_used = False
-    if correction_available:
+    repairable = {index: missing for index, missing in flagged.items() if missing[0].kind != "lineage"}
+    if correction_available and repairable:
+        # Missing/excessive lineage cannot be repaired by another completion.
         # Do not echo the generated proposal/reason. The only variable feedback
         # values are missing anchors and locally assigned action indexes. Cap the
         # rendering, not detection: every flagged action still receives fallback.
@@ -4277,7 +4336,7 @@ async def _guard_detail_loss_updates(
             + json.dumps(
                 {
                     str(index): [anchor.value for anchor in missing[:24]]
-                    for index, missing in list(flagged.items())[:12]
+                    for index, missing in list(repairable.items())[:12]
                 },
                 ensure_ascii=True,
             )
@@ -4301,10 +4360,13 @@ async def _guard_detail_loss_updates(
             kwargs["max_retries"] = 0
             try:
                 with single_completion(budget.start_detail) as attempt:
-                    reply = await llm_config.call(**kwargs)
-                    correction_used = attempt.started
-                    if not attempt.started:
-                        raise CompletionAttemptLimitError("provider did not enforce correction boundary")
+                    try:
+                        reply = await llm_config.call(**kwargs)
+                        if not attempt.started:
+                            raise CompletionAttemptLimitError("provider did not enforce correction boundary")
+                    finally:
+                        # Transport and parsing failures still consumed a completion.
+                        correction_used = attempt.started
                 # A correction may supply text only for the original UPDATE. Its
                 # creates/deletes/citation changes are never execution authority.
                 repaired = {update.observation_id: update for update in reply.content.updates}
@@ -4364,6 +4426,8 @@ async def _consolidate_batch_with_llm(
     remaining_observation_slots: int | None = None,
     max_observations_per_scope: int = -1,
     schema_correction_budget: _SchemaCorrectionBudget | None = None,
+    detail_guard_pool: DatabaseBackend | None = None,
+    detail_guard_bank_id: str | None = None,
 ) -> _BatchLLMResult:
     """Single LLM call for a batch of facts against a pooled set of observations."""
     if config is None:
@@ -4482,6 +4546,7 @@ async def _consolidate_batch_with_llm(
     correction_budget = schema_correction_budget if schema_correction_budget is not None else _SchemaCorrectionBudget()
     correction_used = False
     correction_started = False
+    guard_evidence: _DetailGuardEvidence | None = None
     max_attempts = config.consolidation_max_attempts
     inner_max_retries = config.consolidation_llm_max_retries
     language_retry_available = language_check_enabled and language_mode in {
@@ -4626,11 +4691,17 @@ async def _consolidate_batch_with_llm(
                     )
                     creates = creates[:remaining_observation_slots]
             updates = _dedupe_updates(response.updates, batch_label=batch_label)
+            if updates and guard_evidence is None:
+                # Resolve all potential targets together so language/transport
+                # retries reuse one read, even if the model selects other targets.
+                guard_evidence = await _hydrate_detail_guard_evidence(
+                    union_observations, union_source_facts, detail_guard_pool, detail_guard_bank_id
+                )
             guarded = await _guard_detail_loss_updates(
                 response.model_copy(update={"creates": creates, "updates": updates}),
                 memories=memories,
                 observations=union_observations,
-                sources=union_source_facts,
+                evidence=guard_evidence if guard_evidence is not None else _DetailGuardEvidence(),
                 llm_config=llm_config,
                 call_kwargs=call_kwargs,
                 config=config,
