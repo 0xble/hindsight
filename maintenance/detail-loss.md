@@ -32,6 +32,16 @@ real background-worker story is
 `hindsight-system-tests/tests/test_97_guarded_update_provenance.py`. Run database
 proofs on isolated named instances, never against a deployed service database.
 
+Evidence-free UPDATEs use a conservative upper bound on the original guard's
+work before allocating unsupported anchors. The bound uses the same extractor
+patterns and includes normalization, extraction, indexed spans, label values,
+and worst-case occurrence matching. It may return an empty result only when
+the full path cannot exhaust its work allowance. Literal/trie cases and every
+inconclusive bound fall through to the original guard, preserving its exact
+work-exhaustion veto. Quantity feasibility and normalization identity checks
+preserve the accepted conservative decisions. Keep the accounting aggregate
+CPU sentinel, its 1.0-second limit, and the input, source, and work caps unchanged.
+
 Upstream disposition: no equivalent was found in the examined upstream tree
 `0be6c02b2aafc2b6bdb188ef1842ac507e0cfa2b`; contribution review remains pending.
 Fork delivery: the deployed guard is being reconciled with native source-folding

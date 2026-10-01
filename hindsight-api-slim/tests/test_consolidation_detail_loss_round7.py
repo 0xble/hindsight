@@ -433,3 +433,45 @@ def test_grouped_number_extraction_is_cpu_bounded(size):
 )
 async def test_grouped_scan_preserves_comma_lists_and_canonical_scales(provider, config, before, after, expected):
     await assert_batch_action(provider, config, before, after, expected, ADDITIVE, correction=True)
+
+
+@pytest.mark.parametrize(
+    "before,after,work,exhausted",
+    [
+        ("balance (1)(1)", "plain prose.", 50, False),
+        ("balance (1)(1)", "plain prose.", 10, True),
+        ("5", "5", 4, False),
+        ("5", "5", 3, True),
+        ('"x y"', "x y", 50, False),
+        ('"x y"', "x y", 10, True),
+        ("USD 1k", "none", 14, False),
+        ("USD 1k", "none", 1, True),
+    ],
+)
+def test_evidence_free_updates_still_fail_closed_on_exhausted_work(monkeypatch, before, after, work, exhausted):
+    from hindsight_api.engine.consolidation import detail_loss as d
+
+    budget_type = d._Budget
+    monkeypatch.setattr(d, "_MAX_WORK", work)
+    monkeypatch.setattr(d, "_Budget", lambda: budget_type(remaining=work))
+    expected = [d.Anchor("budget", "detail-loss analysis limit exceeded")] if exhausted else []
+    assert d.dropped_supported_anchors(before, after, [], []) == expected
+
+
+@pytest.mark.parametrize(
+    "text,expected",
+    [
+        ("balance (1)(1)", "balance (1)(1)"),
+        ("plain prose.\nnext line.", "plain prose.\nnext line."),
+        ("key one.one", "key one.one"),
+        ("oneUSD", "oneUSD"),
+        ("one\t two", "1 2"),
+        ("ＡＢＣ one", "abc 1"),
+        ("USD 1k", "USD 1k"),
+        ("The timeout is twenty seconds.", "the timeout is 20 seconds."),
+    ],
+)
+def test_normalization_preserves_opaque_values_and_prose_transforms(text, expected):
+    from hindsight_api.engine.consolidation import detail_loss as d
+
+    assert d.normalize(text) == expected

@@ -43,7 +43,8 @@ _PATTERNS = {
 _SCALE = r"(?:[kmbt]|thousand|million|billion|trillion)"
 _DIGITS = r"(?:\d+(?:,\d{3})*(?:\.\d+)?|\.\d+)"
 # ISO-4217 codes, not arbitrary three-letter technical acronyms.
-_CURRENCY = r"(?i:usd|eur|gbp|cad|aud|nzd|jpy|cny|hkd|sgd|chf|sek|nok|dkk|inr|krw|mxn|brl|zar)"
+_CURRENCY_CODES = tuple("usd eur gbp cad aud nzd jpy cny hkd sgd chf sek nok dkk inr krw mxn brl zar".split())
+_CURRENCY = "(?i:" + "|".join(_CURRENCY_CODES) + ")"
 _SIGN = r"(?:-(?<![\w.]-))?"
 _MONEY = re.compile(
     rf"(?<![\w.])(?P<sign>{_SIGN})(?P<open>\()?"
@@ -157,7 +158,14 @@ def _explicit_identifiers(text: str) -> Iterator[re.Match[str]]:
                 yield match
 
 
+# With these transforms absent from every substring, splitting around opaque
+# spans cannot alter already lowercase ASCII text either.
+_NORMALIZATION_TRIGGER = re.compile("|".join([*_MONTHS, *_NUMBER_WORDS]) + r"|\d(?:st|nd|rd|th)|[^\S \n]| {2}")
+
+
 def normalize(text: str) -> str:
+    if text.isascii() and text == text.casefold() and not _NORMALIZATION_TRIGGER.search(text):
+        return text
     text = unicodedata.normalize("NFKC", text)
     pieces: list[str] = []
     end = 0
@@ -211,6 +219,93 @@ def _canonical_amount(amount: str, scale: str = "") -> str:
     return (sign if whole != "0" or fraction else "") + whole + ("." + fraction if fraction else "")
 
 
+def _quantity_matches(
+    pattern: re.Pattern[str], normalized: str, numeric_starts: list[int] | None = None
+) -> Iterator[re.Match[str]]:
+    # These mandatory suffix fragments come from the same regex definitions.
+    # If absent, none of the maximal numeric starts can match that pattern.
+    if pattern in (_MONEY, _SUFFIX_MONEY):
+        # ASCII substring searches use the same mandatory currency spellings.
+        # Unicode keeps regex case semantics (e.g. dotted capital I).
+        lowered = normalized.lower() if normalized.isascii() else None
+        currency = (
+            any(code in lowered for code in _CURRENCY_CODES)
+            if lowered is not None
+            else bool(re.search(_CURRENCY, normalized))
+        )
+        if not currency and (pattern is _SUFFIX_MONEY or not any(symbol in normalized for symbol in "$€£")):
+            return
+    if pattern is _SCALED_NUMBER and not re.search(_SCALE + r"\b", normalized, re.I):
+        return
+    if pattern is _MONEY:
+        yield from pattern.finditer(normalized)
+    else:
+        starts = (
+            numeric_starts
+            if numeric_starts is not None
+            else (match.start() for match in _NUMERIC_SPANS.finditer(normalized))
+        )
+        for start in starts:
+            match = pattern.match(normalized, start)
+            if match is not None:
+                yield match
+
+
+def _evidence_free_work_fits(before: str, after: str) -> bool:
+    # Without evidence, only a full-path work-limit veto can prevent an empty
+    # result. Prove that path fits rather than allocating unsupported anchors.
+    if len(before) + len(after) > _MAX_INPUT_CHARS:
+        return False
+    old, new = normalize(before), normalize(after)
+    if max(len(old), len(new)) > _MAX_INPUT_CHARS:
+        return False
+    # Literal equivalents traverse a shared trie, so use the full path for
+    # them. Everything else uses only authoritative extractor spans.
+    if any(_PATTERNS["literal"].search(text) for text in (old, new)):
+        return False
+    # Count a superset of extractor candidates before overlap/shape filtering.
+    # Each raw pattern/value key produces at most one canonical anchor.
+    counts: list[int] = []
+    old_keys: set[tuple[str, str]] = set()
+    for index, text in enumerate((old, new)):
+        count = 0
+        patterns = [
+            ("money", _quantity_matches(_MONEY, text)),
+            ("suffix_money", _quantity_matches(_SUFFIX_MONEY, text)),
+            ("scaled_number", _quantity_matches(_SCALED_NUMBER, text)),
+            ("accounting", _ACCOUNTING_NUMBER.finditer(text)),
+            *((kind, pattern.finditer(text)) for kind, pattern in _PATTERNS.items() if kind != "literal"),
+            ("marker", _MARKERS.finditer(text)),
+        ]
+        for kind, matches in patterns:
+            if index == 0:
+                raw_counts = Counter(match[0] for match in matches)
+                count += raw_counts.total()
+                old_keys.update((kind, value) for value in raw_counts)
+            else:
+                count += sum(1 for _ in matches)
+        for match in _explicit_identifiers(text):
+            count += 1
+            if index == 0:
+                old_keys.add(("explicit_identifier", match["value"]))
+        counts.append(count)
+    prior, proposed = counts
+    unique = len(old_keys)
+    # No header/subject label can exist without one of these lexical forms.
+    labeled = (
+        ":" in old
+        or "=" in old
+        or re.search(r"\b(?:is|are|was|were|has|had|changed|grew|fell|equals|equal to)\b", old, re.I)
+    )
+    # Normalized lengths, extraction and indexed spans pay preprocessing.
+    # Labels pay at most one operation per old occurrence. Each unique anchor
+    # pays its loop, old/new contexts and worst-case unpaired cross product.
+    work = len(old) + len(new) + 2 * (prior + proposed)
+    work += prior if labeled else 0
+    work += unique * (1 + prior + proposed + prior * proposed)
+    return work <= _MAX_WORK
+
+
 def _extract_occurrences(normalized: str) -> list[_AnchorOccurrence]:
     result: list[_AnchorOccurrence] = []
     quantities: list[tuple[int, int]] = []
@@ -222,11 +317,7 @@ def _extract_occurrences(normalized: str) -> list[_AnchorOccurrence]:
     for pattern, kind in ((_MONEY, "money"), (_SUFFIX_MONEY, "money"), (_SCALED_NUMBER, "number")):
         quantities.sort()
         money_starts = [start for start, _ in quantities]
-        matches = (
-            pattern.finditer(normalized)
-            if pattern is _MONEY
-            else (match for start in numeric_starts if (match := pattern.match(normalized, start)) is not None)
-        )
+        matches = _quantity_matches(pattern, normalized, numeric_starts)
         for match in matches:
             parent = bisect_right(money_starts, match.start()) - 1
             if parent >= 0 and match.end() <= quantities[parent][1]:
@@ -861,6 +952,8 @@ def dropped_supported_anchors(before: str, after: str, existing: list[Evidence],
     try:
         if len(existing) + len(cited) > _MAX_SOURCES:
             raise _WorkLimit
+        if not existing and not cited and _evidence_free_work_fits(before, after):
+            return []
         budget = _Budget()
         indexes = _prepare([before, after] + [s.text for s in existing] + [s.text for s in cited], budget)
         old, new = indexes[before], indexes[after]
