@@ -98,7 +98,10 @@ intentional fork infrastructure policy, not upstream deployment ownership.
   expansion or metacharacter syntax in every executable and known publisher
   subcommand position, not just variable wrapper commands: `$`, backticks,
   `*`, `?`, `[`, `{`, `}`, leading `~`, backslash escapes, and process
-  substitutions. Preserve authored quote provenance through the existing shlex
+  substitutions. Preserve escaped-newline provenance inside command and exporter
+  words, including split spellings such as `uv pub\\\nlish`; a continuation
+  between words remains ordinary multiline formatting, not a dynamic word.
+  Preserve authored quote provenance through the existing shlex
   tokenizer rather than matching only its decoded words. Double-quoted parameter
   substitutions still expand and are forbidden; quoted literal command words
   remain subject to the publication denylist. Apply the same rule to every

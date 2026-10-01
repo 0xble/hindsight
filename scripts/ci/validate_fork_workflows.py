@@ -294,6 +294,8 @@ def raw_word_is_dynamic(raw: str) -> bool:
                 index += 1  # Quoted escape: shlex already decoded the literal word.
             elif character in "$`":
                 return True  # Double quotes do not suppress shell substitutions.
+        elif character.isspace():
+            break  # The consumed separator is outside this word.
         elif character == "#":
             break  # shlex may consume a trailing comment with the current token.
         elif character in "'\"":
@@ -328,19 +330,33 @@ class PolicyShellLexer(shlex.shlex):
         start = self.source_stream.tell() - len(self._pushback_chars)
         token = super().read_token()
         end = self.source_stream.tell() - len(self._pushback_chars)
-        return None if token is None else ShellWord(token, self.source_text[start:end])
+        # shlex retains the LF from an escaped newline; a shell removes it. Keep
+        # the raw escape for authority checks even after normalizing the word.
+        return None if token is None else ShellWord(token.replace("\n", ""), self.source_text[start:end])
 
 
 def shell_segments(script: str) -> list[list[str]]:
     """Tokenize shell command segments while ignoring comments and quoted prose."""
     segments: list[list[str]] = []
-    # Join explicit continuations first so a split `uv publish` is still one command.
-    for line in script.replace("\\\n", " ").splitlines():
+    # Keep escaped newlines in logical lines so shlex sees the actual word,
+    # while raw provenance still exposes `u\\\nv` and `pub\\\nlish` escapes.
+    lines: list[str] = []
+    pending = ""
+    for line in script.splitlines(keepends=True):
+        pending += line
+        if not line.endswith("\\\n"):
+            lines.append(pending)
+            pending = ""
+    if pending:
+        lines.append(pending)
+    for line in lines:
         lexer = PolicyShellLexer(line)
         current: list[str] = []
         tokens = list(lexer)
         for token in tokens:
-            if token and all(character in ";&|" for character in token):
+            if not token:
+                continue  # A continuation between words does not create a word.
+            if all(character in ";&|" for character in token):
                 if current:
                     segments.append(current)
                     current = []

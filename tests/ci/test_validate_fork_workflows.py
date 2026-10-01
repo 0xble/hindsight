@@ -681,6 +681,26 @@ class ForkWorkflowPolicyTests(unittest.TestCase):
             with self.subTest(command=command):
                 self.assert_publishing_step_rejected(f"run: {command}")
 
+    def test_escaped_newlines_cannot_hide_command_words_or_exporters(self) -> None:
+        for command in (
+            "u\\\nv publish",
+            "uv pub\\\nlish",
+            "uv te\\\nst",
+            "u\\\nv {publish,}",
+            "env u\\\nv test",
+            "docker buildx build --output type=regis\\\ntry .",
+            "docker buildx build -otype=regis\\\ntry .",
+        ):
+            with self.subTest(command=command):
+                self.assertTrue(POLICY.script_is_forbidden(command), command)
+        for command in (
+            "uv \\\n  test",
+            "uv run \\\n  pytest",
+            "docker buildx build \\\n  --output type=local,dest=out .",
+        ):
+            with self.subTest(command=command):
+                self.assertFalse(POLICY.script_is_forbidden(command), command)
+
     def test_unquoted_expansions_fail_closed_across_publisher_paths(self) -> None:
         prefixes = POLICY.FORBIDDEN_COMMAND_PREFIXES | {
             ("gh", "release", "create"),
