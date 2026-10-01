@@ -18,8 +18,7 @@ import re  # noqa: F401
 import json
 
 from pydantic import BaseModel, ConfigDict, Field, StrictStr, field_validator
-from typing import Any, ClassVar, Dict, List, Literal, Optional
-from hindsight_client_api.models.ocr_quality_reason import OcrQualityReason
+from typing import Any, ClassVar, Dict, List, Optional
 from typing import Optional, Set
 from typing_extensions import Self
 
@@ -29,8 +28,8 @@ class FileConvertRetainOperationDetails(BaseModel):
     """ # noqa: E501
     operation_type: Optional[StrictStr] = Field(default='file_convert_retain', description="Discriminator: which operation type this detail describes.")
     failure_class: StrictStr = Field(description="Stable failure class callers may use to decide whether the source artifact is retryable.")
-    failure_reason: OcrQualityReason | Literal["empty_content"] = Field(description="The OCR rejection reason, or empty_content when every parser extracted no text.")
-    parsers: Optional[List[StrictStr]] = Field(default=None, description="Ordered parser chain tried when no extractable text was found.")
+    failure_reason: StrictStr = Field(description="The OCR rejection reason, or empty_content when every parser extracted no text.")
+    parsers: Optional[List[StrictStr]] = None
     __properties: ClassVar[List[str]] = ["operation_type", "failure_class", "failure_reason", "parsers"]
 
     @field_validator('operation_type')
@@ -48,6 +47,13 @@ class FileConvertRetainOperationDetails(BaseModel):
         """Validates the enum"""
         if value not in set(['low_quality_ocr', 'no_extractable_text']):
             raise ValueError("must be one of enum values ('low_quality_ocr', 'no_extractable_text')")
+        return value
+
+    @field_validator('failure_reason')
+    def failure_reason_validate_enum(cls, value):
+        """Validates the enum"""
+        if value not in set(['refusal_or_no_text_response', 'no_meaningful_text', 'excessive_uncertainty', 'excessive_repetition', 'ui_chrome_only', 'empty_content']):
+            raise ValueError("must be one of enum values ('refusal_or_no_text_response', 'no_meaningful_text', 'excessive_uncertainty', 'excessive_repetition', 'ui_chrome_only', 'empty_content')")
         return value
 
     model_config = ConfigDict(
@@ -89,6 +95,11 @@ class FileConvertRetainOperationDetails(BaseModel):
             exclude=excluded_fields,
             exclude_none=True,
         )
+        # set to None if parsers (nullable) is None
+        # and model_fields_set contains the field
+        if self.parsers is None and "parsers" in self.model_fields_set:
+            _dict['parsers'] = None
+
         return _dict
 
     @classmethod

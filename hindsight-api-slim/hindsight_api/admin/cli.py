@@ -62,6 +62,8 @@ BACKUP_TABLES = [
     "attachments",
     "documents",
     "entities",
+    "curation_batches",
+    "curation_entity_pins",
     "chunks",
     "memory_units",
     "invalidated_memory_units",

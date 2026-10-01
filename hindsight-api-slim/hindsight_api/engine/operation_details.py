@@ -1,8 +1,8 @@
 """Stable typed details exposed by async operation status responses."""
 
-from typing import Literal
+from typing import Annotated, Literal
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, WithJsonSchema, model_validator
 
 from .parsers.ocr_quality import OcrQualityReason
 
@@ -17,7 +17,11 @@ class FileConvertRetainOperationDetails(BaseModel):
     failure_class: Literal["low_quality_ocr", "no_extractable_text"] = Field(
         description="Stable failure class callers may use to decide whether the source artifact is retryable.",
     )
-    failure_reason: OcrQualityReason | Literal["empty_content"] = Field(
+    # Keep the existing scalar wire contract when regenerating curation clients.
+    failure_reason: Annotated[
+        OcrQualityReason | Literal["empty_content"],
+        WithJsonSchema({"type": "string", "enum": [reason.value for reason in OcrQualityReason] + ["empty_content"]}),
+    ] = Field(
         description="The OCR rejection reason, or empty_content when every parser extracted no text.",
     )
     parsers: list[str] | None = Field(

@@ -111,6 +111,10 @@ _SKIP_TABLES = frozenset(
         # documents.original_text already holds the extracted text, which is what
         # the replay needs.
         "file_storage",
+        # Capsules preserve exact local row/vector identities. Logical replay
+        # cannot retain their conditional undo contract. Use database backup.
+        "curation_batches",
+        "curation_entity_pins",
     }
 )
 # Derived columns dropped from carried rows so the target regenerates them with

@@ -103,6 +103,7 @@ PATCH_REGRESSIONS=(
   tests/test_response_schema_validation.py
   tests/test_metrics.py
   tests/test_batch_api.py
+  tests/test_migration_shape.py
 )
 OFFLINE_MARKERS="not oracle and not hs_llm_mat and not hs_llm_core and not integration and not slow"
 # These call a real LLM but carry no hs_llm_core marker upstream. Fork CI holds no
@@ -119,8 +120,9 @@ build_smoke() {
 }
 
 client_discriminators() {
-  uv run --directory hindsight-clients/python --frozen pytest tests/test_operation_details.py
-  (cd hindsight-clients/go && go test -run '^TestOperationResponseDetailsUseDiscriminator$' .)
+  uv run --directory hindsight-clients/python --frozen pytest tests/test_operation_details.py tests/test_curation_fields.py
+  (cd hindsight-clients/go && go test -run '^Test(OperationResponseDetailsUseDiscriminator|Curation)' .)
+  cargo test --manifest-path hindsight-clients/rust/Cargo.toml --test curation_fields
 }
 
 assert_candidate
@@ -133,8 +135,9 @@ run types api uv run --frozen ty check hindsight_api
 if [[ "$profile" == gate ]]; then
   run patch-regressions api uv run --frozen --extra all pytest "${PATCH_REGRESSIONS[@]}"
 else
-  run offline-suite api uv run --frozen --extra all pytest -m "$OFFLINE_MARKERS" "${LIVE_LLM_TESTS[@]}"
+  run offline-suite api uv run --frozen --extra all pytest -m "$OFFLINE_MARKERS" "${LIVE_LLM_TESTS[@]}" --ignore=tests/test_curation_batch.py
 fi
+run curation-batch-regressions api uv run --frozen --extra all pytest -n0 tests/test_curation_batch.py
 run client-discriminators client_discriminators
 run build-smoke build_smoke
 

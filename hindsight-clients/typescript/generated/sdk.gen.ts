@@ -11,6 +11,9 @@ import type {
   AddBankBackgroundData,
   AddBankBackgroundErrors,
   AddBankBackgroundResponses,
+  ApplyCurationBatchData,
+  ApplyCurationBatchErrors,
+  ApplyCurationBatchResponses,
   AuditLogStatsData,
   AuditLogStatsErrors,
   AuditLogStatsResponses,
@@ -115,6 +118,9 @@ import type {
   GetChunkData,
   GetChunkErrors,
   GetChunkResponses,
+  GetCurationBatchData,
+  GetCurationBatchErrors,
+  GetCurationBatchResponses,
   GetDirectiveData,
   GetDirectiveErrors,
   GetDirectiveResponses,
@@ -218,6 +224,9 @@ import type {
   LlmRequestStatsResponses,
   MetricsEndpointMetricsGetData,
   MetricsEndpointMetricsGetResponses,
+  PreviewCurationBatchData,
+  PreviewCurationBatchErrors,
+  PreviewCurationBatchResponses,
   PreviewPromptData,
   PreviewPromptErrors,
   PreviewPromptResponses,
@@ -248,6 +257,9 @@ import type {
   RetryOperationData,
   RetryOperationErrors,
   RetryOperationResponses,
+  RevertCurationBatchData,
+  RevertCurationBatchErrors,
+  RevertCurationBatchResponses,
   SearchKnowledgeBaseData,
   SearchKnowledgeBaseErrors,
   SearchKnowledgeBaseResponses,
@@ -426,6 +438,74 @@ export const previewPrompt = <ThrowOnError extends boolean = false>(
 ) =>
   (options.client ?? client).post<PreviewPromptResponses, PreviewPromptErrors, ThrowOnError>({
     url: "/v1/default/banks/{bank_id}/prompts/preview",
+    ...options,
+    headers: {
+      "Content-Type": "application/json",
+      ...options.headers,
+    },
+  });
+
+/**
+ * Preview a bounded raw-curation-v2 dependency closure
+ */
+export const previewCurationBatch = <ThrowOnError extends boolean = false>(
+  options: Options<PreviewCurationBatchData, ThrowOnError>
+) =>
+  (options.client ?? client).post<
+    PreviewCurationBatchResponses,
+    PreviewCurationBatchErrors,
+    ThrowOnError
+  >({
+    url: "/v1/default/banks/{bank_id}/curation-batches/preview",
+    ...options,
+    headers: {
+      "Content-Type": "application/json",
+      ...options.headers,
+    },
+  });
+
+/**
+ * Read a durable raw-curation-v2 receipt after a lost acknowledgement
+ */
+export const getCurationBatch = <ThrowOnError extends boolean = false>(
+  options: Options<GetCurationBatchData, ThrowOnError>
+) =>
+  (options.client ?? client).get<GetCurationBatchResponses, GetCurationBatchErrors, ThrowOnError>({
+    url: "/v1/default/banks/{bank_id}/curation-batches/{batch_id}",
+    ...options,
+  });
+
+/**
+ * Atomically apply a bounded raw-curation-v2 manifest
+ */
+export const applyCurationBatch = <ThrowOnError extends boolean = false>(
+  options: Options<ApplyCurationBatchData, ThrowOnError>
+) =>
+  (options.client ?? client).post<
+    ApplyCurationBatchResponses,
+    ApplyCurationBatchErrors,
+    ThrowOnError
+  >({
+    url: "/v1/default/banks/{bank_id}/curation-batches/{batch_id}",
+    ...options,
+    headers: {
+      "Content-Type": "application/json",
+      ...options.headers,
+    },
+  });
+
+/**
+ * Conditionally restore a raw-curation-v2 capsule without overwriting later work
+ */
+export const revertCurationBatch = <ThrowOnError extends boolean = false>(
+  options: Options<RevertCurationBatchData, ThrowOnError>
+) =>
+  (options.client ?? client).post<
+    RevertCurationBatchResponses,
+    RevertCurationBatchErrors,
+    ThrowOnError
+  >({
+    url: "/v1/default/banks/{bank_id}/curation-batches/{batch_id}/revert",
     ...options,
     headers: {
       "Content-Type": "application/json",

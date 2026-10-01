@@ -698,6 +698,296 @@
         }
       }
     },
+    "/v1/default/banks/{bank_id}/curation-batches/preview": {
+      "post": {
+        "tags": [
+          "Memory"
+        ],
+        "summary": "Preview a bounded raw-curation-v2 dependency closure",
+        "operationId": "preview_curation_batch",
+        "parameters": [
+          {
+            "name": "bank_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Bank Id"
+            }
+          },
+          {
+            "name": "authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CurationPreviewRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CurationPreview"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/default/banks/{bank_id}/curation-batches/{batch_id}": {
+      "post": {
+        "tags": [
+          "Memory"
+        ],
+        "summary": "Atomically apply a bounded raw-curation-v2 manifest",
+        "operationId": "apply_curation_batch",
+        "parameters": [
+          {
+            "name": "bank_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Bank Id"
+            }
+          },
+          {
+            "name": "batch_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_-]{0,79}$",
+              "title": "Batch Id"
+            }
+          },
+          {
+            "name": "authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CurationApplyRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CurationReceipt"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "get": {
+        "tags": [
+          "Memory"
+        ],
+        "summary": "Read a durable raw-curation-v2 receipt after a lost acknowledgement",
+        "operationId": "get_curation_batch",
+        "parameters": [
+          {
+            "name": "bank_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Bank Id"
+            }
+          },
+          {
+            "name": "batch_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_-]{0,79}$",
+              "title": "Batch Id"
+            }
+          },
+          {
+            "name": "authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CurationReceipt"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/default/banks/{bank_id}/curation-batches/{batch_id}/revert": {
+      "post": {
+        "tags": [
+          "Memory"
+        ],
+        "summary": "Conditionally restore a raw-curation-v2 capsule without overwriting later work",
+        "operationId": "revert_curation_batch",
+        "parameters": [
+          {
+            "name": "bank_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Bank Id"
+            }
+          },
+          {
+            "name": "batch_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_-]{0,79}$",
+              "title": "Batch Id"
+            }
+          },
+          {
+            "name": "authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CurationRevertRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CurationReceipt"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/v1/default/banks/{bank_id}/memories/{memory_id}": {
       "get": {
         "tags": [
@@ -10241,6 +10531,346 @@
         "title": "CreateWebhookRequest",
         "description": "Request model for registering a webhook."
       },
+      "CurationApplyRequest": {
+        "properties": {
+          "protocol": {
+            "type": "string",
+            "const": "raw-curation-v2",
+            "title": "Protocol"
+          },
+          "expected_closure_revision": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$",
+            "title": "Expected Closure Revision"
+          },
+          "changes": {
+            "items": {
+              "$ref": "#/components/schemas/CurationChange"
+            },
+            "type": "array",
+            "maxItems": 50,
+            "minItems": 1,
+            "title": "Changes"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "protocol",
+          "expected_closure_revision",
+          "changes"
+        ],
+        "title": "CurationApplyRequest"
+      },
+      "CurationChange": {
+        "properties": {
+          "memory_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Memory Id"
+          },
+          "memory_revision": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$",
+            "title": "Memory Revision"
+          },
+          "source_revision": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$",
+            "title": "Source Revision"
+          },
+          "action": {
+            "type": "string",
+            "enum": [
+              "invalidate",
+              "correct"
+            ],
+            "title": "Action"
+          },
+          "reason": {
+            "type": "string",
+            "maxLength": 2048,
+            "minLength": 1,
+            "title": "Reason"
+          },
+          "fields": {
+            "$ref": "#/components/schemas/CurationFields",
+            "title": "Fields"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "memory_id",
+          "memory_revision",
+          "source_revision",
+          "action",
+          "reason"
+        ],
+        "title": "CurationChange"
+      },
+      "CurationFactType": {
+        "type": "string",
+        "enum": [
+          "world",
+          "experience"
+        ],
+        "title": "CurationFactType"
+      },
+      "CurationFields": {
+        "properties": {
+          "text": {
+            "type": "string",
+            "title": "Text",
+            "description": "Nonblank replacement text, at most 100000 characters"
+          },
+          "context": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "title": "Context",
+            "description": "Replacement context, at most 100000 characters, or null to clear",
+            "nullable": true
+          },
+          "fact_type": {
+            "$ref": "#/components/schemas/CurationFactType",
+            "title": "Fact Type"
+          },
+          "occurred_start": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time",
+            "title": "Occurred Start",
+            "nullable": true
+          },
+          "occurred_end": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time",
+            "title": "Occurred End",
+            "nullable": true
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "title": "CurationFields"
+      },
+      "CurationInventory": {
+        "properties": {
+          "targets": {
+            "type": "integer",
+            "title": "Targets"
+          },
+          "observations": {
+            "type": "integer",
+            "title": "Observations"
+          },
+          "peers": {
+            "type": "integer",
+            "title": "Peers"
+          },
+          "entities": {
+            "type": "integer",
+            "title": "Entities"
+          },
+          "links": {
+            "type": "integer",
+            "title": "Links"
+          },
+          "history_rows": {
+            "type": "integer",
+            "title": "History Rows"
+          },
+          "snapshot_bytes": {
+            "type": "integer",
+            "title": "Snapshot Bytes"
+          },
+          "source_bytes": {
+            "type": "integer",
+            "title": "Source Bytes"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "targets",
+          "observations",
+          "peers",
+          "entities",
+          "links",
+          "history_rows",
+          "snapshot_bytes",
+          "source_bytes"
+        ],
+        "title": "CurationInventory"
+      },
+      "CurationPreview": {
+        "properties": {
+          "protocol": {
+            "type": "string",
+            "const": "raw-curation-v2",
+            "title": "Protocol",
+            "default": "raw-curation-v2"
+          },
+          "closure_revision": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$",
+            "title": "Closure Revision"
+          },
+          "targets": {
+            "items": {
+              "$ref": "#/components/schemas/CurationTargetRevision"
+            },
+            "type": "array",
+            "title": "Targets"
+          },
+          "inventory": {
+            "$ref": "#/components/schemas/CurationInventory"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "closure_revision",
+          "targets",
+          "inventory"
+        ],
+        "title": "CurationPreview"
+      },
+      "CurationPreviewRequest": {
+        "properties": {
+          "protocol": {
+            "type": "string",
+            "const": "raw-curation-v2",
+            "title": "Protocol"
+          },
+          "memory_ids": {
+            "items": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "type": "array",
+            "maxItems": 50,
+            "minItems": 1,
+            "title": "Memory Ids"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "protocol",
+          "memory_ids"
+        ],
+        "title": "CurationPreviewRequest"
+      },
+      "CurationReceipt": {
+        "properties": {
+          "protocol": {
+            "type": "string",
+            "const": "raw-curation-v2",
+            "title": "Protocol",
+            "default": "raw-curation-v2"
+          },
+          "bank_id": {
+            "type": "string",
+            "title": "Bank Id"
+          },
+          "batch_id": {
+            "type": "string",
+            "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_-]{0,79}$",
+            "title": "Batch Id"
+          },
+          "manifest_revision": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$",
+            "title": "Manifest Revision"
+          },
+          "receipt_revision": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$",
+            "title": "Receipt Revision"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "applied",
+              "reverted"
+            ],
+            "title": "Status"
+          },
+          "inventory": {
+            "$ref": "#/components/schemas/CurationInventory"
+          },
+          "maintenance_debt": {
+            "$ref": "#/components/schemas/MaintenanceDebt"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "bank_id",
+          "batch_id",
+          "manifest_revision",
+          "receipt_revision",
+          "status",
+          "inventory",
+          "maintenance_debt"
+        ],
+        "title": "CurationReceipt"
+      },
+      "CurationRevertRequest": {
+        "properties": {
+          "protocol": {
+            "type": "string",
+            "const": "raw-curation-v2",
+            "title": "Protocol"
+          },
+          "expected_receipt_revision": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$",
+            "title": "Expected Receipt Revision"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "protocol",
+          "expected_receipt_revision"
+        ],
+        "title": "CurationRevertRequest"
+      },
+      "CurationTargetRevision": {
+        "properties": {
+          "memory_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Memory Id"
+          },
+          "memory_revision": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$",
+            "title": "Memory Revision"
+          },
+          "source_revision": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$",
+            "title": "Source Revision"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "memory_id",
+          "memory_revision",
+          "source_revision"
+        ],
+        "title": "CurationTargetRevision"
+      },
       "DeleteDocumentResponse": {
         "properties": {
           "success": {
@@ -11677,14 +12307,14 @@
             "description": "Stable failure class callers may use to decide whether the source artifact is retryable."
           },
           "failure_reason": {
-            "anyOf": [
-              {
-                "$ref": "#/components/schemas/OcrQualityReason"
-              },
-              {
-                "type": "string",
-                "const": "empty_content"
-              }
+            "type": "string",
+            "enum": [
+              "refusal_or_no_text_response",
+              "no_meaningful_text",
+              "excessive_uncertainty",
+              "excessive_repetition",
+              "ui_chrome_only",
+              "empty_content"
             ],
             "title": "Failure Reason",
             "description": "The OCR rejection reason, or empty_content when every parser extracted no text."
@@ -11896,6 +12526,7 @@
         "title": "IncludeOptions",
         "description": "Options for including additional data in recall results."
       },
+      "JsonValue": {},
       "KnowledgeNode": {
         "properties": {
           "id": {
@@ -13008,6 +13639,39 @@
         ],
         "title": "LlmOperationHealth",
         "description": "LLM connectivity status for a single operation. Status only \u2014 no provider/model/\nendpoint/error, so the probe never discloses the LLM configuration."
+      },
+      "MaintenanceDebt": {
+        "properties": {
+          "consolidation": {
+            "type": "boolean",
+            "title": "Consolidation",
+            "default": true
+          },
+          "graph": {
+            "type": "boolean",
+            "title": "Graph",
+            "default": true
+          },
+          "model_refresh": {
+            "type": "boolean",
+            "title": "Model Refresh",
+            "default": true
+          },
+          "memory_ids": {
+            "items": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "type": "array",
+            "title": "Memory Ids"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "memory_ids"
+        ],
+        "title": "MaintenanceDebt"
       },
       "MapField-Input": {
         "properties": {

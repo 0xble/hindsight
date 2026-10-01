@@ -60,6 +60,13 @@ from ..worker.stage import set_stage
 from .audit import AuditLogger, audit_context
 from .bank_stats_cache import BankStatsCache, DistributedBankStatsCache
 from .chunk_ids import build_chunk_id, parse_chunk_id, resolve_chunk_id_in
+from .curation_batch import (
+    CurationApplyRequest,
+    CurationPreview,
+    CurationPreviewRequest,
+    CurationReceipt,
+    CurationRevertRequest,
+)
 from .db import DatabaseBackend, DatabaseConnection, ResultRow, create_database_backend
 from .db.ops_postgresql import pg_search_vector_expr
 from .db.postgresql import PostgreSQLBackend
@@ -11158,6 +11165,10 @@ class MemoryEngine(MemoryEngineInterface):
                         f"SELECT bank_id FROM {fq_table('banks')} WHERE bank_id = $1 FOR NO KEY UPDATE",
                         bank_id,
                     )
+                    if self._database_backend_type == "postgresql":
+                        from .memories import get_memories as _curation_store
+
+                        await _curation_store().curation_v2_assert_deletable(conn=conn, bank_id=bank_id)
                     if fact_type:
                         from .memories import get_memories as _get_memories_for_scope
 
@@ -11353,6 +11364,10 @@ class MemoryEngine(MemoryEngineInterface):
                             result["bank_deleted"] = True
 
                 except Exception as e:
+                    from .curation_batch import CurationBatchConflict
+
+                    if isinstance(e, CurationBatchConflict):
+                        raise
                     raise Exception(f"Failed to delete agent data: {str(e)}")
 
             # Drop per-bank vector indexes AFTER the transaction commits: the
@@ -11757,6 +11772,245 @@ class MemoryEngine(MemoryEngineInterface):
         augmented = embedding_processing.augment_texts_with_dates([shim], self._format_readable_date)
         embeddings = await embedding_processing.generate_embeddings_batch(self.embeddings, augmented)
         return str(embeddings[0]) if embeddings else None
+
+    @_bind_bank_id()
+    async def _curation_v2_store(
+        self, bank_id: str, request_context: "RequestContext", *, read: bool = False
+    ) -> "MemoriesExtension":
+        from .curation_batch import CurationBatchConflict
+        from .memories import get_memories
+
+        await self._authenticate_tenant(request_context)
+        if read and self._operation_validator:
+            from hindsight_api.extensions import BankReadContext, BankReadOperation
+
+            await self._validate_operation(
+                self._operation_validator.validate_bank_read(
+                    BankReadContext(
+                        bank_id=bank_id, operation=BankReadOperation.GET_MEMORY_UNIT, request_context=request_context
+                    )
+                )
+            )
+        store = get_memories()
+        if self._database_backend_type != "postgresql" or store.store_owned_for(bank_id):
+            raise CurationBatchConflict("raw-curation-v2 supports SQL-owned PostgreSQL banks only")
+        return store
+
+    @_bind_bank_id()
+    async def preview_curation_batch(
+        self, bank_id: str, request: CurationPreviewRequest, *, request_context: "RequestContext"
+    ) -> CurationPreview:
+        from .curation_batch import (
+            CurationInventory,
+            CurationPreview,
+            CurationTargetRevision,
+            canonical_bytes,
+            revision,
+            snapshot_revision,
+        )
+
+        store = await self._curation_v2_store(bank_id, request_context, read=True)
+        backend = await self._get_backend()
+        async with acquire_with_retry(backend) as conn:
+            async with conn.transaction():
+                snapshot = await store.curation_v2_preview(conn=conn, bank_id=bank_id, target_ids=request.memory_ids)
+        rows = {r["id"]: r for r in snapshot.memories.rows}
+        return CurationPreview(
+            closure_revision=snapshot_revision(snapshot),
+            targets=[
+                CurationTargetRevision(
+                    memory_id=i,
+                    memory_revision=revision(rows[str(i)]),
+                    source_revision=snapshot.source_revisions[str(i)],
+                )
+                for i in snapshot.scope.targets
+            ],
+            inventory=CurationInventory(
+                targets=len(snapshot.scope.targets),
+                observations=len(snapshot.scope.affected) - len(snapshot.scope.targets),
+                peers=len(snapshot.scope.peers),
+                entities=len(snapshot.scope.entities),
+                links=len(snapshot.links.rows),
+                history_rows=len(snapshot.history.rows),
+                snapshot_bytes=len(canonical_bytes(snapshot)),
+                source_bytes=snapshot.source_bytes,
+            ),
+        )
+
+    @_bind_bank_id()
+    async def get_curation_batch(
+        self, bank_id: str, batch_id: str, *, request_context: "RequestContext"
+    ) -> CurationReceipt | None:
+        store = await self._curation_v2_store(bank_id, request_context, read=True)
+        backend = await self._get_backend()
+        async with acquire_with_retry(backend) as conn:
+            capsule = await store.curation_v2_get(conn=conn, bank_id=bank_id, batch_id=batch_id)
+        return capsule.receipt if capsule else None
+
+    @_bind_bank_id()
+    async def apply_curation_batch(
+        self, bank_id: str, batch_id: str, request: CurationApplyRequest, *, request_context: "RequestContext"
+    ) -> CurationReceipt:
+        from pydantic import JsonValue, TypeAdapter
+
+        from .curation_batch import (
+            CurationBatchConflict,
+            CurationFactType,
+            PreparedCorrection,
+            revision,
+            snapshot_revision,
+        )
+
+        store = await self._curation_v2_store(bank_id, request_context)
+        if self._operation_validator:
+            from hindsight_api.extensions import BankWriteContext, BankWriteOperation
+
+            await self._validate_operation(
+                self._operation_validator.validate_bank_write(
+                    BankWriteContext(
+                        bank_id=bank_id,
+                        operation=BankWriteOperation.UPDATE_MEMORY_UNIT,
+                        request_context=request_context,
+                    )
+                )
+            )
+        backend = await self._get_backend()
+        async with acquire_with_retry(backend) as conn:
+            async with conn.transaction():
+                await store.curation_v2_lock(conn=conn, bank_id=bank_id)
+                existing = await store.curation_v2_get(conn=conn, bank_id=bank_id, batch_id=batch_id)
+                if existing:
+                    if existing.receipt.manifest_revision != revision(request):
+                        raise CurationBatchConflict("Batch ID already belongs to a different manifest")
+                    return existing.receipt
+                before = await store.curation_v2_preview(
+                    conn=conn, bank_id=bank_id, target_ids=[c.memory_id for c in request.changes]
+                )
+                if snapshot_revision(before) != request.expected_closure_revision:
+                    raise CurationBatchConflict("Closure revision changed")
+        # Provider work owns no pooled connection or database lock. Phase 2
+        # recaptures the exact closure before admitting any write.
+        corrections: list[PreparedCorrection] = []
+        rows = {r["id"]: r for r in before.memories.rows}
+        entities = {r["id"]: r["canonical_name"] for r in before.entities.rows}
+        for change in request.changes:
+            if change.action != "correct":
+                continue
+            fields = change.fields
+            assert fields is not None  # validated by CurationChange
+            row = rows[str(change.memory_id)]
+            present = fields.model_fields_set
+
+            def snapshot_date(value: JsonValue) -> datetime | None:
+                if value is None:
+                    return None
+                if not isinstance(value, str):
+                    raise CurationBatchConflict("Snapshot date must be an ISO string or null")
+                return datetime.fromisoformat(value)
+
+            start = fields.occurred_start if "occurred_start" in present else snapshot_date(row["occurred_start"])
+            end = fields.occurred_end if "occurred_end" in present else snapshot_date(row["occurred_end"])
+            if start is not None and end is not None and start > end:
+                raise CurationBatchConflict("Correction occurrence start follows end")
+            mentioned = snapshot_date(row["mentioned_at"])
+            text = (
+                fields.text if fields.text is not None else TypeAdapter(str).validate_python(row["text"], strict=True)
+            )
+            context = (
+                fields.context
+                if "context" in present
+                else TypeAdapter(str | None).validate_python(row["context"], strict=True)
+            )
+            fact_type = (
+                fields.fact_type
+                if fields.fact_type is not None
+                else TypeAdapter(CurationFactType).validate_python(row["fact_type"])
+            )
+            names = [
+                TypeAdapter(str).validate_python(entities[p["entity_id"]], strict=True)
+                for p in before.postings.rows
+                if p["unit_id"] == str(change.memory_id)
+            ]
+            embedding = await self._reembed_memory_text(
+                text=text, occurred_start=start, occurred_end=end, mentioned_at=mentioned, entities=names
+            )
+            event_date = start or mentioned if "occurred_start" in present else snapshot_date(row["event_date"])
+            if embedding is None:
+                raise CurationBatchConflict("Correction embedding preparation returned no vector")
+            corrections.append(
+                PreparedCorrection(
+                    memory_id=change.memory_id,
+                    text=text,
+                    context=context,
+                    fact_type=fact_type,
+                    occurred_start=start,
+                    occurred_end=end,
+                    event_date=event_date,
+                    embedding=embedding,
+                )
+            )
+        async with acquire_with_retry(backend) as conn:
+            async with conn.transaction():
+                await store.curation_v2_lock(conn=conn, bank_id=bank_id)
+                existing = await store.curation_v2_get(conn=conn, bank_id=bank_id, batch_id=batch_id)
+                if existing:
+                    if existing.receipt.manifest_revision != revision(request):
+                        raise CurationBatchConflict("Batch ID already belongs to a different manifest")
+                    return existing.receipt
+                current = await store.curation_v2_capture(conn=conn, bank_id=bank_id, scope=before.scope)
+                if snapshot_revision(current) != snapshot_revision(before):
+                    raise CurationBatchConflict("Closure changed during preparation")
+                result = await store.curation_v2_apply(
+                    conn=conn,
+                    bank_id=bank_id,
+                    batch_id=batch_id,
+                    request=request,
+                    before=current,
+                    corrections=corrections,
+                )
+        # Deferred maintenance is in the receipt. Ordinary curation's graph,
+        # consolidation and model-refresh hooks are intentionally not called.
+        await self._bank_stats_cache.invalidate(get_current_schema(), bank_id)
+        return result
+
+    @_bind_bank_id()
+    async def revert_curation_batch(
+        self, bank_id: str, batch_id: str, request: CurationRevertRequest, *, request_context: "RequestContext"
+    ) -> CurationReceipt | None:
+        from .curation_batch import CurationBatchConflict
+
+        store = await self._curation_v2_store(bank_id, request_context)
+        if self._operation_validator:
+            from hindsight_api.extensions import BankWriteContext, BankWriteOperation
+
+            await self._validate_operation(
+                self._operation_validator.validate_bank_write(
+                    BankWriteContext(
+                        bank_id=bank_id,
+                        operation=BankWriteOperation.UPDATE_MEMORY_UNIT,
+                        request_context=request_context,
+                    )
+                )
+            )
+        backend = await self._get_backend()
+        try:
+            async with acquire_with_retry(backend) as conn:
+                async with conn.transaction():
+                    await store.curation_v2_lock(conn=conn, bank_id=bank_id)
+                    capsule = await store.curation_v2_get(conn=conn, bank_id=bank_id, batch_id=batch_id)
+                    if capsule is None:
+                        return None
+                    result = await store.curation_v2_revert(
+                        conn=conn,
+                        bank_id=bank_id,
+                        batch_id=batch_id,
+                        capsule=capsule,
+                        expected_receipt=request.expected_receipt_revision,
+                    )
+        except (asyncpg.UniqueViolationError, asyncpg.ForeignKeyViolationError) as exc:
+            raise CurationBatchConflict("Reconstruction conflicts with later data; capsule preserved") from exc
+        await self._bank_stats_cache.invalidate(get_current_schema(), bank_id)
+        return result
 
     @_bind_bank_id()
     async def update_memory_unit(

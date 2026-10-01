@@ -30,9 +30,9 @@ def test_single_head() -> None:
     """
     script = _script_directory()
     heads = script.get_heads()
-    assert len(heads) == 1, (
-        f"Alembic has {len(heads)} heads ({heads}); expected exactly 1. "
-        "Unify them with ``alembic merge heads -m '<reason>'``."
+    assert heads == ["f8e6c4b2a091"], f"Expected the single compatible curation head, got {heads}"
+    assert script.get_revision("f8e6c4b2a091").down_revision == "e6f7a8b9c0d1", (
+        "curation capsules must extend the installed normalized-observation index lineage"
     )
 
 

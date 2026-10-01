@@ -22,7 +22,17 @@ from __future__ import annotations
 
 from datetime import datetime
 from typing import Any
+from uuid import UUID
 
+from ..curation_batch import (
+    BatchCapsule,
+    ClosureScope,
+    CurationApplyRequest,
+    CurationReceipt,
+    CurationSnapshot,
+    PreparedCorrection,
+)
+from ..db.base import DatabaseConnection
 from .base import (
     DeletePredicate,
     EntityPrunePassResult,
@@ -552,6 +562,60 @@ class PostgresMemories(MemoriesExtension):
 
     async def clear_unit_entities(self, *, conn, fq_table, bank_id: str, unit_id: str) -> None:
         await writes.clear_unit_entities(conn=conn, fq_table=fq_table, bank_id=bank_id, unit_id=unit_id)
+
+    async def curation_v2_preview(
+        self, *, conn: DatabaseConnection, bank_id: str, target_ids: list[UUID]
+    ) -> CurationSnapshot:
+        from .pg import curation_batch
+
+        await curation_batch.lock(conn)
+        await curation_batch.assert_paused(conn, bank_id)
+        scope = await curation_batch.discover(conn, bank_id, target_ids)
+        return await curation_batch.capture(conn, bank_id, scope)
+
+    async def curation_v2_capture(
+        self, *, conn: DatabaseConnection, bank_id: str, scope: ClosureScope
+    ) -> CurationSnapshot:
+        from .pg import curation_batch
+
+        return await curation_batch.capture(conn, bank_id, scope)
+
+    async def curation_v2_get(self, *, conn: DatabaseConnection, bank_id: str, batch_id: str) -> BatchCapsule | None:
+        from .pg import curation_batch
+
+        return await curation_batch.get_capsule(conn, bank_id, batch_id)
+
+    async def curation_v2_lock(self, *, conn: DatabaseConnection, bank_id: str) -> None:
+        from .pg import curation_batch
+
+        await curation_batch.lock(conn)
+        await curation_batch.assert_paused(conn, bank_id)
+
+    async def curation_v2_apply(
+        self,
+        *,
+        conn: DatabaseConnection,
+        bank_id: str,
+        batch_id: str,
+        request: CurationApplyRequest,
+        before: CurationSnapshot,
+        corrections: list[PreparedCorrection],
+    ) -> CurationReceipt:
+        from .pg import curation_batch
+
+        return await curation_batch.apply(conn, bank_id, batch_id, request, before, corrections)
+
+    async def curation_v2_revert(
+        self, *, conn: DatabaseConnection, bank_id: str, batch_id: str, capsule: BatchCapsule, expected_receipt: str
+    ) -> CurationReceipt:
+        from .pg import curation_batch
+
+        return await curation_batch.revert(conn, bank_id, batch_id, capsule, expected_receipt)
+
+    async def curation_v2_assert_deletable(self, *, conn: DatabaseConnection, bank_id: str) -> None:
+        from .pg import curation_batch
+
+        await curation_batch.assert_deletable(conn, bank_id)
 
     async def apply_edit(
         self,

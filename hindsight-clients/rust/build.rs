@@ -125,6 +125,16 @@ fn collapse_string_anyof_unions(value: &mut serde_json::Value) {
 fn convert_anyof_to_nullable(value: &mut serde_json::Value) {
     match value {
         serde_json::Value::Object(obj) => {
+            // OpenAPI 3.1 also spells primitive nullability as a type array.
+            // openapiv3 expects a 3.0 scalar type, so normalize the equivalent
+            // single-primitive + null form before parsing the converted spec.
+            if let Some(types) = obj.get("type").and_then(|v| v.as_array()) {
+                let non_null: Vec<_> = types.iter().filter(|v| v.as_str() != Some("null")).cloned().collect();
+                if types.len() == 2 && non_null.len() == 1 && types.iter().any(|v| v.as_str() == Some("null")) {
+                    obj.insert("type".to_string(), non_null[0].clone());
+                    obj.insert("nullable".to_string(), serde_json::json!(true));
+                }
+            }
             // Check if this object has anyOf with null and process it
             let has_null_in_anyof = obj.get("anyOf")
                 .and_then(|v| v.as_array())
@@ -229,7 +239,14 @@ fn main() {
         .expect("Failed to parse converted OpenAPI spec");
 
     // Generate the client
-    let mut generator = progenitor::Generator::default();
+    let mut settings = progenitor::GenerationSettings::default();
+    // Presence is part of a patch's meaning. Progenitor's Option<T> collapses
+    // omitted fields and explicit null, so use the maintained three-state body.
+    settings.with_replacement(
+        "CurationFields", "crate::CurationFields",
+        std::iter::once(progenitor::TypeImpl::Default),
+    );
+    let mut generator = progenitor::Generator::new(&settings);
 
     // Generate code
     let tokens = generator.generate_tokens(&spec)

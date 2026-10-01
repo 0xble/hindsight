@@ -63,6 +63,16 @@ hindsight_client_api/models/create_mental_model_request.py
 hindsight_client_api/models/create_mental_model_response.py
 hindsight_client_api/models/create_page_request.py
 hindsight_client_api/models/create_webhook_request.py
+hindsight_client_api/models/curation_apply_request.py
+hindsight_client_api/models/curation_change.py
+hindsight_client_api/models/curation_fact_type.py
+hindsight_client_api/models/curation_fields.py
+hindsight_client_api/models/curation_inventory.py
+hindsight_client_api/models/curation_preview.py
+hindsight_client_api/models/curation_preview_request.py
+hindsight_client_api/models/curation_receipt.py
+hindsight_client_api/models/curation_revert_request.py
+hindsight_client_api/models/curation_target_revision.py
 hindsight_client_api/models/delete_document_response.py
 hindsight_client_api/models/delete_operation_response.py
 hindsight_client_api/models/delete_response.py
@@ -119,6 +129,7 @@ hindsight_client_api/models/llm_request_list_response.py
 hindsight_client_api/models/llm_request_stats_bucket.py
 hindsight_client_api/models/llm_request_stats_response.py
 hindsight_client_api/models/llm_request_token_sums.py
+hindsight_client_api/models/maintenance_debt.py
 hindsight_client_api/models/map_field_input.py
 hindsight_client_api/models/map_field_output.py
 hindsight_client_api/models/memories_timeseries_response.py
