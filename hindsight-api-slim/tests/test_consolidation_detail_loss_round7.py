@@ -68,6 +68,14 @@ async def test_a1_accounting_equivalence_and_list_numbering(provider, config, be
         ("Use case-sensitive=Face.", "Use case-sensitive=face."),
         ('The key "PROD" is active.', 'The key "prod" is active.'),
         ("The token `Face` is active.", "The token `face` is active."),
+        ("The API key Abcd is active.", "The API key abcd is active."),
+        ("The token XYZ123 is active.", "The token xyz123 is active."),
+        ("The key is prod_id.", "The key is prod_ID."),
+        ("The key is prod-id.", "The key is prod-ID."),
+        ("The key is prod.id.", "The key is prod.ID."),
+        ("The case-sensitive API key is prod.", "The case-sensitive API key is PROD."),
+        ('The key is "prod".', 'The key is "PROD".'),
+        ("The key is `prod`.", "The key is `PROD`."),
     ],
 )
 async def test_a2_explicit_identifier_case_is_exact(provider, config, before, after):
@@ -86,6 +94,87 @@ async def test_a2_ordinary_predicate_is_not_an_identifier(provider, config, noun
         ADDITIVE,
         correction=True,
     )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("cited", [None, ADDITIVE], ids=["same-text-evidence", "unrelated-additive-evidence"])
+@pytest.mark.parametrize(
+    "before,after,expected",
+    [
+        pytest.param(
+            "The API key Abcd is active.", "The API key abcd is active.", "fallback", id="identifier-apposition"
+        ),
+        pytest.param(
+            "The token was revoked after 7 days.",
+            "The token got revoked after 7 days.",
+            "update",
+            id="was-got-revoked",
+        ),
+        pytest.param(
+            "The token was revoked after 7 days.",
+            "The token has been revoked after 7 days.",
+            "update",
+            id="was-has-been-revoked",
+        ),
+    ],
+)
+async def test_a2_identifier_apposition_and_predicate_restatements(provider, config, before, after, expected, cited):
+    await assert_batch_action(
+        provider, config, before, after, expected, before if cited is None else cited, correction=True
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("predicate", ["is", "are", "was", "were", "equals", "set to", ":", "="])
+@pytest.mark.parametrize("state", ["revoked", "active", "expired", "valid", "rotated"])
+async def test_a2_lowercase_binding_complement_is_not_an_identifier(provider, config, predicate, state):
+    await assert_batch_action(
+        provider,
+        config,
+        f"The token {predicate} {state} after 7 days.",
+        f"The token has been {state} after 7 days.",
+        "update",
+        ADDITIVE,
+        correction=True,
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("predicate", ["was", "has been", "got"])
+async def test_a2_revoked_predicate_restatement_is_lossless(provider, config, predicate):
+    await assert_batch_action(
+        provider,
+        config,
+        f"The token {predicate} revoked after 7 days.",
+        "After 7 days, the token got revoked.",
+        "update",
+        ADDITIVE,
+        correction=True,
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "text",
+    [
+        "The case-sensitive API key is AbC1234.",
+        "The case-sensitive API key is PROD.",
+        "The case-sensitive API key is Abcd.",
+        "The case-sensitive API key is ApiKey.",
+        "Use the case-sensitive API key AbC1234 for login.",
+        "Use the case-sensitive API key PROD for login.",
+        "The case-sensitive API key is Face.",
+        "The case-sensitive identifier is PROD.",
+        "The case-sensitive API key is abc1234.",
+        "Use the case-sensitive API key abc1234 for login.",
+        "The case-sensitive API key is prod.",
+        "The API key Abcd is active.",
+        "The token XYZ123 is active.",
+        "The key is PROD; the token is PROD.",
+    ],
+)
+async def test_a2_unchanged_identifier_contexts_accept(provider, config, text):
+    await assert_batch_action(provider, config, text, text, "update", ADDITIVE, correction=True)
 
 
 @pytest.mark.asyncio

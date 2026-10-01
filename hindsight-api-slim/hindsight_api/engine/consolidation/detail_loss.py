@@ -116,22 +116,30 @@ _OPAQUE = re.compile(
 )
 
 
-# A key noun alone does not bind its next predicate ("token expires") as a
-# value. Retain explicit assignments and case-sensitive appositions; quoted
-# values are already protected by the literal path.
+# Bindings and noun appositions need identifier shape: unrestricted copulas
+# captured ordinary "was revoked", while removing apposition lost "key Abcd".
+# Explicit case-sensitive contexts and literals do not need that shape signal.
+# Known limits: lowercase "key is prod" can change case unnoticed, and an
+# ordinary capitalized apposition ("API key Rotation policy") can falsely veto.
+# Generic UUID extraction can split a retained value when its key noun disappears,
+# so a full UUID captured by apposition may also falsely veto that restatement.
+_IDENTIFIER_SHAPE = re.compile(r"[A-Z0-9_]|[A-Za-z0-9][.-][A-Za-z0-9]")
 _IDENTIFIER_CONTEXT = (
-    r"(?:\b(?:key|token|case-sensitive|identifier|id|secret name|env var|flag)"
-    r"(?:\s*[:=]\s*|\s+(?:is|are|was|were|equals|set to)\s+)"
-    r"|\bcase-sensitive(?:\s+(?:API\s+)?(?:key|token|identifier|id|secret name|env var|flag))?\s+"
-    r"|\buse\s+(?:the\s+)?(?:key|token|identifier|id|secret name|env var|flag)\s+)"
+    r"(?:\bcase-sensitive(?:\s+(?:API\s+)?(?:key|token|identifier|id|secret name|env var|flag))?"
+    r"(?:\s*[:=]\s*|\s+(?:is|are|was|were|equals|set to)\s+|\s+)"
+    r"|(?P<shape>\b(?:key|token|identifier|id|secret name|env var|flag)"
+    r"(?:\s*[:=]\s*|\s+(?:is|are|was|were|equals|set to)\s+|\s+)))"
 )
 # Lookahead keeps a descriptive context from consuming the next explicit key:
 # "case-sensitive identifier is PROD" still discovers "identifier is PROD".
-_EXPLICIT_IDENTIFIER = re.compile(r"(?=" + _IDENTIFIER_CONTEXT + r"(?P<value>[A-Za-z0-9_][\w-]{0,159})\b)", re.I)
+_EXPLICIT_IDENTIFIER = re.compile(r"(?=" + _IDENTIFIER_CONTEXT + r"(?P<value>[A-Za-z0-9_][\w.-]{0,159})\b)", re.I)
 
 
 def _explicit_identifiers(text: str) -> Iterator[re.Match[str]]:
+    seen: set[tuple[int, int]] = set()
     for match in _EXPLICIT_IDENTIFIER.finditer(text):
+        if match["shape"] and not _IDENTIFIER_SHAPE.search(match["value"]):
+            continue
         tail = text[match.end("value") : match.end("value") + 20]
         if re.match(r"\s+(?:key|token|identifier|label)\b", tail, re.I):
             continue
@@ -142,7 +150,11 @@ def _explicit_identifiers(text: str) -> Iterator[re.Match[str]]:
         # Resource availability is already governed by the existing credit path,
         # not the spelling of a key/token value.
         if match["value"].casefold() not in _STOP | set(_NUMBER_WORDS) | {"available"}:
-            yield match
+            # Case-sensitive and noun contexts can discover the same value span.
+            span = match.span("value")
+            if span not in seen:
+                seen.add(span)
+                yield match
 
 
 def normalize(text: str) -> str:
