@@ -139,7 +139,7 @@ build_smoke() {
 
 client_discriminators() {
   uv run --directory hindsight-clients/python --frozen pytest tests/test_operation_details.py
-  (cd hindsight-clients/go && go test -run '^TestOperationResponseDetailsUseDiscriminator$' .)
+  (cd hindsight-clients/go && go test -run '^TestOperationResponseDetails' .)
 }
 
 assert_candidate

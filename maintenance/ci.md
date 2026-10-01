@@ -30,7 +30,11 @@ intentional fork infrastructure policy, not upstream deployment ownership.
   on a fixed daily schedule; `.githooks/pre-push` runs the bypassable
   `./bin/ci preflight`. The validator pins both trigger sets exactly.
   The patch-regression gate includes refresh-outcome and bank-template
-  roundtrip tests alongside the other active service-hardening suites.
+  roundtrip tests alongside the other active service-hardening suites. The lane
+  benchmark's deterministic bounded-concurrency cases are non-slow, so the gate's
+  offline marker filter executes them; do not register only deselected tests.
+  The Go client selector includes all `TestOperationResponseDetails` cases,
+  including direct-null and invalid-discriminator coverage.
   `fork-policy.yml` uses `pull_request_target` only to run default-branch policy
   code against an immutable candidate checkout, without persisted credentials or
   candidate actions, scripts, manifests, or hooks. `qualification` is the sole

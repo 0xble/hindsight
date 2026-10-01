@@ -250,3 +250,36 @@ def test_each_supported_native_tool_record_preserves_its_source_time(tmp_path, i
     content, count = prepare_retention_transcript(messages, retain_full_window=True, include_tool_calls=True)
     assert count == 1
     assert all(block["source_timestamp"] == stamp for block in json.loads(content)[0]["content"])
+
+
+@pytest.mark.parametrize("interpreter", [sys.executable, "/usr/bin/python3"])
+@pytest.mark.parametrize("rich", [False, True])
+@pytest.mark.parametrize("fraction", ["1", "12", "1234", "123456789"])
+def test_fractional_source_time_survives_actual_reader_interpreters(tmp_path, interpreter, rich, fraction):
+    """The hook uses system Python too, including macOS Python 3.9."""
+    if not Path(interpreter).exists():
+        pytest.skip("system Python is not installed")
+    stamp = f"2020-03-04T12:00:00.{fraction}+05:45"
+    rollout = write_rollout(tmp_path, [native_message("user", "Keep original fractional precision.", stamp)])
+    scripts = Path(__file__).resolve().parents[1] / "scripts"
+    result = subprocess.run(
+        [
+            interpreter,
+            "-c",
+            "import json,sys; from lib.content import read_transcript,prepare_retention_transcript; "
+            "rich=sys.argv[2]=='True'; messages=read_transcript(sys.argv[1], include_tool_calls=rich); "
+            "content,count=prepare_retention_transcript(messages, retain_full_window=True, include_tool_calls=rich); "
+            "print(json.dumps({'messages':messages,'content':content,'count':count}))",
+            str(rollout),
+            str(rich),
+        ],
+        cwd=scripts,
+        text=True,
+        capture_output=True,
+        check=True,
+        timeout=10,
+    )
+    payload = json.loads(result.stdout)
+    assert payload["count"] == 1
+    assert payload["messages"][0].get("source_timestamp") == stamp
+    assert stamp in payload["content"]
