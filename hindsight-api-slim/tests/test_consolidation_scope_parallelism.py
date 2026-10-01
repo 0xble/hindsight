@@ -1665,20 +1665,24 @@ async def test_same_lane_apply_rechecks_create_dedup(
 
 @pytest.mark.asyncio
 @pytest.mark.memory_backend_incompatible
-@pytest.mark.parametrize("lane", [False, True])
 @pytest.mark.parametrize(
-    "change",
+    "lane,change",
     [
-        "delete",
-        "rewrite",
-        "source-edit",
-        "reply-update",
-        "reply-fold",
-        "reply-text",
-        "reply-fold-chain",
-        "reply-fold-miss",
-        "reply-fold-retry",
-    ],
+        (lane, change)
+        for change in (
+            "delete",
+            "rewrite",
+            "source-edit",
+            "reply-update",
+            "reply-fold",
+            "reply-text",
+            "reply-fold-chain",
+            "reply-fold-miss",
+            "reply-fold-retry",
+        )
+        for lane in (False, True)
+    ]
+    + [(False, "store-delete"), (False, "store-rewrite")],
 )
 async def test_shown_create_fold_preserves_current_state(memory: MemoryEngine, request_context, lane, change):
     """A shown twin is a guarded fold target, never unconditional durable coverage."""
@@ -1690,6 +1694,7 @@ async def test_shown_create_fold_preserves_current_state(memory: MemoryEngine, r
     final_id = uuid.uuid4()
     semantic = change.startswith("reply-fold")
     separate_sources = semantic or change == "reply-text"
+    store_owned = change.startswith("store-")
     await memory.ensure_bank_profile(bank_id=bank_id, request_context=request_context)
     try:
         async with memory._pool.acquire() as conn:
@@ -1735,6 +1740,16 @@ async def test_shown_create_fold_preserves_current_state(memory: MemoryEngine, r
             source_fact_ids=[str(old_id)],
         )
         wrapper, mock = _mock_llm_one_obs_per_fact()
+        store = mod.get_memories()
+        if store_owned:
+            from tests.test_memories_extension import InMemoryMemories, _stored
+
+            store = InMemoryMemories({})
+            store.rows[str(old_id)] = _stored(str(old_id), "Original source", "experience")
+            store.rows[str(new_id)] = _stored(str(new_id), "New source", "experience")
+            store.rows[str(twin_id)] = _stored(
+                str(twin_id), "Original observation", "observation", source_memory_ids=[str(old_id)]
+            )
         shown_observations = [shown]
         if change == "reply-fold-chain":
             shown_observations.append(
@@ -1780,6 +1795,12 @@ async def test_shown_create_fold_preserves_current_state(memory: MemoryEngine, r
 
         async def mutate_after_reply(*args, **kwargs):
             result = await original_llm(*args, **kwargs)
+            if store_owned:
+                if change == "store-delete":
+                    del store.rows[str(twin_id)]
+                else:
+                    store.rows[str(twin_id)].text = "Rewritten observation"
+                return result
             async with memory._pool.acquire() as conn:
                 if change == "delete":
                     await conn.execute("DELETE FROM memory_units WHERE id=$1", twin_id)
@@ -1800,7 +1821,7 @@ async def test_shown_create_fold_preserves_current_state(memory: MemoryEngine, r
                     await conn.execute("UPDATE memory_units SET text='Rewritten survivor' WHERE id=$1", survivor_id)
             return outcome
 
-        original_stamp = mod.get_memories().mark_consolidated
+        original_stamp = store.mark_consolidated
         stamp_attempts = 0
 
         async def stamp_with_retry(**kwargs):
@@ -1817,13 +1838,14 @@ async def test_shown_create_fold_preserves_current_state(memory: MemoryEngine, r
         ready = asyncio.Event()
         ready.set()
         with (
+            patch.object(mod, "get_memories", return_value=store),
             patch.object(memory, "_consolidation_llm_config", wrapper),
             patch.object(
                 mod, "_find_related_observations", return_value=RecallResult.model_construct(results=shown_observations)
             ),
             patch.object(mod, "_consolidate_batch_with_llm", mutate_after_reply),
             patch.object(mod, "_dedup_adjudicate", adjudicate_then_rewrite),
-            patch.object(mod.get_memories(), "mark_consolidated", stamp_with_retry),
+            patch.object(store, "mark_consolidated", stamp_with_retry),
         ):
             await mod._process_memory_batch(
                 pool=memory._backend,
@@ -1849,6 +1871,17 @@ async def test_shown_create_fold_preserves_current_state(memory: MemoryEngine, r
                 bank_id,
             )
             stamp = await conn.fetchval("SELECT consolidated_at FROM memory_units WHERE id=$1", new_id)
+        if store_owned:
+            rows = [
+                {
+                    "id": uuid.UUID(row.unit_id),
+                    "text": row.text,
+                    "source_memory_ids": [uuid.UUID(s) for s in row.source_memory_ids or []],
+                }
+                for row in store.rows.values()
+                if row.fact_type == "observation"
+            ]
+            stamp = store.rows[str(new_id)].consolidated_at
         if change == "source-edit":
             assert [(row["id"], row["text"], row["source_memory_ids"]) for row in rows] == [
                 (twin_id, "Original observation", [old_id])
@@ -1882,7 +1915,7 @@ async def test_shown_create_fold_preserves_current_state(memory: MemoryEngine, r
             assert len(recreated) == 1 and recreated[0]["id"] != twin_id
             assert recreated[0]["source_memory_ids"] == [new_id]
             assert stamp is not None
-            if change == "rewrite":
+            if change in ("rewrite", "store-rewrite"):
                 preserved = next(row for row in rows if row["id"] == twin_id)
                 assert preserved["text"] == "Rewritten observation" and preserved["source_memory_ids"] == [old_id]
             else:

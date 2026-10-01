@@ -3526,6 +3526,12 @@ async def _process_memory_batch(
                 exclude_id=None,
                 anchor_source_ids=[str(source_id) for source_id in create_source_ids],
             )
+        if prepared_create.source_only_fold and get_memories().store_owned_for(bank_id):
+            # The extension upsert has no text/version CAS. A shown/reply twin
+            # may have changed or vanished, so keep this CREATE's own sources
+            # in a new observation instead of overwriting or claiming that twin.
+            # Semantic store folds retain their existing separate contract.
+            prepared_create.dedup = None
         prepared_creates.append(prepared_create)
 
     # --- Apply: one transaction for everything this LLM response decided ------
