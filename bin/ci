@@ -99,6 +99,11 @@ PATCH_REGRESSIONS=(
   tests/test_alembic_dag.py
   tests/test_migration_entities_bank_trgm.py
   tests/test_consolidation_dedup.py
+  tests/test_consolidation_detail_loss.py
+  tests/test_consolidation_detail_loss_round5.py
+  tests/test_consolidation_detail_loss_round6.py
+  tests/test_consolidation_detail_loss_round7.py
+  tests/test_consolidation_guard_provenance.py
   tests/test_worker_retry_knobs.py
   tests/test_content_policy_refusal_permanent.py
   tests/test_operation_status.py
