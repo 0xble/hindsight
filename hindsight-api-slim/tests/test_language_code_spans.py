@@ -180,6 +180,34 @@ def test_foreign_string_call_arguments_are_deliberately_exempt_data(wrapper: str
     assert not guard.enforcement_failures(result, guard.LanguageIntegrityMode.REJECT)
 
 
+@pytest.mark.parametrize(
+    "output",
+    [
+        f"`report.save()  # {SPANISH}`",
+        f"```python\nreport.save()\n# {SPANISH}\n```",
+        f"`x = 1  # {SPANISH}`",
+    ],
+    ids=["call-inline-comment", "python-fence-comment-line", "assignment-inline-comment"],
+)
+def test_foreign_python_comments_remain_language_checked(output: str) -> None:
+    result = check(ENGLISH, output)
+
+    assert SPANISH in guard._without_code(output)
+    assert result.verdicts[0].status == "mismatch"
+    assert guard.enforcement_failures(result, guard.LanguageIntegrityMode.REJECT)
+
+
+@pytest.mark.parametrize("wrapper", ["`{code}`", "```python\n{code}\n```"], ids=["inline", "python-fence"])
+def test_english_python_comment_passes_without_exposing_string_data(wrapper: str) -> None:
+    comment = "The team completed the review and preserved the original files for the next meeting."
+    output = wrapper.format(code=f'note("{SPANISH} # literal data")  # {comment}')
+    result = check(ENGLISH, output)
+
+    assert comment in guard._without_code(output)
+    assert SPANISH not in guard._without_code(output)
+    assert not guard.enforcement_failures(result, guard.LanguageIntegrityMode.REJECT)
+
+
 def test_fenced_mixed_code_and_foreign_prose_is_not_exempt():
     output = "```python\nprint('hello')\nL’équipe continue la vérification des résultats et prépare les documents.\n```"
 

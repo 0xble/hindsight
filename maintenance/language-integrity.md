@@ -94,6 +94,18 @@ use the configurable policy below without destructive changes to source facts.
   asserts the `preserved` verdict in both wrappers; the bare-string-after-call,
   JSON-scalar and Unicode-identifier counterexamples remain rejection controls.
   No language-integrity implementation or enforcement mode changes in this repair.
+- **Python comments (follow-up M):** Comments are prose, not code data. The
+  syntax recognizer's AST discards them, so tokenize every span it accepts and
+  return COMMENT token text to the classified residue. This applies to inline
+  call/assignment comments and comment-only lines inside accepted Python suites.
+  Keep executable syntax and string literals exempt, including `#` within a
+  literal. If tokenization fails, keep the original span visible rather than
+  erasing unproven text. The three Spanish reviewer reproductions are
+  `preserved` without REJECT failures at `fcbb8cf` and now `mismatch` with REJECT
+  failures against an English source; English-comment controls pass. The
+  `test_language_code_spans.py` suite has 59 passing cases, including existing
+  string-data, JSON, bare-string, and Unicode-identifier controls. This changes
+  code-span residue only, not enforcement modes or the string-data decision.
 - **Round-2 upstream alignment:** Guidance pinned at
   `d863f78aa24408583d69bbc32203649fc6fc230a`: `AGENTS.md` delegates to `CLAUDE.md`;
   `CONTRIBUTING.md` and the referenced code-review standards were also examined.

@@ -654,7 +654,6 @@ class ForkWorkflowPolicyTests(unittest.TestCase):
             "docker buildx build -o type=local,dest=out -o type=tar,dest=out.tar .",
             'docker buildx build -t "$IMAGE" --build-arg VALUE="$VALUE" --output type=local,dest=out "$CONTEXT"',
             'env docker buildx build --output type=local,dest=out "$CONTEXT"',
-            "echo 'docker buildx build --output type=registry is forbidden'",
         ):
             with self.subTest(command=command):
                 self.assertEqual(self.set_fork_ci_step(f"run: {command}"), [])
@@ -699,6 +698,95 @@ class ForkWorkflowPolicyTests(unittest.TestCase):
             "docker buildx build \\\n  --output type=local,dest=out .",
         ):
             with self.subTest(command=command):
+                self.assertTrue(POLICY.script_is_forbidden(command), command)
+
+    def test_quoted_line_continuation_reviewer_repros_fail(self) -> None:
+        for command in (
+            '"u\\\nv" publish',
+            'uv "pub\\\nlish"',
+            'docker buildx build -o "type=regis\\\ntry" .',
+        ):
+            with self.subTest(command=command):
+                self.assertTrue(POLICY.script_is_forbidden(command), command)
+                self.assert_publishing_step_rejected("run: |\n          " + command.replace("\n", "\n          "))
+
+    def test_all_line_continuations_fail_in_every_shell_scope(self) -> None:
+        for quote in ('"', "'", ""):
+            for newline in ("\n", "\r\n"):
+                command = f"echo {quote}safe\\{newline} text{quote}"
+                with self.subTest(quote=quote, newline=newline):
+                    self.assertTrue(POLICY.script_is_forbidden(command), command)
+                    for scope in ("run", "shell", "workflow-default", "job-default"):
+                        root = self.make_root()
+                        path = root / ".github" / "workflows" / "fork-ci.yml"
+                        workflow = POLICY.load_workflow(path)
+                        job = workflow["jobs"]["test"]
+                        if scope in {"run", "shell"}:
+                            job["steps"] = [{"run": "echo safe", scope: command}]
+                        else:
+                            owner = workflow if scope == "workflow-default" else job
+                            owner["defaults"] = {"run": {"shell": command}}
+                        path.write_text(yaml.safe_dump(workflow, sort_keys=False), encoding="utf-8")
+                        with self.subTest(scope=scope):
+                            self.assertTrue(any("line continuation" in error for error in POLICY.validate(root)))
+
+    def test_normalized_publisher_token_grid_fails_closed(self) -> None:
+        prefixes = (
+            POLICY.FORBIDDEN_COMMAND_PREFIXES
+            | {("gh", "release", verb) for verb in POLICY.FORBIDDEN_GH_RELEASE_COMMANDS}
+            | {("kubectl", verb) for verb in POLICY.FORBIDDEN_KUBECTL_COMMANDS}
+        )
+        disguises = (
+            lambda word: '"' + word + '"',
+            lambda word: "'" + word + "'",
+            lambda word: word[:1] + '""' + word[1:],
+            lambda word: "\\".join(word),
+            lambda word: "{" + word + "}",
+            lambda word: "[" + word + "]",
+            lambda word: "*" + word + "?",
+        )
+        for prefix in sorted(prefixes):
+            for disguise in disguises:
+                command = " \t ".join(disguise(word) for word in prefix)
+                with self.subTest(command=command):
+                    # Exercise the coarse backstop itself: precise checks cannot
+                    # accidentally conceal a normalization regression.
+                    self.assertTrue(POLICY.normalized_publisher_text_is_forbidden(command), command)
+                    self.assertTrue(POLICY.script_is_forbidden(command), command)
+        tools = {prefix[0] for prefix in prefixes} | {"buildx"}
+        for tool in sorted(tools):
+            for verb in ("publish", "push"):
+                for command in (f"'{tool}' \"{verb}\"", f"'{verb}' \"{tool}\""):
+                    with self.subTest(command=command):
+                        self.assertTrue(POLICY.normalized_publisher_text_is_forbidden(command), command)
+
+    def test_normalized_buildx_and_exporter_grid_fails_closed(self) -> None:
+        for command in (
+            '"buildx" build "--push" .',
+            "bui'ldx' build --pu'sh'=true .",
+            'docker buildx build -o "ty\\pe=regis\\try" .',
+            "docker buildx build -o '{type}=[registry]' .",
+            'docker buildx build -o "type=image,push=tr\\ue" .',
+            'echo "type=registry"',
+            '# uv "publish"',
+            "echo 'uv publish is forbidden'",
+            "echo 'docker buildx build --output type=registry is forbidden'",
+            'buildx build --push=false "--pu\\sh"=true .',
+        ):
+            with self.subTest(command=command):
+                self.assertTrue(POLICY.normalized_publisher_text_is_forbidden(command), command)
+                self.assertTrue(POLICY.script_is_forbidden(command), command)
+
+    def test_normalized_safe_build_test_and_local_export_controls(self) -> None:
+        for command in (
+            "uv run pytest\necho done",
+            "npm run build",
+            "docker buildx build --push=false --output type=local,dest=out .",
+            "buildx build --output type=image,push=false .",
+            'echo "publishable pushdown uvx"',
+        ):
+            with self.subTest(command=command):
+                self.assertFalse(POLICY.normalized_publisher_text_is_forbidden(command), command)
                 self.assertFalse(POLICY.script_is_forbidden(command), command)
 
     def test_shell_structure_does_not_hide_expanded_executable_words(self) -> None:
@@ -931,7 +1019,6 @@ class ForkWorkflowPolicyTests(unittest.TestCase):
             "run: kubectl --namespace dev get pods",
             "run: docker buildx build --push=false .",
             'run: |\n          args=(--scale tiny)\n          ./scripts/test.sh "${args[@]}"',
-            "run: echo 'uv publish is forbidden'",
             "uses: actions/upload-artifact@v7",
         ):
             with self.subTest(step=step):

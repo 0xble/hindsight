@@ -393,7 +393,42 @@ def nested_command_payloads(tokens: list[str]) -> list[str]:
     return payloads
 
 
+def normalized_publisher_text_is_forbidden(script: str) -> bool:
+    """Coarse fail-closed backstop, deliberately independent of shell parsing."""
+    # Quote/escape provenance has repeatedly exposed parser mismatches. Treat even
+    # comments and quoted data as suspect when normalization exposes a publisher;
+    # this is a workflow policy, not an attempt to interpret arbitrary shell code.
+    normalized = " ".join(script.translate(str.maketrans("", "", "'\"`\\{}[]*?")).lower().split())
+    prefixes = (
+        FORBIDDEN_COMMAND_PREFIXES
+        | {("gh", "release", verb) for verb in FORBIDDEN_GH_RELEASE_COMMANDS}
+        | {("kubectl", verb) for verb in FORBIDDEN_KUBECTL_COMMANDS}
+    )
+    for prefix in prefixes:
+        pattern = r"(?<![\w.-])" + r"\s+".join(re.escape(word) for word in prefix) + r"(?![\w.-])"
+        if re.search(pattern, normalized):
+            return True
+    tools = {prefix[0] for prefix in prefixes} | {"buildx"}
+    for tool in tools:
+        pattern = rf"(?<![\w.-])(?:{tool}\s+(?:publish|push)|(?:publish|push)\s+{tool})(?![\w.-])"
+        if re.search(pattern, normalized):
+            return True
+    if re.search(r"(?<![\w.-])(?:type\s*=\s*registry|push(?:-by-digest)?\s*=\s*true)(?![\w.-])", normalized):
+        return True
+    buildx = re.search(r"(?<![\w.-])buildx(?![\w.-])", normalized)
+    if buildx is None:
+        return False
+    return any(
+        match.group(1) != "false"
+        for match in re.finditer(r"(?<![\w.-])--push(?:=([^\s;|&()]+))?(?![\w.-])", normalized[buildx.end() :])
+    )
+
+
 def script_is_forbidden(script: str, depth: int = 0) -> bool:
+    # Ban continuations in every quote context, even safe commands. Ordinary YAML
+    # multiline scripts or shell arrays remain available without shell escapes.
+    if re.search(r"\\\r?\n", script) or normalized_publisher_text_is_forbidden(script):
+        return True
     # Substitutions generate command text at runtime, beyond what this static policy can prove safe.
     if DYNAMIC_SHELL_SYNTAX.search(script):
         return True
@@ -658,6 +693,8 @@ def command_is_forbidden(tokens: list[str], depth: int = 0) -> bool:
 
 def command_text_policy_errors(scope: str, value: Any) -> list[str]:
     if isinstance(value, str):
+        if re.search(r"\\\r?\n", value):
+            return [f"{scope}: publishing, release, or deployment step is forbidden (shell line continuation)"]
         try:
             forbidden = script_is_forbidden(value)
         except ValueError:

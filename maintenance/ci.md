@@ -98,13 +98,12 @@ intentional fork infrastructure policy, not upstream deployment ownership.
   expansion or metacharacter syntax in every executable and known publisher
   subcommand position, not just variable wrapper commands: `$`, backticks,
   `*`, `?`, `[`, `{`, `}`, leading `~`, backslash escapes, and process
-  substitutions. Preserve escaped-newline provenance inside command and exporter
-  words, including split spellings such as `uv pub\\\nlish`; a continuation
-  between words remains ordinary multiline formatting, not a dynamic word.
+  substitutions. Preserve authored quote provenance through the existing shlex
+  tokenizer rather than matching only its decoded words. The fail-closed
+  backstop below supersedes the earlier exception for continuations between words.
   Parenthesized command groups and conditional/loop introducers cannot hide the
   executable position; fixed shell test syntax remains syntax, not expansion.
-  Preserve authored quote provenance through the existing shlex
-  tokenizer rather than matching only its decoded words. Double-quoted parameter
+  Double-quoted parameter
   substitutions still expand and are forbidden; quoted literal command words
   remain subject to the publication denylist. Apply the same rule to every
   `--output`/`-o` exporter value, including attached and repeated options, Docker
@@ -114,13 +113,31 @@ intentional fork infrastructure policy, not upstream deployment ownership.
   expansion forms: shell expansion in these authority-bearing positions is
   unprovable, even when an example happens to resolve to a safe verb. Ordinary
   data operands after a literal safe verb retain the existing exemptions.
-  The original 46-test suite passed at `fdd71d6`; the new expansion/provenance
-  regressions exposed the class before repair. The owning workflow-boundary test
-  covers all six reported brace bypasses plus escapes, tilde and backticks.
-- **Proof and limits:** New workflow-boundary tests fail against the baseline
-  before each repair; the original 37-test suite passed before adding them.
-  The expanded 46-test suite and repository workflow validation pass after the
-  repairs, with scoped Ruff lint/format and type checks. The validator remains
+  The expansion/provenance regressions exposed the class before repair. The
+  owning workflow-boundary test covers all six reported brace bypasses plus
+  escapes, tilde and backticks.
+- **Fail-closed backstop (follow-up H):** Three reviews found shell-parser
+  mismatches, most recently double-quoted split spellings of `uv`, `publish`,
+  and `type=registry`. Stop relying on exact shell emulation: reject a backslash
+  immediately followed by LF or CRLF in every `run`, step `shell`, and
+  workflow/job `defaults.run.shell`, regardless of quoting, comments, or command.
+  Use YAML multiline block scalars or shell arrays without continuations instead.
+  In addition to all existing precise checks, remove quote characters,
+  backslashes, braces, brackets, and glob characters, then collapse whitespace
+  and scan the entire normalized text for registered publisher/deployer token
+  sequences, `buildx ... --push`, `type=registry`, and enabled push attributes.
+  A bare `publish`/`push` adjacent to a registered tool in either order also
+  rejects. Comments and quoted data intentionally have no exemption from this
+  coarse scan, even when they merely describe forbidden commands; rewrite that
+  prose rather than weakening the rule. Ordinary build/test verbs, local
+  exporters, and `--push=false` retain coverage. All six repository workflows
+  pass unchanged; none uses continuations and no exemption was needed.
+- **Proof and limits:** The 53-test suite at `fcbb8cf` preceded this repair;
+  all three new quoted-continuation reviewer cases reproduce there. The current
+  expanded 58-test suite and all six repository workflows pass, with scoped
+  Ruff lint/format and type checks. Regression grids exercise normalization
+  independently of the precise parser across every registered tool and verb,
+  plus both quote contexts, LF/CRLF, and all shell scopes. The validator remains
   a static workflow check, not a sandbox for arbitrary candidate scripts. Keep
   the qualification-only protection and exact-head trusted-policy pre-merge
   requirement above; the parent checks that policy result. Manual merges that

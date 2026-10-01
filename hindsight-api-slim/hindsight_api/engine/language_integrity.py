@@ -14,11 +14,13 @@ import logging
 import re
 import textwrap
 import threading
+import tokenize
 import unicodedata
 from collections import Counter
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from enum import StrEnum
+from io import StringIO
 from pathlib import Path
 from typing import Any
 
@@ -473,6 +475,17 @@ def _is_syntax_code(text: str) -> bool:
     return True
 
 
+def _code_comment_prose(text: str) -> str:
+    """Return comments from a recognized span; string literals remain code data."""
+    # ast.parse discards comments, so syntax validity cannot authorize erasing
+    # their prose. Tokenization distinguishes real comments from '#' in strings.
+    try:
+        tokens = tokenize.generate_tokens(StringIO(textwrap.dedent(text).strip()).readline)
+        return "\n".join(token.string for token in tokens if token.type == tokenize.COMMENT) or " "
+    except (tokenize.TokenError, IndentationError, SyntaxError):
+        return text  # Never exempt prose when tokenization cannot prove its role.
+
+
 def _without_code(text: str) -> str:
     """Remove only whole recognized code spans or actual code fragments.
 
@@ -494,7 +507,9 @@ def _without_code(text: str) -> str:
     declaration_prefix = re.compile(rf"^\s*{declaration[:-2]};\s*")
 
     def strip_code(line: str) -> str:
-        if whole_line.fullmatch(line) or _is_syntax_code(line):
+        if _is_syntax_code(line):
+            return _code_comment_prose(line)
+        if whole_line.fullmatch(line):
             return " "
         # A known statement preceding prose is removable, but the residual is
         # still evaluated as prose.  Never use a keyword search as authority.
@@ -522,7 +537,7 @@ def _without_code(text: str) -> str:
         # The old line allowlist missed suites and structured literals. Exempt a
         # complete syntax-validated body, not a fence label or a keyword match.
         if _is_syntax_code(body):
-            return " "
+            return _code_comment_prose(body)
         # A fence can contain prose around a small code fragment. Classify each
         # line so that fragment cannot exempt the surrounding foreign prose.
         return "\n".join(strip_code(line) for line in body.splitlines())
