@@ -24,9 +24,25 @@ import json
 import os
 import re
 from datetime import datetime, timezone
+from typing import Optional
 
 # Maximum length for tool output content in JSON format.
 _MAX_TOOL_OUTPUT_CHARS = 2000
+
+# Source record times are not fact event dates. Require an explicit offset so
+# an absent timezone can never become an invented local/UTC temporal anchor.
+_SOURCE_TIMESTAMP_RE = re.compile(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-](?:[01]\d|2[0-3]):[0-5]\d)")
+
+
+def _validate_source_timestamp(value: object) -> Optional[str]:
+    """Keep valid timezone-aware source times verbatim, never synthesize one."""
+    if not isinstance(value, str) or not _SOURCE_TIMESTAMP_RE.fullmatch(value):
+        return None
+    try:
+        datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return value
 
 
 # ---------------------------------------------------------------------------
@@ -73,7 +89,8 @@ def read_transcript(transcript_path: str, include_tool_calls: bool = False) -> l
     """Read a Codex JSONL transcript and return list of message dicts.
 
     When include_tool_calls is False (legacy mode), returns simple
-    {role, content} dicts with text-only content.
+    {role, content} dicts with text-only content and optional source_timestamp.
+    source_timestamp is the message/tool record time, not a claimed event date.
 
     When include_tool_calls is True, returns richer message dicts with
     structured content blocks (matching Claude Code's JSON format):
@@ -119,6 +136,7 @@ def _read_transcript_text(transcript_path: str) -> list:
                     continue
                 try:
                     entry = json.loads(line)
+                    source_timestamp = _validate_source_timestamp(entry.get("timestamp"))
                     # Codex response_item format
                     if entry.get("type") == "response_item":
                         payload = entry.get("payload", {})
@@ -140,10 +158,16 @@ def _read_transcript_text(transcript_path: str) -> list:
                             if role == "user" and is_synthetic_codex_user_message(text):
                                 continue
                             if text:
-                                messages.append({"role": role, "content": text})
+                                message = {"role": role, "content": text}
+                                if source_timestamp is not None:
+                                    message["source_timestamp"] = source_timestamp
+                                messages.append(message)
                     # Flat format (testing / future compatibility)
                     elif "role" in entry and "content" in entry:
-                        messages.append({"role": entry["role"], "content": entry["content"]})
+                        message = {"role": entry["role"], "content": entry["content"]}
+                        if source_timestamp is not None:
+                            message["source_timestamp"] = source_timestamp
+                        messages.append(message)
                 except json.JSONDecodeError:
                     continue
     except OSError:
@@ -156,7 +180,8 @@ def _read_transcript_rich(transcript_path: str) -> list:
 
     Collects all response_items and event_msgs into a sequence of messages
     with structured content blocks. Tool calls and their outputs are grouped
-    under the assistant role.
+    under the assistant role. Each block retains its own source record time,
+    since a grouped assistant message may span different days.
     """
     messages = []
     # Buffer for collecting assistant content blocks between user messages
@@ -178,6 +203,8 @@ def _read_transcript_rich(transcript_path: str) -> list:
                     entry = json.loads(line)
                 except json.JSONDecodeError:
                     continue
+                source_timestamp = _validate_source_timestamp(entry.get("timestamp"))
+                assistant_start = len(assistant_blocks)
 
                 # Flat format (testing / future compatibility)
                 if "role" in entry and "content" in entry:
@@ -186,7 +213,10 @@ def _read_transcript_rich(transcript_path: str) -> list:
                         _flush_assistant()
                         if isinstance(content, str):
                             content = [{"type": "text", "text": content}]
-                        messages.append({"role": "user", "content": content})
+                        message = {"role": "user", "content": content}
+                        if source_timestamp is not None:
+                            message["source_timestamp"] = source_timestamp
+                        messages.append(message)
                     elif entry["role"] == "assistant":
                         if isinstance(content, str):
                             content = [{"type": "text", "text": content}]
@@ -194,6 +224,9 @@ def _read_transcript_rich(transcript_path: str) -> list:
                             assistant_blocks.extend(content)
                         else:
                             assistant_blocks.append({"type": "text", "text": str(content)})
+                        if source_timestamp is not None:
+                            for block in assistant_blocks[assistant_start:]:
+                                block["source_timestamp"] = source_timestamp
                     continue
 
                 item_type = entry.get("type")
@@ -211,7 +244,10 @@ def _read_transcript_rich(transcript_path: str) -> list:
                             if is_synthetic_codex_user_message(text):
                                 continue
                             if text:
-                                messages.append({"role": "user", "content": [{"type": "text", "text": text}]})
+                                message = {"role": "user", "content": [{"type": "text", "text": text}]}
+                                if source_timestamp is not None:
+                                    message["source_timestamp"] = source_timestamp
+                                messages.append(message)
                         elif role == "assistant":
                             # Only include final_answer (not reasoning/intermediary)
                             if payload.get("phase") != "final_answer":
@@ -347,6 +383,13 @@ def _read_transcript_rich(transcript_path: str) -> list:
                                 "type": "tool_result",
                                 "content": _truncate(result_text),
                             })
+
+                # Keep the existing assistant/tool grouping and role filters.
+                # Stamp only blocks appended by this native record, not older
+                # buffered content or a neighboring record with no usable time.
+                if source_timestamp is not None:
+                    for block in assistant_blocks[assistant_start:]:
+                        block["source_timestamp"] = source_timestamp
 
     except OSError:
         pass
@@ -610,7 +653,11 @@ def _prepare_json_transcript(messages: list, allowed_roles: set) -> tuple:
         if not blocks:
             continue
 
-        structured_messages.append({"role": role, "content": blocks})
+        message = {"role": role, "content": blocks}
+        source_timestamp = _validate_source_timestamp(msg.get("source_timestamp"))
+        if source_timestamp is not None:
+            message["source_timestamp"] = source_timestamp
+        structured_messages.append(message)
 
     if not structured_messages:
         return None, 0
@@ -639,7 +686,13 @@ def _prepare_text_transcript(messages: list, allowed_roles: set) -> tuple:
         if not content:
             continue
 
-        parts.append(f"[role: {role}]\n{content}\n[{role}:end]")
+        source_timestamp = _validate_source_timestamp(msg.get("source_timestamp"))
+        time_label = (
+            f"[source_timestamp: {source_timestamp}, message/source time, not a claimed event date]\n"
+            if source_timestamp is not None
+            else ""
+        )
+        parts.append(f"[role: {role}]\n{time_label}{content}\n[{role}:end]")
 
     if not parts:
         return None, 0
@@ -672,7 +725,11 @@ def _strip_memory_tags_from_blocks(content) -> list:
         if block_type == "text":
             text = strip_memory_tags(block.get("text", "")).strip()
             if text:
-                blocks.append({"type": "text", "text": text})
+                cleaned = {"type": "text", "text": text}
+                source_timestamp = _validate_source_timestamp(block.get("source_timestamp"))
+                if source_timestamp is not None:
+                    cleaned["source_timestamp"] = source_timestamp
+                blocks.append(cleaned)
         elif block_type in ("tool_use", "tool_result"):
             # Pass through tool blocks as-is
             blocks.append(block)

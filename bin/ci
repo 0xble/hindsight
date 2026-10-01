@@ -150,6 +150,7 @@ else
   run offline-suite api uv run --frozen --extra all pytest -m "$OFFLINE_MARKERS" "${LIVE_LLM_TESTS[@]}"
 fi
 run client-discriminators client_discriminators
+run codex-integration uv run --no-project --with pytest --with tiktoken==0.12.0 pytest hindsight-integrations/codex/tests -q
 run build-smoke build_smoke
 
 assert_candidate
