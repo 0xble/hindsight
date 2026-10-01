@@ -11,6 +11,7 @@ import re
 import unicodedata
 from bisect import bisect_left, bisect_right
 from collections import Counter
+from collections.abc import Iterator
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 
@@ -41,7 +42,8 @@ _PATTERNS = {
 # not survive underneath canonical amounts and reject equivalent spellings.
 _SCALE = r"(?:[kmbt]|thousand|million|billion|trillion)"
 _DIGITS = r"(?:\d+(?:,\d{3})*(?:\.\d+)?|\.\d+)"
-_CURRENCY = r"(?:(?i:usd|cad|aud|nzd|eur|gbp|jpy|chf)|[A-Z]{3})"
+# ISO-4217 codes, not arbitrary three-letter technical acronyms.
+_CURRENCY = r"(?i:usd|eur|gbp|cad|aud|nzd|jpy|cny|hkd|sgd|chf|sek|nok|dkk|inr|krw|mxn|brl|zar)"
 _SIGN = r"(?:-(?<![\w.]-))?"
 _MONEY = re.compile(
     rf"(?<![\w.])(?P<sign>{_SIGN})(?P<open>\()?"
@@ -50,10 +52,13 @@ _MONEY = re.compile(
     rf"(?P<suffix>\s*{_CURRENCY}\b)?(?P<close>\))?"
 )
 _SUFFIX_MONEY = re.compile(
-    rf"(?<![\w.])(?P<sign>{_SIGN})(?P<amount>{_DIGITS})"
-    rf"(?P<scale>\s*(?i:{_SCALE})(?=\b|{_CURRENCY}\b))?(?P<suffix>\s*{_CURRENCY}\b)"
+    rf"(?<![\w.])(?P<sign>{_SIGN})(?P<open>\()?(?P<amount>{_DIGITS})"
+    rf"(?P<scale>\s*(?i:{_SCALE})(?=\b|{_CURRENCY}\b))?(?P<suffix>\s*{_CURRENCY}\b)(?P<close>\))?"
 )
+_ACCOUNTING_NUMBER = re.compile(rf"\((?P<amount>{_DIGITS})\)")
+_ACCOUNTING_CONTEXT = re.compile(r"\b(?:balance|net|loss|p&l|owed)\b", re.I)
 _SCALED_NUMBER = re.compile(rf"(?<![\w.])(?P<amount>{_SIGN}{_DIGITS})(?P<scale>\s*(?i:{_SCALE})\b)(?![\w])")
+_NUMERIC_SPANS = re.compile(rf"(?<![\w.]){_SIGN}\(?{_DIGITS}")
 _SCALE_PLACES = {"k": 3, "thousand": 3, "m": 6, "million": 6, "b": 9, "billion": 9, "t": 12, "trillion": 12}
 _CURRENCY_NAMES = {
     "us$": "usd",
@@ -66,7 +71,10 @@ _CURRENCY_NAMES = {
     "£": "gbp",
 }
 _LIST_PREFIX = re.compile(r"^(?:[-*•]\s+|\d+[.)]\s+)")
-_HEADER = re.compile(r"^([^:]{1,100}):")
+_HEADER = re.compile(r"^([^:]{1,100}):(?=\s|$)")
+_SUBJECT = re.compile(
+    r"^(?:the |a |an )?(.+?) (?:(?:is|are|was|were|has|had|changed|grew|fell|equals|equal to)\b|=)", re.I
+)
 
 
 _STOP = set(
@@ -98,28 +106,52 @@ class Evidence:
 
 
 # Opaque spellings are not prose: protect literals and identifier tokens before
-# case folding. Uppercase three-letter currency codes retain their lexical shape
-# so ordinary words such as "and" cannot become unknown currency suffixes.
+# case folding. Only supported currencies need additional affixed-code spans.
 _OPAQUE = re.compile(
     _PATTERNS["literal"].pattern
     + "|(?i:"
     + _PATTERNS["identifier"].pattern
-    + r")|\b(?!(?:"
-    + "|".join(word.upper() for word in _STOP | set(_MONTHS) | set(_NUMBER_WORDS))
-    + r")\b)[A-Z]{3}\b|\b[A-Z]{3}(?=\d|\.\d)|(?<=[\dkKmMbBtT])[A-Z]{3}\b"
+    + rf")|\b{_CURRENCY}\b|\b{_CURRENCY}(?=\d|\.\d)|(?<=[\dkKmMbBtT]){_CURRENCY}\b"
 )
+
+
+_IDENTIFIER_CONTEXT = (
+    r"\b(?:key|token|case-sensitive|identifier|id|secret name|env var|flag)(?:\s*[:=]\s*|\s+(?:(?:is|equals)\s+)?)"
+)
+# Lookahead keeps a descriptive context from consuming the next explicit key:
+# "case-sensitive identifier is PROD" still discovers "identifier is PROD".
+_EXPLICIT_IDENTIFIER = re.compile(r"(?=" + _IDENTIFIER_CONTEXT + r"(?P<value>[A-Za-z0-9_][\w-]{0,159})\b)", re.I)
+
+
+def _explicit_identifiers(text: str) -> Iterator[re.Match[str]]:
+    for match in _EXPLICIT_IDENTIFIER.finditer(text):
+        tail = text[match.end("value") : match.end("value") + 20]
+        if re.match(r"\s+(?:key|token|identifier|label)\b", tail, re.I):
+            continue
+        if match["value"].casefold() in {"key", "token", "identifier", "id", "flag"} and re.match(
+            r"\s+(?:is|equals)\b", tail, re.I
+        ):
+            continue
+        # Resource availability is already governed by the existing credit path,
+        # not the spelling of a key/token value.
+        if match["value"].casefold() not in _STOP | set(_NUMBER_WORDS) | {"available"}:
+            yield match
 
 
 def normalize(text: str) -> str:
     text = unicodedata.normalize("NFKC", text)
     pieces: list[str] = []
     end = 0
-    for match in _OPAQUE.finditer(text):
-        token = match[0]
+    spans = [(m.start(), m.end()) for m in _OPAQUE.finditer(text)]
+    spans.extend((m.start("value"), m.end("value")) for m in _explicit_identifiers(text))
+    for start, stop in sorted(spans, key=lambda span: (span[0], -span[1])):
+        if start < end:
+            continue
+        token = text[start:stop]
         if token.casefold() in _STOP or token.casefold() in _NUMBER_WORDS:
             token = _normalize_prose(token)
-        pieces.extend((_normalize_prose(text[end : match.start()]), token))
-        end = match.end()
+        pieces.extend((_normalize_prose(text[end:start]), token))
+        end = stop
     pieces.append(_normalize_prose(text[end:]))
     return "".join(pieces)
 
@@ -164,10 +196,19 @@ def _extract_occurrences(normalized: str) -> list[_AnchorOccurrence]:
     result: list[_AnchorOccurrence] = []
     quantities: list[tuple[int, int]] = []
     money_starts: list[int] = []
+    # One maximal numeric run owns all grouped commas. Suffix searches at each
+    # comma used to retry the remaining tail quadratically when no suffix existed.
+    # Matching at maximal starts still admits prose lists such as note,500 USD.
+    numeric_starts = [match.start() for match in _NUMERIC_SPANS.finditer(normalized)]
     for pattern, kind in ((_MONEY, "money"), (_SUFFIX_MONEY, "money"), (_SCALED_NUMBER, "number")):
         quantities.sort()
         money_starts = [start for start, _ in quantities]
-        for match in pattern.finditer(normalized):
+        matches = (
+            pattern.finditer(normalized)
+            if pattern is _MONEY
+            else (match for start in numeric_starts if (match := pattern.match(normalized, start)) is not None)
+        )
+        for match in matches:
             parent = bisect_right(money_starts, match.start()) - 1
             if parent >= 0 and match.end() <= quantities[parent][1]:
                 continue
@@ -188,12 +229,41 @@ def _extract_occurrences(normalized: str) -> list[_AnchorOccurrence]:
                 value = (currency if currency == "$" else currency + ":") + value
             result.append(_AnchorOccurrence(Anchor(kind, value), match.start(), match.end()))
             quantities.append((match.start(), match.end()))
+    accounting_matches = list(_ACCOUNTING_NUMBER.finditer(normalized))
+    if accounting_matches:
+        boundaries = [0] + _clause_boundaries(normalized) + [len(normalized)]
+        accounting_slots = {
+            i
+            for i, (start, end) in enumerate(zip(boundaries, boundaries[1:]))
+            if _ACCOUNTING_CONTEXT.search(normalized, start, end)
+        }
+        for match in accounting_matches:
+            slot = bisect_right(boundaries, match.start()) - 1
+            # A leading parenthesized list index is never an accounting sign.
+            if slot in accounting_slots and normalized[boundaries[slot] : match.start()].strip():
+                result.append(
+                    _AnchorOccurrence(
+                        Anchor("number", "-" + _canonical_amount(match["amount"])), match.start(), match.end()
+                    )
+                )
+                quantities.append((match.start(), match.end()))
     quantities.sort()
     starts = [start for start, _ in quantities]
+    identifier_spans: set[tuple[int, int]] = set()
+    for match in _explicit_identifiers(normalized):
+        start, end = match.span("value")
+        identifier_spans.add((start, end))
+        result.append(_AnchorOccurrence(Anchor("identifier", match["value"]), start, end))
     for kind, pattern in _PATTERNS.items():
         for match in pattern.finditer(normalized):
             group = next((i for i, g in enumerate(match.groups(), 1) if g is not None), 0)
             value = match[group]
+            if kind == "identifier" and match.span(group) in identifier_spans:
+                continue
+            if kind == "literal" and re.fullmatch(r"[A-Za-z0-9_][\w-]{0,159}", value):
+                if match.span(group) not in identifier_spans:
+                    identifier_spans.add(match.span(group))
+                    result.append(_AnchorOccurrence(Anchor("identifier", value), match.start(group), match.end(group)))
             quantity = bisect_right(starts, match.start(group)) - 1
             if kind in {"number", "identifier"} and quantity >= 0 and match.end(group) <= quantities[quantity][1]:
                 continue
@@ -211,6 +281,8 @@ def _extract_occurrences(normalized: str) -> list[_AnchorOccurrence]:
                 continue
             if kind == "number":
                 value = _canonical_amount(value.removesuffix("%")) + ("%" if value.endswith("%") else "")
+            elif kind == "identifier":
+                identifier_spans.add(match.span(group))
             result.append(_AnchorOccurrence(Anchor(kind, value), match.start(group), match.end(group)))
     result.extend(
         _AnchorOccurrence(Anchor("marker", m[0].casefold()), m.start(), m.end()) for m in _MARKERS.finditer(normalized)
@@ -256,6 +328,7 @@ class _ValueTrie:
 class _Clause:
     end: int
     label: str = ""
+    label_end: int = 0
     snapshot: bool = False
     single_value: bool = False
     snapshot_values: list[Anchor] = field(default_factory=list)
@@ -274,6 +347,7 @@ class _TextIndex:
     contexts: dict[str, list[set[str]]] = field(default_factory=dict)
     clauses: list[_Clause] = field(default_factory=list)
     occurrence_clauses: dict[str, list[int | None]] = field(default_factory=dict)
+    occurrence_in_label: dict[str, list[bool]] = field(default_factory=dict)
     historical: bool = False
     replacements: dict[str, list[Anchor]] = field(default_factory=dict)
     replacement_targets: dict[Anchor, "_ReplacementTarget | None"] = field(default_factory=dict)
@@ -297,6 +371,16 @@ def _context_at(
     return {m[0].casefold().removesuffix("s") for m in nearby if m[0].casefold() not in _STOP}
 
 
+def _header_match(text: str) -> re.Match[str] | None:
+    match = _HEADER.match(text)
+    if match:
+        prefix = match[1]
+        # A closed quoted label is explicit; a colon inside a literal is not.
+        if prefix.count("`") % 2 or prefix.count('"') % 2 or prefix.count("“") != prefix.count("”"):
+            return None
+    return match
+
+
 def _clause_boundaries(text: str) -> list[int]:
     """Structural factual slots; no inherited snapshot/credit authority.
 
@@ -312,7 +396,7 @@ def _clause_boundaries(text: str) -> list[int]:
         if match[0] in {"between", "and"}:
             if header_end < start:
                 prefix = _LIST_PREFIX.sub("", text[start : start + 120].lstrip(), count=1)
-                header = _HEADER.match(prefix)
+                header = _header_match(prefix)
                 header_end = start + header.end() if header else start
             if header_end > start:
                 continue
@@ -429,6 +513,7 @@ def _index_occurrences(index: _TextIndex, trie: _ValueTrie, budget: _Budget) -> 
                 _context_at(words, starts, ends, pos, end, boundaries) if end <= main_end else set()
             )
             clause = bisect_right(boundaries, pos)
+            index.occurrence_in_label.setdefault(value, []).append(end <= index.clauses[clause].label_end)
             index.occurrence_clauses.setdefault(value, []).append(
                 clause if end <= main_end and end <= index.clauses[clause].end else None
             )
@@ -458,9 +543,10 @@ def _prepare(texts: list[str], budget: _Budget) -> dict[str, _TextIndex]:
             clause_text = main[start:end].strip().rstrip(".;!?").strip()
             clause_text = _LIST_PREFIX.sub("", clause_text, count=1)
             clause = _Clause(end)
-            header = _HEADER.match(clause_text)
+            header = _header_match(clause_text)
             if header:
-                clause.label = header[1].strip().casefold()
+                clause.label = _canonical_label(header[1])
+                clause.label_end = main.find(clause_text, start, end) + header.end(1)
                 clause.snapshot = clause.label.startswith("current ")
                 value_text = clause_text[header.end() :].strip()
                 clause.single_value = _single_snapshot_value(value_text)
@@ -468,11 +554,10 @@ def _prepare(texts: list[str], budget: _Budget) -> dict[str, _TextIndex]:
             else:
                 # Ordered subject labels cover explicit prose slots without
                 # turning unordered nearby-word overlap into slot identity.
-                subject = re.match(
-                    r"(?:the |a |an )?(.+?) (?:is|are|was|were|has|had|changed|grew|fell)\b", clause_text, re.I
-                )
+                subject = _SUBJECT.match(clause_text)
                 if subject and subject[1].casefold() not in _STOP | {"there"}:
-                    clause.label = subject[1].strip().casefold()
+                    clause.label = _canonical_label(subject[1])
+                    clause.label_end = main.find(clause_text, start, end) + subject.end(1)
             clause.credit_identity = _credit_identity(clause_text, consumed=False)
             clause.available = bool(clause.credit_identity)
             if not clause.available:
@@ -499,11 +584,27 @@ def _prepare(texts: list[str], budget: _Budget) -> dict[str, _TextIndex]:
     return indexes
 
 
+def _canonical_label(label: str) -> str:
+    label = label.translate(str.maketrans("", "", '`"“”')).strip().casefold()
+    label = re.sub(r"\b(?:is|are|was|were)\b", "", label)
+    label = " ".join(label.split())
+    return re.sub(r"^(?:the|a|an)\s+", "", label)
+
+
+def _label_adds_qualifier(old: str, new: str) -> bool:
+    # Only the demonstrated subject qualifier is a restatement. Arbitrary
+    # additions (e.g. "backup") must not alias otherwise distinct explicit slots.
+    return new == "configured " + old
+
+
 def _occurrence_label(index: _TextIndex, value: str, occurrence: int) -> str:
     slot = index.occurrence_clauses[value][occurrence]
     if slot is None:
         return ""
     clause = index.clauses[slot]
+    # A token inside the subject is not a value placed under that subject.
+    if index.occurrence_in_label[value][occurrence]:
+        return ""
     values = [anchor.value for anchor in clause.snapshot_values]
     if len(values) == 2 and values[0] != values[1] and value in values:
         # A different total is its own slot even under the same colon header.
@@ -538,9 +639,9 @@ def _unmatched_occurrences(anchor: Anchor, before: _TextIndex, after: _TextIndex
         budget.spend(len(contexts))
         scores = [
             (len(context & old) + (100 if label else 0))
-            if old_labels[i] == label
+            if old_labels[i] == label or (old_labels[i] and label and _label_adds_qualifier(old_labels[i], label))
             else len(context & old)
-            if not old_labels[i]
+            if not old_labels[i] or not label
             else 0
             for i, old in enumerate(contexts)
         ]
@@ -749,12 +850,19 @@ def dropped_supported_anchors(before: str, after: str, existing: list[Evidence],
                 budget.spend()
                 if new.occurrences[replacement.value]:
                     source.text.replacements.setdefault(replacement.kind, []).append(replacement)
+        labels_by_kind: dict[str, set[str]] = {}
+        for clause in old.clauses:
+            if clause.label:
+                for value in clause.values:
+                    budget.spend()
+                    labels_by_kind.setdefault(value.kind, set()).add(_canonical_label(clause.label))
         dropped: list[Anchor] = []
         for anchor, needed in old.counts.items():
             budget.spend()
             missing = needed - new.occurrences[anchor.value]
-            labeled = any(slot is not None and old.clauses[slot].label for slot in old.occurrence_clauses[anchor.value])
-            if needed > 1 or labeled:
+            multi_slot = len(labels_by_kind.get(anchor.kind, set())) > 1
+            labeled = any(_occurrence_label(old, anchor.value, i) for i in range(len(old.contexts[anchor.value])))
+            if needed > 1 or multi_slot or labeled:
                 unmatched = _unmatched_occurrences(anchor, old, new, budget)
                 missing = max(missing, len(unmatched))
             else:
