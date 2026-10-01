@@ -13,6 +13,7 @@ func TestOperationResponseDetailsRejectInvalidDiscriminator(t *testing.T) {
 		`{"operation_type":"file_convert_retain","outcome":"content_written"}`,
 		`{"operation_type":"refresh_mental_model","failure_class":"low_quality_ocr","failure_reason":"no_meaningful_text"}`,
 		`{}`,
+		`""`,
 	}
 	for _, payload := range payloads {
 		t.Run(payload, func(t *testing.T) {

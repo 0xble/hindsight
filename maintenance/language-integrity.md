@@ -71,7 +71,14 @@ use the configurable policy below without destructive changes to source facts.
   existing line recognizer; never execute code or trust a fence tag alone.
   Keep the fallback's residual prose visible, including bare quoted expression
   statements beside calls. `tests/test_language_code_spans.py` owns the calls,
-  loop, JSON-string, and foreign-prose counterexamples. These corrections use
+  loop, JSON-string, and foreign-prose counterexamples. Python accepts Unicode
+  identifiers: do not use syntax validity to exempt non-ASCII letters in AST
+  identifier fields (including annotation/assignment names, calls, attributes,
+  arguments, imports, and pattern bindings). Keep literal string values exempt,
+  including Chinese JSON strings. The three CJK/Japanese annotated-assignment
+  and call-shaped prose cases are `mismatch` at `d7554cf` but incorrectly
+  `preserved` at `92d44c8`; the identifier guard restores `mismatch` without
+  changing the await/call/loop/JSON controls. These corrections use
   verdict policy `source-spans-v4`; they do not change enforcement modes.
 - **Round-2 upstream alignment:** Guidance pinned at
   `d863f78aa24408583d69bbc32203649fc6fc230a`: `AGENTS.md` delegates to `CLAUDE.md`;

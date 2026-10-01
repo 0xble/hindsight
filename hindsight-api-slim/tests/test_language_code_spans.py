@@ -109,6 +109,9 @@ def test_syntax_validated_code_literals_are_not_terminal_rejects(output: str) ->
         '```python\nreport.save()\n"' + SPANISH + '"\n```',
         '```json\n"' + SPANISH + '"\n```',
         '`report.save(); "' + SPANISH + '"`',
+        "```\n说明:团队已经完成了全部检查并且保存了所有原始文件\n备注:下次会议将继续讨论这些结果和后续安排\n```",
+        "`团队已经完成了全部检查并且保存了所有原始文件以便下次会议使用(全部)`",
+        "`チームは確認を完了し元のファイルを保存しました(次回の会議用)`",
     ],
     ids=[
         "call-prefix-prose",
@@ -118,12 +121,54 @@ def test_syntax_validated_code_literals_are_not_terminal_rejects(output: str) ->
         "bare-string-after-call",
         "json-scalar-prose",
         "call-and-string-same-line",
+        "chinese-annotated-prose",
+        "chinese-call-prose",
+        "japanese-call-prose",
     ],
 )
 def test_code_syntax_or_tag_does_not_exempt_adjacent_foreign_prose(output: str) -> None:
     result = check(ENGLISH, output)
 
     assert guard.enforcement_failures(result, guard.LanguageIntegrityMode.REJECT)
+
+
+@pytest.mark.parametrize(
+    "code",
+    [
+        "说明:int",
+        "description:团队已经完成了全部检查",
+        "团队已经完成了全部检查(全部)",
+        "report.团队已经完成了全部检查()",
+        "report.save(团队已经完成了全部检查=True)",
+        "def save(团队已经完成了全部检查): pass",
+        "import 团队已经完成了全部检查",
+        "global 团队已经完成了全部检查",
+        "from 团队已经完成了全部检查 import save",
+        "import report as 团队已经完成了全部检查",
+        "def 团队已经完成了全部检查(): pass",
+        "class 团队已经完成了全部检查: pass",
+        "match report:\n    case {**团队已经完成了全部检查}: pass",
+        "match report:\n    case Report(团队已经完成了全部检查=True): pass",
+    ],
+    ids=[
+        "annotated-target",
+        "annotation",
+        "call-name",
+        "attribute",
+        "keyword",
+        "argument",
+        "import",
+        "global",
+        "import-module",
+        "import-alias",
+        "function-name",
+        "class-name",
+        "pattern-rest",
+        "pattern-attribute",
+    ],
+)
+def test_python_unicode_identifiers_are_not_syntax_exemption_authority(code: str) -> None:
+    assert not guard._is_syntax_code(code)
 
 
 def test_fenced_mixed_code_and_foreign_prose_is_not_exempt():

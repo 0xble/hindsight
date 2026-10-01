@@ -112,6 +112,8 @@ def test_parent_operation_preserves_nullable_details(model, include_details: boo
 @pytest.mark.parametrize(
     "payload",
     [
+        {},
+        "",
         {"operation_type": "unknown", "outcome": "content_written"},
         {"outcome": "content_written"},
         {"operation_type": None, "outcome": "content_written"},

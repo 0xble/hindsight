@@ -19,10 +19,14 @@ remain compatible for callers.
   `5fc4ce20917b916240cef27c212c387a177f115b`, this is fork-owned: OCR rejection
   entered in `996c59b9268f58f3e2059079b563adfa5f467b59`; the `nonempty_error`
   slot in `27fcb7b95013afaf4fb4253927b4dcca390921ba` still let a later OCR
-  rejection hide a provider/transport or unsupported-parser failure. Preserve
-  an unclassified error separately, in either parser order, rather than settling
-  a retryable mixed chain as `low_quality_ocr`. Exhaust fallback first; a useful
-  result still succeeds and a low-quality-only chain still has typed OCR details.
+  rejection hide a provider/transport failure. Preserve an unclassified error
+  separately, in either parser order, rather than settling a retryable mixed
+  chain as `low_quality_ocr`. Unsupported file types are deterministic: they
+  must not outrank a capable parser's OCR rejection, even with trailing empty
+  results. Keep OCR errors separately from unsupported-type errors; only
+  transient/unclassified failures take priority. Exhaust fallback first; a useful
+  result still succeeds and low-quality-only or low-quality/unsupported chains
+  still have typed OCR details.
   `tests/test_ocr_quality.py` checks the raised error and failure metadata,
   including wrapped errors and a trailing empty parser.
 - **Fence/sparse-text provenance:** The optional-newline wrapper bug originated
@@ -58,6 +62,15 @@ remain compatible for callers.
   and mismatched shapes are rejected, and parents retain absent/explicit-null
   semantics. Reapplying the patch must be byte-idempotent and changed generator
   boundaries must fail without rewriting the target.
+- **Empty-detail wire contract:** `engine/memory_engine.py::_operation_details`
+  returns a validated, discriminated model dump or `None`, never `{}` or `""`;
+  both list/get operation readers use that projection. `api/http.py` response
+  models and checked-in OpenAPI permit only the typed union or null. Malformed,
+  missing, legacy, or unreported metadata resolves to null. Preserve strict
+  Go/Python rejection of empty non-null details rather than accepting a wire
+  shape the server cannot emit. `tests/test_operation_status.py` guards the
+  projection and server-model boundary; client null/discriminator and generator
+  idempotence tests remain required.
 - **Qualification preflight:** Read upstream `AGENTS.md`, `CONTRIBUTING.md`,
   `CLAUDE.md` and code-review guidance at pinned
   `d863f78aa24408583d69bbc32203649fc6fc230a`. Independent proposal: retain

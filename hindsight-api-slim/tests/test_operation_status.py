@@ -16,10 +16,43 @@ from datetime import datetime
 import httpx
 import pytest
 import pytest_asyncio
+from pydantic import ValidationError
 
 from hindsight_api.api import create_app
-from hindsight_api.engine.memory_engine import _file_convert_failure_metadata
+from hindsight_api.api.http import OperationResponse, OperationStatusResponse
+from hindsight_api.engine.memory_engine import _file_convert_failure_metadata, _operation_details
 from hindsight_api.engine.parsers.ocr_quality import LowQualityOcrError, evaluate_ocr_quality
+
+
+@pytest.mark.parametrize("operation_type", ["retain", "consolidation", "file_convert_retain", "refresh_mental_model"])
+@pytest.mark.parametrize(
+    "metadata",
+    [{}, {"details": {}}, {"details": ""}, {"outcome": ""}, {"failure_class": "", "failure_reason": ""}],
+)
+def test_unreported_or_malformed_operation_details_are_null(operation_type: str, metadata: dict[str, object]) -> None:
+    # Both list/get project typed details here rather than echoing raw metadata.
+    assert _operation_details(operation_type, metadata) is None
+
+
+@pytest.mark.parametrize("model", [OperationResponse, OperationStatusResponse])
+@pytest.mark.parametrize("details", [{}, ""])
+def test_server_operation_models_reject_empty_nontyped_details(
+    model: type[OperationResponse] | type[OperationStatusResponse], details: dict[str, object] | str
+) -> None:
+    payload = {
+        "id": "op",
+        "operation_id": "op",
+        "task_type": "retain",
+        "items_count": 1,
+        "created_at": "2026-10-01T00:00:00Z",
+        "status": "completed",
+        "error_message": None,
+        "details": details,
+    }
+    assert model.model_validate({**payload, "details": None}).details is None
+    with pytest.raises(ValidationError) as caught:
+        model.model_validate(payload)
+    assert all(error["loc"][0] == "details" for error in caught.value.errors())
 
 
 @pytest_asyncio.fixture

@@ -454,6 +454,18 @@ def _is_syntax_code(text: str) -> bool:
     # statements. Only calls (including awaited calls) authorize such statements,
     # at every nesting level, so a small program cannot hide adjacent prose.
     for node in ast.walk(tree):
+        # Python accepts Unicode identifiers, so CJK prose such as label:sentence
+        # or sentence(...) can parse successfully. Identifier fields must not
+        # authorize stripping that prose; string literal values remain exempt.
+        for field, value in ast.iter_fields(node):
+            if field not in {"id", "attr", "arg", "name", "asname", "names", "module", "rest", "kwd_attrs"}:
+                continue
+            identifiers = value if isinstance(value, list) else [value]
+            if any(
+                isinstance(identifier, str) and any(not char.isascii() and char.isalpha() for char in identifier)
+                for identifier in identifiers
+            ):
+                return False
         if isinstance(node, ast.Expr):
             expression = node.value.value if isinstance(node.value, ast.Await) else node.value
             if not isinstance(expression, ast.Call):

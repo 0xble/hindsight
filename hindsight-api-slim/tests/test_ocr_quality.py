@@ -215,7 +215,7 @@ async def test_non_image_content_is_not_subject_to_ocr_quality_gate():
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("transient_first", [True, False])
-@pytest.mark.parametrize("error_type", [TimeoutError, ConnectionError, RuntimeError, UnsupportedFileTypeError])
+@pytest.mark.parametrize("error_type", [TimeoutError, ConnectionError, RuntimeError])
 async def test_mixed_ocr_chain_preserves_nonterminal_error(transient_first: bool, error_type: type[Exception]):
     registry = FileParserRegistry()
     transient = error_type("provider unavailable")
@@ -233,6 +233,30 @@ async def test_mixed_ocr_chain_preserves_nonterminal_error(transient_first: bool
     wrapped = RuntimeError("file failed")
     wrapped.__cause__ = caught.value
     assert _file_convert_failure_metadata(wrapped) == {}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("unsupported_first", [True, False])
+@pytest.mark.parametrize("trailing_empty", [True, False])
+async def test_unsupported_parser_does_not_outrank_capable_parsers_ocr_rejection(
+    unsupported_first: bool, trailing_empty: bool
+) -> None:
+    registry = FileParserRegistry()
+    registry.register(StubParser("unsupported", UnsupportedFileTypeError("unsupported format")))
+    registry.register(StaticParser("first", "No visible text"))
+    registry.register(StaticParser("second", "[unclear]"))
+    registry.register(StaticParser("empty", ""))
+    chain = ["unsupported", "first", "second"] if unsupported_first else ["first", "second", "unsupported"]
+    if trailing_empty:
+        chain.append("empty")
+
+    with pytest.raises(LowQualityOcrError) as caught:
+        await registry.convert_with_fallback(chain, b"image", "scan.png")
+
+    assert _file_convert_failure_metadata(caught.value) == {
+        "failure_class": "low_quality_ocr",
+        "failure_reason": OcrQualityReason.EXCESSIVE_UNCERTAINTY.value,
+    }
 
 
 @pytest.mark.asyncio
