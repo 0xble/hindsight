@@ -1,0 +1,694 @@
+"""Real PostgreSQL proofs for the bounded, conditional recovery protocol.
+
+These tests seed exact history/link identities through SQL, then drive public
+engine/HTTP boundaries. The system story separately exercises client and worker
+composition without SQL or internal imports.
+"""
+
+import json
+import uuid
+from dataclasses import dataclass
+from datetime import UTC, datetime
+from unittest.mock import AsyncMock, patch
+
+import asyncpg
+import httpx
+import pytest
+import pytest_asyncio
+
+from hindsight_api import RequestContext
+from hindsight_api.api import create_app
+from hindsight_api.engine.cross_encoder import RRFPassthroughCrossEncoder
+from hindsight_api.engine.curation_batch import (
+    CurationApplyRequest,
+    CurationBatchConflict,
+    CurationChange,
+    CurationFields,
+    CurationPreviewRequest,
+    CurationRevertRequest,
+    revision,
+    snapshot_revision,
+)
+from hindsight_api.engine.embeddings import Embeddings
+from hindsight_api.engine.memories import get_memories
+from hindsight_api.engine.memories.pg import curation_batch as store
+from hindsight_api.engine.memories.pg import graph
+from hindsight_api.engine.memory_engine import MemoryEngine
+from hindsight_api.engine.schema import fq_table
+from hindsight_api.engine.task_backend import SyncTaskBackend
+
+pytestmark = [pytest.mark.asyncio, pytest.mark.memory_backend_incompatible]
+CTX = RequestContext()
+
+
+class SyntheticEmbeddings(Embeddings):
+    provider_name = "synthetic-curation"
+    dimension = 384
+
+    async def initialize(self):
+        pass
+
+    async def encode(self, texts):
+        return [[0.25] * 384 for _ in texts]
+
+
+@pytest_asyncio.fixture
+async def memory(pg0_db_url):
+    mem = MemoryEngine(
+        db_url=pg0_db_url,
+        memory_llm_provider="mock",
+        memory_llm_api_key="",
+        memory_llm_model="mock",
+        embeddings=SyntheticEmbeddings(),
+        cross_encoder=RRFPassthroughCrossEncoder(),
+        pool_min_size=1,
+        pool_max_size=4,
+        run_migrations=False,
+        task_backend=SyncTaskBackend(),
+    )
+    await mem.initialize()
+    yield mem
+    await mem.close()
+
+
+@dataclass
+class Seed:
+    bank: str
+    raw: uuid.UUID
+    peer: uuid.UUID
+    observation: uuid.UUID
+    entities: list[uuid.UUID]
+    history: list[int]
+
+
+async def raw(conn, bank, text="Alice works on a historical system", *, doc=None):
+    mid = uuid.uuid4()
+    doc = doc or f"document-{mid}"
+    chunk = f"{bank}_{doc}_0"
+    await conn.execute(
+        "INSERT INTO documents(id,bank_id,original_text,content_hash) VALUES($1,$2,$3,'fixture')", doc, bank, text
+    )
+    await conn.execute(
+        "INSERT INTO chunks(chunk_id,document_id,bank_id,chunk_index,chunk_text) VALUES($1,$2,$3,0,$4)",
+        chunk,
+        doc,
+        bank,
+        text,
+    )
+    await conn.execute(
+        "INSERT INTO memory_units(id,bank_id,text,fact_type,document_id,chunk_id,embedding,event_date,occurred_start,occurred_end,mentioned_at,consolidated_at) "
+        "VALUES($1,$2,$3,'world',$4,$5,$6::vector,'2020-01-01','2020-01-01','2020-01-01','2026-10-01',now())",
+        mid,
+        bank,
+        text,
+        doc,
+        chunk,
+        str([0.25] * 384),
+    )
+    return mid
+
+
+@pytest_asyncio.fixture
+async def seeded(memory):
+    bank = f"test-curation-v2-{uuid.uuid4().hex}"
+    await memory.ensure_bank_profile(bank, request_context=CTX)
+    await memory.update_bank_config(bank, {"enable_auto_consolidation": False}, request_context=CTX)
+    async with memory._pool.acquire() as conn:
+        raw_id = await raw(conn, bank)
+        peer = await raw(conn, bank, "Alice also holds a corroborating fact")
+        obs = uuid.uuid4()
+        await conn.execute(
+            "INSERT INTO memory_units(id,bank_id,text,fact_type,source_memory_ids,event_date,embedding,proof_count) VALUES($1,$2,'Derived historical observation','observation',$3,'2020-01-01',$4::vector,2)",
+            obs,
+            bank,
+            [raw_id, peer],
+            str([0.25] * 384),
+        )
+        entities = sorted([uuid.uuid4(), uuid.uuid4()])
+        for index, eid in enumerate(entities):
+            await conn.execute(
+                "INSERT INTO entities(id,bank_id,canonical_name,mention_count) VALUES($1,$2,$3,2)",
+                eid,
+                bank,
+                f"Alice-{index}",
+            )
+            await conn.execute("INSERT INTO unit_entities(unit_id,entity_id) VALUES($1,$2),($3,$2)", raw_id, eid, obs)
+        await conn.execute(
+            "INSERT INTO entity_cooccurrences(entity_id_1,entity_id_2,cooccurrence_count) VALUES($1,$2,2)", *entities
+        )
+        await conn.execute(
+            "INSERT INTO memory_links(bank_id,from_unit_id,to_unit_id,entity_id,link_type,weight) VALUES($1,$2,$3,$4,'entity',0.8)",
+            bank,
+            raw_id,
+            peer,
+            entities[0],
+        )
+        history = []
+        for index in range(2):
+            history.append(
+                await conn.fetchval(
+                    "INSERT INTO observation_history(observation_id,bank_id,content,changed_at) VALUES($1,$2,$3::jsonb,'2025-05-05') RETURNING id",
+                    obs,
+                    bank,
+                    json.dumps({"previous_text": f"version {index}", "numeric": 9007199254740993}),
+                )
+            )
+    yield Seed(bank, raw_id, peer, obs, entities, history)
+    # Cleanup must bypass the public delete guard only in this synthetic fixture.
+    async with memory._pool.acquire() as conn:
+        await conn.execute("DELETE FROM curation_batches WHERE bank_id=$1", bank)
+    await memory.delete_bank(bank, request_context=CTX)
+
+
+async def preview(memory, seed, ids=None):
+    return await memory.preview_curation_batch(
+        seed.bank, CurationPreviewRequest(protocol="raw-curation-v2", memory_ids=ids or [seed.raw]), request_context=CTX
+    )
+
+
+def manifest(view, *, correction=None):
+    return CurationApplyRequest(
+        protocol="raw-curation-v2",
+        expected_closure_revision=view.closure_revision,
+        changes=[
+            CurationChange(
+                **t.model_dump(),
+                action="correct" if correction else "invalidate",
+                reason="canonical source contradicts extracted fact",
+                fields=correction,
+            )
+            for t in view.targets
+        ],
+    )
+
+
+async def apply(memory, seed, request, batch="fixture"):
+    return await memory.apply_curation_batch(seed.bank, batch, request, request_context=CTX)
+
+
+async def revert(memory, seed, receipt, batch="fixture"):
+    return await memory.revert_curation_batch(
+        seed.bank,
+        batch,
+        CurationRevertRequest(protocol="raw-curation-v2", expected_receipt_revision=receipt.receipt_revision),
+        request_context=CTX,
+    )
+
+
+async def snapshot(memory, seed, scope=None):
+    async with memory._pool.acquire() as conn:
+        async with conn.transaction():
+            await store.lock(conn)
+            scope = scope or await store.discover(conn, seed.bank, [seed.raw])
+            return await store.capture(conn, seed.bank, scope)
+
+
+async def test_exact_entity_observation_history_roundtrip(memory, seeded):
+    before = await snapshot(memory, seeded)
+    view = await preview(memory, seeded)
+    assert view.inventory.observations == 1 and view.inventory.history_rows == 2
+    req = manifest(view)
+    with patch.object(memory, "submit_async_consolidation", new=AsyncMock()) as submit:
+        receipt = await apply(memory, seeded, req)
+        assert (
+            receipt.maintenance_debt.consolidation
+            and receipt.maintenance_debt.graph
+            and receipt.maintenance_debt.model_refresh
+        )
+        async with memory._pool.acquire() as conn:
+            assert (
+                await conn.fetchval(
+                    "SELECT count(*) FROM memory_units WHERE id=ANY($1::uuid[])", [seeded.raw, seeded.observation]
+                )
+                == 0
+            )
+            assert (
+                await conn.fetchval(
+                    "SELECT count(*) FROM observation_history WHERE observation_id=$1", seeded.observation
+                )
+                == 0
+            )
+            assert await conn.fetchval("SELECT count(*) FROM curation_entity_pins WHERE bank_id=$1", seeded.bank) == 2
+            assert await conn.fetchval("SELECT consolidated_at IS NULL FROM memory_units WHERE id=$1", seeded.peer)
+            assert await conn.fetchval("SELECT count(*) FROM async_operations WHERE bank_id=$1", seeded.bank) == 0
+            assert await conn.fetchval("SELECT min(mention_count) FROM entities WHERE bank_id=$1", seeded.bank) == 0
+        assert await memory.get_curation_batch(seeded.bank, "fixture", request_context=CTX) == receipt
+        assert await apply(memory, seeded, req) == receipt
+        undone = await revert(memory, seeded, receipt)
+        assert undone.status == "reverted"
+        assert await revert(memory, seeded, receipt) == undone
+        assert await apply(memory, seeded, req) == undone
+        submit.assert_not_called()
+    after = await snapshot(memory, seeded, before.scope)
+    assert snapshot_revision(after) == snapshot_revision(before)
+    assert after.history.rows == before.history.rows
+    async with memory._pool.acquire() as conn:
+        assert await conn.fetchval("SELECT min(mention_count) FROM entities WHERE bank_id=$1", seeded.bank) == 2
+        assert await conn.fetchval("SELECT count(*) FROM curation_entity_pins WHERE bank_id=$1", seeded.bank) == 0
+
+
+async def test_entity_bearing_correction_dates_preserves_identity_and_embedding(memory, seeded):
+    before = await snapshot(memory, seeded)
+    receipt = await apply(
+        memory,
+        seeded,
+        manifest(
+            await preview(memory, seeded),
+            correction=CurationFields(
+                text="Alice retired the system",
+                occurred_start=datetime(2021, 2, 3, tzinfo=UTC),
+                occurred_end=datetime(2021, 2, 3, tzinfo=UTC),
+            ),
+        ),
+    )
+    async with memory._pool.acquire() as conn:
+        row = await conn.fetchrow(
+            "SELECT text,occurred_start,event_date,edited_at FROM memory_units WHERE id=$1", seeded.raw
+        )
+        assert (
+            row["text"] == "Alice retired the system"
+            and row["occurred_start"].year == 2021
+            and row["event_date"] == row["occurred_start"]
+        )
+        assert row["edited_at"] is not None
+        assert await conn.fetchval("SELECT count(*) FROM unit_entities WHERE unit_id=$1", seeded.raw) == 2
+        assert await conn.fetchval("SELECT min(mention_count) FROM entities WHERE bank_id=$1", seeded.bank) == 1
+    await revert(memory, seeded, receipt)
+    assert snapshot_revision(await snapshot(memory, seeded, before.scope)) == snapshot_revision(before)
+
+
+async def test_queued_prune_keeps_pinned_orphans_and_cooccurrences(memory, seeded):
+    # This claimant was queued BEFORE the capsule, as a real worker can be.
+    async with memory._pool.acquire() as conn:
+        await conn.executemany(
+            "INSERT INTO entity_maintenance_queue(bank_id,entity_id) VALUES($1,$2)",
+            [(seeded.bank, e) for e in seeded.entities],
+        )
+    receipt = await apply(memory, seeded, manifest(await preview(memory, seeded)))
+    result = await graph.entity_prune_pass(backend=memory._backend, fq_table=fq_table, bank_id=seeded.bank)
+    assert result.orphan_entities_pruned == 0 and result.stale_cooccurrences_pruned == 0
+    async with memory._pool.acquire() as conn:
+        assert await conn.fetchval("SELECT count(*) FROM entities WHERE bank_id=$1", seeded.bank) == 2
+        assert (
+            await conn.fetchval("SELECT count(*) FROM entity_cooccurrences WHERE entity_id_1=$1", seeded.entities[0])
+            == 1
+        )
+    await revert(memory, seeded, receipt)
+
+
+async def test_shared_entity_two_capsules_and_unrelated_posting_counter(memory, seeded):
+    async with memory._pool.acquire() as conn:
+        second = await raw(conn, seeded.bank, "Independent second target")
+        await conn.execute("INSERT INTO unit_entities(unit_id,entity_id) VALUES($1,$2)", second, seeded.entities[0])
+        await conn.execute("UPDATE entities SET mention_count=mention_count+1 WHERE id=$1", seeded.entities[0])
+    first = await apply(memory, seeded, manifest(await preview(memory, seeded)), "first")
+    second_receipt = await apply(memory, seeded, manifest(await preview(memory, seeded, [second])), "second")
+    async with memory._pool.acquire() as conn:
+        third = await raw(conn, seeded.bank, "Compatible unrelated addition")
+        await conn.execute("INSERT INTO unit_entities(unit_id,entity_id) VALUES($1,$2)", third, seeded.entities[0])
+        await conn.execute(
+            "UPDATE entities SET mention_count=mention_count+1,last_seen=now() WHERE id=$1", seeded.entities[0]
+        )
+        await conn.execute(
+            "UPDATE entity_cooccurrences SET cooccurrence_count=cooccurrence_count+1,last_cooccurred=now() "
+            "WHERE entity_id_1=$1 AND entity_id_2=$2",
+            *seeded.entities,
+        )
+    await revert(memory, seeded, first, "first")
+    async with memory._pool.acquire() as conn:
+        assert await conn.fetchval("SELECT mention_count FROM entities WHERE id=$1", seeded.entities[0]) == 3
+        assert (
+            await conn.fetchval("SELECT count(*) FROM curation_entity_pins WHERE entity_id=$1", seeded.entities[0]) == 1
+        )
+    await revert(memory, seeded, second_receipt, "second")
+    async with memory._pool.acquire() as conn:
+        assert await conn.fetchval("SELECT mention_count FROM entities WHERE id=$1", seeded.entities[0]) == 4
+        assert (
+            await conn.fetchval(
+                "SELECT cooccurrence_count FROM entity_cooccurrences WHERE entity_id_1=$1 AND entity_id_2=$2",
+                *seeded.entities,
+            )
+            == 3
+        )
+
+
+@pytest.mark.parametrize(
+    "drift", ["raw", "source", "schema", "new-observation", "cosource-reconsolidated", "history-collision"]
+)
+async def test_revert_drift_conflicts_atomically_and_preserves_capsule(memory, seeded, drift):
+    receipt = await apply(memory, seeded, manifest(await preview(memory, seeded)))
+    async with memory._pool.acquire() as conn:
+        if drift == "raw":
+            await conn.execute("UPDATE invalidated_memory_units SET text='later edit' WHERE id=$1", seeded.raw)
+        elif drift == "source":
+            await conn.execute("UPDATE documents SET original_text='source changed' WHERE bank_id=$1", seeded.bank)
+        elif drift == "schema":
+            await conn.execute("ALTER TABLE memory_units ADD COLUMN v2_fixture_schema_drift boolean")
+        elif drift == "new-observation":
+            await conn.execute(
+                "INSERT INTO memory_units(bank_id,text,fact_type,source_memory_ids,event_date) VALUES($1,'new dependency','observation',$2,now())",
+                seeded.bank,
+                [seeded.raw],
+            )
+        elif drift == "cosource-reconsolidated":
+            await conn.execute("UPDATE memory_units SET consolidated_at=now() WHERE id=$1", seeded.peer)
+        else:
+            await conn.execute(
+                "INSERT INTO observation_history(id,observation_id,bank_id,content) VALUES($1,$2,$3,'{}')",
+                seeded.history[0],
+                seeded.peer,
+                seeded.bank,
+            )
+    try:
+        with pytest.raises(CurationBatchConflict):
+            await revert(memory, seeded, receipt)
+        async with memory._pool.acquire() as conn:
+            assert not await conn.fetchval("SELECT 1 FROM memory_units WHERE id=$1", seeded.raw)
+            assert await conn.fetchval("SELECT status FROM curation_batches WHERE bank_id=$1", seeded.bank) == "applied"
+            assert await conn.fetchval("SELECT count(*) FROM curation_entity_pins WHERE bank_id=$1", seeded.bank) == 2
+    finally:
+        if drift == "schema":
+            async with memory._pool.acquire() as conn:
+                await conn.execute("ALTER TABLE memory_units DROP COLUMN v2_fixture_schema_drift")
+
+
+async def test_source_and_target_cas_before_apply_and_preparation_race(memory, seeded):
+    req = manifest(await preview(memory, seeded), correction=CurationFields(text="replacement"))
+
+    async def provider(**kwargs):
+        async with memory._pool.acquire() as conn:
+            await conn.execute(
+                "UPDATE documents SET original_text='changed during provider work' WHERE bank_id=$1", seeded.bank
+            )
+        return str([0.25] * 384)
+
+    with patch.object(memory, "_reembed_memory_text", new=provider):
+        with pytest.raises(CurationBatchConflict, match="preparation"):
+            await apply(memory, seeded, req)
+    async with memory._pool.acquire() as conn:
+        assert (
+            await conn.fetchval("SELECT text FROM memory_units WHERE id=$1", seeded.raw)
+            == "Alice works on a historical system"
+        )
+        assert await conn.fetchval("SELECT count(*) FROM curation_batches WHERE bank_id=$1", seeded.bank) == 0
+    with pytest.raises(CurationBatchConflict, match="revision"):
+        await apply(memory, seeded, req)
+
+
+async def test_batch_atomicity_on_second_mutation_failure(memory, seeded):
+    req = manifest(await preview(memory, seeded, [seeded.raw, seeded.peer]))
+    original = store.writes.invalidate_memory
+    calls = 0
+
+    async def fail_second(**kwargs):
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            raise CurationBatchConflict("injected SQL failure")
+        return await original(**kwargs)
+
+    before = await snapshot(memory, seeded)
+    with patch.object(store.writes, "invalidate_memory", new=fail_second):
+        with pytest.raises(CurationBatchConflict):
+            await apply(memory, seeded, req)
+    assert snapshot_revision(await snapshot(memory, seeded, before.scope)) == snapshot_revision(before)
+    async with memory._pool.acquire() as conn:
+        assert await conn.fetchval("SELECT count(*) FROM curation_batches WHERE bank_id=$1", seeded.bank) == 0
+        assert await conn.fetchval("SELECT min(mention_count) FROM entities WHERE bank_id=$1", seeded.bank) == 2
+
+
+async def test_active_capsule_blocks_bank_delete_and_identity_delete(memory, seeded):
+    receipt = await apply(memory, seeded, manifest(await preview(memory, seeded)))
+    with pytest.raises(CurationBatchConflict, match="capsule"):
+        await memory.delete_bank(seeded.bank, request_context=CTX)
+    async with memory._pool.acquire() as conn:
+        with pytest.raises(asyncpg.RestrictViolationError):
+            await conn.execute("DELETE FROM entities WHERE id=$1", seeded.entities[0])
+    await revert(memory, seeded, receipt)
+
+
+@pytest.mark.parametrize(
+    "bad", ["unpaused", "active-operation", "transitive", "wrong-bank", "missing-provenance", "null-source"]
+)
+async def test_preview_fails_closed(memory, seeded, bad):
+    ids = [seeded.raw]
+    if bad == "unpaused":
+        await memory.update_bank_config(seeded.bank, {"enable_auto_consolidation": True}, request_context=CTX)
+    else:
+        async with memory._pool.acquire() as conn:
+            if bad == "active-operation":
+                await conn.execute(
+                    "INSERT INTO async_operations(bank_id,operation_type,status) VALUES($1,'consolidation','processing')",
+                    seeded.bank,
+                )
+            elif bad == "transitive":
+                await conn.execute(
+                    "INSERT INTO memory_units(bank_id,text,fact_type,source_memory_ids,event_date) VALUES($1,'transitive','observation',$2,now())",
+                    seeded.bank,
+                    [seeded.observation],
+                )
+            elif bad == "wrong-bank":
+                ids = [uuid.uuid4()]
+            elif bad == "missing-provenance":
+                await conn.execute("UPDATE memory_units SET chunk_id=NULL WHERE id=$1", seeded.raw)
+            else:
+                await conn.execute("UPDATE documents SET original_text=NULL WHERE bank_id=$1", seeded.bank)
+    with pytest.raises(CurationBatchConflict):
+        await preview(memory, seeded, ids)
+
+
+async def test_bounded_source_content_and_observation_caps(memory, seeded, monkeypatch):
+    monkeypatch.setattr(store, "MAX_BYTES", 1000)
+    with pytest.raises(CurationBatchConflict, match="8MiB"):
+        await preview(memory, seeded)
+    monkeypatch.setattr(store, "MAX_BYTES", 8 * 1024 * 1024)
+    monkeypatch.setattr(store, "MAX_OBSERVATIONS", 0)
+    with pytest.raises(CurationBatchConflict, match="cap"):
+        await preview(memory, seeded)
+
+
+async def test_http_lost_ack_idempotence_manifest_conflict_and_cross_bank_lookup(memory, seeded):
+    app = create_app(memory, initialize_memory=False)
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
+        url = f"/v1/default/banks/{seeded.bank}/curation-batches"
+        view = await client.post(
+            url + "/preview", json={"protocol": "raw-curation-v2", "memory_ids": [str(seeded.raw)]}
+        )
+        assert view.status_code == 200, view.text
+        req = manifest(await preview(memory, seeded)).model_dump(mode="json")
+        applied = await client.post(url + "/lost-ack", json=req)
+        assert applied.status_code == 200, applied.text
+        loaded = await client.get(url + "/lost-ack")
+        assert loaded.json() == applied.json()
+        assert (await client.get("/v1/default/banks/another-bank/curation-batches/lost-ack")).status_code == 404
+        req["changes"][0]["reason"] = "different manifest"
+        assert (await client.post(url + "/lost-ack", json=req)).status_code == 409
+        reversed_response = await client.post(
+            url + "/lost-ack/revert",
+            json={"protocol": "raw-curation-v2", "expected_receipt_revision": loaded.json()["receipt_revision"]},
+        )
+        assert reversed_response.status_code == 200, reversed_response.text
+        assert reversed_response.json()["status"] == "reverted"
+
+
+@pytest.mark.parametrize("clear_context", [False, True])
+async def test_http_correction_presence_survives_capsule_get_retry_and_revert(memory, seeded, clear_context):
+    async with memory._pool.acquire() as conn:
+        await conn.execute(
+            "UPDATE memory_units SET context='historical context' WHERE bank_id=$1 AND id=$2", seeded.bank, seeded.raw
+        )
+    before = await snapshot(memory, seeded)
+    fields = CurationFields(text="replacement", context=None) if clear_context else CurationFields(text="replacement")
+    expected_presence = {"text", "context"} if clear_context else {"text"}
+    req = manifest(await preview(memory, seeded), correction=fields)
+    wire = req.model_dump_json()
+    parsed = CurationApplyRequest.model_validate_json(wire)
+    assert parsed.changes[0].fields.model_fields_set == expected_presence
+    clearing = parsed.model_copy(deep=True)
+    clearing.changes[0].fields = (
+        CurationFields(text="replacement") if clear_context else CurationFields(text="replacement", context=None)
+    )
+    assert revision(req) != revision(clearing)
+    app = create_app(memory, initialize_memory=False)
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
+        url = f"/v1/default/banks/{seeded.bank}/curation-batches/presence"
+        applied = await client.post(url, content=wire, headers={"content-type": "application/json"})
+        assert applied.status_code == 200, applied.text
+        loaded = await client.get(url)
+        assert loaded.status_code == 200, loaded.text
+        assert loaded.json() == applied.json()
+        repeated = await client.post(url, json=parsed.model_dump(mode="json"))
+        assert repeated.status_code == 200, repeated.text
+        assert repeated.json() == applied.json()
+        conflict = await client.post(url, json=clearing.model_dump(mode="json"))
+        assert conflict.status_code == 409, conflict.text
+        async with memory._pool.acquire() as conn:
+            assert await conn.fetchval(
+                "SELECT context FROM memory_units WHERE bank_id=$1 AND id=$2", seeded.bank, seeded.raw
+            ) == (None if clear_context else "historical context")
+            capsule = await store.get_capsule(conn, seeded.bank, "presence")
+            assert capsule.manifest.changes[0].fields.model_fields_set == expected_presence
+            assert revision(capsule.manifest) == capsule.receipt.manifest_revision
+            assert capsule.manifest.changes[0].reason == req.changes[0].reason
+        undone = await client.post(
+            url + "/revert",
+            json={"protocol": "raw-curation-v2", "expected_receipt_revision": loaded.json()["receipt_revision"]},
+        )
+        assert undone.status_code == 200, undone.text
+        assert undone.json()["status"] == "reverted"
+        assert (await client.get(url)).json() == undone.json()
+    assert snapshot_revision(await snapshot(memory, seeded, before.scope)) == snapshot_revision(before)
+
+
+async def test_backup_restores_capsule_and_pins_with_conditional_revert(memory, seeded, pg0_db_url, tmp_path):
+    from hindsight_api.admin.cli import _backup, _restore
+    from hindsight_api.engine.memory_engine import _current_schema
+    from hindsight_api.migrations import run_migrations
+
+    before = await snapshot(memory, seeded)
+    receipt = await apply(memory, seeded, manifest(await preview(memory, seeded)))
+    backup_path = tmp_path / "capsule-backup.zip"
+    backup = await _backup(pg0_db_url, backup_path)
+    assert backup["tables"]["curation_batches"]["rows"] == 1
+    assert backup["tables"]["curation_entity_pins"]["rows"] == 2
+    schema = f"v2_recovery_{uuid.uuid4().hex[:12]}"
+    async with memory._pool.acquire() as conn:
+        await conn.execute(f'CREATE SCHEMA "{schema}"')
+    try:
+        run_migrations(pg0_db_url, schema=schema)
+        await _restore(pg0_db_url, backup_path, schema=schema)
+        token = _current_schema.set(schema)
+        try:
+            async with memory._pool.acquire() as conn:
+                async with conn.transaction():
+                    await store.lock(conn)
+                    capsule = await store.get_capsule(conn, seeded.bank, "fixture")
+                    assert capsule.receipt == receipt
+                    assert (
+                        await conn.fetchval(
+                            f'SELECT count(*) FROM "{schema}".curation_entity_pins WHERE bank_id=$1', seeded.bank
+                        )
+                        == 2
+                    )
+                    result = await store.revert(conn, seeded.bank, "fixture", capsule, receipt.receipt_revision)
+                    assert result.status == "reverted"
+                    restored = await store.capture(conn, seeded.bank, before.scope)
+                    assert snapshot_revision(restored) == snapshot_revision(before)
+        finally:
+            _current_schema.reset(token)
+    finally:
+        async with memory._pool.acquire() as conn:
+            await conn.execute(f'DROP SCHEMA "{schema}" CASCADE')
+
+
+async def test_read_and_write_authorization_guards(memory, seeded):
+    from types import SimpleNamespace
+
+    from hindsight_api.extensions import ValidationResult
+
+    validator = SimpleNamespace(
+        validate_bank_read=AsyncMock(return_value=ValidationResult.reject("read denied", status_code=403)),
+        validate_bank_write=AsyncMock(return_value=ValidationResult.reject("write denied", status_code=403)),
+    )
+    req = manifest(await preview(memory, seeded))
+    with patch.object(memory, "_operation_validator", validator):
+        app = create_app(memory, initialize_memory=False)
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
+            url = f"/v1/default/banks/{seeded.bank}/curation-batches"
+            assert (
+                await client.post(
+                    url + "/preview", json={"protocol": "raw-curation-v2", "memory_ids": [str(seeded.raw)]}
+                )
+            ).status_code == 403
+            assert (await client.get(url + "/absent")).status_code == 403
+            assert (await client.post(url + "/denied", json=req.model_dump(mode="json"))).status_code == 403
+            assert (
+                await client.post(
+                    url + "/denied/revert", json={"protocol": "raw-curation-v2", "expected_receipt_revision": "0" * 64}
+                )
+            ).status_code == 403
+    async with memory._pool.acquire() as conn:
+        assert await conn.fetchval("SELECT count(*) FROM curation_batches WHERE bank_id=$1", seeded.bank) == 0
+
+
+async def test_non_postgres_and_non_sql_stores_fail_closed(memory, seeded):
+    with patch.object(memory, "_database_backend_type", "oracle"):
+        with pytest.raises(CurationBatchConflict, match="PostgreSQL"):
+            await preview(memory, seeded)
+    with patch.object(get_memories(), "store_owned_for", return_value=True):
+        with pytest.raises(CurationBatchConflict, match="SQL-owned"):
+            await preview(memory, seeded)
+
+
+async def test_cross_bank_edges_are_rejected_before_any_cascade(memory, seeded):
+    another = f"test-curation-v2-{uuid.uuid4().hex}"
+    await memory.ensure_bank_profile(another, request_context=CTX)
+    try:
+        async with memory._pool.acquire() as conn:
+            foreign = await raw(conn, another, "foreign peer")
+            await conn.execute(
+                "INSERT INTO memory_links(bank_id,from_unit_id,to_unit_id,link_type,weight) VALUES($1,$2,$3,'temporal',1)",
+                another,
+                seeded.raw,
+                foreign,
+            )
+        with pytest.raises(CurationBatchConflict, match="Cross-bank"):
+            await preview(memory, seeded)
+        async with memory._pool.acquire() as conn:
+            assert await conn.fetchval("SELECT 1 FROM memory_units WHERE id=$1", seeded.raw)
+    finally:
+        await memory.delete_bank(another, request_context=CTX)
+
+
+async def test_combined_sources_are_bounded_before_snapshot_hashing(memory, seeded):
+    ids = [seeded.raw]
+    async with memory._pool.acquire() as conn:
+        for index in range(5):
+            mid = await raw(conn, seeded.bank, f"source-{index}")
+            ids.append(mid)
+            await conn.execute(
+                "UPDATE documents SET original_text=$2 WHERE bank_id=$1 AND id=(SELECT document_id FROM memory_units WHERE id=$3)",
+                seeded.bank,
+                "x" * 900_000,
+                mid,
+            )
+            await conn.execute(
+                "UPDATE chunks SET chunk_text=$2 WHERE bank_id=$1 AND chunk_id=(SELECT chunk_id FROM memory_units WHERE id=$3)",
+                seeded.bank,
+                "x" * 900_000,
+                mid,
+            )
+    with pytest.raises(CurationBatchConflict, match="Source content"):
+        await preview(memory, seeded, ids)
+
+
+@pytest.mark.parametrize("cap", ["MAX_ENTITIES", "MAX_LINKS", "MAX_HISTORY", "MAX_PEERS"])
+async def test_every_closure_row_family_has_a_cap(memory, seeded, monkeypatch, cap):
+    monkeypatch.setattr(store, cap, 1 if cap == "MAX_HISTORY" else 0)
+    with pytest.raises(CurationBatchConflict, match="cap"):
+        await preview(memory, seeded)
+
+
+async def test_busy_curation_window_fails_without_waiting_or_mutation(memory, seeded):
+    async with memory._pool.acquire() as blocker:
+        async with blocker.transaction():
+            await blocker.execute("LOCK TABLE memory_units IN ROW EXCLUSIVE MODE")
+            with pytest.raises(CurationBatchConflict, match="busy"):
+                await preview(memory, seeded)
+    async with memory._pool.acquire() as conn:
+        assert await conn.fetchval("SELECT count(*) FROM curation_batches WHERE bank_id=$1", seeded.bank) == 0
+
+
+async def test_lost_ack_after_commit_is_reconciled_by_receipt_get(memory, seeded):
+    request = manifest(await preview(memory, seeded))
+    with patch.object(
+        memory._bank_stats_cache,
+        "invalidate",
+        new=AsyncMock(side_effect=RuntimeError("cache unavailable after commit")),
+    ):
+        with pytest.raises(RuntimeError, match="after commit"):
+            await apply(memory, seeded, request, "lost-after-commit")
+    committed = await memory.get_curation_batch(seeded.bank, "lost-after-commit", request_context=CTX)
+    assert committed.status == "applied"
+    assert await apply(memory, seeded, request, "lost-after-commit") == committed
+    await revert(memory, seeded, committed, "lost-after-commit")

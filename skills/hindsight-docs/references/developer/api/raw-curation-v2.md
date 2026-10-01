@@ -1,0 +1,76 @@
+
+`raw-curation-v2` is an opt-in PostgreSQL API for correcting or invalidating raw
+world/experience facts. A server-owned capsule preserves the bounded affected
+observations, exact histories, postings, graph links and vectors for conditional
+revert. Ordinary individual memory curation keeps its existing behavior.
+
+## Prepare A Curation Window
+
+Pause automatic consolidation through the bank configuration API with
+`enable_auto_consolidation: false`, then wait until all pending/processing
+consolidation is finished. Back up the database before the first live batch and
+before schema changes. This protocol creates no ordinary background jobs.
+Its receipt records consolidation, graph and model-refresh maintenance debt for
+the caller to coordinate with the worker owner after the window.
+
+The initial bounds are 50 raw targets, 200 one-hop observations, 500 co-sources
+or graph peers, 2000 entity pins/postings, 4000 links/cooccurrences and 2000 history
+rows. Snapshot and unique source document/chunk bytes together must fit 8 MiB.
+Each source document/chunk must fit 1 MiB. Missing provenance, cross-bank sources,
+transitive observations, Oracle and non-SQL memories stores are rejected.
+
+## Preview, Apply And Reconcile
+
+All routes are under `/v1/default/banks/{bank_id}/curation-batches`:
+
+| Method | Suffix | Result |
+| --- | --- | --- |
+| POST | `/preview` | Bounded inventory and opaque target/source/closure revisions |
+| POST | `/{batch_id}` | Atomically apply the exact manifest and persist its receipt |
+| GET | `/{batch_id}` | Read the durable receipt after a lost acknowledgement |
+| POST | `/{batch_id}/revert` | Restore the capsule only if its committed closure is unchanged |
+
+Preview accepts `{"protocol":"raw-curation-v2","memory_ids":["uuid"]}`. Apply
+accepts that protocol, `expected_closure_revision`, and `changes`. Each change
+contains the returned `memory_id`, `memory_revision`, `source_revision`, an
+`action` (`invalidate` or `correct`) and a nonempty `reason`. Only `correct`
+includes `fields`.
+
+Correction fields are `text`, `context`, `fact_type`, `occurred_start` and
+`occurred_end`. Omitted fields are unchanged. Null context/dates explicitly
+clear them. Text must be nonblank and fact type must be world or experience.
+Text/context are bounded to 100000 characters. Dates require a timezone and a
+nondecreasing occurrence window. Entity associations remain unchanged.
+The durable capsule retains the full manifest, including each reason and the
+distinction between omitted fields and explicit nulls.
+
+Use a unique batch ID of 1–80 alphanumeric, underscore or hyphen characters,
+starting with an alphanumeric character. Replaying its identical manifest
+returns the existing receipt, including after revert. A different manifest for
+that ID returns 409. The server hashes numeric values, so clients must pass
+opaque revisions unchanged rather than recreate hashes from serialized JSON.
+
+## Conditional Recovery
+
+Revert accepts `{"protocol":"raw-curation-v2","expected_receipt_revision":"hash"}`
+using the applied receipt revision. Exact retries return the current reverted
+receipt. Successful revert restores original memory and history IDs, rows,
+vectors, postings and links and releases that batch's entity pins. It adjusts
+shared entity counters only by the batch's own postings.
+
+A conflicting edit, source change, schema change, reconsolidation, new dependency
+or identity collision returns 409 without partial restoration. The capsule and
+pins survive. Resolve the conflict with canonical evidence before choosing a
+new action. A capsule does not permit unconditional undo of later work.
+
+Active pins protect entities and incident cooccurrences from queued pruning.
+They have no expiry. Bank deletion is rejected while applied capsules exist.
+Maintenance debt is durable, but this first protocol slice does not execute it
+or expose a finalize/release endpoint.
+
+## Preserve Recovery Evidence
+
+Admin database backup/restore includes capsules and pins. Logical export, import
+and clone intentionally omit them because replay regenerates IDs and embeddings.
+A logical ZIP therefore cannot replace the database backup used for curation
+recovery. Schema downgrade refuses applied capsules.

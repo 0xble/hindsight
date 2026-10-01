@@ -53,6 +53,9 @@ def test_operation_details_deserialize_by_discriminator(payload, expected_type):
     details = OperationResponseDetails.from_dict(payload)
 
     assert isinstance(details.actual_instance, expected_type)
+    if expected_type is FileConvertRetainOperationDetails:
+        assert details.actual_instance.failure_reason == payload["failure_reason"]
+        assert isinstance(details.actual_instance.failure_reason, str)
     assert isinstance(OperationResponseDetails.model_validate(payload).actual_instance, expected_type)
     assert isinstance(OperationResponseDetails.model_validate_json(json.dumps(payload)).actual_instance, expected_type)
     status = OperationStatusResponse.model_validate({"operation_id": "op", "status": "completed", "details": payload})

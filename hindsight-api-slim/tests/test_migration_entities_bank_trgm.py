@@ -131,7 +131,10 @@ def test_resolver_candidate_query_can_use_the_index(head_db_url):
                 "AND indexdef LIKE '%USING btree (bank_id%'"
             )
         ).scalars():
-            conn.execute(text(f'DROP INDEX "{name}"'))
+            # A newer fork migration uses one competing unique index for
+            # curation pin foreign keys. Remove those dependencies only in this
+            # test transaction, whose rollback restores both index and keys.
+            conn.execute(text(f'DROP INDEX "{name}" CASCADE'))
         conn.execute(text("ANALYZE entities"))
         conn.execute(text("SET LOCAL enable_seqscan = off"))
         params = {"names": ["entity name 42"], "bank": "trgm-a"}
