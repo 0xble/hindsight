@@ -296,9 +296,12 @@ async def test_document_deadline_kills_real_process_and_cleans_scratch(monkeypat
     from hindsight_api.engine.parsers import pdf_ocr
 
     monkeypatch.setattr(tempfile, "tempdir", str(tmp_path))
-    monkeypatch.setattr(pdf_ocr, "PDF_OCR_LIMITS", replace(pdf_ocr.PDF_OCR_LIMITS, seconds=3.0, request_seconds=10.0))
+    # A parallel gate can spend several seconds starting the spawned interpreter.
+    # Keep the real document deadline shorter than the hung provider request,
+    # with enough startup allowance to exercise termination during that request.
+    monkeypatch.setattr(pdf_ocr, "PDF_OCR_LIMITS", replace(pdf_ocr.PDF_OCR_LIMITS, seconds=20.0, request_seconds=45.0))
     before = {child.pid for child in multiprocessing.active_children()}
-    with ocr_server([10.0]) as (url, calls):
+    with ocr_server([40.0]) as (url, calls):
         with pytest.raises(RuntimeError, match="deadline"):
             await parser(url).convert(scanned_pdf(), "source.pdf")
     assert calls, "the real OCR request must be active when the deadline fires"
@@ -315,7 +318,7 @@ async def test_cancellation_kills_real_process_and_cleans_scratch(monkeypatch, t
     before = {child.pid for child in multiprocessing.active_children()}
     with ocr_server([10.0]) as (url, calls):
         task = asyncio.create_task(parser(url).convert(scanned_pdf(), "source.pdf"))
-        async with asyncio.timeout(5):
+        async with asyncio.timeout(20):
             while not calls:
                 await asyncio.sleep(0.05)
         task.cancel()
