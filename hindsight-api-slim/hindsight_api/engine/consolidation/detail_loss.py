@@ -47,7 +47,7 @@ _CURRENCY = r"(?i:usd|eur|gbp|cad|aud|nzd|jpy|cny|hkd|sgd|chf|sek|nok|dkk|inr|kr
 _SIGN = r"(?:-(?<![\w.]-))?"
 _MONEY = re.compile(
     rf"(?<![\w.])(?P<sign>{_SIGN})(?P<open>\()?"
-    rf"(?P<prefix>{_CURRENCY}\s*|(?i:[a-z]{{0,3}}\$|[€£])\s*)"
+    rf"(?P<prefix>{_CURRENCY}(?:\s+[$€£])?\s*|(?i:[a-z]{{0,3}}\$|[€£])\s*)"
     rf"(?P<amount>{_DIGITS})(?P<scale>\s*(?i:{_SCALE})(?=\b|{_CURRENCY}\b))?"
     rf"(?P<suffix>\s*{_CURRENCY}\b)?(?P<close>\))?"
 )
@@ -73,7 +73,8 @@ _CURRENCY_NAMES = {
 _LIST_PREFIX = re.compile(r"^(?:[-*•]\s+|\d+[.)]\s+)")
 _HEADER = re.compile(r"^([^:]{1,100}):(?=\s|$)")
 _SUBJECT = re.compile(
-    r"^(?:the |a |an )?(.+?) (?:(?:is|are|was|were|has|had|changed|grew|fell|equals|equal to)\b|=)", re.I
+    r"^(?:the |a |an )?(.+?)(?: (?:(?:is|are|was|were|has|had|changed|grew|fell|equals|equal to)\b|=)|=)",
+    re.I,
 )
 
 
@@ -221,6 +222,9 @@ def _extract_occurrences(normalized: str) -> list[_AnchorOccurrence]:
             value = _canonical_amount(match["amount"], match["scale"] or "")
             if kind == "money":
                 raw_prefix = (match.groupdict().get("prefix") or "").strip().casefold()
+                # An explicit ISO code owns an adjacent spaced currency symbol:
+                # USD $750 is USD 750, not an unqualified $750.
+                raw_prefix = re.sub(r"\s+[$€£]$", "", raw_prefix)
                 prefix = _CURRENCY_NAMES.get(raw_prefix, raw_prefix)
                 suffix = (match["suffix"] or "").strip().casefold()
                 if match["sign"] or (match.groupdict().get("open") and match.groupdict().get("close")):
@@ -563,6 +567,14 @@ def _prepare(texts: list[str], budget: _Budget) -> dict[str, _TextIndex]:
                 # Ordered subject labels cover explicit prose slots without
                 # turning unordered nearby-word overlap into slot identity.
                 subject = _SUBJECT.match(clause_text)
+                if (
+                    subject
+                    and clause_text[subject.end(1)] == "="
+                    and not re.fullmatch(r"[\w-]+(?:\s+[\w-]+)+", subject[1])
+                ):
+                    # Only ordered prose subjects gain compact '=' binding.
+                    # Standalone a=b code and URL/query syntax are not slots.
+                    subject = None
                 if subject and subject[1].casefold() not in _STOP | {"there"}:
                     clause.label = _canonical_label(subject[1])
                     clause.label_end = main.find(clause_text, start, end) + subject.end(1)

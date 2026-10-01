@@ -110,6 +110,59 @@ async def test_a3_equals_predicate_keeps_primary_and_backup_distinct(provider, c
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("assignment", ["=", "= ", " ="])
+async def test_a3_unspaced_equals_keeps_primary_and_backup_distinct(provider, config, assignment):
+    await assert_batch_action(
+        provider,
+        config,
+        f"Primary timeout{assignment}7 seconds.",
+        f"Backup timeout{assignment}7 seconds.",
+        "fallback",
+        ADDITIVE,
+        correction=True,
+    )
+
+
+@pytest.mark.parametrize(
+    "text",
+    ["a=b", "`a=b`", "a=7", "https://example.invalid/?a=b", "Endpoint https://example.invalid/?a=7"],
+)
+def test_a3_compact_code_and_query_noise_do_not_create_subject_slots(text):
+    from hindsight_api.engine.consolidation import detail_loss as d
+
+    index = d._prepare([text], d._Budget())[text]
+    assert not any(clause.label for clause in index.clauses)
+
+
+@pytest.mark.asyncio
+async def test_a3_compact_equals_accepts_same_subject_restatement(provider, config):
+    await assert_batch_action(
+        provider,
+        config,
+        "Primary timeout=7 seconds.",
+        "Primary timeout = 7 seconds.",
+        "update",
+        ADDITIVE,
+        correction=True,
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "after,expected",
+    [
+        ("The invoice amount is EUR $750.", "fallback"),
+        ("The invoice amount is US$750.", "update"),
+        ("The invoice amount is $750 USD.", "update"),
+    ],
+)
+async def test_b2_spaced_currency_symbol_prefix_is_part_of_money(provider, config, after, expected):
+    await assert_batch_action(
+        provider, config, "The invoice amount is USD $750.", after, expected, ADDITIVE, correction=True
+    )
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     "before,after",
     [
