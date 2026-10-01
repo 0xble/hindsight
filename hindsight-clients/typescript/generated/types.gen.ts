@@ -523,6 +523,12 @@ export type BankTemplateConfig = {
    */
   reflect_mission?: string | null;
   /**
+   * File Delete After Retain
+   *
+   * Delete original upload bytes after conversion queues retention; null inherits
+   */
+  file_delete_after_retain?: boolean | null;
+  /**
    * Retain Mission
    *
    * Steers what gets extracted during retain
