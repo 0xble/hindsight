@@ -46,18 +46,21 @@ def _pg_upgrade() -> None:
     with op.get_context().autocommit_block():
         # Only clean up the old index name in pre-release test databases.
         op.execute(f"DROP INDEX CONCURRENTLY IF EXISTS {schema}{_OLD_INDEX_NAME}")
-        leftover_invalid = bind.execute(
-            text(
-                "SELECT NOT i.indisvalid FROM pg_class c "
-                "JOIN pg_index i ON c.oid = i.indexrelid "
-                "JOIN pg_namespace n ON c.relnamespace = n.oid "
-                "WHERE c.relname = :index_name "
-                "AND n.nspname = COALESCE(:target_schema, current_schema())"
-            ),
-            {"index_name": _INDEX_NAME, "target_schema": target_schema},
-        ).scalar()
-        if leftover_invalid:
-            op.execute(f"DROP INDEX CONCURRENTLY IF EXISTS {schema}{_INDEX_NAME}")
+        # Offline SQL generation has no catalog/result to inspect. Keep online
+        # interrupted-index recovery, but render the idempotent DDL without it.
+        if not context.is_offline_mode():
+            leftover_invalid = bind.execute(
+                text(
+                    "SELECT NOT i.indisvalid FROM pg_class c "
+                    "JOIN pg_index i ON c.oid = i.indexrelid "
+                    "JOIN pg_namespace n ON c.relnamespace = n.oid "
+                    "WHERE c.relname = :index_name "
+                    "AND n.nspname = COALESCE(:target_schema, current_schema())"
+                ),
+                {"index_name": _INDEX_NAME, "target_schema": target_schema},
+            ).scalar()
+            if leftover_invalid:
+                op.execute(f"DROP INDEX CONCURRENTLY IF EXISTS {schema}{_INDEX_NAME}")
         op.execute(
             f"CREATE INDEX CONCURRENTLY IF NOT EXISTS {_INDEX_NAME} ON {schema}memory_units "
             f"(bank_id, md5({_NORM_EXPR})) WHERE fact_type = 'observation'"

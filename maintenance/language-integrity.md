@@ -54,6 +54,75 @@ use the configurable policy below without destructive changes to source facts.
   line only when empty or a syntactic language tag; retain prose before the first
   newline for classification, including when followed by genuine code. This is
   fork-owned and covered by `tests/test_language_code_spans.py`.
+- **Minority-language authority (round-2 M2):** Fork-owned, not a regression in
+  upstream release `v0.10.2` (`5fc4ce20917b916240cef27c212c387a177f115b`), which
+  has no `engine/language_integrity.py`. The early script veto comes from
+  `bfc0475a122164cfe3bfad7a34cd850a2137f1c8`; qualification commit
+  `eca183958baf91776e49036574aecbfd1d239da2` also applied same-script lexical
+  confirmation to cross-script source clauses. Keep accepted source-language
+  and script evidence together: a substantive minority clause can authorize
+  paraphrases below the aggregate mixed-language share. Quoted/code-only source
+  text cannot confer that authority, nor can an uncited source. Supported scripts
+  do not license unsupported languages or a third script. The owning regressions
+  are in `tests/test_language_prevention_review.py`.
+- **Code-literal recognition (round-2 M3):** Fork-owned line allowlist from
+  `276e9a13ac97357d553faa07f903aefe92d9061b`, also absent from that release.
+  Syntax-validated Python statements/suites and JSON containers supplement the
+  existing line recognizer; never execute code or trust a fence tag alone.
+  Keep the fallback's residual prose visible, including bare quoted expression
+  statements beside calls. `tests/test_language_code_spans.py` owns the calls,
+  loop, JSON-string, and foreign-prose counterexamples. Python accepts Unicode
+  identifiers: do not use syntax validity to exempt non-ASCII letters in AST
+  identifier fields (including annotation/assignment names, calls, attributes,
+  arguments, imports, and pattern bindings). Keep literal string values exempt,
+  including Chinese JSON strings. The three CJK/Japanese annotated-assignment
+  and call-shaped prose cases are `mismatch` at `d7554cf` but incorrectly
+  `preserved` at `92d44c8`; the identifier guard restores `mismatch` without
+  changing the await/call/loop/JSON controls. These corrections use
+  verdict policy `source-spans-v4`; they do not change enforcement modes.
+- **String-literal exemption (follow-up L):** Deliberately preserve string-literal
+  contents as code data, including `note("<Spanish sentence>")` inside backticks
+  or a `python` fence, just as Chinese values in fenced JSON containers stay
+  exempt. This widens the older `d7554cf` line allowlist by design, not by
+  treating foreign prose as an ASCII identifier. Python syntax-exemption
+  identifiers must be ASCII; string-literal data does not confer identifier or
+  source-language authority. A bare top-level string statement remains prose,
+  including one after a call: it has no enclosing call argument, assignment, or
+  JSON container to establish a data role. The existing nested-expression guard
+  applies that distinction throughout a Python suite; adjacent prose remains
+  subject to REJECT. `test_foreign_string_call_arguments_are_deliberately_exempt_data`
+  asserts the `preserved` verdict in both wrappers; the bare-string-after-call,
+  JSON-scalar and Unicode-identifier counterexamples remain rejection controls.
+  No language-integrity implementation or enforcement mode changes in this repair.
+- **Python comments (follow-up M):** Comments are prose, not code data. The
+  syntax recognizer's AST discards them, so tokenize every span it accepts and
+  return COMMENT token text to the classified residue. This applies to inline
+  call/assignment comments and comment-only lines inside accepted Python suites.
+  Keep executable syntax and string literals exempt, including `#` within a
+  literal. If tokenization fails, keep the original span visible rather than
+  erasing unproven text. The three Spanish reviewer reproductions are
+  `preserved` without REJECT failures at `fcbb8cf` and now `mismatch` with REJECT
+  failures against an English source; English-comment controls pass. The
+  `test_language_code_spans.py` suite has 59 passing cases, including existing
+  string-data, JSON, bare-string, and Unicode-identifier controls. This changes
+  code-span residue only, not enforcement modes or the string-data decision.
+- **Round-2 upstream alignment:** Guidance pinned at
+  `d863f78aa24408583d69bbc32203649fc6fc230a`: `AGENTS.md` delegates to `CLAUDE.md`;
+  `CONTRIBUTING.md` and the referenced code-review standards were also examined.
+  After proposing source-evidence/script reconciliation and syntax recognition,
+  searches for language integrity, multilingual behavior, and the affected symbol
+  found no upstream equivalent for M2/M3. Checked 2026-10-01: #4016 remains closed
+  as not planned; #4018 and bank-policy proposal #5029 remain closed unmerged.
+  [The human review of #4018](https://github.com/vectorize-io/hindsight/pull/4018#issuecomment-5510660919)
+  rejected `langdetect`, synchronous/repeated profiling, false rejections, and
+  an unconfigurable fail-closed boundary, preferring prompt fixes. Merged
+  [#4410](https://github.com/vectorize-io/hindsight/pull/4410),
+  [#4432](https://github.com/vectorize-io/hindsight/pull/4432), and
+  [#4447](https://github.com/vectorize-io/hindsight/pull/4447) change retain prompts,
+  language evals, and real-model test budgets, not this validator. Keep this
+  opt-in fail-closed enforcement and off-loop profiling as intentional fork
+  divergence; the proposal remains valid without adding a dependency, changing
+  prompts, or adopting bank policy.
 - **Enforcement gate:** prevention is only in effect with
   `HINDSIGHT_API_LLM_LANGUAGE_INTEGRITY=reject` and `HINDSIGHT_API_LLM_OUTPUT_LANGUAGE`
   unset. The shipped default stays `observe`, which records verdicts and accepts

@@ -27,6 +27,7 @@ import re
 import time
 import uuid
 from collections import defaultdict
+from contextlib import nullcontext
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -890,24 +891,51 @@ async def test_failed_preparation_does_not_release_later_apply_early(memory: Mem
         wrapper, _ = _mock_llm_one_obs_per_fact()
         applied: list[str] = []
         first_applying = asyncio.Event()
-        second_failed = asyncio.Event()
+        second_finished = asyncio.Event()
+        third_waiting_for_apply = asyncio.Event()
+        second_task = None
+        second_successor = None
         original_process = mod._process_memory_batch
         original_apply = mod._apply_create_action
+        original_progress = memory._write_operation_progress
+
+        async def tracked_progress(*args, **kwargs):
+            await original_progress(*args, **kwargs)
+            if asyncio.current_task() is second_task:
+                # Progress is the failed batch's final await. Queue the signal so
+                # its dispatcher finally runs before the first apply is released.
+                asyncio.get_running_loop().call_soon(second_finished.set)
 
         async def fail_second(*args, **kwargs):
+            nonlocal second_task, second_successor
             text = kwargs["memories"][0]["text"]
             if text == "Order fact 1":
+                second_task = asyncio.current_task()
+                second_successor = kwargs["apply_turn"][1]
                 await first_applying.wait()
-                second_failed.set()
                 raise mod._InvalidConsolidationReferences("deterministic invalid response")
+            if text == "Order fact 2":
+                turn = kwargs["apply_turn"][0]
+                original_wait = turn.wait
+
+                async def tracked_wait():
+                    third_waiting_for_apply.set()
+                    assert not turn.is_set(), "third apply turn released before first committed"
+                    return await original_wait()
+
+                with patch.object(turn, "wait", tracked_wait):
+                    return await original_process(*args, **kwargs)
             return await original_process(*args, **kwargs)
 
         async def slow_first(*args, **kwargs):
             text = kwargs["prepared"].source_mems[0]["text"]
             if text == "Order fact 0":
                 first_applying.set()
-                await second_failed.wait()
-                await asyncio.sleep(0.15)
+                await asyncio.wait_for(second_finished.wait(), 10)
+                await asyncio.wait_for(third_waiting_for_apply.wait(), 10)
+                assert second_successor is not None and not second_successor.is_set(), (
+                    "failed second batch released third before first committed"
+                )
             applied.append(text)
             return await original_apply(*args, **kwargs)
 
@@ -916,6 +944,7 @@ async def test_failed_preparation_does_not_release_later_apply_early(memory: Mem
             patch.object(memory, "submit_async_consolidation"),
             patch.object(mod, "_process_memory_batch", fail_second),
             patch.object(mod, "_apply_create_action", slow_first),
+            patch.object(memory, "_write_operation_progress", tracked_progress),
             _override_config(
                 memory,
                 consolidation_llm_parallelism=3,
@@ -935,12 +964,16 @@ async def test_failed_preparation_does_not_release_later_apply_early(memory: Mem
 
 @pytest.mark.asyncio
 @pytest.mark.memory_backend_incompatible
-async def test_cancel_lane_before_predecessor_turn_does_not_hang(memory: MemoryEngine, request_context):
+@pytest.mark.parametrize("interrupt_setup", [False, True], ids=["normal", "setup-interrupted"])
+async def test_cancel_lane_before_predecessor_turn_does_not_hang(
+    memory: MemoryEngine, request_context, interrupt_setup: bool
+):
     """Cancellation while the first batch prepares unwinds all lane waiters."""
     from hindsight_api.engine.consolidation import consolidator as mod
 
     bank_id = f"test-lane-cancel-turn-{uuid.uuid4().hex[:8]}"
     await memory.ensure_bank_profile(bank_id=bank_id, request_context=request_context)
+    job = None
     try:
         async with memory._pool.acquire() as conn:
             for index in range(3):
@@ -970,11 +1003,30 @@ async def test_cancel_lane_before_predecessor_turn_does_not_hang(memory: MemoryE
             job = asyncio.create_task(
                 run_consolidation_job(memory_engine=memory, bank_id=bank_id, request_context=request_context)
             )
-            await asyncio.wait_for(entered.wait(), 10)
-            job.cancel()
-            with pytest.raises(asyncio.CancelledError):
-                await asyncio.wait_for(job, 10)
+            try:
+                with (
+                    pytest.raises(AssertionError, match="injected setup failure") if interrupt_setup else nullcontext()
+                ):
+                    await asyncio.wait_for(entered.wait(), 10)
+                    if interrupt_setup:
+                        raise AssertionError("injected setup failure")
+                    job.cancel()
+                    with pytest.raises(asyncio.CancelledError):
+                        await asyncio.wait_for(job, 10)
+            finally:
+                # Keep the patch lifetime until the cancelled job and its lane
+                # children drain, including when setup fails before job.cancel().
+                if not job.done():
+                    job.cancel()
+                await asyncio.gather(job, return_exceptions=True)
+            assert job.done(), "setup failure left a consolidation task running"
     finally:
+        # Setup assertions/timeouts can fail before the normal cancellation path.
+        # Never tear down the bank or its pool with a live consolidation task.
+        if job is not None:
+            if not job.done():
+                job.cancel()
+            await asyncio.gather(job, return_exceptions=True)
         await memory.delete_bank(bank_id, request_context=request_context)
 
 
@@ -1011,6 +1063,8 @@ async def test_same_lane_stale_update_retries_fresh_recall(memory: MemoryEngine,
         def update_callback(messages, scope):
             if scope != "consolidation":
                 return _ConsolidationBatchResponse()
+            if recall_count <= 2:
+                assert len(initial_snapshot_texts) == 2, "LLM started before both snapshots completed"
             prompt = "\n".join(m.get("content", "") for m in messages if m.get("role") == "user")
             source_id = next(str(fact_id) for fact_id in fact_ids if str(fact_id) in prompt)
             return _ConsolidationBatchResponse(
@@ -1027,17 +1081,29 @@ async def test_same_lane_stale_update_retries_fresh_recall(memory: MemoryEngine,
         wrapper.with_config.return_value = mock_llm
 
         recall_count = 0
+        initial_snapshot_texts: list[str] = []
+        first_snapshot_ready = asyncio.Event()
         initial_recalls_ready = asyncio.Event()
 
         async def fake_find(*, memory_engine, bank_id, query, request_context, tags=None, config=None):
             nonlocal recall_count
             recall_count += 1
-            if recall_count == 2:
-                initial_recalls_ready.set()
+            recall_number = recall_count
+            if recall_number == 2:
+                # Force the second read to yield until the first snapshot exists.
+                await asyncio.wait_for(first_snapshot_ready.wait(), 10)
             async with memory._pool.acquire() as conn:
                 row = await conn.fetchrow(
                     "SELECT text, source_memory_ids FROM memory_units WHERE id = $1", observation_id
                 )
+            if recall_number <= 2:
+                initial_snapshot_texts.append(row["text"])
+                if len(initial_snapshot_texts) == 2:
+                    initial_recalls_ready.set()
+                assert initial_recalls_ready.is_set() == (len(initial_snapshot_texts) == 2), (
+                    "recall barrier released before both SQL snapshots completed"
+                )
+                first_snapshot_ready.set()
             observed = RecallResult.model_construct(
                 results=[
                     MemoryFact.model_construct(
@@ -1049,8 +1115,8 @@ async def test_same_lane_stale_update_retries_fresh_recall(memory: MemoryEngine,
                     )
                 ]
             )
-            if recall_count <= 2:
-                await initial_recalls_ready.wait()
+            if recall_number <= 2:
+                await asyncio.wait_for(initial_recalls_ready.wait(), 10)
             return observed
 
         original_config_llm = memory._consolidation_llm_config
@@ -1081,7 +1147,8 @@ async def test_same_lane_stale_update_retries_fresh_recall(memory: MemoryEngine,
                 fact_ids,
             )
         assert row["text"] == f"Updated from {str(fact_ids[1])[:8]}"
-        assert recall_count >= 3
+        assert initial_snapshot_texts == ["Original observation", "Original observation"]
+        assert recall_count == 3
         assert all(state["consolidation_failed_at"] is None for state in states)
         assert sum(state["consolidated_at"] is not None for state in states) == 2
     finally:
@@ -1251,6 +1318,8 @@ async def test_lane_partial_invalid_reply_and_stale_sibling_retry(memory: Memory
 
         def response(messages, scope):
             assert scope == "consolidation"
+            if initial_recalls <= 3:
+                assert len(initial_snapshot_texts) == 3, "LLM started before all snapshots completed"
             prompt = "\n".join(m.get("content", "") for m in messages if m.get("role") == "user")
             calls.append(prompt)
             if "Lane partial fact 0" in prompt and "Lane partial fact 1" in prompt:
@@ -1290,19 +1359,31 @@ async def test_lane_partial_invalid_reply_and_stale_sibling_retry(memory: Memory
             )
 
         initial_recalls = 0
+        initial_snapshot_texts: list[str] = []
+        first_snapshot_ready = asyncio.Event()
         both_recalled = asyncio.Event()
 
         async def fake_find(*, memory_engine, bank_id, query, request_context, tags=None, config=None):
             nonlocal initial_recalls
             initial_recalls += 1
-            if initial_recalls == 2:
-                both_recalled.set()
+            recall_number = initial_recalls
+            if 1 < recall_number <= 3:
+                await asyncio.wait_for(first_snapshot_ready.wait(), 10)
             async with memory._pool.acquire() as conn:
                 row = await conn.fetchrow(
                     "SELECT text, source_memory_ids FROM memory_units WHERE id = $1", observation_id
                 )
-            if initial_recalls <= 2:
-                await both_recalled.wait()
+            if recall_number <= 3:
+                initial_snapshot_texts.append(row["text"])
+                # The first batch recalls two facts and its sibling recalls one.
+                # All three reads must finish before either batch can apply.
+                if len(initial_snapshot_texts) == 3:
+                    both_recalled.set()
+                assert both_recalled.is_set() == (len(initial_snapshot_texts) == 3), (
+                    "recall barrier released before all SQL snapshots completed"
+                )
+                first_snapshot_ready.set()
+                await asyncio.wait_for(both_recalled.wait(), 10)
             return RecallResult.model_construct(
                 results=[
                     MemoryFact.model_construct(
@@ -1335,6 +1416,7 @@ async def test_lane_partial_invalid_reply_and_stale_sibling_retry(memory: Memory
             )
         assert result["status"] == "completed"
         assert result["memories_failed"] == 0
+        assert initial_snapshot_texts == ["Original observation"] * 3
         assert len(calls) == 4  # partial first reply, B-only retry, stale C reply, fresh C retry
         async with memory._pool.acquire() as conn:
             observation = await conn.fetchrow("SELECT text FROM memory_units WHERE id=$1", observation_id)
@@ -1350,6 +1432,83 @@ async def test_lane_partial_invalid_reply_and_stale_sibling_retry(memory: Memory
         assert all(
             state["consolidated_at"] is not None and state["consolidation_failed_at"] is None for state in states
         )
+    finally:
+        await memory.delete_bank(bank_id, request_context=request_context)
+
+
+@pytest.mark.asyncio
+@pytest.mark.memory_backend_incompatible
+async def test_stale_later_scope_preserves_committed_delete_counters(memory: MemoryEngine, request_context):
+    """A committed first-scope DELETE survives exhaustion on the final scope."""
+    from hindsight_api.engine.consolidation import consolidator as mod
+    from tests.test_consolidation_batch_atomicity import _llm
+
+    bank_id = f"test-stale-scope-counters-{uuid.uuid4().hex[:8]}"
+    await memory.ensure_bank_profile(bank_id=bank_id, request_context=request_context)
+    observation_id = uuid.uuid4()
+    attempts = 0
+    original = mod._process_memory_batch
+    try:
+        async with memory._pool.acquire() as conn:
+            fact_id = await _insert_memory(conn, bank_id, "Multi-scope source", ["a", "b"], "per_tag")
+            await conn.execute(
+                "INSERT INTO memory_units (id, bank_id, text, fact_type, tags, source_memory_ids) "
+                "VALUES ($1,$2,'Delete me','observation',$3,$4)",
+                observation_id,
+                bank_id,
+                ["a"],
+                [str(fact_id)],
+            )
+
+        async def recalled(**kwargs):
+            return RecallResult.model_construct(
+                results=[
+                    MemoryFact.model_construct(
+                        id=str(observation_id),
+                        text="Delete me",
+                        fact_type="observation",
+                        tags=["a"],
+                        source_fact_ids=[str(fact_id)],
+                    )
+                ]
+            )
+
+        async def stale_final_scope(*args, **kwargs):
+            nonlocal attempts
+            if kwargs["obs_tags_override"] == ["b"]:
+                attempts += 1
+                raise mod._StaleConsolidationReference("forced final-scope conflict")
+            return await original(*args, **kwargs)
+
+        with (
+            patch.object(
+                memory,
+                "_consolidation_llm_config",
+                _llm(
+                    lambda messages, scope: _ConsolidationBatchResponse(
+                        deletes=[mod._DeleteAction(observation_id=str(observation_id))]
+                    )
+                ),
+            ),
+            patch.object(memory, "submit_async_consolidation"),
+            patch.object(mod, "_find_related_observations", recalled),
+            patch.object(mod, "_process_memory_batch", stale_final_scope),
+            _override_config(memory, consolidation_lane_llm_parallelism=2, consolidation_dedup_threshold=1.0),
+        ):
+            result = await asyncio.wait_for(
+                run_consolidation_job(memory_engine=memory, bank_id=bank_id, request_context=request_context), 15
+            )
+        async with memory._pool.acquire() as conn:
+            assert await conn.fetchval("SELECT id FROM memory_units WHERE id=$1", observation_id) is None
+            state = await conn.fetchrow(
+                "SELECT consolidated_at, consolidation_failed_at FROM memory_units WHERE id=$1", fact_id
+            )
+        assert state["consolidated_at"] is None and state["consolidation_failed_at"] is None
+        assert attempts == 3
+        assert result["status"] == "completed"
+        assert result["memories_processed"] == result["memories_failed"] == 0
+        assert result["observations_deleted"] == 1
+        assert result["memories_deferred"] == 1
     finally:
         await memory.delete_bank(bank_id, request_context=request_context)
 
@@ -1474,6 +1633,7 @@ async def test_reference_failure_lifecycle(memory: MemoryEngine, request_context
             memory._consolidation_llm_config = previous
         assert result["status"] == "completed"
         assert attempts == (1 if failed else 3)
+        assert result["memories_deferred"] == (0 if failed else 1)
         async with memory._pool.acquire() as conn:
             rows = await conn.fetch(
                 "SELECT id, consolidated_at, consolidation_failed_at FROM memory_units WHERE id = ANY($1::uuid[])",
@@ -1996,6 +2156,24 @@ async def test_intra_response_near_twin_creates_match_default_lane(
 @pytest.mark.memory_backend_incompatible
 async def test_same_lane_apply_rechecks_observation_capacity(memory: MemoryEngine, request_context):
     """Concurrent CREATE preparation must never exceed a scope's observation cap."""
+    from hindsight_api.engine.consolidation import consolidator as mod
+
+    prepared_counts: list[int] = []
+    both_prepared = asyncio.Event()
+    original_count = mod._count_observations_for_scope
+
+    async def counted(conn, bank_id, tags):
+        count = await original_count(conn, bank_id, tags)
+        if len(prepared_counts) < 2:
+            prepared_counts.append(count)
+            if len(prepared_counts) == 2:
+                both_prepared.set()
+            # Neither batch may leave its completed preparation read until both
+            # saw the empty scope. Otherwise a serialized preparation masks a
+            # missing apply-time capacity guard.
+            await asyncio.wait_for(both_prepared.wait(), 10)
+        return count
+
     bank_id = f"test-lane-capacity-{uuid.uuid4().hex[:8]}"
     await memory.ensure_bank_profile(bank_id=bank_id, request_context=request_context)
     try:
@@ -2018,6 +2196,7 @@ async def test_same_lane_apply_rechecks_observation_capacity(memory: MemoryEngin
                     consolidation_dedup_threshold=1.0,
                     max_observations_per_scope=1,
                 ),
+                patch.object(mod, "_count_observations_for_scope", counted),
                 patch.object(memory, "submit_async_consolidation"),
             ):
                 result = await run_consolidation_job(
@@ -2033,6 +2212,7 @@ async def test_same_lane_apply_rechecks_observation_capacity(memory: MemoryEngin
                 bank_id,
             )
             states = await conn.fetch("SELECT consolidated_at FROM memory_units WHERE id=ANY($1::uuid[])", facts)
+        assert prepared_counts == [0, 0]
         assert observation_count == 1
         assert all(row["consolidated_at"] is not None for row in states)
     finally:

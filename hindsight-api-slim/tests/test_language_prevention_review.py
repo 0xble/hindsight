@@ -60,6 +60,62 @@ def test_routine_english_outputs_do_not_rescan_source_scripts(monkeypatch):
     assert len(source_scans) == preparation_scans
 
 
+RUSSIAN_SOURCE = "Команда завершила проверку и сохранила исходные документы для следующего выпуска."
+RUSSIAN_PARAPHRASE = "Исходные документы сохранены после проверки, и команда подготовилась к следующему выпуску."
+
+
+@pytest.mark.parametrize("separate_sources", [False, True])
+def test_minority_source_language_supports_cross_script_paraphrase(separate_sources: bool) -> None:
+    english = (ENGLISH + "\n") * 10
+    sources = {"en": english, "ru": RUSSIAN_SOURCE} if separate_sources else {"s": english + RUSSIAN_SOURCE}
+    context = guard._prepare_context_sync(sources)
+    keys = tuple(sources)
+
+    # Cyrillic evidence is substantive but below the document-level mixed share.
+    assert guard._letter_count(RUSSIAN_SOURCE) / guard._letter_count(english + RUSSIAN_SOURCE) < 0.20
+    assert context.source_profiles[keys[0]].language == "en"
+    assert context.source_profiles[keys[0]].actionable
+    result = guard._evaluate_sync(context, [guard.GeneratedText("f", RUSSIAN_PARAPHRASE, keys)])
+
+    assert result.verdicts[0].status == "preserved"
+    assert not guard.enforcement_failures(result, guard.LanguageIntegrityMode.REJECT)
+    assert set().union(*(context.supported_languages[key] for key in keys)) == {"en", "ru"}
+
+
+@pytest.mark.parametrize("wrapper", ["{}", '"{}"', "`{}`"])
+def test_only_unquoted_source_prose_authorizes_cross_script_paraphrase(wrapper: str) -> None:
+    source = (ENGLISH + "\n") * 10 + wrapper.format(RUSSIAN_SOURCE)
+    result = check(source, RUSSIAN_PARAPHRASE)
+
+    if wrapper == "{}":
+        assert not guard.enforcement_failures(result, guard.LanguageIntegrityMode.REJECT)
+    else:
+        assert result.verdicts[0].status == "mismatch"
+
+
+def test_supported_script_does_not_authorize_unsupported_language() -> None:
+    source = (ENGLISH + "\n") * 10 + RUSSIAN_SOURCE
+    ukrainian = "Команда завершила перевірку та зберегла початкові документи для наступного випуску."
+    result = check(source, ukrainian)
+
+    assert result.verdicts[0].status == "mismatch"
+    assert result.mismatches[0].generated_language == "uk"
+
+
+def test_uncited_source_language_does_not_authorize_paraphrase() -> None:
+    context = guard._prepare_context_sync({"en": ENGLISH, "ru": RUSSIAN_SOURCE})
+    result = guard._evaluate_sync(context, [guard.GeneratedText("f", RUSSIAN_PARAPHRASE, ("en",))])
+
+    assert result.verdicts[0].status == "mismatch"
+
+
+def test_minority_source_script_does_not_authorize_new_third_script() -> None:
+    source = (ENGLISH + "\n") * 10 + RUSSIAN_SOURCE
+    output = RUSSIAN_PARAPHRASE.rstrip(".") + " 请保留原始记录并完成安全检查。"
+
+    assert check(source, output).verdicts[0].status == "mismatch"
+
+
 def test_capitalization_is_not_name_evidence():
     result = check(ENGLISH, "Alles Gut")
     assert result.verdicts[0].status == "unchecked"

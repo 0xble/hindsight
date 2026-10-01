@@ -38,8 +38,11 @@ def _validate_source_timestamp(value: object) -> Optional[str]:
     """Keep valid timezone-aware source times verbatim, never synthesize one."""
     if not isinstance(value, str) or not _SOURCE_TIMESTAMP_RE.fullmatch(value):
         return None
+    # Python 3.9/3.10 accept only 3 or 6 fractional digits. Normalize only the
+    # validation copy to microseconds; retain the original source precision.
+    validation_value = re.sub(r"\.(\d+)", lambda match: "." + match.group(1)[:6].ljust(6, "0"), value, count=1)
     try:
-        datetime.fromisoformat(value.replace("Z", "+00:00"))
+        datetime.fromisoformat(validation_value.replace("Z", "+00:00"))
     except ValueError:
         return None
     return value

@@ -2567,6 +2567,9 @@ async def _run_consolidation_job(
                         )
 
                 except _StaleConsolidationReference:
+                    # Earlier scopes committed independently; exhaustion must not
+                    # erase their DELETE accounting when this leaf stays pending.
+                    all_deleted += sub_deleted
                     committed_scope_results.extend(sub_results)
                     # No stamp or failure marker: leave these facts for a later job.
                     # This batch's ordered apply turn still advances in the dispatch
@@ -2685,7 +2688,7 @@ async def _run_consolidation_job(
                 "observations_deleted": all_deleted,
                 "actions_executed": 0,
                 "skipped": 0,
-                "memories_deferred": 0,
+                "memories_deferred": len(pending_conflicts),
                 "memories_failed": 0,
             }
             for result_index, result in enumerate([*committed_scope_results, *all_results]):

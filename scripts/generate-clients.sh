@@ -157,7 +157,7 @@ echo "Syncing generated tree into $PYTHON_CLIENT_DIR..."
 cp -R "$GEN_TMP_DIR/hindsight_client_api" "$PYTHON_CLIENT_DIR/"
 # OpenAPI Generator's oneOf Pydantic wrapper ignores raw operation detail JSON.
 # Apply the checked-in discriminator patch to the freshly generated output.
-python3 "$PROJECT_ROOT/scripts/patch-operation-details-client.py"
+python3 "$PROJECT_ROOT/scripts/patch-operation-details-client.py" --language python
 if [ -d "$GEN_TMP_DIR/.openapi-generator" ]; then
     rm -rf "$PYTHON_CLIENT_DIR/.openapi-generator"
     cp -R "$GEN_TMP_DIR/.openapi-generator" "$PYTHON_CLIENT_DIR/"
@@ -611,6 +611,11 @@ else
         sed -i.bak 's|"net/url"|"net/url"\n\t"os"|' api_files.go
         rm -f api_files.go.bak
     fi
+
+    # Nullable operation-detail unions must decode by operation_type, not shape.
+    # Apply after copying fresh Go output (the earlier Python patch cannot own it).
+    python3 "$PROJECT_ROOT/scripts/patch-operation-details-client.py" --language go
+    gofmt -w model_operation_response_details.go
 
     # Initialize module and build
     echo "Building Go client..."

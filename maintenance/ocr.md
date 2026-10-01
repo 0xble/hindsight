@@ -15,6 +15,20 @@ remain compatible for callers.
 - **Upstream PR:** [#4047](https://github.com/vectorize-io/hindsight/pull/4047),
   closed unmerged: the maintainer preferred explicit MarkItDown flags over heuristics.
   The admission policy remains an intentional fork divergence.
+- **Mixed-chain precedence (M1):** Relative to released base
+  `5fc4ce20917b916240cef27c212c387a177f115b`, this is fork-owned: OCR rejection
+  entered in `996c59b9268f58f3e2059079b563adfa5f467b59`; the `nonempty_error`
+  slot in `27fcb7b95013afaf4fb4253927b4dcca390921ba` still let a later OCR
+  rejection hide a provider/transport failure. Preserve an unclassified error
+  separately, in either parser order, rather than settling a retryable mixed
+  chain as `low_quality_ocr`. Unsupported file types are deterministic: they
+  must not outrank a capable parser's OCR rejection, even with trailing empty
+  results. Keep OCR errors separately from unsupported-type errors; only
+  transient/unclassified failures take priority. Exhaust fallback first; a useful
+  result still succeeds and low-quality-only or low-quality/unsupported chains
+  still have typed OCR details.
+  `tests/test_ocr_quality.py` checks the raised error and failure metadata,
+  including wrapped errors and a trailing empty parser.
 - **Fence/sparse-text provenance:** The optional-newline wrapper bug originated
   in fork commit `f7a140b6ad68e5ab9e56fcc6ef7bddb0c572bd2a`; unconditional
   UI-only rejection originated in `08de007103ba1de80a805301ded41847de8e8f11`.
@@ -37,6 +51,45 @@ remain compatible for callers.
   deterministic evidence exclusions without parsing error prose. Retries clear
   stale terminal details, and generated clients accept both supported detail types,
   including raw dictionary and JSON Pydantic validation nested in operation responses.
+- **Nullable discriminator correction (L7):** The Python/Go oneOf wrappers were
+  introduced by fork `fded26c852a11c2ffc2b99a106544c4ce3ec3979` after released
+  base `5fc4ce20917b916240cef27c212c387a177f115b`; upstream's single refresh
+  detail had no such union. Python trial decoding counted JSON null as two
+  matches; Go chose a shape even when `operation_type` named another variant.
+  Keep `scripts/patch-operation-details-client.py` as the source owner for both
+  generated wrappers. Run its language-specific hook after each language's
+  generation; null represents no actual instance, unknown/missing discriminators
+  and mismatched shapes are rejected, and parents retain absent/explicit-null
+  semantics. Reapplying the patch must be byte-idempotent and changed generator
+  boundaries must fail without rewriting the target.
+- **Empty-detail wire contract:** `engine/memory_engine.py::_operation_details`
+  returns a validated, discriminated model dump or `None`, never `{}` or `""`;
+  both list/get operation readers use that projection. `api/http.py` response
+  models and checked-in OpenAPI permit only the typed union or null. Malformed,
+  missing, legacy, or unreported metadata resolves to null. Preserve strict
+  Go/Python rejection of empty non-null details rather than accepting a wire
+  shape the server cannot emit. `tests/test_operation_status.py` guards the
+  projection and server-model boundary; client null/discriminator and generator
+  idempotence tests remain required.
+- **Qualification preflight:** Read upstream `AGENTS.md`, `CONTRIBUTING.md`,
+  `CLAUDE.md` and code-review guidance at pinned
+  `d863f78aa24408583d69bbc32203649fc6fc230a`. Independent proposal: retain
+  non-terminal parser failures separately and decode nullable unions once by
+  `operation_type` through the existing generation patch. Related upstream
+  [#4047](https://github.com/vectorize-io/hindsight/pull/4047) remains closed
+  unmerged (explicit MarkItDown flags preferred); merged
+  [#3609](https://github.com/vectorize-io/hindsight/pull/3609) establishes null
+  details for older/in-flight/unreporting operations, but not the fork's OCR
+  union. Neither replaces these corrections. Both findings are fixed as retained
+  fork divergences; no upstream write or new contribution is part of this work.
+- **Generation proof:** OpenAPI Generator 7.10.0 was run for Python and Go against
+  the checked-in spec/config in isolated scratch using Java, then the maintained
+  patch and Go value-receiver/formatting postprocessing were applied. Both
+  operation-detail wrappers matched the checked-in candidate byte-for-byte;
+  two subsequent patch/format passes were unchanged. The full multi-language
+  Docker/Rust/TypeScript generation script is not needed for these two wrappers.
+  `hindsight-clients/python/tests/test_operation_details.py` also verifies patch
+  idempotency and fail-closed behavior for both languages.
 - **Oracle adaptation:** Brian Le's retry-clear change
   `c343c30c202466a636f4d4560d09954e3c618362` introduced CASE/chained JSONB merges
   the Oracle adapter cannot translate. Keep native CLOB `JSON_MERGEPATCH` in the
@@ -80,7 +133,8 @@ remain compatible for callers.
   introduced by `27fcb7b95013afaf4fb4253927b4dcca390921ba` requires adapting
   successful null/empty/whitespace results to `NoExtractableContentError`.
   Keep provider, transport, and job failures unclassified; do not infer no-text
-  from arbitrary exception messages. The registry already preserves mixed chains.
+  from arbitrary exception messages. Preserve unclassified failures separately
+  from OCR rejection so either ordering of a mixed chain remains unclassified.
 - **Upstream issue:** https://github.com/vectorize-io/hindsight/issues/3255 (scanned
   PDFs; the typed failure is fork-only)
 - **Upstream PR:** None. Upstream closed PDF OCR in #3442 pending a better parser.

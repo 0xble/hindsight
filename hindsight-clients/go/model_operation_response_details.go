@@ -11,14 +11,14 @@ API version: 0.10.2
 package hindsight
 
 import (
+	"bytes"
 	"encoding/json"
-	"gopkg.in/validator.v2"
 	"fmt"
 )
 
 // OperationResponseDetails - struct for OperationResponseDetails
 type OperationResponseDetails struct {
-	FileConvertRetainOperationDetails *FileConvertRetainOperationDetails
+	FileConvertRetainOperationDetails  *FileConvertRetainOperationDetails
 	RefreshMentalModelOperationDetails *RefreshMentalModelOperationDetails
 }
 
@@ -36,61 +36,38 @@ func RefreshMentalModelOperationDetailsAsOperationResponseDetails(v *RefreshMent
 	}
 }
 
-
 // Unmarshal JSON data into one of the pointers in the struct
 func (dst *OperationResponseDetails) UnmarshalJSON(data []byte) error {
-	var err error
-	// this object is nullable so check if the payload is null or empty string
-	if string(data) == "" || string(data) == "{}" {
+	// Trial-decoding by shape accepts mismatched operation_type values and
+	// treats null as matching both schemas. Null is an empty union; all other
+	// payloads must select exactly the variant named on the wire.
+	*dst = OperationResponseDetails{}
+	if bytes.Equal(bytes.TrimSpace(data), []byte("null")) {
 		return nil
 	}
-
-	match := 0
-	// try to unmarshal data into FileConvertRetainOperationDetails
-	err = newStrictDecoder(data).Decode(&dst.FileConvertRetainOperationDetails)
-	if err == nil {
-		jsonFileConvertRetainOperationDetails, _ := json.Marshal(dst.FileConvertRetainOperationDetails)
-		if string(jsonFileConvertRetainOperationDetails) == "{}" { // empty struct
-			dst.FileConvertRetainOperationDetails = nil
-		} else {
-			if err = validator.Validate(dst.FileConvertRetainOperationDetails); err != nil {
-				dst.FileConvertRetainOperationDetails = nil
-			} else {
-				match++
-			}
+	var tag struct {
+		OperationType string `json:"operation_type"`
+	}
+	if err := json.Unmarshal(data, &tag); err != nil {
+		return err
+	}
+	switch tag.OperationType {
+	case "file_convert_retain":
+		var detail FileConvertRetainOperationDetails
+		if err := json.Unmarshal(data, &detail); err != nil {
+			return err
 		}
-	} else {
-		dst.FileConvertRetainOperationDetails = nil
-	}
-
-	// try to unmarshal data into RefreshMentalModelOperationDetails
-	err = newStrictDecoder(data).Decode(&dst.RefreshMentalModelOperationDetails)
-	if err == nil {
-		jsonRefreshMentalModelOperationDetails, _ := json.Marshal(dst.RefreshMentalModelOperationDetails)
-		if string(jsonRefreshMentalModelOperationDetails) == "{}" { // empty struct
-			dst.RefreshMentalModelOperationDetails = nil
-		} else {
-			if err = validator.Validate(dst.RefreshMentalModelOperationDetails); err != nil {
-				dst.RefreshMentalModelOperationDetails = nil
-			} else {
-				match++
-			}
+		dst.FileConvertRetainOperationDetails = &detail
+	case "refresh_mental_model":
+		var detail RefreshMentalModelOperationDetails
+		if err := json.Unmarshal(data, &detail); err != nil {
+			return err
 		}
-	} else {
-		dst.RefreshMentalModelOperationDetails = nil
+		dst.RefreshMentalModelOperationDetails = &detail
+	default:
+		return fmt.Errorf("unknown operation details type: %q", tag.OperationType)
 	}
-
-	if match > 1 { // more than 1 match
-		// reset to nil
-		dst.FileConvertRetainOperationDetails = nil
-		dst.RefreshMentalModelOperationDetails = nil
-
-		return fmt.Errorf("data matches more than one schema in oneOf(OperationResponseDetails)")
-	} else if match == 1 {
-		return nil // exactly one match
-	} else { // no match
-		return fmt.Errorf("data failed to match schemas in oneOf(OperationResponseDetails)")
-	}
+	return nil
 }
 
 // Marshal data from the first non-nil pointers in the struct to JSON
@@ -103,11 +80,11 @@ func (src OperationResponseDetails) MarshalJSON() ([]byte, error) {
 		return json.Marshal(&src.RefreshMentalModelOperationDetails)
 	}
 
-	return nil, nil // no data in oneOf schemas
+	return []byte("null"), nil // no data in oneOf schemas
 }
 
 // Get the actual instance
-func (obj *OperationResponseDetails) GetActualInstance() (interface{}) {
+func (obj *OperationResponseDetails) GetActualInstance() interface{} {
 	if obj == nil {
 		return nil
 	}
@@ -158,5 +135,3 @@ func (v *NullableOperationResponseDetails) UnmarshalJSON(src []byte) error {
 	v.isSet = true
 	return json.Unmarshal(src, &v.value)
 }
-
-
