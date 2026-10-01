@@ -29,6 +29,7 @@ type UpdateMemoryRequest struct {
 	ResolveEntities *bool `json:"resolve_entities,omitempty"`
 	State NullableString `json:"state,omitempty"`
 	Reason NullableString `json:"reason,omitempty"`
+	CurationGuard NullableCurationGuard `json:"curation_guard,omitempty"`
 }
 
 // NewUpdateMemoryRequest instantiates a new UpdateMemoryRequest object
@@ -411,6 +412,48 @@ func (o *UpdateMemoryRequest) UnsetReason() {
 	o.Reason.Unset()
 }
 
+// GetCurationGuard returns the CurationGuard field value if set, zero value otherwise (both if not set or set to explicit null).
+func (o *UpdateMemoryRequest) GetCurationGuard() CurationGuard {
+	if o == nil || IsNil(o.CurationGuard.Get()) {
+		var ret CurationGuard
+		return ret
+	}
+	return *o.CurationGuard.Get()
+}
+
+// GetCurationGuardOk returns a tuple with the CurationGuard field value if set, nil otherwise
+// and a boolean to check if the value has been set.
+// NOTE: If the value is an explicit nil, `nil, true` will be returned
+func (o *UpdateMemoryRequest) GetCurationGuardOk() (*CurationGuard, bool) {
+	if o == nil {
+		return nil, false
+	}
+	return o.CurationGuard.Get(), o.CurationGuard.IsSet()
+}
+
+// HasCurationGuard returns a boolean if a field has been set.
+func (o *UpdateMemoryRequest) HasCurationGuard() bool {
+	if o != nil && o.CurationGuard.IsSet() {
+		return true
+	}
+
+	return false
+}
+
+// SetCurationGuard gets a reference to the given NullableCurationGuard and assigns it to the CurationGuard field.
+func (o *UpdateMemoryRequest) SetCurationGuard(v CurationGuard) {
+	o.CurationGuard.Set(&v)
+}
+// SetCurationGuardNil sets the value for CurationGuard to be an explicit nil
+func (o *UpdateMemoryRequest) SetCurationGuardNil() {
+	o.CurationGuard.Set(nil)
+}
+
+// UnsetCurationGuard ensures that no value is present for CurationGuard, not even an explicit nil
+func (o *UpdateMemoryRequest) UnsetCurationGuard() {
+	o.CurationGuard.Unset()
+}
+
 func (o UpdateMemoryRequest) MarshalJSON() ([]byte, error) {
 	toSerialize,err := o.ToMap()
 	if err != nil {
@@ -447,6 +490,9 @@ func (o UpdateMemoryRequest) ToMap() (map[string]interface{}, error) {
 	}
 	if o.Reason.IsSet() {
 		toSerialize["reason"] = o.Reason.Get()
+	}
+	if o.CurationGuard.IsSet() {
+		toSerialize["curation_guard"] = o.CurationGuard.Get()
 	}
 	return toSerialize, nil
 }

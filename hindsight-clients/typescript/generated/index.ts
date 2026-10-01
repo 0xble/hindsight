@@ -211,6 +211,7 @@ export type {
   CreateWebhookRequest,
   CreateWebhookResponse,
   CreateWebhookResponses,
+  CurationGuard,
   DeleteBankData,
   DeleteBankError,
   DeleteBankErrors,

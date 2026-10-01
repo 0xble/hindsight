@@ -25,6 +25,7 @@ runs; these extend this sole enrollment and scheduling unit:
 - [Fork CI governance](maintenance/ci.md): HINDSIGHT-003.
 - [Generated-language integrity](maintenance/language-integrity.md): HINDSIGHT-005.
 - [Bounded consolidation schema correction](maintenance/schema-correction.md): consolidation-only divergence.
+- [Guarded raw curation](maintenance/raw-curation.md): optional atomic PATCH preconditions.
 
 ## Upstream-owned recovery
 
