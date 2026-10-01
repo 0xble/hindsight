@@ -80,6 +80,68 @@ def assert_safe_database_parameters(
                 assert_safe_database_url(f"postgresql:///test?port={name.removeprefix('.s.PGSQL.')}", source=source)
 
 
+def install_startup_guards(config: pytest.Config) -> None:
+    """Refuse resolved endpoints before model/native work or isolated child dispatch.
+
+    Install only when the optional API package is present; client-only pytest
+    environments must not acquire API dependencies to enforce driver guards.
+    Both root and direct-API scopes share this implementation and cleanup.
+    """
+    import importlib.util
+    import inspect
+    from functools import wraps
+
+    import pytest
+
+    if getattr(config, "_hindsight_startup_guards_installed", False):
+        return
+    if importlib.util.find_spec("hindsight_api") is None:
+        return
+
+    from hindsight_api import MemoryEngine, migrations
+    from hindsight_api import config as api_config
+
+    patches = pytest.MonkeyPatch()
+    config.add_cleanup(patches.undo)
+
+    @wraps(MemoryEngine.initialize)
+    async def safe_initialize(engine):
+        check_test_database_environment()
+        assert_safe_database_url(engine.db_url)
+        resolved = api_config.get_config()
+        assert_safe_database_url(resolved.read_database_url, source="read_database_url")
+        assert_safe_database_url(resolved.migration_database_url, source="migration_database_url")
+        return await original_initialize(engine)
+
+    original_initialize = MemoryEngine.initialize
+    patches.setattr(MemoryEngine, "initialize", safe_initialize)
+
+    def guard_migration(entry):
+        signature = inspect.signature(entry)
+
+        @wraps(entry)
+        def safe_migration(*args, **kwargs):
+            # A child interpreter does not inherit pytest's Python hooks. Check
+            # both resolved endpoints in its parent, before native/child work.
+            arguments = signature.bind(*args, **kwargs).arguments
+            check_test_database_environment()
+            assert_safe_database_url(arguments.get("database_url"))
+            assert_safe_database_url(arguments.get("migration_database_url"), source="migration_database_url")
+            return entry(*args, **kwargs)
+
+        return safe_migration
+
+    for name in (
+        "run_migrations",
+        "run_migrations_for_schemas",
+        "ensure_embedding_dimension",
+        "ensure_vector_extension",
+        "ensure_text_search_extension",
+    ):
+        patches.setattr(migrations, name, guard_migration(getattr(migrations, name)))
+    config._hindsight_startup_guards_installed = True
+
+
 def install_driver_guards(config: pytest.Config) -> None:
     """Protect every pytest scope, including native libpq, without patching IPC."""
     import importlib.util

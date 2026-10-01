@@ -9,7 +9,6 @@ import os
 import socket
 import sys
 from collections.abc import Iterator
-from functools import wraps
 from pathlib import Path
 
 import filelock
@@ -254,9 +253,9 @@ def pytest_configure(config):
 def _install_database_connection_guards(config: pytest.Config) -> None:
     """Catch URLs resolved after startup, including libpq's native socket path."""
     _db_guard.install_driver_guards(config)
+    _db_guard.install_startup_guards(config)
 
     from hindsight_api import config as api_config
-    from hindsight_api import migrations
 
     patches = pytest.MonkeyPatch()
 
@@ -269,41 +268,6 @@ def _install_database_connection_guards(config: pytest.Config) -> None:
     api_config.clear_config_cache()
     original_get_pg0 = EmbeddedPostgres._get_pg0
     original_ensure_running = EmbeddedPostgres.ensure_running
-    original_initialize = MemoryEngine.initialize
-
-    @wraps(original_initialize)
-    async def safe_initialize(engine):
-        # A default/explicit URL can reach Alembic/libpq before asyncpg ever
-        # creates a socket. Refuse it before model init or startup migrations.
-        _check_test_database_safety(engine.db_url)
-        config = api_config.get_config()
-        _db_guard.assert_safe_database_url(config.read_database_url, source="read_database_url")
-        _db_guard.assert_safe_database_url(config.migration_database_url, source="migration_database_url")
-        return await original_initialize(engine)
-
-    def guard_migration(entry):
-        signature = inspect.signature(entry)
-
-        @wraps(entry)
-        def safe_migration(*args, **kwargs):
-            # Isolated migration children do not inherit Python hooks. Validate
-            # both endpoints in the parent before native SQL or child dispatch.
-            arguments = signature.bind(*args, **kwargs).arguments
-            _check_test_database_safety(arguments.get("database_url"))
-            _db_guard.assert_safe_database_url(arguments.get("migration_database_url"), source="migration_database_url")
-            return entry(*args, **kwargs)
-
-        return safe_migration
-
-    patches.setattr(MemoryEngine, "initialize", safe_initialize)
-    for name in (
-        "run_migrations",
-        "run_migrations_for_schemas",
-        "ensure_embedding_dimension",
-        "ensure_vector_extension",
-        "ensure_text_search_extension",
-    ):
-        patches.setattr(migrations, name, guard_migration(getattr(migrations, name)))
 
     def safe_get_pg0(instance):
         # Explicit bare pg0 bypasses DEFAULT_DATABASE_URL. Redirect before pg0

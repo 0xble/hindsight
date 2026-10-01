@@ -257,6 +257,55 @@ def test_root_native_driver_guard_refuses_programmatic_endpoint(monkeypatch):
     native.assert_not_called()
 
 
+@pytest.mark.parametrize(
+    "url",
+    [
+        "postgresql://dummy@127.0.0.1:5436/dummy",
+        "postgresql:///dummy?host=/nonexistent/pr59-root&port=5436",
+    ],
+)
+@pytest.mark.parametrize("migration_endpoint", [False, True])
+def test_root_migration_isolation_refuses_before_child_dispatch(monkeypatch, url, migration_endpoint):
+    from unittest.mock import Mock
+
+    migrations = pytest.importorskip("hindsight_api.migrations")
+    from hindsight_api.config import clear_config_cache
+
+    # Root-scoped pytest never loads the API conftest. Exercise real isolation
+    # configuration, stopping the child boundary even on an unguarded RED head.
+    dispatched = Mock(side_effect=AssertionError("migration subprocess boundary reached"))
+    monkeypatch.setenv("HINDSIGHT_API_MIGRATION_ISOLATION", "true")
+    clear_config_cache()
+    monkeypatch.setattr(migrations, "_run_in_migration_child", dispatched)
+    try:
+        with pytest.raises(ValueError, match="Refusing test database.*5436"):
+            if migration_endpoint:
+                migrations.run_migrations("postgresql://dummy@127.0.0.1:5575/dummy", migration_database_url=url)
+            else:
+                migrations.run_migrations(url)
+        dispatched.assert_not_called()
+    finally:
+        clear_config_cache()
+
+
+def test_root_migration_isolation_allows_disposable_child_dispatch(monkeypatch):
+    from unittest.mock import Mock
+
+    migrations = pytest.importorskip("hindsight_api.migrations")
+    from hindsight_api.config import clear_config_cache
+
+    dispatched = Mock()
+    monkeypatch.setenv("HINDSIGHT_API_MIGRATION_ISOLATION", "true")
+    clear_config_cache()
+    monkeypatch.setattr(migrations, "_run_in_migration_child", dispatched)
+    try:
+        migrations.run_migrations("postgresql://dummy@127.0.0.1:5575/dummy")
+        dispatched.assert_called_once()
+        assert dispatched.call_args.args[0] == "run_migrations"
+    finally:
+        clear_config_cache()
+
+
 @pytest.mark.parametrize("entry", ["export", "connection", "pool"])
 def test_root_async_driver_guard_refuses_before_resolver(monkeypatch, entry):
     import asyncio

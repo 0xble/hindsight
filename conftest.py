@@ -1,8 +1,8 @@
-"""Repository-wide pytest safety boundary; never import application code here."""
+"""Repository-wide pytest safety boundary, installed before collection."""
 
 import pytest
 
-from scripts.ci.test_db_guard import check_test_database_environment, install_driver_guards
+from scripts.ci.test_db_guard import check_test_database_environment, install_driver_guards, install_startup_guards
 
 
 @pytest.hookimpl(tryfirst=True)
@@ -14,3 +14,4 @@ def pytest_configure(config: pytest.Config) -> None:
     except ValueError as exc:
         raise pytest.UsageError(str(exc)) from None
     install_driver_guards(config)
+    install_startup_guards(config)
