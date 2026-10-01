@@ -7,10 +7,12 @@ claim that statistical language identification is infallible.
 
 from __future__ import annotations
 
+import ast
 import asyncio
 import json
 import logging
 import re
+import textwrap
 import threading
 import unicodedata
 from collections import Counter
@@ -103,6 +105,7 @@ class LanguageContext:
     source_profiles: dict[str, LanguageProfile]
     source_prose: dict[str, str]
     supported_languages: dict[str, frozenset[str]]
+    supported_scripts: dict[str, frozenset[str]]
 
 
 @dataclass(frozen=True, slots=True)
@@ -120,7 +123,7 @@ class LanguageVerdict:
     status: str
     reason: str
     source_keys: tuple[str, ...]
-    policy_version: str = "source-spans-v3"
+    policy_version: str = "source-spans-v4"
 
 
 @dataclass(frozen=True, slots=True)
@@ -277,13 +280,16 @@ def _non_latin_script_runs(text: str) -> list[tuple[str, str]]:
     return runs
 
 
-def has_introduced_script_prose(source_text: str, generated_text: str) -> bool:
+def has_introduced_script_prose(
+    source_text: str, generated_text: str, *, supported_scripts: frozenset[str] = frozenset()
+) -> bool:
     """Detect substantial novel non-Latin prose in an otherwise Latin source.
 
     This stdlib-only signal runs before language-ID abstention. Literal code,
     source-compatible foreign-script runs (including copied quotations), and
     short name-sized runs are excluded so it remains narrower than a global
-    English-only policy.
+    English-only policy. Independently profiled source scripts also authorize
+    paraphrases, even when their document-level share is small.
     """
 
     generated_runs = _non_latin_script_runs(_without_code(generated_text))
@@ -309,6 +315,8 @@ def has_introduced_script_prose(source_text: str, generated_text: str) -> bool:
 
     novel_counts: Counter[str] = Counter()
     for script, run in generated_runs:
+        if script in supported_scripts:
+            continue
         if not any(
             script == source_script and _script_run_is_evidenced(script, run, source_run)
             for source_script, source_run in source_runs
@@ -425,6 +433,34 @@ def _profile(text: str, *, source: bool) -> LanguageProfile:
     return LanguageProfile(language, confidence, margin, letters, _dominant_script(text), mixed)
 
 
+def _is_syntax_code(text: str) -> bool:
+    """Recognize code without executing it or trusting a Markdown language tag."""
+
+    text = textwrap.dedent(text).strip()
+    # JSON containers are structured literals; a bare quoted sentence is prose.
+    if text.startswith(("{", "[")):
+        try:
+            if isinstance(json.loads(text), (dict, list)):
+                return True
+        except (ValueError, RecursionError):
+            pass
+    try:
+        tree = ast.parse(text)
+    except (SyntaxError, ValueError, RecursionError):
+        return False
+    if not tree.body:
+        return False
+    # Parsing alone accepts bare identifiers and quoted sentences as expression
+    # statements. Only calls (including awaited calls) authorize such statements,
+    # at every nesting level, so a small program cannot hide adjacent prose.
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Expr):
+            expression = node.value.value if isinstance(node.value, ast.Await) else node.value
+            if not isinstance(expression, ast.Call):
+                return False
+    return True
+
+
 def _without_code(text: str) -> str:
     """Remove only whole recognized code spans or actual code fragments.
 
@@ -446,7 +482,7 @@ def _without_code(text: str) -> str:
     declaration_prefix = re.compile(rf"^\s*{declaration[:-2]};\s*")
 
     def strip_code(line: str) -> str:
-        if whole_line.fullmatch(line):
+        if whole_line.fullmatch(line) or _is_syntax_code(line):
             return " "
         # A known statement preceding prose is removable, but the residual is
         # still evaluated as prose.  Never use a keyword search as authority.
@@ -471,6 +507,10 @@ def _without_code(text: str) -> str:
             body = match.group().strip("`").strip()
         if not fenced:
             return strip_code(body)
+        # The old line allowlist missed suites and structured literals. Exempt a
+        # complete syntax-validated body, not a fence label or a keyword match.
+        if _is_syntax_code(body):
+            return " "
         # A fence can contain prose around a small code fragment. Classify each
         # line so that fragment cannot exempt the surrounding foreign prose.
         return "\n".join(strip_code(line) for line in body.splitlines())
@@ -518,6 +558,7 @@ def _prepare_context_sync(source_texts: Mapping[str, str]) -> LanguageContext:
         prose_by_text = {text: _source_prose(text) for text in set(copied_texts.values())}
         profiles_by_text = {text: _profile(prose, source=True) for text, prose in prose_by_text.items()}
         supported_by_text = {}
+        scripts_by_text = {}
         for text, profile in profiles_by_text.items():
             evidence = [profile]
             for part in _SEGMENT_BOUNDARY.split(prose_by_text[text]):
@@ -529,7 +570,11 @@ def _prepare_context_sync(source_texts: Mapping[str, str]) -> LanguageContext:
                 # A confident whole-document profile can hide a substantial
                 # same-script clause. Admit only independently corroborated
                 # foreign-language evidence, not a technical-prose classifier error.
-                if profile.actionable and segment.language != profile.language:
+                if (
+                    profile.actionable
+                    and segment.language != profile.language
+                    and segment.dominant_script == profile.dominant_script
+                ):
                     if not _same_script_mismatch_confirmed(
                         source_text=prose_by_text[text],
                         generated_text=part,
@@ -539,11 +584,13 @@ def _prepare_context_sync(source_texts: Mapping[str, str]) -> LanguageContext:
                         continue
                 evidence.append(segment)
             supported_by_text[text] = frozenset(p.language for p in evidence if p.actionable)
+            scripts_by_text[text] = frozenset(p.dominant_script for p in evidence if p.actionable)
     return LanguageContext(
         copied_texts,
         {key: profiles_by_text[text] for key, text in copied_texts.items()},
         {key: prose_by_text[text] for key, text in copied_texts.items()},
         {key: supported_by_text[text] for key, text in copied_texts.items()},
+        {key: scripts_by_text[text] for key, text in copied_texts.items()},
     )
 
 
@@ -598,7 +645,14 @@ def _evaluate_sync(context: LanguageContext, generated: Sequence[GeneratedText])
                 copy_source = copy_sources[item.source_keys]
                 if _is_copied(copy_source, item.text):
                     status, reason = "copied", "source_evidenced_span_not_independent_assertion"
-                elif has_introduced_script_prose(source, item.text):
+                elif has_introduced_script_prose(
+                    source,
+                    item.text,
+                    # The fallback must not override minority source-language authority.
+                    # Only accepted unquoted source profiles supply these scripts; the
+                    # segment checks below still reject unsupported same-script languages.
+                    supported_scripts=frozenset().union(*(context.supported_scripts[key] for key in item.source_keys)),
+                ):
                     mismatch = LanguageMismatch(
                         item.key, _profile(source, source=False).language, _profile(item.text, source=False).language
                     )

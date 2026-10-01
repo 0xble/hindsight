@@ -3,7 +3,7 @@
 import pytest
 
 from hindsight_api.engine import language_integrity as guard
-from tests.test_language_prevention import ENGLISH
+from tests.test_language_prevention import ENGLISH, SPANISH
 from tests.test_language_prevention_review import check
 
 
@@ -79,6 +79,51 @@ def test_single_line_fenced_genuine_code_remains_exempt():
 )
 def test_fenced_code_with_optional_info_and_blank_or_crlf_lines_remains_exempt(output):
     assert not guard.enforcement_failures(check(ENGLISH, output), guard.LanguageIntegrityMode.REJECT)
+
+
+@pytest.mark.parametrize(
+    "output",
+    [
+        "`await client.fetch_records()`",
+        "`report.save()`",
+        "```python\nfor record in records:\n    report.save(record)\n```",
+        '```json\n{"message": "这是示例代码中的文本内容", "ready": true}\n```',
+        '```\n{\n  "message": "这是示例代码中的文本内容"\n}\n```',
+    ],
+    ids=["await-call", "method-call", "python-loop", "json-strings", "untagged-json"],
+)
+def test_syntax_validated_code_literals_are_not_terminal_rejects(output: str) -> None:
+    result = check(ENGLISH, output)
+
+    assert result.verdicts[0].status == "preserved"
+    assert not guard.enforcement_failures(result, guard.LanguageIntegrityMode.REJECT)
+
+
+@pytest.mark.parametrize(
+    "output",
+    [
+        "`report.save(); " + SPANISH + "`",
+        "```python\nfor record in records:\n    report.save(record)\n" + SPANISH + "\n```",
+        '```json\n{"message": "这是示例代码中的文本内容"}\n' + SPANISH + "\n```",
+        "```python\nreport.save()\n" + SPANISH + "\n```",
+        '```python\nreport.save()\n"' + SPANISH + '"\n```',
+        '```json\n"' + SPANISH + '"\n```',
+        '`report.save(); "' + SPANISH + '"`',
+    ],
+    ids=[
+        "call-prefix-prose",
+        "loop-prose",
+        "json-prose",
+        "call-prose",
+        "bare-string-after-call",
+        "json-scalar-prose",
+        "call-and-string-same-line",
+    ],
+)
+def test_code_syntax_or_tag_does_not_exempt_adjacent_foreign_prose(output: str) -> None:
+    result = check(ENGLISH, output)
+
+    assert guard.enforcement_failures(result, guard.LanguageIntegrityMode.REJECT)
 
 
 def test_fenced_mixed_code_and_foreign_prose_is_not_exempt():

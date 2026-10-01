@@ -54,6 +54,42 @@ use the configurable policy below without destructive changes to source facts.
   line only when empty or a syntactic language tag; retain prose before the first
   newline for classification, including when followed by genuine code. This is
   fork-owned and covered by `tests/test_language_code_spans.py`.
+- **Minority-language authority (round-2 M2):** Fork-owned, not a regression in
+  upstream release `v0.10.2` (`5fc4ce20917b916240cef27c212c387a177f115b`), which
+  has no `engine/language_integrity.py`. The early script veto comes from
+  `bfc0475a122164cfe3bfad7a34cd850a2137f1c8`; qualification commit
+  `eca183958baf91776e49036574aecbfd1d239da2` also applied same-script lexical
+  confirmation to cross-script source clauses. Keep accepted source-language
+  and script evidence together: a substantive minority clause can authorize
+  paraphrases below the aggregate mixed-language share. Quoted/code-only source
+  text cannot confer that authority, nor can an uncited source. Supported scripts
+  do not license unsupported languages or a third script. The owning regressions
+  are in `tests/test_language_prevention_review.py`.
+- **Code-literal recognition (round-2 M3):** Fork-owned line allowlist from
+  `276e9a13ac97357d553faa07f903aefe92d9061b`, also absent from that release.
+  Syntax-validated Python statements/suites and JSON containers supplement the
+  existing line recognizer; never execute code or trust a fence tag alone.
+  Keep the fallback's residual prose visible, including bare quoted expression
+  statements beside calls. `tests/test_language_code_spans.py` owns the calls,
+  loop, JSON-string, and foreign-prose counterexamples. These corrections use
+  verdict policy `source-spans-v4`; they do not change enforcement modes.
+- **Round-2 upstream alignment:** Guidance pinned at
+  `d863f78aa24408583d69bbc32203649fc6fc230a`: `AGENTS.md` delegates to `CLAUDE.md`;
+  `CONTRIBUTING.md` and the referenced code-review standards were also examined.
+  After proposing source-evidence/script reconciliation and syntax recognition,
+  searches for language integrity, multilingual behavior, and the affected symbol
+  found no upstream equivalent for M2/M3. Checked 2026-10-01: #4016 remains closed
+  as not planned; #4018 and bank-policy proposal #5029 remain closed unmerged.
+  [The human review of #4018](https://github.com/vectorize-io/hindsight/pull/4018#issuecomment-5510660919)
+  rejected `langdetect`, synchronous/repeated profiling, false rejections, and
+  an unconfigurable fail-closed boundary, preferring prompt fixes. Merged
+  [#4410](https://github.com/vectorize-io/hindsight/pull/4410),
+  [#4432](https://github.com/vectorize-io/hindsight/pull/4432), and
+  [#4447](https://github.com/vectorize-io/hindsight/pull/4447) change retain prompts,
+  language evals, and real-model test budgets, not this validator. Keep this
+  opt-in fail-closed enforcement and off-loop profiling as intentional fork
+  divergence; the proposal remains valid without adding a dependency, changing
+  prompts, or adopting bank policy.
 - **Enforcement gate:** prevention is only in effect with
   `HINDSIGHT_API_LLM_LANGUAGE_INTEGRITY=reject` and `HINDSIGHT_API_LLM_OUTPUT_LANGUAGE`
   unset. The shipped default stays `observe`, which records verdicts and accepts
