@@ -518,6 +518,180 @@ class ForkWorkflowPolicyTests(unittest.TestCase):
             with self.subTest(step=step):
                 self.assert_publishing_step_rejected(step)
 
+    def test_dynamic_publisher_subcommands_fail_closed(self) -> None:
+        for command in (
+            'verb=publish; uv "$verb"',
+            'uv "${VERB}"',
+            'uv pub"${SUFFIX}"',
+            'uv "$1"',
+            'uv "${args[@]}"',
+            "uv ${{ inputs.verb }}",
+            'uv --directory "$PROJECT" "$VERB"',
+            'uv --config-file "$CONFIG" "$VERB"',
+            "uv --${OPTION} build",
+            'cargo "$VERB"',
+            'cargo +stable "$VERB"',
+            'npm "$VERB"',
+            'pnpm "$VERB"',
+            'yarn npm "$VERB"',
+            'dotnet nuget "$VERB"',
+            'docker "$VERB" image',
+            'docker buildx "$VERB" .',
+            'git -C "$PROJECT" "$VERB" origin main',
+            'gh --repo "$REPO" release "$VERB" v1',
+            'gh "$GROUP" create v1',
+            'kubectl --namespace "$NAMESPACE" "$VERB" -f deploy.yml',
+            'python3.12 -I -m twine "$VERB" dist/*',
+            'python -m "$MODULE" upload dist/*',
+            'twine --repository-url "$REGISTRY" "$VERB" dist/*',
+            'cosign "$VERB" image',
+            'helm "$VERB" chart',
+            'env uv "$VERB"',
+            "bash -c 'uv \"$VERB\"'",
+        ):
+            with self.subTest(command=command):
+                self.assert_publishing_step_rejected(f"run: {command}")
+
+    def test_dynamic_wrapper_command_words_fail_closed(self) -> None:
+        for command in (
+            'env "$COMMAND" publish',
+            'env -u NAME "$COMMAND" publish',
+            'env --chdir "$PROJECT" "$COMMAND" publish',
+            'command "$COMMAND" publish',
+            'timeout 10 "$COMMAND" publish',
+            'sudo -u runner "$COMMAND" publish',
+            'sudo -p prompt "$COMMAND" publish',
+            'xargs -I {} "$COMMAND" publish',
+            'env --argv0 name "$COMMAND" publish',
+            'uv --default-index https://example.com "$COMMAND"',
+            'env --unreviewed-option name "$COMMAND" publish',
+            'uv --unreviewed-option value "$COMMAND"',
+        ):
+            with self.subTest(command=command):
+                self.assert_publishing_step_rejected(f"run: {command}")
+
+    def test_data_arguments_are_not_dynamic_publisher_subcommands(self) -> None:
+        for command in (
+            'uv --directory "$PROJECT" run pytest "$TESTS"',
+            'uv --config-file "$CONFIG" build',
+            'uv run pytest "$TESTS"',
+            'cargo test "$FILTER"',
+            'cargo +stable test "$FILTER"',
+            'npm run build -- "$TARGET"',
+            'git -C "$PROJECT" status',
+            'gh --repo "$REPO" release view "$TAG"',
+            'kubectl --namespace "$NAMESPACE" get pods',
+            'python "$TEST_SCRIPT"',
+            'python -m pytest "$TESTS"',
+            'env TESTS="$TESTS" pytest "$TESTS"',
+            'env -u NAME pytest "$TESTS"',
+            'env --chdir "$PROJECT" pytest "$TESTS"',
+            'command pytest "$TESTS"',
+            'timeout 10 pytest "$TESTS"',
+            'sudo -u runner pytest "$TESTS"',
+            'env uv --directory "$PROJECT" run pytest "$TESTS"',
+            'uv --default-index "$INDEX" run pytest "$TESTS"',
+            'env --argv0 name pytest "$TESTS"',
+            'env --ignore-environment pytest "$TESTS"',
+            'xargs -I {} pytest "$TESTS"',
+            'sudo -p prompt pytest "$TESTS"',
+            'uv --offline run pytest "$TESTS"',
+            'uv -p"$PYTHON" run pytest "$TESTS"',
+            'git -C"$PROJECT" status',
+            'env -C"$PROJECT" pytest "$TESTS"',
+            "bash -c 'uv run pytest \"$TESTS\"'",
+            "echo 'uv $VERB is not literal prose to execute'",
+        ):
+            with self.subTest(command=command):
+                self.assertEqual(self.set_fork_ci_step(f"run: {command}"), [])
+
+    def test_buildx_publishing_exporters_fail_closed(self) -> None:
+        for command in (
+            "docker buildx build --output type=registry .",
+            "docker buildx build --output=type=registry .",
+            "docker buildx build -o type=registry .",
+            "docker buildx build -otype=registry .",
+            "docker buildx build -o=type=registry .",
+            "docker buildx build --output type=registry,push=false .",
+            "docker buildx build --output type=image,push=true .",
+            "docker buildx build --output 'type=image, push =true' .",
+            "docker buildx build --output ' type =registry,name=example/image' .",
+            "docker buildx build --output=type=image,push=1 .",
+            "docker buildx build -o type=image,push=True .",
+            "docker buildx build -otype=image,push=t .",
+            "docker buildx build --push=false -o type=image,push=true .",
+            "docker buildx build -o type=local,dest=out -o type=registry .",
+            "docker buildx build --output 'type=image,\"name=one,two\",push=true' .",
+            "docker buildx build --output '\"type=registry\",name=example/image' .",
+            "docker buildx build --output type=image,push-by-digest=true .",
+            'exporter=type=registry; docker buildx build --output "$exporter" .',
+            'docker buildx build --output="${EXPORTER}" .',
+            'docker buildx build -o "$EXPORTER" .',
+            "docker buildx build -o${EXPORTER} .",
+            "docker buildx build --output type=${TYPE},dest=out .",
+            "docker buildx build --output type=image,push=${PUSH:-false} .",
+            'docker buildx build --output type=image,"${KEY}"=true .',
+            'docker buildx build --output type=local,dest="$DEST" .',
+            "env docker buildx build --output type=registry .",
+            "bash -c 'docker buildx build -o type=registry .'",
+        ):
+            with self.subTest(command=command):
+                self.assert_publishing_step_rejected(f"run: {command}")
+
+    def test_local_buildx_exporters_and_data_arguments_are_allowed(self) -> None:
+        for command in (
+            "docker buildx build --output type=local,dest=out .",
+            "docker buildx build --output=type=tar,dest=out.tar .",
+            "docker buildx build -o type=docker .",
+            "docker buildx build -otype=oci,dest=out.tar .",
+            "docker buildx build -o=type=image,push=false .",
+            "docker buildx build --output type=image,push=0 .",
+            "docker buildx build --output type=image,push=FALSE .",
+            "docker buildx build --output type=image,push=f .",
+            "docker buildx build --output type=image .",
+            "docker buildx build --output ./out .",
+            "docker buildx build -o - .",
+            "docker buildx build -o type=local,dest=out -o type=tar,dest=out.tar .",
+            'docker buildx build -t "$IMAGE" --build-arg VALUE="$VALUE" --output type=local,dest=out "$CONTEXT"',
+            'env docker buildx build --output type=local,dest=out "$CONTEXT"',
+            "echo 'docker buildx build --output type=registry is forbidden'",
+        ):
+            with self.subTest(command=command):
+                self.assertEqual(self.set_fork_ci_step(f"run: {command}"), [])
+
+    def test_publisher_subcommand_globs_fail_closed(self) -> None:
+        for command in ("uv pub*", "npm publis?", "cargo [p]ublish"):
+            with self.subTest(command=command):
+                self.assert_publishing_step_rejected(f"run: {command}")
+
+    def test_all_known_publisher_paths_reject_variable_verbs(self) -> None:
+        for prefix in sorted(POLICY.FORBIDDEN_COMMAND_PREFIXES):
+            command = " ".join((*prefix[:-1], '"$VERB"'))
+            with self.subTest(command=command):
+                self.assert_publishing_step_rejected(f"run: {command}")
+
+    def test_buildx_exporters_cannot_bypass_policy_via_build_alias(self) -> None:
+        self.assert_publishing_step_rejected("run: docker buildx b -o type=registry .")
+
+    def test_publisher_policy_covers_shell_templates_at_all_scopes(self) -> None:
+        for command in ('uv "$VERB" {0}', "docker buildx build -o type=registry {0}"):
+            for scope in ("step", "workflow", "job"):
+                with self.subTest(scope=scope, command=command):
+                    root = self.make_root()
+                    workflow = root / ".github" / "workflows" / "fork-ci.yml"
+                    candidate = POLICY.load_workflow(workflow)
+                    job = candidate["jobs"]["test"]
+                    job["steps"] = [{"run": "echo safe"}]
+                    if scope == "step":
+                        job["steps"][0]["shell"] = command
+                    else:
+                        owner = candidate if scope == "workflow" else job
+                        owner["defaults"] = {"run": {"shell": command}}
+                    workflow.write_text(yaml.safe_dump(candidate, sort_keys=False), encoding="utf-8")
+                    self.assertTrue(
+                        any("publishing, release, or deployment step" in error for error in POLICY.validate(root))
+                    )
+
     def test_proved_release_action_bypass_fails(self) -> None:
         self.assert_publishing_step_rejected("uses: softprops/action-gh-release@v2")
 

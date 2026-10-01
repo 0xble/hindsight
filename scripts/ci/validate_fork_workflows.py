@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import copy
+import csv
 import hashlib
 import re
 import shlex
@@ -138,6 +139,33 @@ ACTIONS_EXPRESSION = re.compile(r"\$\{\{(.*?)\}\}", re.DOTALL)
 SECRET_IDENTIFIER = re.compile(r"(?<![A-Za-z0-9_])secrets(?![A-Za-z0-9_])", re.IGNORECASE)
 SHELL_INTERPRETERS = {"bash", "dash", "ksh", "sh", "zsh"}
 DYNAMIC_COMMAND = re.compile(r"^\$(?:[A-Za-z_][A-Za-z0-9_]*|\{[^}]+\})")
+COMMAND_WORD_EXPANSION = re.compile(r"[$*?\[]")
+COMMAND_BOOLEAN_OPTIONS = {
+    "--debug",
+    "--foreground",
+    "--frozen",
+    "--help",
+    "--ignore-environment",
+    "--locked",
+    "--no-cache",
+    "--no-config",
+    "--no-progress",
+    "--offline",
+    "--preserve-status",
+    "--quiet",
+    "--verbose",
+    "--version",
+    "-D",
+    "-V",
+    "-h",
+    "-i",
+    "-n",
+    "-p",
+    "-q",
+    "-v",
+    "-vv",
+    "-vvv",
+}
 DYNAMIC_SHELL_SYNTAX = re.compile(r"\$\(|`|(?:<|>)\(")
 DYNAMIC_COMMAND_WRAPPERS = {
     "builtin",
@@ -288,6 +316,151 @@ def script_is_forbidden(script: str, depth: int = 0) -> bool:
     return any(command_is_forbidden(segment, depth) for segment in shell_segments(script))
 
 
+def command_value_options(command: str) -> set[str]:
+    """Recognize data-valued options before executable/subcommand words."""
+    if command == "uv":
+        return {
+            "--directory",
+            "--project",
+            "--config-file",
+            "--cache-dir",
+            "--color",
+            "--python",
+            "-p",
+            "--default-index",
+            "--index-url",
+            "--extra-index-url",
+            "--index",
+            "--keyring-provider",
+            "--allow-insecure-host",
+            "--trusted-host",
+        }
+    if command == "git":
+        return {"-C", "-c", "--git-dir", "--work-tree", "--namespace", "--config-env"}
+    if command == "gh":
+        return {"--repo", "-R", "--hostname"}
+    if command in {"kubectl", "helm"}:
+        return {"--namespace", "-n", "--context", "--kube-context", "--kubeconfig", "--server", "--token"}
+    if command == "docker":
+        return {"--config", "--context", "-c", "--host", "-H", "--builder"}
+    if command in {"cargo", "npm", "pnpm", "yarn", "poetry", "hatch"}:
+        return {"--manifest-path", "--config", "--cwd", "--directory", "--prefix", "--registry", "-C"}
+    if command == "twine":
+        return {"--repository", "--repository-url", "--config-file", "-r"}
+    if command == "env":
+        return {"-u", "--unset", "-C", "--chdir", "-S", "--split-string", "--argv0", "-a"}
+    if command == "sudo":
+        return {"-u", "--user", "-g", "--group", "-h", "--host", "-C", "--close-from", "-p", "--prompt"}
+    if command == "timeout":
+        return {"-s", "--signal", "-k", "--kill-after"}
+    if command == "xargs":
+        return {"-I", "--replace", "-a", "--arg-file", "-n", "--max-args", "-P", "--max-procs", "-d", "--delimiter"}
+    if command == "nice":
+        return {"-n", "--adjustment"}
+    if command == "stdbuf":
+        return {"-i", "--input", "-o", "--output", "-e", "--error"}
+    return set()
+
+
+def next_command_word(tokens: list[str], start: int, command: str, assignments: bool = False) -> int | None:
+    """Skip literal options and their data, not expansions that could select a command."""
+    value_options = command_value_options(command)
+    index = start
+    while index < len(tokens):
+        token = tokens[index]
+        if command == "cargo" and token.startswith("+"):
+            index += 1  # rustup toolchain selector, not cargo's subcommand.
+        elif assignments and SHELL_ASSIGNMENT.match(token):
+            index += 1
+        elif token == "--":
+            return index + 1 if index + 1 < len(tokens) else None
+        elif token in value_options:
+            index += 2
+        elif token.startswith("-") and not token.startswith("--") and token[:2] in value_options:
+            index += 1  # Attached short-option data, including variable paths.
+        elif token.startswith("-") and not COMMAND_WORD_EXPANSION.search(token.split("=", 1)[0]):
+            # Unknown option arity could conceal a verb after its operand. Fail closed
+            # when expansions remain; known boolean/data options preserve ordinary CI.
+            if (
+                token not in COMMAND_BOOLEAN_OPTIONS
+                and "=" not in token
+                and token[:2] not in value_options
+                and any(COMMAND_WORD_EXPANSION.search(argument) for argument in tokens[index + 1 :])
+            ):
+                return index
+            index += 1
+        else:
+            return index
+    return None
+
+
+def dynamic_publisher_subcommand(tokens: list[str]) -> bool:
+    # Literal-only denylist matching missed `uv "$verb"`. Resolve just the known command
+    # paths, never shell variable values. Once a safe literal verb is selected, arguments
+    # such as `uv run pytest "$TESTS"` remain data rather than possible publisher verbs.
+    prefixes = {prefix for prefix in FORBIDDEN_COMMAND_PREFIXES if prefix[0] not in {"python", "python3"}}
+    prefixes |= {("docker", "buildx", "build"), ("gh", "release", "create"), ("kubectl", "apply")}
+    for index, token in enumerate(tokens):
+        command = token.rsplit("/", 1)[-1].lower()
+        for prefix in prefixes:
+            if command != prefix[0]:
+                continue
+            position = index + 1
+            for word in prefix[1:]:
+                next_index = next_command_word(tokens, position, command)
+                if next_index is None:
+                    break
+                candidate = tokens[next_index]
+                if candidate.startswith("-") or COMMAND_WORD_EXPANSION.search(candidate):
+                    return True
+                if candidate.lower() != word:
+                    break
+                position = next_index + 1
+        if re.fullmatch(r"python(?:\d+(?:\.\d+)*)?", command):
+            arguments = tokens[index + 1 :]
+            if "-m" in arguments:
+                module_index = arguments.index("-m") + 1
+                if module_index < len(arguments) and "$" in arguments[module_index]:
+                    return True
+    return False
+
+
+def buildx_exporter_is_forbidden(value: str) -> bool:
+    # --push is only shorthand: registry exporters and image push attributes also
+    # publish. Exporter values are CSV, including quoted fields with multiple names.
+    # Any expansion can inject additional CSV attributes, even in a dest/name value.
+    if "$" in value:
+        return True
+    try:
+        fields = next(csv.reader([value], strict=True))
+    except csv.Error:
+        return True
+    for field in fields:
+        key, separator, setting = field.partition("=")
+        if not separator:
+            continue  # A bare destination is buildx's local-exporter shorthand.
+        key = key.strip().lower()  # buildx trims and lowercases CSV keys.
+        if key == "type" and setting.lower() == "registry":
+            return True
+        if key in {"push", "push-by-digest"} and setting.lower() not in {"false", "0", "f"}:
+            return True
+    return False
+
+
+def buildx_outputs_are_forbidden(tokens: list[str]) -> bool:
+    for index, token in enumerate(tokens):
+        if token in {"--output", "-o"}:
+            if index + 1 >= len(tokens) or buildx_exporter_is_forbidden(tokens[index + 1]):
+                return True
+        elif token.startswith("--output="):
+            if buildx_exporter_is_forbidden(token.split("=", 1)[1]):
+                return True
+        elif token.startswith("-o") and token != "-o":
+            if buildx_exporter_is_forbidden(token[2:].removeprefix("=")):
+                return True
+    return False
+
+
 def command_is_forbidden(tokens: list[str], depth: int = 0) -> bool:
     normalized = [token.rsplit("/", 1)[-1].lower() for token in tokens]
 
@@ -305,11 +478,27 @@ def command_is_forbidden(tokens: list[str], depth: int = 0) -> bool:
         # validator never sees. Reject the indirection rather than trying to emulate a shell.
         if command in {".", "eval", "source"} or DYNAMIC_COMMAND.match(tokens[command_index]):
             return True
-        if command in DYNAMIC_COMMAND_WRAPPERS and any(
-            DYNAMIC_COMMAND.match(token) or normalized[index] in {".", "eval", "source"}
-            for index, token in enumerate(tokens[command_index + 1 :], command_index + 1)
-        ):
-            return True
+        while command in DYNAMIC_COMMAND_WRAPPERS:
+            # The former all-arguments check rejected `env pytest "$TESTS"`. Only the
+            # wrapped executable can introduce command text; later operands are data.
+            wrapped_index = next_command_word(tokens, command_index + 1, command, assignments=True)
+            if command == "timeout" and wrapped_index is not None:
+                if "$" in tokens[wrapped_index]:
+                    return True
+                wrapped_index += 1  # timeout's duration precedes its executable.
+            if wrapped_index is None or wrapped_index >= len(tokens):
+                break
+            command_index = wrapped_index
+            command = normalized[command_index]
+            if (
+                tokens[command_index].startswith("-")
+                or "$" in tokens[command_index]
+                or command in {".", "eval", "source"}
+            ):
+                return True
+
+    if dynamic_publisher_subcommand(tokens):
+        return True
 
     def contains_ordered(words: tuple[str, ...], haystack: list[str] = normalized) -> bool:
         """Match command structure without assuming options are contiguous."""
@@ -335,7 +524,9 @@ def command_is_forbidden(tokens: list[str], depth: int = 0) -> bool:
     push_enabled = any(
         token == "--push" or token.startswith("--push=") and token != "--push=false" for token in normalized
     )
-    if push_enabled and contains_ordered(("docker", "buildx", "build")):
+    if any(contains_ordered(("docker", "buildx", verb)) for verb in {"build", "b"}) and (
+        push_enabled or buildx_outputs_are_forbidden(tokens)
+    ):
         return True
 
     if any(contains_ordered(("gh", "release", command)) for command in FORBIDDEN_GH_RELEASE_COMMANDS):
