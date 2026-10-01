@@ -6,8 +6,9 @@ exercises real parsing and the single-completion attempt boundary.
 """
 
 import json
+import random
 from pathlib import Path
-from time import perf_counter
+from time import process_time
 from types import SimpleNamespace
 
 import pytest
@@ -16,6 +17,7 @@ from hindsight_api.engine.consolidation import consolidator as c
 from hindsight_api.engine.consolidation.detail_loss import (
     Anchor,
     Evidence,
+    anchors,
     dropped_merge_anchors,
     dropped_supported_anchors,
     without_temporal_suffix,
@@ -149,6 +151,185 @@ async def test_fallback_suppresses_delete_of_preserved_target_and_survives_zero_
     result = await run_case(provider, config, case, remaining_observation_slots=0, max_observations_per_scope=1)
     assert not result.failed and not result.deletes and result.creates
     assert len(stub.requests) == 2
+
+
+def transition_case(before, after):
+    return {
+        "before": before,
+        "after": after,
+        "prior_source_facts": [
+            {"id": "11111111-1111-4111-8111-111111111111", "text": before, "mentioned_at": "2026-09-29T10:00:00Z"}
+        ],
+        "new_source_facts": [
+            {"id": "22222222-2222-4222-8222-222222222222", "text": after, "mentioned_at": "2026-09-30T10:00:00Z"}
+        ],
+    }
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "before,after",
+    [
+        ("Current deployment commit: abc1234. The server timeout is 5 seconds.", "Current deployment commit: def5678."),
+        (
+            "A reset credit is available until 2026-10-02. The server timeout is 5 seconds.",
+            "Brian used the last reset credit.",
+        ),
+    ],
+    ids=["snapshot", "credit"],
+)
+async def test_clause_local_transition_preserves_unrelated_timeout_at_update_boundary(provider, config, before, after):
+    case = transition_case(before, after)
+    stub = install(provider, [response(case)])
+    budget = c._SchemaCorrectionBudget(0)
+    result = await run_case(provider, config, case, schema_correction_budget=budget)
+    assert not result.failed and not result.updates
+    assert result.creates[0].text == after and result.creates[0]._preserve_separate
+    assert budget.result_stats()["detail_loss_flagged"] == 1
+    assert len(stub.requests) == 1
+
+
+@pytest.mark.parametrize(
+    "before,after",
+    [
+        ("Current deployment commit: abc1234.", "Current deployment commit: def5678."),
+        ("A reset credit is available until 2026-10-02.", "Brian used the last reset credit."),
+    ],
+    ids=["snapshot", "credit"],
+)
+def test_clause_local_transition_controls_pass(before, after):
+    assert not dropped_supported_anchors(
+        before, after, [Evidence(before, "2026-09-29T10:00:00Z")], [Evidence(after, "2026-09-30T10:00:00Z")]
+    )
+
+
+@pytest.mark.parametrize("separator", [". ", "; ", " and ", ", the "])
+@pytest.mark.parametrize("transition", ["snapshot", "credit"])
+def test_clause_local_transition_keeps_repeated_value_in_unrelated_slot(separator, transition):
+    state = "Current deployment count: 5" if transition == "snapshot" else "A reset credit is available for 5 days"
+    after = "Current deployment count: 10." if transition == "snapshot" else "Brian used the last reset credit."
+    before = state + separator + "server timeout is 5 seconds."
+    assert Anchor("number", "5") in dropped_supported_anchors(
+        before, after, [Evidence(before, "2026-09-29T10:00:00Z")], [Evidence(after, "2026-09-30T10:00:00Z")]
+    )
+
+
+@pytest.mark.parametrize(
+    "before,after",
+    [
+        ("Current primary deployment count: 5. Current backup deployment count: 5.", "Current deployment count: 10."),
+        (
+            "Alpha reset credit is available for 5 days. Beta reset credit is available for 5 days.",
+            "Brian used the last reset credit.",
+        ),
+    ],
+    ids=["snapshot", "credit"],
+)
+def test_ambiguous_state_transition_fails_closed(before, after):
+    assert Anchor("number", "5") in dropped_supported_anchors(
+        before, after, [Evidence(before, "2026-09-29T10:00:00Z")], [Evidence(after, "2026-09-30T10:00:00Z")]
+    )
+
+
+def test_snapshot_shared_parent_is_not_same_slot_authority():
+    before = "Current deployment commit: abc1234."
+    after = "Current deployment timeout: 10 seconds."
+    assert Anchor("identifier", "abc1234") in dropped_supported_anchors(
+        before, after, [Evidence(before, "2026-09-29T10:00:00Z")], [Evidence(after, "2026-09-30T10:00:00Z")]
+    )
+
+
+@pytest.mark.parametrize("dash", list("‐‑‒–—−"))
+def test_unicode_dashes_unchanged_invariant(dash):
+    text = f'2026{dash}10{dash}02; below{dash}€500K; £11.2k{dash}£11.6k; v1.2.3{dash}alpha; "ready{dash}now".'
+    assert dropped_supported_anchors(text, text, [Evidence(text)], []) == []
+    assert dropped_merge_anchors(text, text) == []
+
+
+CURRENCY_SHAPES = [
+    "$500K+",
+    "$500k,",
+    "$100K",
+    "below‑$100K",
+    "<$150k AND",
+    "$3k/week",
+    "$11.2k–$11.6k",
+    "$679k to $579k",
+    "$30M",
+    "$250k, $300k, and $500k",
+    "$1M+",
+    "US$500",
+    "C$500",
+    "$500USD",
+]
+
+
+@pytest.mark.parametrize("symbol", ["$", "€", "£"])
+@pytest.mark.parametrize("shape", CURRENCY_SHAPES)
+def test_unchanged_currency_extraction_invariant(symbol, shape):
+    text = "The purchase price is " + shape.replace("$", symbol) + "."
+    assert dropped_supported_anchors(text, text, [Evidence(text)], []) == []
+    assert dropped_merge_anchors(text, text) == []
+
+
+def test_generated_unchanged_anchor_invariant():
+    # Fixed seed reproduces failures without a fuzzing dependency or model call.
+    rng = random.Random(45)
+    tokens = [
+        "500",
+        "5%",
+        "11.2%",
+        "1,000",
+        "2026-10-02",
+        "2026‑10‑02",
+        "August 15, 2026",
+        "v1.2.3",
+        "1.2.3+meta",
+        "v1.2.3-alpha.4",
+        "abc1234",
+        "ABC-123",
+        "update_goal",
+        "550e8400-e29b-41d4-a716-446655440000",
+        "file.name",
+        '" ready "',
+        '"!ready?"',
+        'x"ready"y',
+        "`$500K`",
+        "“50%”",
+        "“_id_”",
+        '"and"',
+        '"."',
+        "must not",
+        "only",
+        "never",
+    ] + CURRENCY_SHAPES
+    corpus = list(tokens)
+    for _ in range(2000):
+        selected = rng.sample(tokens, rng.randrange(1, 7))
+        corpus.append(rng.choice(["", "X", "_", "(", "‑", "—"]).join(selected) + rng.choice(["", ",", "+", "Z"]))
+    for text in corpus:
+        assert dropped_supported_anchors(text, text, [Evidence(text)], []) == [], repr(text)
+        assert dropped_merge_anchors(text, text) == [], repr(text)
+
+
+def test_currency_magnitude_is_preserved_and_case_normalized():
+    assert Anchor("money", "$500k") in anchors("$500K")
+    assert Anchor("money", "$500") not in anchors("$500K")
+    assert not dropped_supported_anchors("The price is $500K.", "The price is $500k.", [Evidence("$500K")], [])
+    for guard in (lambda a, b: dropped_supported_anchors(a, b, [Evidence(a)], []), dropped_merge_anchors):
+        assert Anchor("money", "$500k") in guard("The price is $500K.", "The price is $500.")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("shape", ["US$500", "C$500", "$500USD", "$500K+", "$3k/week", "$11.2k–$11.6k"])
+async def test_unchanged_currency_update_boundary_has_one_request(provider, config, shape):
+    text = "The purchase price is " + shape + "."
+    case = transition_case(text, text)
+    stub = install(provider, [response(case)])
+    result = await run_case(provider, config, case)
+    assert not result.failed and not result.creates
+    assert len(result.updates) == 1 and result.updates[0].text == text
+    assert len(stub.requests) == 1
 
 
 def test_missing_evidence_is_not_invented_support():
@@ -310,13 +491,14 @@ def test_equal_multiplicity_of_historical_timeout_cannot_hide_lost_retry():
     assert Anchor("number", "5") in dropped_supported_anchors(before, after, old, new)
 
 
+# Bound CPU work rather than scheduler delays on loaded contributor machines.
 @pytest.mark.parametrize("add_note", [False, True], ids=["unchanged", "additive-note"])
 def test_many_identical_preserved_occurrences_remain_bounded(add_note):
     before = "The server timeout is 5 seconds. " * 2000
     after = before + ("A plain additive note." if add_note else "")
-    start = perf_counter()
+    start = process_time()
     assert not dropped_supported_anchors(before, after, [Evidence(before)], [])
-    assert perf_counter() - start < 1.0
+    assert process_time() - start < 1.0
 
 
 def test_ambiguous_repeated_slot_replacement_fails_closed():
@@ -339,17 +521,19 @@ def test_replacement_in_wrong_output_slot_does_not_excuse_missing_timeout():
 def test_anchor_dense_update_finishes_under_one_second(dense_citation):
     before = " ".join(f"Metric value {i}." for i in range(1000, 4000)).ljust(60000)
     assert len(before) == 60000
-    start = perf_counter()
+    start = process_time()
     dropped = dropped_supported_anchors(
         before,
         "Metric values remain recorded.",
         [Evidence(before, "2026-09-29T10:00:00Z")],
         [Evidence(before if dense_citation else "Metric value 4000.", "2026-09-30T10:00:00Z")],
     )
-    elapsed = perf_counter() - start
+    elapsed = process_time() - start
     assert len([a for a in dropped if a.kind == "number"]) == 3000
-    assert elapsed < 1.0, f"anchor-dense update took {elapsed:.3f}s"
-    print(f"anchor-dense update: {len(before)} chars, 3000 anchors, dense_citation={dense_citation}, {elapsed:.3f}s")
+    assert elapsed < 1.0, f"anchor-dense update took {elapsed:.3f}s CPU"
+    print(
+        f"anchor-dense update: {len(before)} chars, 3000 anchors, dense_citation={dense_citation}, {elapsed:.3f}s CPU"
+    )
 
 
 @pytest.mark.parametrize("guard", ["update", "merge"])
@@ -367,7 +551,7 @@ def test_slot_comparison_work_cap_fails_closed_below_input_size_cap():
     before = " ".join(f"Alpha timeout {i}." for i in range(1000, 2000))
     after = " ".join(f"Beta price {i}." for i in range(3000, 4000))
     assert 2 * (len(before) + len(after)) < 262144
-    start = perf_counter()
+    start = process_time()
     dropped = dropped_supported_anchors(
         before,
         after,
@@ -375,14 +559,14 @@ def test_slot_comparison_work_cap_fails_closed_below_input_size_cap():
         [Evidence(after, "2026-09-30T10:00:00Z")],
     )
     assert dropped == [Anchor("budget", "detail-loss analysis limit exceeded")]
-    assert perf_counter() - start < 1.0
+    assert process_time() - start < 1.0
 
 
 def test_preprocessing_many_consumption_words_stays_bounded():
     before = "used " * 20000 + "5"
-    start = perf_counter()
+    start = process_time()
     assert not dropped_supported_anchors(before, "5", [Evidence(before)], [])
-    assert perf_counter() - start < 1.0
+    assert process_time() - start < 1.0
 
 
 def test_excessive_source_count_fails_closed():
