@@ -1576,8 +1576,37 @@ async def test_per_batch_log_line_attributes_only_own_work(memory: MemoryEngine,
 
 @pytest.mark.asyncio
 @pytest.mark.memory_backend_incompatible
-async def test_same_lane_apply_rechecks_create_dedup(memory: MemoryEngine, request_context):
-    """Concurrent CREATE preparation must not duplicate an identical committed observation."""
+@pytest.mark.parametrize("lane_parallelism,preparation", [(2, "overlapped"), (2, "committed"), (1, "committed")])
+async def test_same_lane_apply_rechecks_create_dedup(
+    memory: MemoryEngine, request_context, lane_parallelism, preparation
+):
+    """Both current and prompt-shown twins preserve the two valid source facts."""
+    from hindsight_api.engine.consolidation import consolidator as mod
+
+    first_committed = asyncio.Event()
+    both_recalled = asyncio.Event()
+    recalls = 0
+    original_find = mod._find_related_observations
+    original_process = mod._process_memory_batch
+
+    async def ordered_find(**kwargs):
+        nonlocal recalls
+        if preparation == "committed" and kwargs["query"] == "Fact two":
+            await asyncio.wait_for(first_committed.wait(), 10)
+        result = await original_find(**kwargs)
+        recalls += 1
+        if preparation == "overlapped":
+            if recalls == 2:
+                both_recalled.set()
+            await asyncio.wait_for(both_recalled.wait(), 10)
+        return result
+
+    async def tracked_process(*args, **kwargs):
+        result = await original_process(*args, **kwargs)
+        if kwargs["memories"][0]["text"] == "Fact one":
+            first_committed.set()
+        return result
+
     bank_id = f"test-lane-create-dedup-{uuid.uuid4().hex[:8]}"
     await memory.ensure_bank_profile(bank_id=bank_id, request_context=request_context)
     try:
@@ -1608,14 +1637,16 @@ async def test_same_lane_apply_rechecks_create_dedup(memory: MemoryEngine, reque
                 _override_config(
                     memory,
                     consolidation_llm_parallelism=2,
-                    consolidation_lane_llm_parallelism=2,
+                    consolidation_lane_llm_parallelism=lane_parallelism,
                     consolidation_llm_batch_size=1,
                     consolidation_dedup_threshold=0.97,
                 ),
                 patch.object(memory, "submit_async_consolidation"),
+                patch.object(mod, "_find_related_observations", ordered_find),
+                patch.object(mod, "_process_memory_batch", tracked_process),
             ):
-                result = await run_consolidation_job(
-                    memory_engine=memory, bank_id=bank_id, request_context=request_context
+                result = await asyncio.wait_for(
+                    run_consolidation_job(memory_engine=memory, bank_id=bank_id, request_context=request_context), 30
                 )
         finally:
             memory._consolidation_llm_config = original_llm
@@ -1628,6 +1659,120 @@ async def test_same_lane_apply_rechecks_create_dedup(memory: MemoryEngine, reque
             )
         assert len(observations) == 1
         assert set(observations[0]["source_memory_ids"]) == set(facts)
+    finally:
+        await memory.delete_bank(bank_id, request_context=request_context)
+
+
+@pytest.mark.asyncio
+@pytest.mark.memory_backend_incompatible
+@pytest.mark.parametrize("lane", [False, True])
+@pytest.mark.parametrize("change", ["delete", "rewrite", "source-edit", "reply-update"])
+async def test_shown_create_fold_preserves_current_state(memory: MemoryEngine, request_context, lane, change):
+    """A shown twin is a guarded fold target, never unconditional durable coverage."""
+    from hindsight_api.engine.consolidation import consolidator as mod
+
+    bank_id = f"test-shown-fold-{uuid.uuid4().hex[:8]}"
+    twin_id = uuid.uuid4()
+    await memory.ensure_bank_profile(bank_id=bank_id, request_context=request_context)
+    try:
+        async with memory._pool.acquire() as conn:
+            old_id = await _insert_memory(conn, bank_id, "Original source", [], "shared")
+            new_id = await _insert_memory(conn, bank_id, "New source", [], "shared")
+            await conn.execute("UPDATE memory_units SET updated_at=now() WHERE id=$1", new_id)
+            await conn.execute(
+                "INSERT INTO memory_units (id,bank_id,text,fact_type,tags,source_memory_ids,created_at) "
+                "VALUES ($1,$2,'Original observation','observation','{}',$3,now())",
+                twin_id,
+                bank_id,
+                [str(old_id)],
+            )
+            new_fact = dict(await conn.fetchrow("SELECT * FROM memory_units WHERE id=$1", new_id))
+        shown = MemoryFact.model_construct(
+            id=str(twin_id),
+            text="Original observation",
+            fact_type="observation",
+            tags=[],
+            source_fact_ids=[str(old_id)],
+        )
+        wrapper, mock = _mock_llm_one_obs_per_fact()
+
+        def response(messages, scope):
+            return _ConsolidationBatchResponse(
+                creates=[_CreateAction(text="Original observation", source_fact_ids=[str(new_id)])],
+                updates=[
+                    _UpdateAction(
+                        observation_id=str(twin_id), text="Updated observation", source_fact_ids=[str(new_id)]
+                    )
+                ]
+                if change == "reply-update"
+                else [],
+            )
+
+        mock.set_response_callback(response)
+        original_llm = mod._consolidate_batch_with_llm
+
+        async def mutate_after_reply(*args, **kwargs):
+            result = await original_llm(*args, **kwargs)
+            async with memory._pool.acquire() as conn:
+                if change == "delete":
+                    await conn.execute("DELETE FROM memory_units WHERE id=$1", twin_id)
+                elif change == "rewrite":
+                    await conn.execute("UPDATE memory_units SET text='Rewritten observation' WHERE id=$1", twin_id)
+                elif change == "source-edit":
+                    await conn.execute(
+                        "UPDATE memory_units SET text='Edited source', updated_at=now() WHERE id=$1", new_id
+                    )
+            return result
+
+        ready = asyncio.Event()
+        ready.set()
+        with (
+            patch.object(mod, "_find_related_observations", return_value=RecallResult.model_construct(results=[shown])),
+            patch.object(mod, "_consolidate_batch_with_llm", mutate_after_reply),
+        ):
+            await mod._process_memory_batch(
+                pool=memory._backend,
+                memory_engine=memory,
+                llm_config=wrapper.with_config(),
+                bank_id=bank_id,
+                memories=[new_fact],
+                request_context=request_context,
+                config=type(_get_raw_config())(
+                    **{
+                        **{f: getattr(_get_raw_config(), f) for f in _get_raw_config().__dataclass_fields__},
+                        "consolidation_dedup_threshold": 1.0,
+                    }
+                ),
+                mark_consolidated_ids=[new_id],
+                obs_tags_override=[],
+                apply_turn=(ready, asyncio.Event()) if lane else None,
+            )
+        async with memory._pool.acquire() as conn:
+            rows = await conn.fetch(
+                "SELECT id,text,source_memory_ids FROM memory_units WHERE bank_id=$1 AND fact_type='observation'",
+                bank_id,
+            )
+            stamp = await conn.fetchval("SELECT consolidated_at FROM memory_units WHERE id=$1", new_id)
+        if change == "source-edit":
+            assert [(row["id"], row["text"], row["source_memory_ids"]) for row in rows] == [
+                (twin_id, "Original observation", [old_id])
+            ]
+            assert stamp is None
+        elif change == "reply-update":
+            assert [(row["id"], row["text"], set(row["source_memory_ids"])) for row in rows] == [
+                (twin_id, "Updated observation", {old_id, new_id})
+            ]
+            assert stamp is not None
+        else:
+            recreated = [row for row in rows if row["text"] == "Original observation"]
+            assert len(recreated) == 1 and recreated[0]["id"] != twin_id
+            assert recreated[0]["source_memory_ids"] == [new_id]
+            assert stamp is not None
+            if change == "rewrite":
+                preserved = next(row for row in rows if row["id"] == twin_id)
+                assert preserved["text"] == "Rewritten observation" and preserved["source_memory_ids"] == [old_id]
+            else:
+                assert len(rows) == 1
     finally:
         await memory.delete_bank(bank_id, request_context=request_context)
 

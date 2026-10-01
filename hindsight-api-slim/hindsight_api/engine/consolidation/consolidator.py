@@ -3444,16 +3444,14 @@ async def _process_memory_batch(
     # Deterministic dedup guard: map the observations the LLM was SHOWN by their
     # normalised text. The model intermittently emits a CREATE whose text is identical
     # to an observation already in its context (over-aggregation / incoherence — it even
-    # UPDATEs the twin and creates a sibling). When that happens we drop the duplicate
-    # CREATE instead of inserting a redundant row. No extra LLM/embedding cost — the
-    # match is exact text against the in-memory set.
+    # UPDATEs the twin and creates a sibling). Fold exact twins transactionally:
+    # suppressing only the row would lose the CREATE's newly cited source facts.
     shown_obs_by_text = {_norm_obs_text(o.text): o for o in union_observations}
     # Also collapse a CREATE that reproduces the text of an UPDATE issued in the SAME
     # response (the model occasionally UPDATEs the twin to text X and also CREATEs X).
     update_texts = {_norm_obs_text(u.text) for u in llm_result.updates if u.text}
 
     prepared_creates: list[_PreparedCreate] = []
-    duplicate_create_sources: set[str] = set()
     for create in llm_result.creates:
         source_mems = [mem_by_id[fid] for fid in create.source_fact_ids if fid in mem_by_id]
         if not source_mems:
@@ -3463,17 +3461,14 @@ async def _process_memory_batch(
 
         # Reconcile against observations shown to the LLM: an exact-text match means
         # this CREATE reproduces verbatim an observation the model already had in context.
-        # Since that observation already carries this exact text, drop the duplicate CREATE
-        # — no row is inserted, nothing is lost. We deliberately do NOT also UPDATE the twin
-        # here: the LLM frequently UPDATEd it earlier in this same batch, and a second update
-        # would run off the pre-LLM snapshot and clobber that change (see _dedupe_updates).
+        # A shown twin still needs a successful transactional source fold before
+        # these new facts have durable coverage. Its snapshot is only a CAS target,
+        # never proof that the twin survives until apply.
+        shown_duplicate = shown_obs_by_text.get(_norm_obs_text(create.text))
         duplicate_of = _duplicate_create_target(create.text, shown_obs_by_text, update_texts)
-        if duplicate_of is not None:
-            # Only an already-stored observation proves coverage without a write.
-            # A duplicate of an UPDATE in this reply must wait for that UPDATE's
-            # successful write (and its own source citation) instead.
-            if _norm_obs_text(create.text) in shown_obs_by_text:
-                duplicate_create_sources.update(str(m["id"]) for m in source_mems)
+        if duplicate_of is not None and shown_duplicate is None:
+            # An UPDATE in this reply has not committed yet. Only that UPDATE's
+            # successful source citations can establish coverage for these facts.
             logger.warning(
                 "[CONSOLIDATION] dropped duplicate observation CREATE — verbatim match of %s; llm_reason=%r",
                 duplicate_of,
@@ -3501,7 +3496,14 @@ async def _process_memory_batch(
         # The probe reads the state the batch started from, so two near-twin CREATEs in ONE
         # response can both land; the next round's probe sees them and folds them, and the
         # exact-text guard above already covers the common case.
-        if dedup_enabled:
+        if shown_duplicate is not None:
+            prepared_create.dedup = _DedupOutcome(
+                best_id=str(shown_duplicate.id),
+                merged_text=shown_duplicate.text,
+                should_merge=True,
+                best_text=shown_duplicate.text,
+            )
+        elif dedup_enabled:
             prepared_create.dedup = await _dedup_adjudicate(
                 pool,
                 memory_engine,
@@ -3547,8 +3549,17 @@ async def _process_memory_batch(
             for observation_id in prepared_deletes
         }
         target_ids = {*recalled_deletes, *(prepared.update.observation_id for prepared in prepared_updates)}
+        target_ids.update(
+            prepared.dedup.best_id
+            for prepared in prepared_creates
+            if prepared.dedup is not None and prepared.dedup.best_id is not None
+        )
         lock_ids = {uuid.UUID(observation_id) for observation_id in target_ids}
-        for model in [*recalled_deletes.values(), *(prepared.model for prepared in prepared_updates)]:
+        for model in [
+            *recalled_deletes.values(),
+            *(prepared.model for prepared in prepared_updates),
+            *(observation for observation in union_observations if str(observation.id) in target_ids),
+        ]:
             lock_ids.update(uuid.UUID(str(source_id)) for source_id in (model.source_fact_ids or []))
         for prepared in prepared_updates:
             lock_ids.update(uuid.UUID(str(source_id)) for source_id in prepared.source_memory_ids)
@@ -3630,6 +3641,17 @@ async def _process_memory_batch(
                                 continue
                             for m in prepared.source_mems:
                                 per_memory_updated.add(str(m["id"]))
+                            # Keep a shown CREATE twin's source-only fold on the
+                            # text this same transaction just wrote, rather than
+                            # reverting the UPDATE to its recalled snapshot.
+                            for create in prepared_creates:
+                                if (
+                                    create.dedup is not None
+                                    and create.dedup.best_id == prepared.update.observation_id
+                                    and _norm_obs_text(create.text) in shown_obs_by_text
+                                ):
+                                    create.dedup.best_text = prepared.update.text
+                                    create.dedup.merged_text = prepared.update.text
                             if prepared.dedup is not None:
                                 await _apply_dedup_update_fold(
                                     conn,
@@ -3774,7 +3796,7 @@ async def _process_memory_batch(
                             # A filtered response may have an action discarded at preparation
                             # or write time. Stamp only facts with a durable observation, not
                             # merely facts whose citation appeared in the LLM response.
-                            durable_ids = per_memory_created | per_memory_updated | duplicate_create_sources
+                            durable_ids = per_memory_created | per_memory_updated
                             safe_stamp_ids = (
                                 [mid for mid in stamp_ids if str(mid) in durable_ids]
                                 if llm_result.filtered_references
@@ -3810,11 +3832,7 @@ async def _process_memory_batch(
         elif updated:
             results.append({"action": "updated"})
         else:
-            reason = (
-                "invalid_references_pending"
-                if llm_result.filtered_references and mid not in duplicate_create_sources
-                else "no_durable_knowledge"
-            )
+            reason = "invalid_references_pending" if llm_result.filtered_references else "no_durable_knowledge"
             results.append({"action": "skipped", "reason": reason})
 
     return results, deleted_count, llm_result.failed
