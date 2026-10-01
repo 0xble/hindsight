@@ -58,4 +58,14 @@ in the root contract.
   deadlocks, and passes this regression.
 
 
+## HINDSIGHT-008: Total OpenAI-compatible request deadline
+
+- **Status:** Active on a branch based on deployed `ad4f7587931eec0b39607e9a4736acd09b6c63db`; source publication is not activation.
+- **Behavior:** Keep the resolved per-request timeout as a wall-clock cap for structured, free-form, tool, and native Ollama requests, even when the upstream sends keepalive bytes. SDK deadline expiration remains `APITimeoutError`, so existing retry counts, backoff, and error classification do not change.
+- **Adopted source:** Related upstream [#4784](https://github.com/vectorize-io/hindsight/pull/4784), merged as `878f43998dfc0e95257f8f09893d945d3da045b7`. The fork narrows that solution to the OpenAI-compatible provider and retains SDK timeout classification rather than exposing a new bare `TimeoutError` on the SDK path. No upstream publication is authorized for this delivery.
+- **Configuration:** Dedup already wraps the consolidation provider via `with_config`; its distinct trace label does not select a global timeout. Preserve the regression proving consolidation `300` wins over global `120`.
+- **Regression:** `tests/test_openai_total_deadline.py`, `tests/test_llm_timeout_propagation.py`, `tests/test_llm_transport_diagnostics.py`, and `tests/test_consolidation_dedup.py`.
+- **Retire when:** A released upstream implementation adopted by the fork passes these regressions while preserving timeout classification and retry semantics. Do not duplicate the deadline if that implementation is reconciled.
+- **Rollback:** Revert this scoped provider change and tests; no data rollback or runtime activation is part of source rollback.
+
 Run the API-local regression commands from `hindsight-api-slim`.
