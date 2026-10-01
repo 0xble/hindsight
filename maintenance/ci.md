@@ -55,6 +55,21 @@ intentional fork infrastructure policy, not upstream deployment ownership.
   offline marker filter executes them; do not register only deselected tests.
   The Go client selector includes all `TestOperationResponseDetails` cases,
   including direct-null and invalid-discriminator coverage.
+  Test sessions and every `bin/ci` profile refuse production port 5436 and
+  protected test port 5556 before native migrations or connections, including
+  Unix-domain PostgreSQL socket paths. Preserve `scripts/ci/test_db_guard.py`,
+  the root/API pytest boundaries, and both database-safety regression suites.
+  Serial tests default to disposable pg0 port 5557 (`HINDSIGHT_TEST_PG_PORT`
+  can select another safe port); xdist workers explicitly select ephemeral
+  ports under the startup lock rather than pg0's 5432-based allocator.
+  Runtime refusals must report ordinary pytest errors, never exit workers.
+  Validate inherited `PGPORT`/`PGHOST` fallback settings before engine startup
+  and migration-child dispatch, even without a `db_url` or API URL override.
+  Refuse libpq service settings/files rather than trusting hidden endpoints.
+  The root and direct-API pytest scopes share driver guards: validate native
+  psycopg2 DSNs/kwargs and asyncpg DSNs/kwargs before libpq/resolver work. Socket
+  audit hooks inspect only the actual endpoint; never monkeypatch sockets or
+  apply database-environment policy to unrelated xdist IPC.
   `fork-policy.yml` uses `pull_request_target` only to run default-branch policy
   code against an immutable candidate checkout, without persisted credentials or
   candidate actions, scripts, manifests, or hooks. `qualification` is the sole
