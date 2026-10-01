@@ -75,15 +75,19 @@ CONFIG_FILE="${CODEX_DIR}/config.toml"
 SCRIPT_FILES=(
     "scripts/session_start.py"
     "scripts/recall.py"
+    "scripts/recall_launcher.py"
     "scripts/retain.py"
     "scripts/lib/__init__.py"
     "scripts/lib/bank.py"
     "scripts/lib/client.py"
     "scripts/lib/config.py"
     "scripts/lib/content.py"
+    "scripts/lib/recall_context.py"
+    "scripts/lib/token_budget.py"
     "scripts/lib/daemon.py"
     "scripts/lib/llm.py"
     "scripts/lib/state.py"
+    "scripts/lib/upgrade_notice.py"
 )
 
 # Parse arguments
@@ -210,6 +214,32 @@ chmod +x "${SCRIPTS_DIR}/retain.py"
 
 print_success "Scripts installed to ${SCRIPTS_DIR}"
 
+# Optional private tokenizer runtime. All package/asset downloads happen here,
+# never when a prompt hook executes. Failure preserves dependency-free hooks.
+TOKENIZER_DIR="${INSTALL_DIR}/tokenizer-venv"
+ENCODING_FILE="${INSTALL_DIR}/assets/o200k_base.tiktoken"
+print_step "Preparing offline recall tokenizer"
+# Rebuild this private runtime on every install so obsolete base-interpreter
+# symlinks cannot survive a Python upgrade. Do not clear a redirected directory.
+if [ ! -L "${TOKENIZER_DIR}" ] && python3 -m venv --clear "${TOKENIZER_DIR}" && \
+   "${TOKENIZER_DIR}/bin/python" -m pip install --disable-pip-version-check --quiet 'tiktoken==0.12.0'; then
+    mkdir -p "${INSTALL_DIR}/assets"
+    if download_file "https://openaipublic.blob.core.windows.net/encodings/o200k_base.tiktoken" "${ENCODING_FILE}.new" && \
+       "${TOKENIZER_DIR}/bin/python" - "${ENCODING_FILE}.new" <<'TOKENIZER_VERIFY'
+import hashlib, pathlib, sys
+asset = pathlib.Path(sys.argv[1]).read_bytes()
+sys.exit(0 if hashlib.sha256(asset).hexdigest() == "446a9538cb6c348e3516120d7c08b09f57c36495e2acfffe59a5bf8b0cfb1a2d" else 1)
+TOKENIZER_VERIFY
+    then
+        mv "${ENCODING_FILE}.new" "${ENCODING_FILE}"
+        print_success "Pinned o200k tokenizer installed for offline hooks"
+    else
+        print_warning "Tokenizer asset unavailable. Recall uses a conservative byte bound."
+    fi
+else
+    print_warning "Tokenizer runtime unavailable. Recall uses a conservative byte bound."
+fi
+
 # Step 4: Download default settings (don't overwrite existing, but update version)
 SETTINGS_DST="${INSTALL_DIR}/settings.json"
 if [ ! -f "${SETTINGS_DST}" ]; then
@@ -326,7 +356,7 @@ cat > "${HOOKS_FILE}" <<HOOKSEOF
         "hooks": [
           {
             "type": "command",
-            "command": "python3 \"${SCRIPTS_DIR}/recall.py\"",
+            "command": "python3 \"${SCRIPTS_DIR}/recall_launcher.py\"",
             "timeout": 12
           }
         ]

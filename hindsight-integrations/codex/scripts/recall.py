@@ -36,6 +36,7 @@ from lib.content import (
     truncate_recall_query,
 )
 from lib.daemon import get_api_url
+from lib.recall_context import build_recall_context
 from lib.state import write_state
 
 LAST_RECALL_STATE = "last_recall.json"
@@ -82,6 +83,11 @@ def main():
 
     if not config.get("autoRecall"):
         debug_log(config, "Auto-recall disabled, exiting")
+        return
+
+    max_tokens = config.get("recallMaxTokens", 1024)
+    if type(max_tokens) is not int or max_tokens <= 0:
+        debug_log(config, "Invalid recallMaxTokens, skipping recall")
         return
 
     # Read hook input from stdin
@@ -146,7 +152,7 @@ def main():
         response = client.recall(
             bank_id=bank_id,
             query=query,
-            max_tokens=config.get("recallMaxTokens", 1024),
+            max_tokens=max_tokens,
             budget=config.get("recallBudget", "mid"),
             types=config.get("recallTypes"),
             timeout=recall_timeout,
@@ -162,16 +168,17 @@ def main():
         debug_log(config, "No memories found")
         return
 
-    debug_log(config, f"Injecting {len(results)} memories")
-
-    memories_formatted = format_memories(results)
-
-    context_message = (
-        f"<hindsight_memories>\n"
-        f"{preamble}\n"
-        f"Current time - {current_time}\n\n"
-        f"{memories_formatted}\n"
-        f"</hindsight_memories>"
+    bounded = build_recall_context(
+        [format_memories([result]) for result in results], preamble, current_time, max_tokens
+    )
+    if not bounded.context:
+        debug_log(config, "No complete memory fits the injection budget")
+        return
+    context_message = bounded.context
+    debug_log(
+        config,
+        f"Injecting {bounded.result_count}/{len(results)} memories, "
+        f"{bounded.counting_method} token bound: {bounded.token_upper_bound}/{max_tokens}",
     )
 
     write_state(
@@ -180,7 +187,7 @@ def main():
             "context": context_message,
             "saved_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
             "bank_id": bank_id,
-            "result_count": len(results),
+            "result_count": bounded.result_count,
         },
     )
 

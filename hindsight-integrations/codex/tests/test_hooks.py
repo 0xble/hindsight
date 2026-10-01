@@ -73,6 +73,17 @@ def _run_hook(module_name, hook_input, monkeypatch, tmp_path, urlopen_side_effec
 
 
 class TestRecallHook:
+    @pytest.fixture(autouse=True)
+    def standalone_token_budget(self, monkeypatch):
+        from lib.token_budget import TokenBudget
+
+        # Exercise the dependency-free fallback even if a developer has the
+        # optional managed encoding installed alongside this source tree.
+        monkeypatch.setattr(
+            "lib.recall_context.load_token_budget",
+            lambda: TokenBudget(lambda text: len(text.encode("utf-8")), "utf8-byte-upper-bound"),
+        )
+
     def test_outputs_additional_context_when_memories_found(self, monkeypatch, tmp_path):
         memory = make_memory("Paris is the capital of France", "world")
         response = FakeHTTPResponse({"results": [memory]})
@@ -85,6 +96,98 @@ class TestRecallHook:
         context = data["hookSpecificOutput"]["additionalContext"]
         assert "Paris is the capital of France" in context
         assert "<hindsight_memories>" in context
+
+    def test_complete_context_fits_budget_and_state_counts_only_emitted_facts(self, monkeypatch, tmp_path):
+        from lib.content import format_memories
+
+        memories = [
+            make_memory("Brian plans to migrate, but has not deployed it. " + "a" * 280, "world"),
+            make_memory("Mahin said she prefers tea, not Brian. " + "b" * 280, "world"),
+            make_memory("Third ranked fact should not fit. " + "c" * 350, "world"),
+        ]
+        response = FakeHTTPResponse({"results": memories})
+        output = _run_hook(
+            "recall", make_hook_input(), monkeypatch, tmp_path,
+            urlopen_side_effect=lambda *a, **kw: response,
+            user_config={"recallMaxTokens": 1024},
+        )
+        context = json.loads(output)["hookSpecificOutput"]["additionalContext"]
+        assert len(context.encode("utf-8")) <= 1024
+        assert format_memories([memories[0]]) in context
+        assert format_memories([memories[1]]) in context
+        assert format_memories([memories[2]]) not in context
+        assert context.index(memories[0]["text"]) < context.index(memories[1]["text"])
+        state = json.loads((tmp_path / ".hindsight/codex/state/last_recall.json").read_text())
+        assert state["result_count"] == 2
+        assert state["context"] == context
+
+    def test_skips_oversized_fact_whole_and_keeps_later_ranked_facts(self, monkeypatch, tmp_path):
+        from lib.content import format_memories
+
+        memories = [
+            make_memory("Oversized claim " + "x" * 2000 + ", but this was only a proposal."),
+            make_memory("First fitting fact"),
+            make_memory("Second fitting fact"),
+        ]
+        response = FakeHTTPResponse({"results": memories})
+        output = _run_hook(
+            "recall", make_hook_input(), monkeypatch, tmp_path,
+            urlopen_side_effect=lambda *a, **kw: response,
+        )
+        context = json.loads(output)["hookSpecificOutput"]["additionalContext"]
+        assert "Oversized claim" not in context
+        assert "only a proposal" not in context
+        for memory in memories[1:]:
+            assert format_memories([memory]) in context
+        assert context.index("First fitting fact") < context.index("Second fitting fact")
+
+    @pytest.mark.parametrize("preamble", ["x" * 1024, "🧠" * 256])
+    def test_no_context_if_preamble_and_wrapper_exceed_budget(self, monkeypatch, tmp_path, preamble):
+        response = FakeHTTPResponse({"results": [make_memory("Small fact")]})
+        output = _run_hook(
+            "recall", make_hook_input(), monkeypatch, tmp_path,
+            urlopen_side_effect=lambda *a, **kw: response,
+            user_config={"recallPromptPreamble": preamble, "recallMaxTokens": 1024},
+        )
+        assert output == ""
+        assert not (tmp_path / ".hindsight/codex/state/last_recall.json").exists()
+
+    def test_unicode_and_metadata_are_included_in_budget(self, monkeypatch, tmp_path):
+        memories = [
+            make_memory("日本語 🧠 " * 30, "world", "2026-09-30T12:34:56.123456Z"),
+            make_memory("Later fact " * 50, "experience", "2026-09-29T12:34:56.123456Z"),
+        ]
+        response = FakeHTTPResponse({"results": memories})
+        output = _run_hook(
+            "recall", make_hook_input(), monkeypatch, tmp_path,
+            urlopen_side_effect=lambda *a, **kw: response,
+            user_config={"recallMaxTokens": 1024},
+        )
+        context = json.loads(output)["hookSpecificOutput"]["additionalContext"]
+        assert len(context.encode("utf-8")) <= 1024
+        assert memories[0]["text"] in context
+        assert "[world] (2026-09-30T12:34:56.123456Z)" in context
+        assert memories[1]["text"] not in context
+
+    def test_no_context_when_no_complete_fact_fits(self, monkeypatch, tmp_path):
+        response = FakeHTTPResponse({"results": [make_memory("x" * 2000)]})
+        output = _run_hook(
+            "recall", make_hook_input(), monkeypatch, tmp_path,
+            urlopen_side_effect=lambda *a, **kw: response,
+        )
+        assert output == ""
+
+    @pytest.mark.parametrize("budget", [0, -1, True, "1024"])
+    def test_invalid_budget_skips_recall(self, monkeypatch, tmp_path, budget):
+        def unexpected_request(*a, **kw):
+            pytest.fail("Invalid budget must not reach the API")
+
+        output = _run_hook(
+            "recall", make_hook_input(), monkeypatch, tmp_path,
+            urlopen_side_effect=unexpected_request,
+            user_config={"recallMaxTokens": budget},
+        )
+        assert output == ""
 
     def test_recall_min_scores_filters_low_scoring_memories(self, monkeypatch, tmp_path):
         low_semantic = make_memory("Marginal match")
