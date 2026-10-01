@@ -9,6 +9,8 @@ import hashlib
 import re
 import shlex
 import sys
+from collections import deque
+from io import StringIO
 from pathlib import Path
 from typing import Any
 
@@ -138,8 +140,6 @@ SECRET_ACCESS = re.compile(r"(?<![A-Za-z0-9_])secrets\s*(?:\.|\[)", re.IGNORECAS
 ACTIONS_EXPRESSION = re.compile(r"\$\{\{(.*?)\}\}", re.DOTALL)
 SECRET_IDENTIFIER = re.compile(r"(?<![A-Za-z0-9_])secrets(?![A-Za-z0-9_])", re.IGNORECASE)
 SHELL_INTERPRETERS = {"bash", "dash", "ksh", "sh", "zsh"}
-DYNAMIC_COMMAND = re.compile(r"^\$(?:[A-Za-z_][A-Za-z0-9_]*|\{[^}]+\})")
-COMMAND_WORD_EXPANSION = re.compile(r"[$*?\[]")
 COMMAND_BOOLEAN_OPTIONS = {
     "--debug",
     "--foreground",
@@ -264,13 +264,79 @@ def sensitive_capability_errors(scope: str, value: Any, path: str = "workflow") 
     return errors
 
 
+class ShellWord(str):
+    """Decoded shlex word with its authored expansion/quoting evidence intact."""
+
+    dynamic: bool
+    raw: str
+
+    def __new__(cls, value: str, raw: str) -> ShellWord:
+        word = super().__new__(cls, value)
+        word.raw = raw.lstrip()
+        word.dynamic = raw_word_is_dynamic(raw)
+        return word
+
+
+def raw_word_is_dynamic(raw: str) -> bool:
+    """Fail closed on shell expansion syntax, not metacharacters in literal quotes."""
+    quote: str | None = None
+    index = 0
+    raw = raw.lstrip()
+    while index < len(raw):
+        character = raw[index]
+        if quote == "'":
+            if character == "'":
+                quote = None
+        elif quote == '"':
+            if character == '"':
+                quote = None
+            elif character == "\\":
+                index += 1  # Quoted escape: shlex already decoded the literal word.
+            elif character in "$`":
+                return True  # Double quotes do not suppress shell substitutions.
+        elif character == "#":
+            break  # shlex may consume a trailing comment with the current token.
+        elif character in "'\"":
+            quote = character
+        elif character in "$`*?[{}\\" or character == "~" and index == 0:
+            return True
+        elif raw[index : index + 2] in {"<(", ">("}:
+            return True
+        index += 1
+    return False
+
+
+def command_word_is_dynamic(word: str) -> bool:
+    # Plain-string callers have no quotation evidence and must also fail closed.
+    return word.dynamic if isinstance(word, ShellWord) else raw_word_is_dynamic(word)
+
+
+class PolicyShellLexer(shlex.shlex):
+    """Reuse shlex's word boundaries while retaining the raw source of each word."""
+
+    _pushback_chars: deque[str]
+
+    def __init__(self, source: str) -> None:
+        self.source_stream = StringIO(source)
+        super().__init__(self.source_stream, posix=True, punctuation_chars=";&|")
+        self.source_text = source
+        self.whitespace_split = True
+
+    def read_token(self) -> str | None:
+        # shlex reads one character ahead at punctuation boundaries. Account for
+        # its pending characters so adjacent `test;uv` words keep exact provenance.
+        start = self.source_stream.tell() - len(self._pushback_chars)
+        token = super().read_token()
+        end = self.source_stream.tell() - len(self._pushback_chars)
+        return None if token is None else ShellWord(token, self.source_text[start:end])
+
+
 def shell_segments(script: str) -> list[list[str]]:
     """Tokenize shell command segments while ignoring comments and quoted prose."""
     segments: list[list[str]] = []
     # Join explicit continuations first so a split `uv publish` is still one command.
     for line in script.replace("\\\n", " ").splitlines():
-        lexer = shlex.shlex(line, posix=True, punctuation_chars=";&|")
-        lexer.whitespace_split = True
+        lexer = PolicyShellLexer(line)
         current: list[str] = []
         tokens = list(lexer)
         for token in tokens:
@@ -378,14 +444,14 @@ def next_command_word(tokens: list[str], start: int, command: str, assignments: 
             index += 2
         elif token.startswith("-") and not token.startswith("--") and token[:2] in value_options:
             index += 1  # Attached short-option data, including variable paths.
-        elif token.startswith("-") and not COMMAND_WORD_EXPANSION.search(token.split("=", 1)[0]):
+        elif token.startswith("-") and not command_word_is_dynamic(token.split("=", 1)[0]):
             # Unknown option arity could conceal a verb after its operand. Fail closed
             # when expansions remain; known boolean/data options preserve ordinary CI.
             if (
                 token not in COMMAND_BOOLEAN_OPTIONS
                 and "=" not in token
                 and token[:2] not in value_options
-                and any(COMMAND_WORD_EXPANSION.search(argument) for argument in tokens[index + 1 :])
+                and any(command_word_is_dynamic(argument) for argument in tokens[index + 1 :])
             ):
                 return index
             index += 1
@@ -399,7 +465,16 @@ def dynamic_publisher_subcommand(tokens: list[str]) -> bool:
     # paths, never shell variable values. Once a safe literal verb is selected, arguments
     # such as `uv run pytest "$TESTS"` remain data rather than possible publisher verbs.
     prefixes = {prefix for prefix in FORBIDDEN_COMMAND_PREFIXES if prefix[0] not in {"python", "python3"}}
-    prefixes |= {("docker", "buildx", "build"), ("gh", "release", "create"), ("kubectl", "apply")}
+    prefixes |= {
+        ("docker", "buildx", "build"),
+        ("docker", "buildx", "b"),
+        ("docker", "build"),
+        ("docker", "builder", "build"),
+        ("buildx", "build"),
+        ("buildx", "b"),
+        ("gh", "release", "create"),
+        ("kubectl", "apply"),
+    }
     for index, token in enumerate(tokens):
         command = token.rsplit("/", 1)[-1].lower()
         for prefix in prefixes:
@@ -411,7 +486,7 @@ def dynamic_publisher_subcommand(tokens: list[str]) -> bool:
                 if next_index is None:
                     break
                 candidate = tokens[next_index]
-                if candidate.startswith("-") or COMMAND_WORD_EXPANSION.search(candidate):
+                if candidate.startswith("-") or command_word_is_dynamic(candidate):
                     return True
                 if candidate.lower() != word:
                     break
@@ -420,7 +495,7 @@ def dynamic_publisher_subcommand(tokens: list[str]) -> bool:
             arguments = tokens[index + 1 :]
             if "-m" in arguments:
                 module_index = arguments.index("-m") + 1
-                if module_index < len(arguments) and "$" in arguments[module_index]:
+                if module_index < len(arguments) and command_word_is_dynamic(arguments[module_index]):
                     return True
     return False
 
@@ -429,7 +504,7 @@ def buildx_exporter_is_forbidden(value: str) -> bool:
     # --push is only shorthand: registry exporters and image push attributes also
     # publish. Exporter values are CSV, including quoted fields with multiple names.
     # Any expansion can inject additional CSV attributes, even in a dest/name value.
-    if "$" in value:
+    if command_word_is_dynamic(value):
         return True
     try:
         fields = next(csv.reader([value], strict=True))
@@ -453,10 +528,18 @@ def buildx_outputs_are_forbidden(tokens: list[str]) -> bool:
             if index + 1 >= len(tokens) or buildx_exporter_is_forbidden(tokens[index + 1]):
                 return True
         elif token.startswith("--output="):
-            if buildx_exporter_is_forbidden(token.split("=", 1)[1]):
+            if command_word_is_dynamic(token):
+                return True
+            raw = token.raw if isinstance(token, ShellWord) else token
+            value = ShellWord(token.split("=", 1)[1], raw.split("=", 1)[1])
+            if buildx_exporter_is_forbidden(value):
                 return True
         elif token.startswith("-o") and token != "-o":
-            if buildx_exporter_is_forbidden(token[2:].removeprefix("=")):
+            if command_word_is_dynamic(token):
+                return True
+            raw = token.raw if isinstance(token, ShellWord) else token
+            value = ShellWord(token[2:].removeprefix("="), raw[2:].removeprefix("="))
+            if buildx_exporter_is_forbidden(value):
                 return True
     return False
 
@@ -476,14 +559,14 @@ def command_is_forbidden(tokens: list[str], depth: int = 0) -> bool:
         command = normalized[command_index]
         # eval/source and variable command words can execute candidate-generated text that this
         # validator never sees. Reject the indirection rather than trying to emulate a shell.
-        if command in {".", "eval", "source"} or DYNAMIC_COMMAND.match(tokens[command_index]):
+        if command in {".", "eval", "source"} or command_word_is_dynamic(tokens[command_index]):
             return True
         while command in DYNAMIC_COMMAND_WRAPPERS:
             # The former all-arguments check rejected `env pytest "$TESTS"`. Only the
             # wrapped executable can introduce command text; later operands are data.
             wrapped_index = next_command_word(tokens, command_index + 1, command, assignments=True)
             if command == "timeout" and wrapped_index is not None:
-                if "$" in tokens[wrapped_index]:
+                if command_word_is_dynamic(tokens[wrapped_index]):
                     return True
                 wrapped_index += 1  # timeout's duration precedes its executable.
             if wrapped_index is None or wrapped_index >= len(tokens):
@@ -492,7 +575,7 @@ def command_is_forbidden(tokens: list[str], depth: int = 0) -> bool:
             command = normalized[command_index]
             if (
                 tokens[command_index].startswith("-")
-                or "$" in tokens[command_index]
+                or command_word_is_dynamic(tokens[command_index])
                 or command in {".", "eval", "source"}
             ):
                 return True
@@ -524,9 +607,17 @@ def command_is_forbidden(tokens: list[str], depth: int = 0) -> bool:
     push_enabled = any(
         token == "--push" or token.startswith("--push=") and token != "--push=false" for token in normalized
     )
-    if any(contains_ordered(("docker", "buildx", verb)) for verb in {"build", "b"}) and (
-        push_enabled or buildx_outputs_are_forbidden(tokens)
-    ):
+    if any(
+        contains_ordered(prefix)
+        for prefix in (
+            ("docker", "buildx", "build"),
+            ("docker", "buildx", "b"),
+            ("docker", "build"),
+            ("docker", "builder", "build"),
+            ("buildx", "build"),
+            ("buildx", "b"),
+        )
+    ) and (push_enabled or buildx_outputs_are_forbidden(tokens)):
         return True
 
     if any(contains_ordered(("gh", "release", command)) for command in FORBIDDEN_GH_RELEASE_COMMANDS):

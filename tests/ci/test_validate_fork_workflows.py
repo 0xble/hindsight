@@ -659,6 +659,141 @@ class ForkWorkflowPolicyTests(unittest.TestCase):
             with self.subTest(command=command):
                 self.assertEqual(self.set_fork_ci_step(f"run: {command}"), [])
 
+    def test_review_shell_expansion_reproductions_are_rejected_at_workflow_boundary(self) -> None:
+        for command in (
+            "uv {publish,}",
+            "uv publis{h,}",
+            "npm {publish,}",
+            "cargo {publish,x}",
+            r"uv pub\lish",
+            "uv ~/x",
+            "uv `printf publish`",
+            "docker buildx build --output {type=registry,} .",
+            "docker buildx build --output type=regis{try,} .",
+            'docker buildx build "-o"type=regis{try,} .',
+            'docker buildx build "--output="type=regis{try,} .',
+            "docker buildx build   -o~/out .",
+            "env u{v,} test",
+            "command u* test",
+            r"sudo u\v test",
+            "~/bin/uv test",
+        ):
+            with self.subTest(command=command):
+                self.assert_publishing_step_rejected(f"run: {command}")
+
+    def test_unquoted_expansions_fail_closed_across_publisher_paths(self) -> None:
+        prefixes = POLICY.FORBIDDEN_COMMAND_PREFIXES | {
+            ("gh", "release", "create"),
+            ("kubectl", "apply"),
+            ("docker", "buildx", "build"),
+            ("docker", "builder", "build"),
+            ("buildx", "build"),
+        }
+        expansions = (
+            "{word}*",
+            "{word}?",
+            "[{word}]",
+            "{{{word},}}",
+            "{word}{{x,}}",
+            "{{{word},x}}",
+            "{word}}}",
+            "~/x",
+            "$WORD",
+            "`printf word`",
+            "<(printf word)",
+            ">(printf word)",
+        )
+        for prefix in sorted(prefixes):
+            for position in range(len(prefix)):
+                if prefix[position] == "-m":
+                    continue  # Interpreter option, not a command/module/verb word.
+                for template in expansions:
+                    words = list(prefix)
+                    word = words[position]
+                    # An identity escape still must fail closed, even for safe verbs.
+                    replacement = word[:1] + "\\" + word[1:]
+                    for value in (template.format(word=word), replacement):
+                        words[position] = value
+                        command = " ".join(words)
+                        with self.subTest(command=command):
+                            self.assertTrue(POLICY.script_is_forbidden(command), command)
+
+    def test_safe_verbs_with_unquoted_expansions_are_not_provably_safe(self) -> None:
+        for tool in (
+            "uv",
+            "twine",
+            "npm",
+            "pnpm",
+            "yarn",
+            "cargo",
+            "gh release",
+            "docker buildx",
+            "poetry",
+            "hatch",
+            "flit",
+        ):
+            for word in ("tes{t,}", r"te\st", "~/x", "test*", "test?", "[t]est", "test}"):
+                command = f"{tool} {word}"
+                with self.subTest(command=command):
+                    self.assertTrue(POLICY.script_is_forbidden(command), command)
+
+    def test_exporter_expansions_fail_closed_for_all_output_spellings(self) -> None:
+        for tool in (
+            "docker buildx build",
+            "docker buildx b",
+            "docker build",
+            "docker builder build",
+            "buildx build",
+            "buildx b",
+        ):
+            for option in ("--output ", "--output=", "-o ", "-o", "-o="):
+                for value in (
+                    "{type=registry,}",
+                    "type=regis{try,}",
+                    "type=local,dest={out,x}",
+                    "type=local,dest=out*",
+                    "type=local,dest=out?",
+                    "type=local,dest=[o]ut",
+                    "type=local,dest=out}",
+                    "~/out",
+                    r"type=local,dest=o\ut",
+                    "$OUTPUT",
+                    "`printf type=registry`",
+                    "<(printf type=registry)",
+                ):
+                    command = f"{tool} {option}{value} ."
+                    with self.subTest(command=command):
+                        self.assertTrue(POLICY.script_is_forbidden(command), command)
+
+    def test_quote_provenance_and_literal_local_exporters_are_preserved(self) -> None:
+        for command in (
+            "uv 'test'",
+            'uv "test"',
+            "uv te'st'",
+            "'uv' test",
+            '"uv" test',
+            "uv 'tes{t,}'",
+            'uv "test*"',
+            "uv '[t]est'",
+            "uv '~/x'",
+            r"uv 'te\st'",
+            "uv test # {this is a comment}",
+            "uv test; npm test",
+            "uv test&&npm test",
+            'echo "{prose}";uv test',
+            'docker buildx build --output "type=docker" .',
+            "docker buildx build --output type=local,dest=out .",
+            "docker buildx build -o out .",
+            "docker buildx build --output 'type=local,dest={out,x}' .",
+            'docker buildx build --output="type=local,dest=out*" .',
+            "docker buildx build -o'type=local,dest=[o]ut' .",
+        ):
+            with self.subTest(command=command):
+                self.assertFalse(POLICY.script_is_forbidden(command), command)
+        for command in ("'uv' 'publish'", "uv pub'li'sh", "docker buildx build -o'type=registry' ."):
+            with self.subTest(command=command):
+                self.assertTrue(POLICY.script_is_forbidden(command), command)
+
     def test_publisher_subcommand_globs_fail_closed(self) -> None:
         for command in ("uv pub*", "npm publis?", "cargo [p]ublish"):
             with self.subTest(command=command):

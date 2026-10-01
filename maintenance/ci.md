@@ -94,6 +94,24 @@ intentional fork infrastructure policy, not upstream deployment ownership.
   [Docker's exporter contract](https://docs.docker.com/build/exporters/image-registry/)
   defines registry output as implicit `push=true` and image push-by-digest as
   publication; literal local/archive/image-without-push outputs remain available.
+- **Follow-up M-a/M-b disposition:** Fail closed on the class of unquoted shell
+  expansion or metacharacter syntax in every executable and known publisher
+  subcommand position, not just variable wrapper commands: `$`, backticks,
+  `*`, `?`, `[`, `{`, `}`, leading `~`, backslash escapes, and process
+  substitutions. Preserve authored quote provenance through the existing shlex
+  tokenizer rather than matching only its decoded words. Double-quoted parameter
+  substitutions still expand and are forbidden; quoted literal command words
+  remain subject to the publication denylist. Apply the same rule to every
+  `--output`/`-o` exporter value, including attached and repeated options, Docker
+  build/buildx/builder spellings and standalone buildx. Literal `type=docker`,
+  `type=local,dest=out`, and `-o out` remain allowed, as do quoted literal local
+  destinations containing metacharacters. Do not whitelist individual brace
+  expansion forms: shell expansion in these authority-bearing positions is
+  unprovable, even when an example happens to resolve to a safe verb. Ordinary
+  data operands after a literal safe verb retain the existing exemptions.
+  The original 46-test suite passed at `fdd71d6`; the new expansion/provenance
+  regressions exposed the class before repair. The owning workflow-boundary test
+  covers all six reported brace bypasses plus escapes, tilde and backticks.
 - **Proof and limits:** New workflow-boundary tests fail against the baseline
   before each repair; the original 37-test suite passed before adding them.
   The expanded 46-test suite and repository workflow validation pass after the

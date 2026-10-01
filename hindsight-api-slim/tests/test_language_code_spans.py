@@ -1,8 +1,8 @@
 """Real-detector regressions for language-integrity code exemptions."""
 
 import pytest
-
 from hindsight_api.engine import language_integrity as guard
+
 from tests.test_language_prevention import ENGLISH, SPANISH
 from tests.test_language_prevention_review import check
 
@@ -169,6 +169,15 @@ def test_code_syntax_or_tag_does_not_exempt_adjacent_foreign_prose(output: str) 
 )
 def test_python_unicode_identifiers_are_not_syntax_exemption_authority(code: str) -> None:
     assert not guard._is_syntax_code(code)
+
+
+@pytest.mark.parametrize("wrapper", ["`{code}`", "```python\n{code}\n```"], ids=["inline", "python-fence"])
+def test_foreign_string_call_arguments_are_deliberately_exempt_data(wrapper: str) -> None:
+    output = wrapper.format(code=f'note("{SPANISH}")')
+    result = check(ENGLISH, output)
+
+    assert result.verdicts[0].status == "preserved"
+    assert not guard.enforcement_failures(result, guard.LanguageIntegrityMode.REJECT)
 
 
 def test_fenced_mixed_code_and_foreign_prose_is_not_exempt():

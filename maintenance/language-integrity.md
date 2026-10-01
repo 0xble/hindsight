@@ -80,6 +80,20 @@ use the configurable policy below without destructive changes to source facts.
   `preserved` at `92d44c8`; the identifier guard restores `mismatch` without
   changing the await/call/loop/JSON controls. These corrections use
   verdict policy `source-spans-v4`; they do not change enforcement modes.
+- **String-literal exemption (follow-up L):** Deliberately preserve string-literal
+  contents as code data, including `note("<Spanish sentence>")` inside backticks
+  or a `python` fence, just as Chinese values in fenced JSON containers stay
+  exempt. This widens the older `d7554cf` line allowlist by design, not by
+  treating foreign prose as an ASCII identifier. Python syntax-exemption
+  identifiers must be ASCII; string-literal data does not confer identifier or
+  source-language authority. A bare top-level string statement remains prose,
+  including one after a call: it has no enclosing call argument, assignment, or
+  JSON container to establish a data role. The existing nested-expression guard
+  applies that distinction throughout a Python suite; adjacent prose remains
+  subject to REJECT. `test_foreign_string_call_arguments_are_deliberately_exempt_data`
+  asserts the `preserved` verdict in both wrappers; the bare-string-after-call,
+  JSON-scalar and Unicode-identifier counterexamples remain rejection controls.
+  No language-integrity implementation or enforcement mode changes in this repair.
 - **Round-2 upstream alignment:** Guidance pinned at
   `d863f78aa24408583d69bbc32203649fc6fc230a`: `AGENTS.md` delegates to `CLAUDE.md`;
   `CONTRIBUTING.md` and the referenced code-review standards were also examined.
