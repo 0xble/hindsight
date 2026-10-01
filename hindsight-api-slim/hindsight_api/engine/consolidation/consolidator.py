@@ -236,7 +236,8 @@ def _duplicate_create_target(
     A CREATE is a duplicate when its normalised text matches an observation that was
     already shown to the LLM, or the text of an UPDATE issued in the same response
     (the model occasionally UPDATEs the twin to text X and also CREATEs X). Exact-text
-    match means no information is lost by dropping the CREATE.
+    match permits folding the CREATE's sources into that target. Dropping only
+    its row would lose any sources not already cited by the target.
     """
     norm = _norm_obs_text(create_text)
     matched = shown_obs_by_text.get(norm)
@@ -1299,6 +1300,9 @@ class _PreparedCreate:
     agg: "_SourceAggregation"
     embedding_str: str | None
     dedup: _DedupOutcome | None = None
+    # Exact shown/reply twins attach sources without synthesizing their text.
+    # Follow same-transaction UPDATE survivors only for these source-only folds.
+    source_only_fold: bool = False
 
 
 @dataclass
@@ -3449,7 +3453,8 @@ async def _process_memory_batch(
     shown_obs_by_text = {_norm_obs_text(o.text): o for o in union_observations}
     # Also collapse a CREATE that reproduces the text of an UPDATE issued in the SAME
     # response (the model occasionally UPDATEs the twin to text X and also CREATEs X).
-    update_texts = {_norm_obs_text(u.text) for u in llm_result.updates if u.text}
+    updates_by_text = {_norm_obs_text(p.update.text): p for p in prepared_updates if p.update.text}
+    update_texts = set(updates_by_text)
 
     prepared_creates: list[_PreparedCreate] = []
     for create in llm_result.creates:
@@ -3465,16 +3470,10 @@ async def _process_memory_batch(
         # these new facts have durable coverage. Its snapshot is only a CAS target,
         # never proof that the twin survives until apply.
         shown_duplicate = shown_obs_by_text.get(_norm_obs_text(create.text))
+        reply_duplicate = updates_by_text.get(_norm_obs_text(create.text))
         duplicate_of = _duplicate_create_target(create.text, shown_obs_by_text, update_texts)
-        if duplicate_of is not None and shown_duplicate is None:
-            # An UPDATE in this reply has not committed yet. Only that UPDATE's
-            # successful source citations can establish coverage for these facts.
-            logger.warning(
-                "[CONSOLIDATION] dropped duplicate observation CREATE — verbatim match of %s; llm_reason=%r",
-                duplicate_of,
-                create.reason or "(none given)",
-            )
-            continue
+        if duplicate_of is not None:
+            logger.debug("[CONSOLIDATION] preparing source-only CREATE fold into %s", duplicate_of)
 
         async with acquire_with_retry(pool) as conn:
             if not await _any_live_source_memory(conn, bank_id, create_source_ids):
@@ -3497,11 +3496,22 @@ async def _process_memory_batch(
         # response can both land; the next round's probe sees them and folds them, and the
         # exact-text guard above already covers the common case.
         if shown_duplicate is not None:
+            prepared_create.source_only_fold = True
             prepared_create.dedup = _DedupOutcome(
                 best_id=str(shown_duplicate.id),
                 merged_text=shown_duplicate.text,
                 should_merge=True,
                 best_text=shown_duplicate.text,
+            )
+        elif reply_duplicate is not None:
+            # This future target is valid only if the UPDATE actually writes it.
+            # The apply-time CAS falls back to CREATE if that UPDATE is skipped.
+            prepared_create.source_only_fold = True
+            prepared_create.dedup = _DedupOutcome(
+                best_id=reply_duplicate.update.observation_id,
+                merged_text=reply_duplicate.update.text,
+                should_merge=True,
+                best_text=reply_duplicate.update.text,
             )
         elif dedup_enabled:
             prepared_create.dedup = await _dedup_adjudicate(
@@ -3551,10 +3561,20 @@ async def _process_memory_batch(
         target_ids = {*recalled_deletes, *(prepared.update.observation_id for prepared in prepared_updates)}
         target_ids.update(
             prepared.dedup.best_id
-            for prepared in prepared_creates
+            for prepared in [*prepared_updates, *prepared_creates]
             if prepared.dedup is not None and prepared.dedup.best_id is not None
         )
+        # Semantic survivors may not have appeared in the main recall. Include
+        # their current co-sources before ordered locking, then fence any change
+        # to this set before a fold can take additional source locks.
+        target_rows = await conn.fetch(
+            f"SELECT id, source_memory_ids FROM {fq_table('memory_units')} WHERE bank_id = $1 AND id = ANY($2::uuid[])",
+            bank_id,
+            [uuid.UUID(target_id) for target_id in target_ids],
+        )
         lock_ids = {uuid.UUID(observation_id) for observation_id in target_ids}
+        for row in target_rows:
+            lock_ids.update(uuid.UUID(str(source_id)) for source_id in (row["source_memory_ids"] or []))
         for model in [
             *recalled_deletes.values(),
             *(prepared.model for prepared in prepared_updates),
@@ -3573,6 +3593,12 @@ async def _process_memory_batch(
             sorted(lock_ids),
         )
         current_by_id = {str(row["id"]): row for row in locked_rows}
+        for before in target_rows:
+            current = current_by_id.get(str(before["id"]))
+            if current is not None and set(current["source_memory_ids"] or []) != set(
+                before["source_memory_ids"] or []
+            ):
+                raise _StaleConsolidationReference("fold target sources changed before ordered apply locks")
         for observation_id, recalled in recalled_deletes.items():
             row = current_by_id.get(observation_id)
             if (
@@ -3602,6 +3628,11 @@ async def _process_memory_batch(
             deleted_count = 0
             per_memory_created = set()
             per_memory_updated = set()
+            # Transaction retries must start from the original prepared targets,
+            # not from a survivor selected in a rolled-back attempt.
+            create_dedups = [replace(create.dedup) if create.dedup is not None else None for create in prepared_creates]
+            same_response_folds: set[int] = set()
+            folded_targets: set[str] = set()
             async with AsyncExitStack() as lock_stack:
                 for lock in apply_locks or []:
                     await lock_stack.enter_async_context(lock)
@@ -3629,6 +3660,27 @@ async def _process_memory_batch(
                             deleted_count += 1
 
                         for prepared in prepared_updates:
+                            if prepared.update.observation_id in folded_targets:
+                                # An earlier UPDATE folded sources into this row
+                                # in the same response. Preserve that provenance
+                                # instead of overwriting it with the recall snapshot.
+                                current = await get_memories().get_memories(
+                                    conn=conn,
+                                    fq_table=fq_table,
+                                    bank_id=bank_id,
+                                    unit_ids=[prepared.update.observation_id],
+                                )
+                                if current:
+                                    prepared = replace(
+                                        prepared,
+                                        model=prepared.model.model_copy(
+                                            update={
+                                                "text": current[0].text,
+                                                "tags": current[0].tags,
+                                                "source_fact_ids": current[0].source_memory_ids,
+                                            }
+                                        ),
+                                    )
                             updated_emb_str = await _apply_update_action(
                                 conn=conn,
                                 memory_engine=memory_engine,
@@ -3641,19 +3693,10 @@ async def _process_memory_batch(
                                 continue
                             for m in prepared.source_mems:
                                 per_memory_updated.add(str(m["id"]))
-                            # Keep a shown CREATE twin's source-only fold on the
-                            # text this same transaction just wrote, rather than
-                            # reverting the UPDATE to its recalled snapshot.
-                            for create in prepared_creates:
-                                if (
-                                    create.dedup is not None
-                                    and create.dedup.best_id == prepared.update.observation_id
-                                    and _norm_obs_text(create.text) in shown_obs_by_text
-                                ):
-                                    create.dedup.best_text = prepared.update.text
-                                    create.dedup.merged_text = prepared.update.text
+                            survivor_id = prepared.update.observation_id
+                            survivor_text = prepared.update.text
                             if prepared.dedup is not None:
-                                await _apply_dedup_update_fold(
+                                folded = await _apply_dedup_update_fold(
                                     conn,
                                     memory_engine,
                                     bank_id,
@@ -3662,6 +3705,25 @@ async def _process_memory_batch(
                                     prepared.update.observation_id,
                                     prepared.update.text,
                                 )
+                                if folded:
+                                    assert prepared.dedup.best_id is not None
+                                    survivor_id = prepared.dedup.best_id
+                                    survivor_text = prepared.dedup.merged_text
+                                    folded_targets.add(survivor_id)
+                            # Follow the actual survivor only AFTER a successful
+                            # fold, including subsequent UPDATEs of that survivor.
+                            # Semantic CREATE verdicts keep their synthesized text.
+                            for index, create in enumerate(prepared_creates):
+                                dedup = create_dedups[index]
+                                if (
+                                    create.source_only_fold
+                                    and dedup is not None
+                                    and dedup.best_id == prepared.update.observation_id
+                                ):
+                                    create_dedups[index] = replace(
+                                        dedup, best_id=survivor_id, best_text=survivor_text, merged_text=survivor_text
+                                    )
+                                    same_response_folds.add(index)
 
                         apply_remaining_slots: int | None = None
                         if apply_turn is not None and max_obs >= 0 and fact_tags:
@@ -3696,12 +3758,12 @@ async def _process_memory_batch(
                                 )
                                 exact_by_scope[scope] = {_norm_obs_text(row["text"]): row for row in rows}
                         apply_dedups = []
-                        for prepared_create in prepared_creates:
+                        for index, (prepared_create, prepared_dedup) in enumerate(zip(prepared_creates, create_dedups)):
                             scope = tuple(sorted(prepared_create.source_fact_tags or []))
                             if _norm_obs_text(prepared_create.text) in exact_by_scope.get(scope, {}):
                                 apply_dedups.append(None)
                                 continue
-                            apply_dedup = prepared_create.dedup
+                            apply_dedup = prepared_dedup
                             if apply_turn is not None and dedup_enabled:
                                 current_dedup = await _dedup_probe(
                                     conn,
@@ -3714,7 +3776,9 @@ async def _process_memory_batch(
                                     None,
                                 )
                                 if current_dedup.best_id is not None:
-                                    if apply_dedup is None or apply_dedup.best_id != current_dedup.best_id:
+                                    if index not in same_response_folds and (
+                                        apply_dedup is None or apply_dedup.best_id != current_dedup.best_id
+                                    ):
                                         # Only a predecessor's new semantic twin needs
                                         # off-connection LLM adjudication on fresh recall.
                                         raise _StaleConsolidationReference(

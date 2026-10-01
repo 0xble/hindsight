@@ -35,8 +35,8 @@ from hindsight_api.config import _get_raw_config
 from hindsight_api.engine.consolidation.consolidator import (
     _ConsolidationBatchResponse,
     _CreateAction,
-    _UpdateAction,
     _effective_lane_parallelism,
+    _UpdateAction,
     run_consolidation_job,
 )
 from hindsight_api.engine.memory_engine import MemoryEngine
@@ -1666,18 +1666,37 @@ async def test_same_lane_apply_rechecks_create_dedup(
 @pytest.mark.asyncio
 @pytest.mark.memory_backend_incompatible
 @pytest.mark.parametrize("lane", [False, True])
-@pytest.mark.parametrize("change", ["delete", "rewrite", "source-edit", "reply-update"])
+@pytest.mark.parametrize(
+    "change",
+    [
+        "delete",
+        "rewrite",
+        "source-edit",
+        "reply-update",
+        "reply-fold",
+        "reply-text",
+        "reply-fold-chain",
+        "reply-fold-miss",
+        "reply-fold-retry",
+    ],
+)
 async def test_shown_create_fold_preserves_current_state(memory: MemoryEngine, request_context, lane, change):
     """A shown twin is a guarded fold target, never unconditional durable coverage."""
     from hindsight_api.engine.consolidation import consolidator as mod
 
     bank_id = f"test-shown-fold-{uuid.uuid4().hex[:8]}"
     twin_id = uuid.uuid4()
+    survivor_id = uuid.uuid4()
+    final_id = uuid.uuid4()
+    semantic = change.startswith("reply-fold")
+    separate_sources = semantic or change == "reply-text"
     await memory.ensure_bank_profile(bank_id=bank_id, request_context=request_context)
     try:
         async with memory._pool.acquire() as conn:
             old_id = await _insert_memory(conn, bank_id, "Original source", [], "shared")
             new_id = await _insert_memory(conn, bank_id, "New source", [], "shared")
+            create_id = await _insert_memory(conn, bank_id, "Separate CREATE source", [], "shared")
+            survivor_source_id = await _insert_memory(conn, bank_id, "Survivor source", [], "shared")
             await conn.execute("UPDATE memory_units SET updated_at=now() WHERE id=$1", new_id)
             await conn.execute(
                 "INSERT INTO memory_units (id,bank_id,text,fact_type,tags,source_memory_ids,created_at) "
@@ -1687,6 +1706,27 @@ async def test_shown_create_fold_preserves_current_state(memory: MemoryEngine, r
                 [str(old_id)],
             )
             new_fact = dict(await conn.fetchrow("SELECT * FROM memory_units WHERE id=$1", new_id))
+            create_fact = dict(await conn.fetchrow("SELECT * FROM memory_units WHERE id=$1", create_id))
+            if semantic:
+                embedding = await mod._embed_observation_text(memory, "Updated observation", None)
+                await conn.execute(
+                    "INSERT INTO memory_units (id,bank_id,text,fact_type,tags,source_memory_ids,embedding,created_at) "
+                    "VALUES ($1,$2,'Merge survivor','observation','{}',$3,$4::vector,now())",
+                    survivor_id,
+                    bank_id,
+                    [str(survivor_source_id)],
+                    embedding,
+                )
+            if change == "reply-fold-chain":
+                embedding = await mod._embed_observation_text(memory, "Chain update", None)
+                await conn.execute(
+                    "INSERT INTO memory_units (id,bank_id,text,fact_type,tags,source_memory_ids,embedding,created_at) "
+                    "VALUES ($1,$2,'Final merge survivor','observation','{}',$3,$4::vector,now())",
+                    final_id,
+                    bank_id,
+                    [str(survivor_source_id)],
+                    embedding,
+                )
         shown = MemoryFact.model_construct(
             id=str(twin_id),
             text="Original observation",
@@ -1695,16 +1735,43 @@ async def test_shown_create_fold_preserves_current_state(memory: MemoryEngine, r
             source_fact_ids=[str(old_id)],
         )
         wrapper, mock = _mock_llm_one_obs_per_fact()
+        shown_observations = [shown]
+        if change == "reply-fold-chain":
+            shown_observations.append(
+                MemoryFact.model_construct(
+                    id=str(survivor_id),
+                    text="Merge survivor",
+                    fact_type="observation",
+                    tags=[],
+                    source_fact_ids=[str(survivor_source_id)],
+                )
+            )
 
         def response(messages, scope):
+            if scope == "consolidation_dedup":
+                prompt = "\n".join(m.get("content", "") for m in messages)
+                return mod._DedupDecision(
+                    action="merge",
+                    text="Final merged observation" if "Chain update" in prompt else "Merged observation",
+                )
             return _ConsolidationBatchResponse(
-                creates=[_CreateAction(text="Original observation", source_fact_ids=[str(new_id)])],
+                creates=[
+                    _CreateAction(
+                        text="Updated observation" if change == "reply-text" else "Original observation",
+                        source_fact_ids=[str(create_id if separate_sources else new_id)],
+                    )
+                ],
                 updates=[
                     _UpdateAction(
                         observation_id=str(twin_id), text="Updated observation", source_fact_ids=[str(new_id)]
                     )
                 ]
-                if change == "reply-update"
+                + (
+                    [_UpdateAction(observation_id=str(survivor_id), text="Chain update", source_fact_ids=[str(new_id)])]
+                    if change == "reply-fold-chain"
+                    else []
+                )
+                if change.startswith("reply-")
                 else [],
             )
 
@@ -1724,26 +1791,55 @@ async def test_shown_create_fold_preserves_current_state(memory: MemoryEngine, r
                     )
             return result
 
+        original_adjudicate = mod._dedup_adjudicate
+
+        async def adjudicate_then_rewrite(*args, **kwargs):
+            outcome = await original_adjudicate(*args, **kwargs)
+            if change == "reply-fold-miss":
+                async with memory._pool.acquire() as conn:
+                    await conn.execute("UPDATE memory_units SET text='Rewritten survivor' WHERE id=$1", survivor_id)
+            return outcome
+
+        original_stamp = mod.get_memories().mark_consolidated
+        stamp_attempts = 0
+
+        async def stamp_with_retry(**kwargs):
+            nonlocal stamp_attempts
+            stamp_attempts += 1
+            if change == "reply-fold-retry" and stamp_attempts == 1:
+                # Real transaction rollback after the CREATE fold selected its
+                # survivor, followed by the production apply retry loop.
+                import asyncpg
+
+                raise asyncpg.DeadlockDetectedError("controlled post-fold rollback")
+            return await original_stamp(**kwargs)
+
         ready = asyncio.Event()
         ready.set()
         with (
-            patch.object(mod, "_find_related_observations", return_value=RecallResult.model_construct(results=[shown])),
+            patch.object(memory, "_consolidation_llm_config", wrapper),
+            patch.object(
+                mod, "_find_related_observations", return_value=RecallResult.model_construct(results=shown_observations)
+            ),
             patch.object(mod, "_consolidate_batch_with_llm", mutate_after_reply),
+            patch.object(mod, "_dedup_adjudicate", adjudicate_then_rewrite),
+            patch.object(mod.get_memories(), "mark_consolidated", stamp_with_retry),
         ):
             await mod._process_memory_batch(
                 pool=memory._backend,
                 memory_engine=memory,
                 llm_config=wrapper.with_config(),
                 bank_id=bank_id,
-                memories=[new_fact],
+                memories=[new_fact, create_fact] if separate_sources else [new_fact],
                 request_context=request_context,
                 config=type(_get_raw_config())(
                     **{
                         **{f: getattr(_get_raw_config(), f) for f in _get_raw_config().__dataclass_fields__},
-                        "consolidation_dedup_threshold": 1.0,
+                        "consolidation_dedup_threshold": 0.9999 if semantic else 1.0,
+                        "llm_language_integrity": "off",
                     }
                 ),
-                mark_consolidated_ids=[new_id],
+                mark_consolidated_ids=[new_id, create_id] if separate_sources else [new_id],
                 obs_tags_override=[],
                 apply_turn=(ready, asyncio.Event()) if lane else None,
             )
@@ -1758,11 +1854,29 @@ async def test_shown_create_fold_preserves_current_state(memory: MemoryEngine, r
                 (twin_id, "Original observation", [old_id])
             ]
             assert stamp is None
-        elif change == "reply-update":
+        elif change.startswith("reply-"):
+            if change == "reply-fold-miss":
+                preserved = next(row for row in rows if row["id"] == survivor_id)
+                assert preserved["text"] == "Rewritten survivor"
+                assert preserved["source_memory_ids"] == [survivor_source_id]
+                rows = [row for row in rows if row["id"] != survivor_id]
+            merged = semantic and change != "reply-fold-miss"
             assert [(row["id"], row["text"], set(row["source_memory_ids"])) for row in rows] == [
-                (twin_id, "Updated observation", {old_id, new_id})
+                (
+                    final_id if change == "reply-fold-chain" else survivor_id if merged else twin_id,
+                    "Final merged observation"
+                    if change == "reply-fold-chain"
+                    else "Merged observation"
+                    if merged
+                    else "Updated observation",
+                    {old_id, new_id}
+                    | ({create_id} if separate_sources else set())
+                    | ({survivor_source_id} if merged else set()),
+                )
             ]
             assert stamp is not None
+            if change == "reply-fold-retry":
+                assert stamp_attempts == 2
         else:
             recreated = [row for row in rows if row["text"] == "Original observation"]
             assert len(recreated) == 1 and recreated[0]["id"] != twin_id
