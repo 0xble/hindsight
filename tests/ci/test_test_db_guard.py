@@ -70,7 +70,7 @@ def test_refuses_query_host_ports(guard, url):
         "pg0://disposable:5575?max_connections=300",
         "pg0://disposable",
         "pg0",
-        "postgresql://localhost:5556/test",
+        "postgresql://localhost:5557/test",
         "postgresql:///db?host=localhost:5575&host=[::1]",
     ],
 )
@@ -85,11 +85,12 @@ def test_additional_forbidden_ports(guard, monkeypatch):
             guard.assert_safe_database_url(f"postgresql://localhost:{port}/db")
 
 
+@pytest.mark.parametrize("port", [5436, 5556])
 @pytest.mark.parametrize("denylist", ["", "5577"])
-def test_production_port_cannot_be_removed(guard, monkeypatch, denylist):
+def test_production_port_cannot_be_removed(guard, monkeypatch, denylist, port):
     monkeypatch.setenv("HINDSIGHT_TEST_FORBIDDEN_DB_PORTS", denylist)
-    with pytest.raises(ValueError, match="5436"):
-        guard.assert_safe_database_url("postgresql://localhost:5436/db")
+    with pytest.raises(ValueError, match=str(port)):
+        guard.assert_safe_database_url(f"postgresql://localhost:{port}/db")
 
 
 @pytest.mark.parametrize("denylist", ["not-a-port", "70000", "0"])
@@ -169,7 +170,7 @@ raise SystemExit(pytest.main(['--collect-only', '-q', '-o', 'addopts=', 'tests/c
         )
     result = subprocess.run([sys.executable, "-c", probe], cwd=ROOT, env=env, capture_output=True, text=True)
     output = result.stdout + result.stderr
-    assert result.returncode in (2, 4), output  # configure exit or early conftest import rejection
+    assert result.returncode == 4, output  # clear pytest usage error, not a worker exit
     assert "HINDSIGHT_API_DATABASE_URL" in output
     assert "[REDACTED]" in output
     assert "fake-password" not in output
@@ -198,3 +199,11 @@ def test_ci_refuses_before_running_any_stage(tmp_path, profile, query_host):
     assert "HINDSIGHT_API_DATABASE_URL" in output
     assert "fake-password" not in output
     assert not marker.exists(), output
+
+
+@pytest.mark.parametrize("port", [5436, 5556])
+@pytest.mark.parametrize("directory", ["/tmp", "/var/run/postgresql", "%2Ftmp"])
+def test_socket_directory_dsn_refuses_protected_ports(guard, monkeypatch, port, directory):
+    monkeypatch.setenv("HINDSIGHT_TEST_FORBIDDEN_DB_PORTS", "")
+    with pytest.raises(ValueError, match=f"Refusing test database.*{port}"):
+        guard.assert_safe_database_url(f"postgresql://u@/db?host={directory}&port={port}")

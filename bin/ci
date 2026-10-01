@@ -78,6 +78,7 @@ assert_candidate() {
 
 # Maintained-patch and upstream-recovery regressions registered in MAINTENANCE.md.
 PATCH_REGRESSIONS=(
+  tests/test_database_safety.py
   tests/test_codex_quota_reset_defer.py
   tests/test_provider_quota_reset_defer.py
   tests/test_op_cancellation.py

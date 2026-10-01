@@ -6,8 +6,10 @@ import asyncio
 import importlib.util
 import inspect
 import os
+import socket
 import sys
 from collections.abc import Iterator
+from functools import wraps
 from pathlib import Path
 
 import filelock
@@ -25,14 +27,20 @@ _guard_spec.loader.exec_module(_db_guard)
 
 
 def _check_test_database_safety(url: str | None = None) -> None:
+    # Runtime refusals must be ordinary test/fixture errors. pytest.exit is a
+    # BaseException that tears down xdist workers instead of reporting the cause.
+    _db_guard.check_test_database_environment()
+    _db_guard.assert_safe_database_url(url)
+
+
+def _check_test_session_database_safety(url: str | None = None) -> None:
     try:
-        _db_guard.check_test_database_environment()
-        _db_guard.assert_safe_database_url(url)
+        _check_test_database_safety(url)
     except ValueError as exc:
-        pytest.exit(str(exc), returncode=2)
+        raise pytest.UsageError(str(exc)) from None
 
 
-_check_test_database_safety()
+_check_test_session_database_safety()
 
 # Force torch to initialize exactly once, in the main thread, at conftest import
 # time — before any fixture spins up an event loop or sentence-transformers'
@@ -200,7 +208,7 @@ def _restore_global_metrics_collector():
 
 # Default pg0 instance configuration for tests
 DEFAULT_PG0_INSTANCE_NAME = "hindsight-test"
-DEFAULT_PG0_PORT = int(os.environ.get("HINDSIGHT_TEST_PG_PORT", "5556"))
+DEFAULT_PG0_PORT = int(os.environ.get("HINDSIGHT_TEST_PG_PORT", "5557"))
 
 # Keep the background MaintenanceLoop from auto-starting during tests. In
 # production it sweeps retention and re-schedules consolidation, but its timers
@@ -223,7 +231,7 @@ os.environ.setdefault("HINDSIGHT_API_LLM_TRACE_RETENTION_DAYS", "-1")
 def pytest_configure(config):
     """Load environment variables before running tests."""
     # Reject inherited URLs even if the workspace .env would replace them.
-    _check_test_database_safety()
+    _check_test_session_database_safety()
     # Look for .env in the workspace root (two levels up from tests dir)
     env_file = Path(__file__).parent.parent.parent / ".env"
     if env_file.exists():
@@ -231,7 +239,7 @@ def pytest_configure(config):
         # session, matching the precedence hindsight_api used to apply at import
         # time (removed in #2961 so library imports are side-effect-free).
         load_dotenv(env_file, override=True)
-        _check_test_database_safety()
+        _check_test_session_database_safety()
     else:
         print(f"Warning: {env_file} not found, tests may fail without proper configuration")
 
@@ -239,7 +247,7 @@ def pytest_configure(config):
 
     # Tests constructing engines/configs directly must not reuse the live bare-pg0
     # default. Do not set the API env var: db_url must still choose its pg0 fixture.
-    _check_test_database_safety(api_config.DEFAULT_DATABASE_URL)
+    _check_test_session_database_safety(api_config.DEFAULT_DATABASE_URL)
     _install_database_connection_guards(config)
 
 
@@ -247,7 +255,7 @@ def _install_database_connection_guards(config: pytest.Config) -> None:
     """Catch URLs resolved after startup, including libpq's native socket path."""
     import psycopg2
 
-    from hindsight_api import config as api_config
+    from hindsight_api import config as api_config, migrations
 
     patches = pytest.MonkeyPatch()
     active = True
@@ -264,6 +272,41 @@ def _install_database_connection_guards(config: pytest.Config) -> None:
     original_get_pg0 = EmbeddedPostgres._get_pg0
     original_ensure_running = EmbeddedPostgres.ensure_running
     original_connect = psycopg2.connect
+    original_initialize = MemoryEngine.initialize
+
+    @wraps(original_initialize)
+    async def safe_initialize(engine):
+        # A default/explicit URL can reach Alembic/libpq before asyncpg ever
+        # creates a socket. Refuse it before model init or startup migrations.
+        _check_test_database_safety(engine.db_url)
+        config = api_config.get_config()
+        _db_guard.assert_safe_database_url(config.read_database_url, source="read_database_url")
+        _db_guard.assert_safe_database_url(config.migration_database_url, source="migration_database_url")
+        return await original_initialize(engine)
+
+    def guard_migration(entry):
+        signature = inspect.signature(entry)
+
+        @wraps(entry)
+        def safe_migration(*args, **kwargs):
+            # Isolated migration children do not inherit Python hooks. Validate
+            # both endpoints in the parent before native SQL or child dispatch.
+            arguments = signature.bind(*args, **kwargs).arguments
+            _check_test_database_safety(arguments.get("database_url"))
+            _db_guard.assert_safe_database_url(arguments.get("migration_database_url"), source="migration_database_url")
+            return entry(*args, **kwargs)
+
+        return safe_migration
+
+    patches.setattr(MemoryEngine, "initialize", safe_initialize)
+    for name in (
+        "run_migrations",
+        "run_migrations_for_schemas",
+        "ensure_embedding_dimension",
+        "ensure_vector_extension",
+        "ensure_text_search_extension",
+    ):
+        patches.setattr(migrations, name, guard_migration(getattr(migrations, name)))
 
     def safe_get_pg0(instance):
         # Explicit bare pg0 bypasses DEFAULT_DATABASE_URL. Redirect before pg0
@@ -271,6 +314,12 @@ def _install_database_connection_guards(config: pytest.Config) -> None:
         if instance.name == "hindsight" and instance.port is None:
             instance.name = DEFAULT_PG0_INSTANCE_NAME
             instance.port = DEFAULT_PG0_PORT
+        elif instance.port is None:
+            # Dedicated migration/unit fixtures also construct named pg0 with
+            # no port. Never let those fall back to pg0's low-port allocator.
+            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as reservation:
+                reservation.bind(("127.0.0.1", 0))
+                instance.port = reservation.getsockname()[1]
         if instance.port is not None:
             _check_test_database_safety(f"pg0://test:{instance.port}")
         return original_get_pg0(instance)
@@ -300,6 +349,12 @@ def _install_database_connection_guards(config: pytest.Config) -> None:
             address = args[1]
             if isinstance(address, tuple):
                 _check_test_database_safety(f"postgresql://test:{address[1]}/db")
+            elif isinstance(address, (str, bytes)):
+                # Unix-domain sockets have no (host, port) tuple. asyncpg uses
+                # <socket directory>/.s.PGSQL.<port>; bytes paths are valid too.
+                name = os.fsdecode(address).rsplit("/", 1)[-1]
+                if name.startswith(".s.PGSQL."):
+                    _check_test_database_safety(f"postgresql://test/db?port={name.removeprefix('.s.PGSQL.')}")
 
     sys.addaudithook(socket_guard)
 
@@ -364,17 +419,9 @@ def pg0_db_url(db_url, tmp_path_factory, worker_id) -> Iterator[str]:
     owns_instance = worker_id != "master"
     if owns_instance:
         # The pytest session directory also separates concurrent runs/worktrees.
-        # Let pg0 allocate a free port, rather than assuming adjacent ports are
-        # available (a restored database or another service may already use one).
         pg0_instance_name = f"{pg0_instance_name}-{root_tmp_dir.name}-{worker_id}"
-        pg0_instance_port = None
 
-    _check_test_database_safety(f"pg0://{pg0_instance_name}:{pg0_instance_port or DEFAULT_PG0_PORT}")
-    pg0 = EmbeddedPostgres(
-        name=pg0_instance_name,
-        port=pg0_instance_port,
-        config={"max_connections": "300"},
-    )
+    pg0 = None
 
     # Serial runs can reuse their instance. Worker names also distinguish
     # parallel sessions, so their setup receipts are never shared.
@@ -390,11 +437,21 @@ def pg0_db_url(db_url, tmp_path_factory, worker_id) -> Iterator[str]:
             if url_file.exists() and not owns_instance:
                 url = url_file.read_text().strip()
             else:
-                # pg0 selects a free port before PostgreSQL starts listening.
-                # Serialize only startup across workers and pytest sessions,
-                # otherwise two fresh instances can select the same port.
+                # Select an OS-assigned ephemeral port and keep selection/start
+                # under the same cross-session lock. pg0's implicit allocator
+                # walks from 5432 and can pick protected 5436 on hosted workers.
                 startup_lock = root_tmp_dir.parent / "hindsight_pg0_start.lock"
                 with filelock.FileLock(str(startup_lock)):
+                    if owns_instance:
+                        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as reservation:
+                            reservation.bind(("127.0.0.1", 0))
+                            pg0_instance_port = reservation.getsockname()[1]
+                    _check_test_database_safety(f"pg0://{pg0_instance_name}:{pg0_instance_port}")
+                    pg0 = EmbeddedPostgres(
+                        name=pg0_instance_name,
+                        port=pg0_instance_port,
+                        config={"max_connections": "300"},
+                    )
                     loop = asyncio.new_event_loop()
                     try:
                         url = loop.run_until_complete(pg0.ensure_running())
@@ -416,7 +473,7 @@ def pg0_db_url(db_url, tmp_path_factory, worker_id) -> Iterator[str]:
                 cleanup_done.write_text("done")
         yield url
     finally:
-        if owns_instance:
+        if owns_instance and pg0 is not None:
             loop = asyncio.new_event_loop()
             try:
                 loop.run_until_complete(pg0.stop())

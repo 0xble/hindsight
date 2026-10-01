@@ -12,4 +12,4 @@ def pytest_configure(config: pytest.Config) -> None:
     try:
         check_test_database_environment()
     except ValueError as exc:
-        pytest.exit(str(exc), returncode=2)
+        raise pytest.UsageError(str(exc)) from None

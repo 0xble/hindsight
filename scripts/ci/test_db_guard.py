@@ -13,10 +13,10 @@ def assert_safe_database_url(url: str | None, *, source: str = "HINDSIGHT_API_DA
     """Reject protected ports without connecting or exposing URL credentials.
 
     The opt-in denylist can protect additional instances, but cannot disable the
-    production-port safeguard. Query-string ports also override libpq URL ports.
+    production and protected-test-port safeguards. Query-string ports also override libpq URL ports.
     """
     try:
-        forbidden = {5436} | {
+        forbidden = {5436, 5556} | {
             int(value.strip()) for value in os.environ.get(FORBIDDEN_PORTS_ENV, "5436").split(",") if value.strip()
         }
         if any(port < 1 or port > 65535 for port in forbidden):
@@ -49,7 +49,8 @@ def assert_safe_database_url(url: str | None, *, source: str = "HINDSIGHT_API_DA
         raise ValueError(
             f"Refusing test database from {source} URL [REDACTED]: forbidden port(s) "
             f"{', '.join(str(port) for port in sorted(denied))} ({FORBIDDEN_PORTS_ENV}; production port 5436 "
-            "is always forbidden). Unset HINDSIGHT_API_DATABASE_URL or point it at a disposable database."
+            "and protected test port 5556 are always forbidden). Unset HINDSIGHT_API_DATABASE_URL "
+            "or point it at a disposable database."
         )
 
 
@@ -62,7 +63,7 @@ def check_test_database_environment() -> None:
         "HINDSIGHT_API_MIGRATION_DATABASE_URL",
     ):
         assert_safe_database_url(env.get(name), source=name)
-    assert_safe_database_url(f"pg0://test:{env.get('HINDSIGHT_TEST_PG_PORT', '5556')}", source="HINDSIGHT_TEST_PG_PORT")
+    assert_safe_database_url(f"pg0://test:{env.get('HINDSIGHT_TEST_PG_PORT', '5557')}", source="HINDSIGHT_TEST_PG_PORT")
 
 
 if __name__ == "__main__":
