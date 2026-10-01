@@ -66,6 +66,7 @@ from ..llm_trace import (
 )
 from ..llm_wrapper import sanitize_llm_output
 from ..memories import FactRecord, get_memories
+from ..memories.base import MemoryTextSize
 from ..memory_engine import Budget, fq_table
 from ..retain import embedding_utils
 from ..structured_output import provider_json_schema, strict_json_schema
@@ -3432,7 +3433,9 @@ async def _process_memory_batch(
                                     logger.info("[CONSOLIDATION] folded exact duplicate CREATE during serialized apply")
                                     for m in prepared_create.source_mems:
                                         per_memory_created.add(str(m["id"]))
-                                continue
+                                    continue
+                                # A veto or stale twin did not attach these sources.
+                                # Fall through to the normal insert before stamping.
                             if apply_dedup is not None:
                                 merged_into = await _apply_dedup_create_fold(
                                     conn,
@@ -4229,6 +4232,12 @@ def _record_detail_loss(budget: "_SchemaCorrectionBudget | None", outcome: str, 
 
 _DETAIL_GUARD_MAX_SOURCE_FACTS = 128
 _DETAIL_GUARD_MAX_SOURCE_CHARS = 131072
+# Size rows are small and body-free; allow more than the body budget so an
+# oversized early target does not consume later targets' hydration allowance.
+_DETAIL_GUARD_MAX_BATCH_METADATA_FACTS = 4096
+_DETAIL_GUARD_MAX_BATCH_SOURCE_FACTS = 512
+_DETAIL_GUARD_MAX_BATCH_SOURCE_CHARS = 524288
+_DETAIL_GUARD_MAX_BATCH_SOURCE_BYTES = 1048576
 
 
 @dataclass
@@ -4243,49 +4252,97 @@ async def _hydrate_detail_guard_evidence(
     pool: DatabaseBackend | None,
     bank_id: str | None,
 ) -> _DetailGuardEvidence:
-    """One bank-scoped addressed read per batch, private to the deterministic gate.
+    """At most two narrow, bank-scoped reads, private to the deterministic gate.
 
-    Recall's display budget intentionally omits complete facts. It must not make
-    an otherwise legitimate observation permanently CREATE-only. Bound each
-    target independently; an excessive or absent source fails that target closed
-    without poisoning its siblings or increasing the LLM's context.
+    Size metadata precedes body admission. Per-target and batch caps fail only
+    excessive targets closed, without spending an unrepairable correction or
+    increasing the model-visible context. Cache only complete admitted evidence.
     """
     result = _DetailGuardEvidence()
     ids_by_observation: dict[str, list[str]] = {}
-    missing_ids: set[str] = set()
+    requested_ids: set[str] = set()
+    sizes: dict[str, MemoryTextSize] = {}
     for observation in observations:
         oid = str(observation.id)
         ids = list(dict.fromkeys(str(fid) for fid in observation.source_fact_ids or []))
-        if len(ids) > _DETAIL_GUARD_MAX_SOURCE_FACTS:
+        # Bound even the metadata read. Recall order determines admission; shared
+        # source ids consume budget once. Rejected targets do not poison siblings.
+        if (
+            len(ids) > _DETAIL_GUARD_MAX_SOURCE_FACTS
+            or len(requested_ids | set(ids)) > _DETAIL_GUARD_MAX_BATCH_METADATA_FACTS
+        ):
             result.unavailable.add(oid)
             continue
         ids_by_observation[oid] = ids
-        for fid in ids:
-            if fid in recalled_sources:
-                source = recalled_sources[fid]
-                result.sources[fid] = Evidence(source.text, source.mentioned_at)
-            else:
-                missing_ids.add(fid)
-    if missing_ids and pool is not None and bank_id is not None:
+        requested_ids.update(ids)
+    missing_ids = requested_ids - recalled_sources.keys()
+    for fid in requested_ids - missing_ids:
+        source = recalled_sources[fid]
+        chars = len(source.text)
+        # Avoid encoding arbitrarily large already-recalled strings; excessive
+        # characters alone veto the target and no body will be admitted for it.
+        byte_size = len(source.text.encode("utf-8")) if chars <= _DETAIL_GUARD_MAX_SOURCE_CHARS else 4 * chars
+        sizes[fid] = MemoryTextSize(fid, chars, byte_size)
+
+    def admit_targets() -> set[str]:
+        admitted: set[str] = set()
+        batch_chars = batch_bytes = 0
+        for oid, ids in ids_by_observation.items():
+            if (
+                any(fid not in sizes for fid in ids)
+                or sum(sizes[fid].text_chars for fid in ids) > _DETAIL_GUARD_MAX_SOURCE_CHARS
+            ):
+                result.unavailable.add(oid)
+                continue
+            extra_ids = set(ids) - admitted
+            extra_chars = sum(sizes[fid].text_chars for fid in extra_ids)
+            extra_bytes = sum(sizes[fid].text_bytes for fid in extra_ids)
+            if (
+                len(admitted | set(ids)) > _DETAIL_GUARD_MAX_BATCH_SOURCE_FACTS
+                or batch_chars + extra_chars > _DETAIL_GUARD_MAX_BATCH_SOURCE_CHARS
+                or batch_bytes + extra_bytes > _DETAIL_GUARD_MAX_BATCH_SOURCE_BYTES
+            ):
+                result.unavailable.add(oid)
+                continue
+            admitted.update(ids)
+            batch_chars += extra_chars
+            batch_bytes += extra_bytes
+        return admitted
+
+    async def read_evidence(conn, evidence_bank_id: str) -> set[str]:
         store = get_memories()
-        if store.store_owned_for(bank_id):
-            loaded = await store.get_memories(conn=None, fq_table=fq_table, bank_id=bank_id, unit_ids=list(missing_ids))
+        metadata = await store.get_memory_text_sizes(
+            conn=conn, fq_table=fq_table, bank_id=evidence_bank_id, unit_ids=sorted(missing_ids)
+        )
+        sizes.update({size.unit_id: size for size in metadata if size.unit_id in missing_ids})
+        admitted = admit_targets()
+        body_sizes = [sizes[fid] for fid in sorted(admitted & missing_ids)]
+        if body_sizes:
+            loaded = await store.get_memory_evidence(
+                conn=conn, fq_table=fq_table, bank_id=evidence_bank_id, sizes=body_sizes
+            )
+            for source in loaded:
+                fid = str(source.unit_id)
+                if fid in admitted:
+                    result.sources[fid] = Evidence(source.text, source.mentioned_at)
+        return admitted
+
+    if missing_ids and pool is not None and bank_id is not None:
+        if get_memories().store_owned_for(bank_id):
+            admitted = await read_evidence(None, bank_id)
         else:
             async with acquire_with_retry(pool) as conn:
-                loaded = await store.get_memories(
-                    conn=conn, fq_table=fq_table, bank_id=bank_id, unit_ids=list(missing_ids)
-                )
-        for source in loaded:
-            result.sources[str(source.unit_id)] = Evidence(source.text, source.mentioned_at)
+                admitted = await read_evidence(conn, bank_id)
+    else:
+        admitted = admit_targets()
+    for fid in admitted - missing_ids:
+        source = recalled_sources[fid]
+        result.sources[fid] = Evidence(source.text, source.mentioned_at)
+    # A row may disappear or grow between the two reads. The store's body query
+    # filters changed sizes server-side, and the affected target fails closed.
     for oid, ids in ids_by_observation.items():
-        if (
-            any(fid not in result.sources for fid in ids)
-            or sum(len(result.sources[fid].text) for fid in ids if fid in result.sources)
-            > _DETAIL_GUARD_MAX_SOURCE_CHARS
-        ):
+        if any(fid not in result.sources for fid in ids):
             result.unavailable.add(oid)
-    # Do not retain excessive text throughout subsequent completions. Shared
-    # evidence stays cached only when at least one eligible target needs it.
     eligible_ids = {fid for oid, ids in ids_by_observation.items() if oid not in result.unavailable for fid in ids}
     result.sources = {fid: source for fid, source in result.sources.items() if fid in eligible_ids}
     return result

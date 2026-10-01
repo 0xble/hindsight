@@ -27,8 +27,10 @@ from .base import (
     DeletePredicate,
     EntityPrunePassResult,
     MemoriesExtension,
+    MemoryEvidence,
     MemoryPatch,
     MemoryScopeWatermark,
+    MemoryTextSize,
     RecallArms,
     RelinkPassResult,
     ScanPage,
@@ -298,6 +300,14 @@ class PostgresMemories(MemoriesExtension):
 
     async def get_memories(self, *, conn, fq_table, bank_id: str, unit_ids: list[str]) -> list[StoredMemory]:
         return await reads.get_memories(conn=conn, fq_table=fq_table, bank_id=bank_id, unit_ids=unit_ids)
+
+    async def get_memory_text_sizes(self, *, conn, fq_table, bank_id: str, unit_ids: list[str]) -> list[MemoryTextSize]:
+        return await reads.get_memory_text_sizes(conn=conn, fq_table=fq_table, bank_id=bank_id, unit_ids=unit_ids)
+
+    async def get_memory_evidence(
+        self, *, conn, fq_table, bank_id: str, sizes: list[MemoryTextSize]
+    ) -> list[MemoryEvidence]:
+        return await reads.get_memory_evidence(conn=conn, fq_table=fq_table, bank_id=bank_id, sizes=sizes)
 
     async def scan_memories(
         self,

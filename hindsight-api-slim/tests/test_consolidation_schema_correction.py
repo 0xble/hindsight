@@ -847,7 +847,7 @@ async def test_guard_hydrates_capped_provenance_without_prompt_or_row_growth(mem
     rounds = 3 if mode == "legitimate" else 1
     before_hydration_reads = []
     store = c.get_memories()
-    original_read = store.get_memories
+    original_read = store.get_memory_text_sizes
 
     async def traced_read(**kwargs):
         if str(old_id) in {str(fid) for fid in kwargs["unit_ids"]}:
@@ -909,7 +909,7 @@ async def test_guard_hydrates_capped_provenance_without_prompt_or_row_growth(mem
                     new=AsyncMock(return_value=RecallResult(results=[obs], source_facts={})),
                 ),
                 patch.object(c, "_embed_observation_text", new=AsyncMock(return_value=None)),
-                patch.object(store, "get_memories", new=traced_read),
+                patch.object(store, "get_memory_text_sizes", new=traced_read),
             ):
                 await c._process_memory_batch(
                     pool=memory._backend,
@@ -970,7 +970,18 @@ async def test_guard_hydration_is_one_batched_read_and_target_local(provider, co
         SimpleNamespace(unit_id=good_source, text=observations[0].text, mentioned_at=None),
         SimpleNamespace(unit_id=char_source, text="x" * 131073, mentioned_at=None),
     ]
-    store = SimpleNamespace(store_owned_for=lambda bank_id: store_owned, get_memories=AsyncMock(return_value=loaded))
+    store = SimpleNamespace(
+        store_owned_for=lambda bank_id: store_owned,
+        get_memory_text_sizes=AsyncMock(
+            return_value=[
+                SimpleNamespace(
+                    unit_id=source.unit_id, text_chars=len(source.text), text_bytes=len(source.text.encode("utf-8"))
+                )
+                for source in loaded
+            ]
+        ),
+        get_memory_evidence=AsyncMock(return_value=loaded[:1]),
+    )
     connection = object()
 
     @asynccontextmanager
@@ -998,10 +1009,13 @@ async def test_guard_hydration_is_one_batched_read_and_target_local(provider, co
     assert [update.observation_id for update in result.updates] == [OBS_ID]
     assert len(result.creates) == 2 and all(create._preserve_separate for create in result.creates)
     assert len(stub.requests) == 1
-    store.get_memories.assert_awaited_once()
-    assert set(store.get_memories.await_args.kwargs["unit_ids"]) == {good_source, char_source}
-    assert store.get_memories.await_args.kwargs["bank_id"] == "synthetic-bank"
-    assert store.get_memories.await_args.kwargs["conn"] is (None if store_owned else connection)
+    store.get_memory_text_sizes.assert_awaited_once()
+    store.get_memory_evidence.assert_awaited_once()
+    assert set(store.get_memory_text_sizes.await_args.kwargs["unit_ids"]) == {good_source, char_source}
+    assert {size.unit_id for size in store.get_memory_evidence.await_args.kwargs["sizes"]} == {good_source}
+    for read in (store.get_memory_text_sizes, store.get_memory_evidence):
+        assert read.await_args.kwargs["bank_id"] == "synthetic-bank"
+        assert read.await_args.kwargs["conn"] is (None if store_owned else connection)
 
 
 @pytest.mark.asyncio
@@ -1017,7 +1031,14 @@ async def test_guard_hydration_is_reused_after_language_retry(provider, config):
     )
     store = SimpleNamespace(
         store_owned_for=lambda bank_id: False,
-        get_memories=AsyncMock(
+        get_memory_text_sizes=AsyncMock(
+            return_value=[
+                SimpleNamespace(
+                    unit_id=UNKNOWN, text_chars=len(observation.text), text_bytes=len(observation.text.encode("utf-8"))
+                )
+            ]
+        ),
+        get_memory_evidence=AsyncMock(
             return_value=[SimpleNamespace(unit_id=UNKNOWN, text=observation.text, mentioned_at=None)]
         ),
     )
@@ -1054,4 +1075,344 @@ async def test_guard_hydration_is_reused_after_language_retry(provider, config):
         )
     assert not result.failed and len(result.updates) == 1
     assert len(stub.requests) == 2
-    store.get_memories.assert_awaited_once()
+    store.get_memory_text_sizes.assert_awaited_once()
+    store.get_memory_evidence.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+@pytest.mark.memory_backend_incompatible
+async def test_exact_serialized_fold_veto_inserts_and_attributes_new_source(memory, request_context, provider):
+    import uuid
+    from dataclasses import replace
+
+    from hindsight_api.config import _get_raw_config
+    from hindsight_api.engine.response_models import RecallResult
+
+    bank_id = f"detail-exact-veto-{uuid.uuid4().hex[:8]}"
+    await memory.ensure_bank_profile(bank_id=bank_id, request_context=request_context)
+    old_id, new_id, target_id = [uuid.uuid4() for _ in range(3)]
+    # The identical fold inputs together exceed the lexical work guard's bound.
+    text = "Plain preserved narrative. " * 5100
+    config = replace(_get_raw_config(), llm_language_integrity="off", consolidation_dedup_threshold=1.0)
+    stub = install(provider, [{"creates": [{"text": text, "source_fact_ids": [str(new_id)]}]}])
+    predecessor, successor = asyncio.Event(), asyncio.Event()
+    predecessor.set()
+    try:
+        async with memory._pool.acquire() as conn:
+            for fact_id in [old_id, new_id]:
+                await conn.execute(
+                    "INSERT INTO memory_units (id, bank_id, text, fact_type, tags, created_at) VALUES ($1,$2,$3,'world','{}',now())",
+                    fact_id,
+                    bank_id,
+                    "A new supported fact.",
+                )
+            await conn.execute(
+                "INSERT INTO memory_units (id, bank_id, text, fact_type, tags, source_memory_ids, created_at) VALUES ($1,$2,$3,'observation','{}',$4,now())",
+                target_id,
+                bank_id,
+                text,
+                [old_id],
+            )
+        with (
+            patch.object(
+                c, "_find_related_observations", new=AsyncMock(return_value=RecallResult(results=[], source_facts={}))
+            ),
+            patch.object(c, "_embed_observation_text", new=AsyncMock(return_value=None)),
+        ):
+            await c._process_memory_batch(
+                pool=memory._backend,
+                memory_engine=memory,
+                llm_config=provider,
+                bank_id=bank_id,
+                memories=[{"id": new_id, "text": "A new supported fact.", "tags": []}],
+                request_context=request_context,
+                config=config,
+                mark_consolidated_ids=[new_id],
+                apply_turn=(predecessor, successor),
+            )
+        assert len(stub.requests) == 1
+        # The public read API doesn't expose source_memory_ids or consolidation
+        # stamps: read committed rows to prove attribution, not just CREATE calls.
+        async with memory._pool.acquire() as conn:
+            rows = await conn.fetch(
+                "SELECT id, text, source_memory_ids FROM memory_units WHERE bank_id=$1 AND fact_type='observation'",
+                bank_id,
+            )
+            stamped = await conn.fetchval(
+                "SELECT consolidated_at IS NOT NULL FROM memory_units WHERE bank_id=$1 AND id=$2",
+                bank_id,
+                new_id,
+            )
+        assert any(new_id in (row["source_memory_ids"] or []) for row in rows), "New source has no durable attribution"
+        assert stamped
+        old = next(row for row in rows if row["id"] == target_id)
+        assert old["text"] == text and old["source_memory_ids"] == [old_id]
+        assert len(rows) == 2
+    finally:
+        await memory.delete_bank(bank_id=bank_id, request_context=request_context)
+
+
+@pytest.mark.asyncio
+@pytest.mark.memory_backend_incompatible
+async def test_guard_hydration_rejects_oversize_before_loading_body(memory, request_context):
+    import uuid
+    from contextlib import asynccontextmanager
+
+    from hindsight_api.engine.response_models import MemoryFact
+
+    bank_id = f"detail-size-read-{uuid.uuid4().hex[:8]}"
+    await memory.ensure_bank_profile(bank_id=bank_id, request_context=request_context)
+    source_id = uuid.uuid4()
+    observation = MemoryFact(
+        id=OBS_ID, text="Timeout is 5 seconds.", fact_type="observation", source_fact_ids=[str(source_id)]
+    )
+    queries = []
+
+    class NarrowReadSpy:
+        def __init__(self, conn):
+            self.conn = conn
+
+        async def fetch(self, query, *args):
+            queries.append(query)
+            # Size metadata may inspect text on the server, but may not return
+            # it (or unrelated context/metadata) to the Python caller.
+            projection = query.lower().split("from", 1)[0]
+            assert "char_length(text)" in projection and "octet_length(text)" in projection
+            assert "context" not in projection and "metadata" not in projection
+            assert "id, text," not in projection
+            return await self.conn.fetch(query, *args)
+
+    @asynccontextmanager
+    async def acquire(pool):
+        async with memory._pool.acquire() as conn:
+            yield NarrowReadSpy(conn)
+
+    try:
+        async with memory._pool.acquire() as conn:
+            await conn.execute(
+                "INSERT INTO memory_units (id, bank_id, text, fact_type, tags, created_at) VALUES ($1,$2,$3,'world','{}',now())",
+                source_id,
+                bank_id,
+                "x" * 1_000_000,
+            )
+        with patch.object(c, "acquire_with_retry", new=acquire):
+            evidence = await c._hydrate_detail_guard_evidence([observation], {}, memory._backend, bank_id)
+        assert evidence.unavailable == {OBS_ID} and not evidence.sources
+        assert len(queries) == 1  # No body read for this target, not even a truncated one.
+    finally:
+        await memory.delete_bank(bank_id=bank_id, request_context=request_context)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("bound", ["chars", "sources", "bytes"])
+async def test_guard_hydration_enforces_batch_caps_before_body_read(provider, config, bound):
+    import uuid
+    from contextlib import asynccontextmanager
+
+    from hindsight_api.engine.response_models import MemoryFact
+
+    observations, loaded = [], []
+    per_target = 128 if bound == "sources" else 1
+    source_text = "x" * 131072 if bound == "chars" else ("界" * 131072 if bound == "bytes" else "Timeout is 5 seconds.")
+    accepted = 2 if bound == "bytes" else 4
+    for index in range(6):
+        source_ids = [str(uuid.uuid4()) for _ in range(per_target)]
+        observations.append(
+            MemoryFact(
+                id=str(uuid.uuid4()), text="Timeout is 5 seconds.", fact_type="observation", source_fact_ids=source_ids
+            )
+        )
+        loaded.extend(SimpleNamespace(unit_id=fid, text=source_text, mentioned_at=None) for fid in source_ids)
+    sizes = [
+        SimpleNamespace(
+            unit_id=source.unit_id, text_chars=len(source.text), text_bytes=len(source.text.encode("utf-8"))
+        )
+        for source in loaded
+    ]
+
+    async def bounded_read(**kwargs):
+        ids = {size.unit_id for size in kwargs["sizes"]}
+        selected = [source for source in loaded if source.unit_id in ids]
+        assert len(selected) <= 512
+        assert sum(len(source.text) for source in selected) <= 524288
+        assert sum(len(source.text.encode("utf-8")) for source in selected) <= 1048576
+        return selected
+
+    store = SimpleNamespace(
+        store_owned_for=lambda bank_id: False,
+        get_memories=AsyncMock(return_value=loaded),
+        get_memory_text_sizes=AsyncMock(return_value=sizes),
+        get_memory_evidence=AsyncMock(side_effect=bounded_read),
+    )
+
+    @asynccontextmanager
+    async def acquire(pool):
+        yield object()
+
+    reply = {
+        "updates": [
+            {"text": obs.text + " Configuration active.", "observation_id": obs.id, "source_fact_ids": [F]}
+            for obs in observations
+        ]
+    }
+    stub = install(provider, [reply])
+    with patch.object(c, "get_memories", return_value=store), patch.object(c, "acquire_with_retry", new=acquire):
+        result = await c._consolidate_batch_with_llm(
+            provider,
+            MEMORIES,
+            observations,
+            {},
+            config,
+            detail_guard_pool=object(),
+            detail_guard_bank_id="synthetic-bank",
+        )
+    assert [update.observation_id for update in result.updates] == [obs.id for obs in observations[:accepted]]
+    assert len(result.creates) == 6 - accepted and all(create._preserve_separate for create in result.creates)
+    assert len(stub.requests) == 1  # Excessive evidence is not repairable by a completion.
+    store.get_memories.assert_not_awaited()
+    store.get_memory_text_sizes.assert_awaited_once()
+    store.get_memory_evidence.assert_awaited_once()
+    assert {size.unit_id for size in store.get_memory_evidence.await_args.kwargs["sizes"]} == {
+        fid for obs in observations[:accepted] for fid in obs.source_fact_ids
+    }
+
+
+@pytest.mark.asyncio
+@pytest.mark.memory_backend_incompatible
+async def test_guard_batch_cap_keeps_admitted_updates_in_place(memory, request_context, provider):
+    import uuid
+    from dataclasses import replace
+
+    from hindsight_api.config import _get_raw_config
+    from hindsight_api.engine.response_models import MemoryFact, RecallResult
+
+    bank_id = f"detail-batch-cap-{uuid.uuid4().hex[:8]}"
+    await memory.ensure_bank_profile(bank_id=bank_id, request_context=request_context)
+    old_ids, new_ids, target_ids = [[uuid.uuid4() for _ in range(3)] for _ in range(3)]
+    before = "Timeout is 5 seconds."
+    after = before + " Configuration active."
+    observations = [
+        MemoryFact(id=str(oid), text=before, fact_type="observation", source_fact_ids=[str(fid)])
+        for oid, fid in zip(target_ids, old_ids)
+    ]
+    reply = {
+        "updates": [
+            {"text": after, "observation_id": str(oid), "source_fact_ids": [str(fid)]}
+            for oid, fid in zip(target_ids, new_ids)
+        ]
+    }
+    stub = install(provider, [reply])
+    config = replace(_get_raw_config(), llm_language_integrity="off", consolidation_dedup_threshold=1.0)
+    try:
+        async with memory._pool.acquire() as conn:
+            for fid in old_ids + new_ids:
+                await conn.execute(
+                    "INSERT INTO memory_units (id, bank_id, text, fact_type, tags, created_at) VALUES ($1,$2,$3,'world','{}',now())",
+                    fid,
+                    bank_id,
+                    before if fid in old_ids else "Configuration active.",
+                )
+            for oid, fid in zip(target_ids, old_ids):
+                await conn.execute(
+                    "INSERT INTO memory_units (id, bank_id, text, fact_type, tags, source_memory_ids, created_at) VALUES ($1,$2,$3,'observation','{}',$4,now())",
+                    oid,
+                    bank_id,
+                    before,
+                    [fid],
+                )
+        with (
+            patch.object(c, "_DETAIL_GUARD_MAX_BATCH_SOURCE_CHARS", len(before) * 2),
+            patch.object(
+                c,
+                "_find_related_observations",
+                new=AsyncMock(return_value=RecallResult(results=observations, source_facts={})),
+            ),
+            patch.object(c, "_embed_observation_text", new=AsyncMock(return_value=None)),
+        ):
+            await c._process_memory_batch(
+                pool=memory._backend,
+                memory_engine=memory,
+                llm_config=provider,
+                bank_id=bank_id,
+                memories=[{"id": fid, "text": "Configuration active.", "tags": []} for fid in new_ids],
+                request_context=request_context,
+                config=config,
+                mark_consolidated_ids=new_ids,
+            )
+        assert len(stub.requests) == 1
+        units = await memory.list_memory_units(
+            bank_id, fact_type="observation", limit=100, request_context=request_context
+        )
+        assert units["total"] == 4
+        for oid in target_ids[:2]:
+            assert next(unit for unit in units["items"] if unit["id"] == str(oid))["text"] == after
+        assert next(unit for unit in units["items"] if unit["id"] == str(target_ids[2]))["text"] == before
+        # Lineage and stamping are not exposed by the public read API.
+        async with memory._pool.acquire() as conn:
+            rows = await conn.fetch(
+                "SELECT id, source_memory_ids FROM memory_units WHERE bank_id=$1 AND fact_type='observation'", bank_id
+            )
+            stamps = await conn.fetch(
+                "SELECT id FROM memory_units WHERE bank_id=$1 AND id=ANY($2::uuid[]) AND consolidated_at IS NOT NULL",
+                bank_id,
+                new_ids,
+            )
+        for oid, fid in zip(target_ids[:2], new_ids[:2]):
+            assert fid in next(row for row in rows if row["id"] == oid)["source_memory_ids"]
+        fallback = next(row for row in rows if row["id"] not in target_ids)
+        assert fallback["source_memory_ids"] == [new_ids[2]]
+        assert {row["id"] for row in stamps} == set(new_ids)
+    finally:
+        await memory.delete_bank(bank_id=bank_id, request_context=request_context)
+
+
+@pytest.mark.asyncio
+@pytest.mark.memory_backend_incompatible
+async def test_guard_hydration_excludes_body_that_grows_after_size_read(memory, request_context):
+    import uuid
+    from contextlib import asynccontextmanager
+
+    from hindsight_api.engine.response_models import MemoryFact
+
+    bank_id = f"detail-size-race-{uuid.uuid4().hex[:8]}"
+    await memory.ensure_bank_profile(bank_id=bank_id, request_context=request_context)
+    source_id = uuid.uuid4()
+    obs = MemoryFact(id=OBS_ID, text="Timeout is 5 seconds.", fact_type="observation", source_fact_ids=[str(source_id)])
+    queries = []
+
+    class GrowingSource:
+        def __init__(self, conn):
+            self.conn = conn
+
+        async def fetch(self, query, *args):
+            queries.append(query)
+            rows = await self.conn.fetch(query, *args)
+            if len(queries) == 1:
+                await self.conn.execute(
+                    "UPDATE memory_units SET text=$1 WHERE bank_id=$2 AND id=$3", "x" * 1_000_000, bank_id, source_id
+                )
+            else:
+                assert "SELECT id, text, mentioned_at" in query
+                assert "char_length(text) = $" in query and "octet_length(text) = $" in query
+                assert not rows  # An oversized changed body never crossed the SQL boundary.
+            return rows
+
+    @asynccontextmanager
+    async def acquire(pool):
+        async with memory._pool.acquire() as conn:
+            yield GrowingSource(conn)
+
+    try:
+        async with memory._pool.acquire() as conn:
+            await conn.execute(
+                "INSERT INTO memory_units (id, bank_id, text, fact_type, tags, created_at) VALUES ($1,$2,$3,'world','{}',now())",
+                source_id,
+                bank_id,
+                obs.text,
+            )
+        with patch.object(c, "acquire_with_retry", new=acquire):
+            evidence = await c._hydrate_detail_guard_evidence([obs], {}, memory._backend, bank_id)
+        assert evidence.unavailable == {OBS_ID} and not evidence.sources
+        assert len(queries) == 2
+    finally:
+        await memory.delete_bank(bank_id=bank_id, request_context=request_context)

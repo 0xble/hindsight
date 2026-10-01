@@ -38,7 +38,7 @@ from ...search.tags import (
     build_tags_where_clause_simple,
     tag_clause_is_index_only,
 )
-from ..base import MemoryScopeWatermark, ScanPage, StoredMemory
+from ..base import MemoryEvidence, MemoryScopeWatermark, MemoryTextSize, ScanPage, StoredMemory
 
 # The `memory_units` projection every read here shares. Superset of the by-id
 # SELECT the recall source-facts path used (text/fact_type/context/timestamps/
@@ -158,6 +158,60 @@ async def get_memories(
         ids,
     )
     return [_stored_from_row(row) for row in rows]
+
+
+def _text_chars_expression(conn) -> str:
+    return "length(text)" if getattr(conn, "backend_type", "postgresql") == "oracle" else "char_length(text)"
+
+
+def _text_bytes_expression(conn) -> str:
+    # Oracle CLOB LENGTHB is not available for multibyte character sets. Four
+    # bytes per character is a conservative UTF-8 bound, without reading bodies.
+    return "4 * length(text)" if getattr(conn, "backend_type", "postgresql") == "oracle" else "octet_length(text)"
+
+
+async def get_memory_text_sizes(
+    *, conn, fq_table: Callable[[str], str], bank_id: str, unit_ids: list[str]
+) -> list[MemoryTextSize]:
+    ids = _as_uuids(unit_ids)
+    if not ids:
+        return []
+    rows = await conn.fetch(
+        f"""
+        SELECT id, {_text_chars_expression(conn)} AS text_chars, {_text_bytes_expression(conn)} AS text_bytes
+        FROM {fq_table("memory_units")}
+        WHERE bank_id = $1 AND id = ANY($2::uuid[])
+        """,
+        bank_id,
+        ids,
+    )
+    return [MemoryTextSize(str(row["id"]), row["text_chars"], row["text_bytes"]) for row in rows]
+
+
+async def get_memory_evidence(
+    *, conn, fq_table: Callable[[str], str], bank_id: str, sizes: list[MemoryTextSize]
+) -> list[MemoryEvidence]:
+    if not sizes:
+        return []
+    params: list[Any] = [bank_id]
+    predicates = []
+    chars, byte_size = _text_chars_expression(conn), _text_bytes_expression(conn)
+    # The list is batch-bounded by the caller. Per-id predicates also close the
+    # size-read/body-read race: an enlarged body cannot cross the wire even if
+    # it changes after admission. Do not use the broad 17-column memory read.
+    for size in sizes:
+        index = len(params) + 1
+        predicates.append(f"(id = ${index}::uuid AND {chars} = ${index + 1} AND {byte_size} = ${index + 2})")
+        params.extend([uuid.UUID(size.unit_id), size.text_chars, size.text_bytes])
+    rows = await conn.fetch(
+        f"""
+        SELECT id, text, mentioned_at
+        FROM {fq_table("memory_units")}
+        WHERE bank_id = $1 AND ({" OR ".join(predicates)})
+        """,
+        *params,
+    )
+    return [MemoryEvidence(str(row["id"]), row["text"], row["mentioned_at"]) for row in rows]
 
 
 async def _semantic_edges(
