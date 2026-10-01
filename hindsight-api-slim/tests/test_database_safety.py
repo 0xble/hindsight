@@ -8,7 +8,6 @@ from urllib.parse import urlsplit
 
 import psycopg2
 import pytest
-
 from hindsight_api.config import get_config
 from hindsight_api.pg0 import EmbeddedPostgres, parse_pg0_url
 
@@ -111,10 +110,10 @@ async def test_allowed_resolved_pg0_receipt(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_engine_without_db_url_refuses_default_before_native_migrations(monkeypatch):
-    from hindsight_api import MemoryEngine, config as api_config
-    from hindsight_api import migrations
-    from hindsight_api.engine.task_backend import SyncTaskBackend
     import sqlalchemy
+    from hindsight_api import MemoryEngine, migrations
+    from hindsight_api import config as api_config
+    from hindsight_api.engine.task_backend import SyncTaskBackend
 
     # Restore the historical unsafe default, with no inherited API env. Every
     # native boundary is instrumented, so even RED cannot touch a real database.
@@ -202,6 +201,7 @@ async def test_connection_refusal_is_a_normal_error_not_a_worker_exit(monkeypatc
 def test_xdist_pg0_allocates_an_explicit_safe_port(request, monkeypatch, tmp_path):
     """pg0's implicit allocator starts at 5432 and walks through protected 5436."""
     from types import SimpleNamespace
+
     import hindsight_api.migrations
 
     conftest = next(
@@ -262,3 +262,92 @@ def test_actual_unix_socket_connect_is_refused(port):
             listener.listen()
             with pytest.raises(ValueError, match=f"Refusing test database.*{port}"):
                 client.connect(address)
+
+
+@pytest.mark.asyncio
+async def test_no_db_url_with_libpq_fallback_refused_before_alembic(monkeypatch):
+    from hindsight_api import MemoryEngine, migrations
+    from hindsight_api import config as api_config
+    from hindsight_api.engine.task_backend import SyncTaskBackend
+
+    # No db_url, and no API env: libpq's native fallback alone selects production.
+    for name in list(os.environ):
+        if name.startswith(("HINDSIGHT_API_", "PG")):
+            monkeypatch.delenv(name)
+    monkeypatch.setattr(api_config, "DEFAULT_DATABASE_URL", "postgresql:///fake_db?host=/nonexistent/pr59")
+    api_config.clear_config_cache()
+    monkeypatch.setenv("PGPORT", "5436")
+    monkeypatch.setenv("PGHOST", "/nonexistent/pr59")
+    native = AsyncMock(side_effect=AssertionError("native libpq reached"))
+    monkeypatch.setattr(psycopg2, "_connect", native)
+    models = AsyncMock()
+    models.provider_name = "test"
+    models.dimension = 384
+    engine = MemoryEngine(
+        memory_llm_provider="none",
+        memory_llm_model="none",
+        embeddings=models,
+        cross_encoder=models,
+        query_analyzer=models,
+        task_backend=SyncTaskBackend(),
+        skip_llm_verification=True,
+    )
+    migration = AsyncMock(side_effect=AssertionError("startup migration reached"))
+    monkeypatch.setattr(migrations, "run_migrations_for_schemas", migration)
+    with pytest.raises(ValueError, match="Refusing test database.*5436"):
+        await engine.initialize()
+    migration.assert_not_called()
+    native.assert_not_called()
+    models.initialize.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "entry,args",
+    [
+        ("run_migrations", []),
+        ("run_migrations_for_schemas", [["public"]]),
+        ("ensure_embedding_dimension", [384]),
+        ("ensure_vector_extension", ["pgvector"]),
+        ("ensure_text_search_extension", ["native"]),
+    ],
+)
+def test_native_migration_refuses_omitted_port_before_child_or_sqlalchemy(monkeypatch, entry, args):
+    from hindsight_api import migrations
+
+    monkeypatch.setenv("PGHOST", "/nonexistent/pr59")
+    monkeypatch.setenv("PGPORT", "5436")
+    native = AsyncMock(side_effect=AssertionError("native SQLAlchemy reached"))
+    child = AsyncMock(side_effect=AssertionError("migration child reached"))
+    monkeypatch.setattr(migrations, "create_engine", native)
+    monkeypatch.setattr(migrations, "_run_in_migration_child", child)
+    monkeypatch.setattr(migrations, "_should_isolate_migrations", lambda: True)
+    with pytest.raises(ValueError, match="Refusing test database.*5436"):
+        getattr(migrations, entry)("postgresql:///fake_db?host=/nonexistent/pr59", *args)
+    native.assert_not_called()
+    child.assert_not_called()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "kwargs",
+    [
+        {"host": "/nonexistent/pr59", "port": 5436},
+        {"host": ["/nonexistent/pr59", "127.0.0.1"], "port": [5575, 5436]},
+    ],
+)
+async def test_programmatic_asyncpg_refused_before_resolver(monkeypatch, kwargs):
+    import asyncpg
+
+    resolver = AsyncMock(side_effect=AssertionError("asyncpg resolver reached"))
+    monkeypatch.setattr(asyncpg.connect_utils, "_connect", resolver)
+    with pytest.raises(ValueError, match="Refusing test database.*5436"):
+        await asyncpg.connect(**kwargs)
+    resolver.assert_not_called()
+
+
+def test_psycopg2_service_cannot_hide_native_endpoint(monkeypatch):
+    native = AsyncMock(side_effect=AssertionError("native libpq reached"))
+    monkeypatch.setattr(psycopg2, "_connect", native)
+    with pytest.raises(ValueError, match="Refusing test database"):
+        psycopg2.connect(service="fake_production")
+    native.assert_not_called()

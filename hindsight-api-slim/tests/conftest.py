@@ -253,16 +253,14 @@ def pytest_configure(config):
 
 def _install_database_connection_guards(config: pytest.Config) -> None:
     """Catch URLs resolved after startup, including libpq's native socket path."""
-    import psycopg2
+    _db_guard.install_driver_guards(config)
 
-    from hindsight_api import config as api_config, migrations
+    from hindsight_api import config as api_config
+    from hindsight_api import migrations
 
     patches = pytest.MonkeyPatch()
-    active = True
 
     def cleanup():
-        nonlocal active
-        active = False
         patches.undo()
         api_config.clear_config_cache()
 
@@ -271,7 +269,6 @@ def _install_database_connection_guards(config: pytest.Config) -> None:
     api_config.clear_config_cache()
     original_get_pg0 = EmbeddedPostgres._get_pg0
     original_ensure_running = EmbeddedPostgres.ensure_running
-    original_connect = psycopg2.connect
     original_initialize = MemoryEngine.initialize
 
     @wraps(original_initialize)
@@ -329,34 +326,8 @@ def _install_database_connection_guards(config: pytest.Config) -> None:
         _check_test_database_safety(url)
         return url
 
-    def safe_connect(dsn=None, *args, **kwargs):
-        # parse_dsn is offline. psycopg2 uses native libpq, so Python's socket
-        # audit hook alone does not protect migrations or SQLAlchemy connections.
-        params = psycopg2.extensions.parse_dsn(dsn) if dsn else {}
-        params.update(kwargs)
-        ports = params.get("port") or os.environ.get("PGPORT", "5432")
-        _check_test_database_safety(f"postgresql://test/db?port={ports}")
-        return original_connect(dsn, *args, **kwargs)
-
     patches.setattr(EmbeddedPostgres, "_get_pg0", safe_get_pg0)
     patches.setattr(EmbeddedPostgres, "ensure_running", safe_ensure_running)
-    patches.setattr(psycopg2, "connect", safe_connect)
-
-    def socket_guard(event, args):
-        # asyncpg pools and any late/default URL reach this boundary before the
-        # OS connect. Audit hooks are process-wide; disable it when pytest ends.
-        if event == "socket.connect" and active:
-            address = args[1]
-            if isinstance(address, tuple):
-                _check_test_database_safety(f"postgresql://test:{address[1]}/db")
-            elif isinstance(address, (str, bytes)):
-                # Unix-domain sockets have no (host, port) tuple. asyncpg uses
-                # <socket directory>/.s.PGSQL.<port>; bytes paths are valid too.
-                name = os.fsdecode(address).rsplit("/", 1)[-1]
-                if name.startswith(".s.PGSQL."):
-                    _check_test_database_safety(f"postgresql://test/db?port={name.removeprefix('.s.PGSQL.')}")
-
-    sys.addaudithook(socket_guard)
 
 
 @pytest.fixture(scope="session")
@@ -891,7 +862,6 @@ async def api_client(memory):
     audit-enabled variant.
     """
     import httpx
-
     from hindsight_api.api import create_app
 
     app = create_app(memory, initialize_memory=False)

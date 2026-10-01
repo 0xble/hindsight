@@ -124,7 +124,7 @@ def test_test_pg0_port_refused(guard, monkeypatch):
 def subprocess_environment():
     env = os.environ.copy()
     for name in list(env):
-        if name.startswith("HINDSIGHT_API_"):
+        if name.startswith(("HINDSIGHT_API_", "PG")):
             env.pop(name)
     env.pop("HINDSIGHT_TEST_FORBIDDEN_DB_PORTS", None)
     env["HINDSIGHT_TEST_PG_PORT"] = "5575"
@@ -133,12 +133,15 @@ def subprocess_environment():
 
 
 @pytest.mark.parametrize("api_direct", [False, True])
-@pytest.mark.parametrize("query_host", [False, True])
-def test_pytest_aborts_before_collection_or_connection(api_direct, query_host):
+@pytest.mark.parametrize("endpoint", ["url", "query_host", "libpq"])
+def test_pytest_aborts_before_collection_or_connection(api_direct, endpoint):
     env = subprocess_environment()
     env["HINDSIGHT_API_DATABASE_URL"] = "postgresql://u:fake-password@127.0.0.1:5436/hindsight"
-    if query_host:
+    if endpoint == "query_host":
         env["HINDSIGHT_API_DATABASE_URL"] = "postgresql:///hindsight?host=localhost:5436"
+    elif endpoint == "libpq":
+        env.pop("HINDSIGHT_API_DATABASE_URL")
+        env.update(PGHOST="/nonexistent/pr59", PGPORT="5436")
     # Instrument the child, so any attempted Python socket connection is evidence
     # of a regression rather than an actual connection to a protected instance.
     probe = """
@@ -171,7 +174,7 @@ raise SystemExit(pytest.main(['--collect-only', '-q', '-o', 'addopts=', 'tests/c
     result = subprocess.run([sys.executable, "-c", probe], cwd=ROOT, env=env, capture_output=True, text=True)
     output = result.stdout + result.stderr
     assert result.returncode == 4, output  # clear pytest usage error, not a worker exit
-    assert "HINDSIGHT_API_DATABASE_URL" in output
+    assert ("PG*" if endpoint == "libpq" else "HINDSIGHT_API_DATABASE_URL") in output
     assert "[REDACTED]" in output
     assert "fake-password" not in output
     assert "CONNECTION_ATTEMPT" not in output
@@ -207,3 +210,88 @@ def test_socket_directory_dsn_refuses_protected_ports(guard, monkeypatch, port, 
     monkeypatch.setenv("HINDSIGHT_TEST_FORBIDDEN_DB_PORTS", "")
     with pytest.raises(ValueError, match=f"Refusing test database.*{port}"):
         guard.assert_safe_database_url(f"postgresql://u@/db?host={directory}&port={port}")
+
+
+@pytest.mark.parametrize(
+    "settings",
+    [
+        {"PGHOST": "/nonexistent/pr59", "PGPORT": "5436"},
+        {"PGHOST": "127.0.0.1", "PGPORT": "5436"},
+        {"PGSERVICE": "production"},
+        {"PGSERVICEFILE": "/nonexistent/service.conf"},
+    ],
+)
+def test_libpq_environment_refused_before_any_url_or_native_work(guard, monkeypatch, settings):
+    for key, value in settings.items():
+        monkeypatch.setenv(key, value)
+    with pytest.raises(ValueError, match="Refusing test database"):
+        guard.check_test_database_environment()
+
+
+@pytest.mark.parametrize("profile", ["preflight", "gate", "nightly"])
+def test_ci_refuses_inherited_libpq_fallback_before_stages(tmp_path, profile):
+    env = subprocess_environment()
+    env.update(PGHOST="/nonexistent/pr59", PGPORT="5436")
+    marker = tmp_path / "uv-called"
+    fake_uv = tmp_path / "uv"
+    fake_uv.write_text(f"#!/bin/sh\ntouch '{marker}'\nexit 95\n")
+    fake_uv.chmod(0o755)
+    env["PATH"] = f"{tmp_path}:{env['PATH']}"
+    args = ["bash", "bin/ci", profile]
+    if profile != "preflight":
+        args.append(subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=ROOT, text=True).strip())
+    result = subprocess.run(args, cwd=ROOT, env=env, capture_output=True, text=True)
+    assert result.returncode == 2, result.stdout + result.stderr
+    assert "Refusing test database" in result.stderr
+    assert not marker.exists()
+
+
+def test_root_native_driver_guard_refuses_programmatic_endpoint(monkeypatch):
+    from unittest.mock import Mock
+
+    psycopg2 = pytest.importorskip("psycopg2")
+    native = Mock(side_effect=AssertionError("native libpq reached"))
+    monkeypatch.setattr(psycopg2, "_connect", native)
+    with pytest.raises(ValueError, match="Refusing test database.*5436"):
+        psycopg2.connect(host="/nonexistent/pr59", port=5436)
+    native.assert_not_called()
+
+
+@pytest.mark.parametrize("entry", ["export", "connection", "pool"])
+def test_root_async_driver_guard_refuses_before_resolver(monkeypatch, entry):
+    import asyncio
+    from unittest.mock import AsyncMock
+
+    asyncpg = pytest.importorskip("asyncpg")
+    resolver = AsyncMock(side_effect=AssertionError("asyncpg resolver reached"))
+    monkeypatch.setattr(asyncpg.connect_utils, "_connect", resolver)
+
+    async def connect_to_fake_endpoint():
+        with pytest.raises(ValueError, match="Refusing test database.*5436"):
+            if entry == "pool":
+                async with asyncpg.create_pool(host="/nonexistent/pr59", port=5436, min_size=1):
+                    pass
+            else:
+                connect = asyncpg.connect if entry == "export" else asyncpg.connection.connect
+                await connect(host="/nonexistent/pr59", port=5436)
+
+    asyncio.run(connect_to_fake_endpoint())
+    resolver.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "dsn,kwargs",
+    [
+        ("host=/nonexistent/pr59 port=5436 dbname=fake", {"port": None}),
+        ("service=fake_production", {"service": None}),
+    ],
+)
+def test_none_kwarg_does_not_erase_native_dsn_endpoint(monkeypatch, dsn, kwargs):
+    from unittest.mock import Mock
+
+    psycopg2 = pytest.importorskip("psycopg2")
+    native = Mock(side_effect=AssertionError("native libpq reached"))
+    monkeypatch.setattr(psycopg2, "_connect", native)
+    with pytest.raises(ValueError, match="Refusing test database"):
+        psycopg2.connect(dsn, **kwargs)
+    native.assert_not_called()

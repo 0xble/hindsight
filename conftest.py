@@ -2,7 +2,7 @@
 
 import pytest
 
-from scripts.ci.test_db_guard import check_test_database_environment
+from scripts.ci.test_db_guard import check_test_database_environment, install_driver_guards
 
 
 @pytest.hookimpl(tryfirst=True)
@@ -13,3 +13,4 @@ def pytest_configure(config: pytest.Config) -> None:
         check_test_database_environment()
     except ValueError as exc:
         raise pytest.UsageError(str(exc)) from None
+    install_driver_guards(config)

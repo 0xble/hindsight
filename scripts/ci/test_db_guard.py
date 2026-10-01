@@ -1,10 +1,14 @@
-"""Test-only database safety checks shared by pytest and bin/ci (stdlib only)."""
+"""Test-only database guards; URL/environment checks use only the stdlib."""
 
 from __future__ import annotations
 
 import os
 import sys
+from typing import TYPE_CHECKING
 from urllib.parse import parse_qs, urlsplit
+
+if TYPE_CHECKING:
+    import pytest
 
 FORBIDDEN_PORTS_ENV = "HINDSIGHT_TEST_FORBIDDEN_DB_PORTS"
 
@@ -44,6 +48,8 @@ def assert_safe_database_url(url: str | None, *, source: str = "HINDSIGHT_API_DA
         # Never include the URL or parser exception: either can contain secrets,
         # including passwords embedded in query parameters or malformed netlocs.
         raise ValueError(f"Invalid {source} URL [REDACTED]; point it at a disposable database.") from None
+    if query.get("service") or query.get("servicefile"):
+        raise ValueError(f"Refusing test database from {source} URL [REDACTED]: service files hide endpoints.")
     denied = ports & forbidden
     if denied:
         raise ValueError(
@@ -54,9 +60,103 @@ def assert_safe_database_url(url: str | None, *, source: str = "HINDSIGHT_API_DA
         )
 
 
+def assert_safe_database_parameters(
+    *, port: object = None, host: object = None, service: object = None, source: str = "connection parameters"
+) -> None:
+    """Validate programmatic/fallback parameters without resolving an endpoint."""
+    if service:
+        raise ValueError(
+            f"Refusing test database from {source} [REDACTED]: service files can hide protected endpoints."
+        )
+    if port is not None:
+        ports = port if isinstance(port, (list, tuple)) else [port]
+        for value in ports:
+            assert_safe_database_url(f"postgresql:///test?port={value}", source=source)
+    hosts = host if isinstance(host, (list, tuple)) else [host]
+    for value in hosts:
+        if isinstance(value, (str, bytes)):
+            name = os.fsdecode(value).rsplit("/", 1)[-1]
+            if name.startswith(".s.PGSQL."):
+                assert_safe_database_url(f"postgresql:///test?port={name.removeprefix('.s.PGSQL.')}", source=source)
+
+
+def install_driver_guards(config: pytest.Config) -> None:
+    """Protect every pytest scope, including native libpq, without patching IPC."""
+    import importlib.util
+    from functools import wraps
+
+    import pytest
+
+    patches = pytest.MonkeyPatch()
+    active = True
+
+    def cleanup():
+        nonlocal active
+        active = False
+        patches.undo()
+
+    config.add_cleanup(cleanup)
+    if importlib.util.find_spec("psycopg2") is not None:
+        import psycopg2
+
+        original = psycopg2.connect
+
+        @wraps(original)
+        def safe_connect(dsn=None, *args, **kwargs):
+            check_test_database_environment()
+            try:
+                params = psycopg2.extensions.parse_dsn(dsn) if dsn else {}
+            except psycopg2.ProgrammingError:
+                raise ValueError("Invalid psycopg2 DSN [REDACTED]; point it at a disposable database.") from None
+            # psycopg2.make_dsn drops None-valued kwargs; they do not override
+            # fields already present in the DSN. Mirror that before validation.
+            params.update({name: value for name, value in kwargs.items() if value is not None})
+            assert_safe_database_parameters(
+                port=params.get("port"), host=params.get("host"), service=params.get("service"), source="psycopg2"
+            )
+            return original(dsn, *args, **kwargs)
+
+        patches.setattr(psycopg2, "connect", safe_connect)
+    if importlib.util.find_spec("asyncpg") is not None:
+        import asyncpg
+
+        original_async = asyncpg.connection.connect
+
+        @wraps(original_async)
+        async def safe_async_connect(dsn=None, *args, **kwargs):
+            check_test_database_environment()
+            assert_safe_database_url(dsn, source="asyncpg")
+            assert_safe_database_parameters(port=kwargs.get("port"), host=kwargs.get("host"), source="asyncpg")
+            return await original_async(dsn, *args, **kwargs)
+
+        patches.setattr(asyncpg, "connect", safe_async_connect)
+        patches.setattr(asyncpg.connection, "connect", safe_async_connect)
+
+    def socket_guard(event, args):
+        if event != "socket.connect" or not active:
+            return
+        address = args[1]
+        # Do not revalidate env on unrelated worker IPC. Only this actual socket
+        # endpoint matters here; driver/startup guards own URL and env policy.
+        if isinstance(address, tuple):
+            assert_safe_database_parameters(port=address[1], source="socket")
+        elif isinstance(address, (str, bytes)):
+            assert_safe_database_parameters(host=address, source="socket")
+
+    sys.addaudithook(socket_guard)
+
+
 def check_test_database_environment() -> None:
     """Validate inherited endpoints, including the fallback pg0 port."""
     env = os.environ
+    # libpq and asyncpg inherit these when the URL omits connection fields. An
+    # isolated Alembic child has no pytest hooks, so reject them in its parent.
+    assert_safe_database_parameters(port=env.get("PGPORT"), host=env.get("PGHOST"), source="PG*")
+    for name in ("PGSERVICE", "PGSERVICEFILE"):
+        if env.get(name):
+            raise ValueError(
+                f"Refusing test database from {name} [REDACTED]: service files can hide protected endpoints."
+            )
     for name in (
         "HINDSIGHT_API_DATABASE_URL",
         "HINDSIGHT_API_READ_DATABASE_URL",
