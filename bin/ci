@@ -160,10 +160,13 @@ run database-guard-tests api uv run --frozen pytest -o addopts= ../tests/ci/test
 run lint api uv run --frozen ruff check .
 run format api uv run --frozen ruff format --check .
 run types api uv run --frozen ty check hindsight_api
+# Guard tests deliberately exercise a quiescent PostgreSQL write window. The
+# optional NOWAIT table guard must not share it with unrelated xdist writers.
+run curation-guard api uv run --frozen --extra all pytest -n 0 tests/test_guarded_curation.py
 if [[ "$profile" == gate ]]; then
   run patch-regressions api uv run --frozen --extra all pytest -m "$OFFLINE_MARKERS" "${PATCH_REGRESSIONS[@]}"
 else
-  run offline-suite api uv run --frozen --extra all pytest -m "$OFFLINE_MARKERS" "${LIVE_LLM_TESTS[@]}"
+  run offline-suite api uv run --frozen --extra all pytest --ignore=tests/test_guarded_curation.py -m "$OFFLINE_MARKERS" "${LIVE_LLM_TESTS[@]}"
 fi
 run client-discriminators client_discriminators
 run codex-integration uv run --no-project --with pytest --with tiktoken==0.12.0 pytest hindsight-integrations/codex/tests -q

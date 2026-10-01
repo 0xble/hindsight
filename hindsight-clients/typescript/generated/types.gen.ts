@@ -1846,6 +1846,36 @@ export type DefaultScopesPreview = {
 };
 
 /**
+ * CurationGuard
+ */
+export type CurationGuard = {
+  /**
+   * Protocol
+   */
+  protocol: "raw-curation-v1";
+  /**
+   * Expected Memory Sha256
+   *
+   * Lowercase SHA-256 hex digest.
+   */
+  expected_memory_sha256: string;
+  /**
+   * Expected Source Sha256
+   *
+   * Lowercase SHA-256 hex digest.
+   */
+  expected_source_sha256: string;
+  /**
+   * Require No Observations
+   */
+  require_no_observations: true;
+  /**
+   * Require Quiescent Consolidation
+   */
+  require_quiescent_consolidation: true;
+};
+
+/**
  * DeleteDocumentResponse
  *
  * Response model for delete document endpoint.
@@ -6852,6 +6882,10 @@ export type UpdateMemoryRequest = {
    * Optional free-text reason recorded when invalidating.
    */
   reason?: string | null;
+  /**
+   * Optional raw-curation-v1 atomic snapshot/source preconditions. Requires the PostgreSQL memory store, explicitly paused quiescent consolidation and no dependent observations. Rejects entity-changing requests. A conflict is HTTP 409 without the curation write.
+   */
+  curation_guard?: CurationGuard | null;
 };
 
 /**
