@@ -26,6 +26,10 @@ esac
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
 cd "$root"
 
+# Check before installs, imports or any test stage; the helper is stdlib-only.
+# A missing Python interpreter fails closed rather than skipping the safeguard.
+python3 scripts/ci/test_db_guard.py
+
 if ! command -v uv >/dev/null 2>&1; then
   echo "env_missing: uv not found on PATH" >&2
   exit 127
@@ -151,6 +155,7 @@ assert_candidate
 export CI=true
 run install api uv sync --frozen --group dev --extra all
 run workflow-policy workflow_policy
+run database-guard-tests api uv run --frozen pytest -o addopts= ../tests/ci/test_test_db_guard.py
 run lint api uv run --frozen ruff check .
 run format api uv run --frozen ruff format --check .
 run types api uv run --frozen ty check hindsight_api

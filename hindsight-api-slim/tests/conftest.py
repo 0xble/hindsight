@@ -6,6 +6,7 @@ import asyncio
 import importlib.util
 import inspect
 import os
+import sys
 from collections.abc import Iterator
 from pathlib import Path
 
@@ -13,6 +14,25 @@ import filelock
 import pytest
 import pytest_asyncio
 from dotenv import load_dotenv
+
+# Load the stdlib-only guard by path so --confcutdir/direct API runs are safe too.
+_guard_spec = importlib.util.spec_from_file_location(
+    "hindsight_test_db_guard", Path(__file__).resolve().parents[2] / "scripts/ci/test_db_guard.py"
+)
+assert _guard_spec is not None and _guard_spec.loader is not None
+_db_guard = importlib.util.module_from_spec(_guard_spec)
+_guard_spec.loader.exec_module(_db_guard)
+
+
+def _check_test_database_safety(url: str | None = None) -> None:
+    try:
+        _db_guard.check_test_database_environment()
+        _db_guard.assert_safe_database_url(url)
+    except ValueError as exc:
+        pytest.exit(str(exc), returncode=2)
+
+
+_check_test_database_safety()
 
 # Force torch to initialize exactly once, in the main thread, at conftest import
 # time — before any fixture spins up an event loop or sentence-transformers'
@@ -202,6 +222,8 @@ os.environ.setdefault("HINDSIGHT_API_LLM_TRACE_RETENTION_DAYS", "-1")
 # Load environment variables from .env at the start of test session
 def pytest_configure(config):
     """Load environment variables before running tests."""
+    # Reject inherited URLs even if the workspace .env would replace them.
+    _check_test_database_safety()
     # Look for .env in the workspace root (two levels up from tests dir)
     env_file = Path(__file__).parent.parent.parent / ".env"
     if env_file.exists():
@@ -209,8 +231,77 @@ def pytest_configure(config):
         # session, matching the precedence hindsight_api used to apply at import
         # time (removed in #2961 so library imports are side-effect-free).
         load_dotenv(env_file, override=True)
+        _check_test_database_safety()
     else:
         print(f"Warning: {env_file} not found, tests may fail without proper configuration")
+
+    from hindsight_api import config as api_config
+
+    # Tests constructing engines/configs directly must not reuse the live bare-pg0
+    # default. Do not set the API env var: db_url must still choose its pg0 fixture.
+    _check_test_database_safety(api_config.DEFAULT_DATABASE_URL)
+    _install_database_connection_guards(config)
+
+
+def _install_database_connection_guards(config: pytest.Config) -> None:
+    """Catch URLs resolved after startup, including libpq's native socket path."""
+    import psycopg2
+
+    from hindsight_api import config as api_config
+
+    patches = pytest.MonkeyPatch()
+    active = True
+
+    def cleanup():
+        nonlocal active
+        active = False
+        patches.undo()
+        api_config.clear_config_cache()
+
+    config.add_cleanup(cleanup)
+    patches.setattr(api_config, "DEFAULT_DATABASE_URL", f"pg0://{DEFAULT_PG0_INSTANCE_NAME}:{DEFAULT_PG0_PORT}")
+    api_config.clear_config_cache()
+    original_get_pg0 = EmbeddedPostgres._get_pg0
+    original_ensure_running = EmbeddedPostgres.ensure_running
+    original_connect = psycopg2.connect
+
+    def safe_get_pg0(instance):
+        # Explicit bare pg0 bypasses DEFAULT_DATABASE_URL. Redirect before pg0
+        # looks up the persistent live instance's receipt or checks its health.
+        if instance.name == "hindsight" and instance.port is None:
+            instance.name = DEFAULT_PG0_INSTANCE_NAME
+            instance.port = DEFAULT_PG0_PORT
+        if instance.port is not None:
+            _check_test_database_safety(f"pg0://test:{instance.port}")
+        return original_get_pg0(instance)
+
+    async def safe_ensure_running(instance):
+        url = await original_ensure_running(instance)
+        _check_test_database_safety(url)
+        return url
+
+    def safe_connect(dsn=None, *args, **kwargs):
+        # parse_dsn is offline. psycopg2 uses native libpq, so Python's socket
+        # audit hook alone does not protect migrations or SQLAlchemy connections.
+        params = psycopg2.extensions.parse_dsn(dsn) if dsn else {}
+        params.update(kwargs)
+        ports = params.get("port") or os.environ.get("PGPORT", "5432")
+        _check_test_database_safety(f"postgresql://test/db?port={ports}")
+        return original_connect(dsn, *args, **kwargs)
+
+    patches.setattr(EmbeddedPostgres, "_get_pg0", safe_get_pg0)
+    patches.setattr(EmbeddedPostgres, "ensure_running", safe_ensure_running)
+    patches.setattr(psycopg2, "connect", safe_connect)
+
+    def socket_guard(event, args):
+        # asyncpg pools and any late/default URL reach this boundary before the
+        # OS connect. Audit hooks are process-wide; disable it when pytest ends.
+        if event == "socket.connect" and active:
+            address = args[1]
+            if isinstance(address, tuple):
+                _check_test_database_safety(f"postgresql://test:{address[1]}/db")
+
+    sys.addaudithook(socket_guard)
 
 
 @pytest.fixture(scope="session")
@@ -221,7 +312,9 @@ def db_url():
     If HINDSIGHT_API_DATABASE_URL is set, use it directly.
     Otherwise, return None to indicate pg0 should be used (managed by pg0_instance fixture).
     """
-    return os.getenv("HINDSIGHT_API_DATABASE_URL")
+    url = os.getenv("HINDSIGHT_API_DATABASE_URL")
+    _check_test_database_safety(url)
+    return url
 
 
 @pytest.fixture(scope="session")
@@ -238,6 +331,9 @@ def pg0_db_url(db_url, tmp_path_factory, worker_id) -> Iterator[str]:
     indexes and lets one worker's index DDL block every other's retain/recall. That
     made otherwise short append regressions exceed the 300-second test timeout.
     """
+    # Also validate explicit fixture overrides before migrations or pg0 startup.
+    _check_test_database_safety(db_url)
+
     from hindsight_api.pg0 import parse_pg0_url as _parse_pg0_url
 
     # Determine pg0 instance name/port from db_url (if it's a pg0:// URL) or use defaults
@@ -273,6 +369,7 @@ def pg0_db_url(db_url, tmp_path_factory, worker_id) -> Iterator[str]:
         pg0_instance_name = f"{pg0_instance_name}-{root_tmp_dir.name}-{worker_id}"
         pg0_instance_port = None
 
+    _check_test_database_safety(f"pg0://{pg0_instance_name}:{pg0_instance_port or DEFAULT_PG0_PORT}")
     pg0 = EmbeddedPostgres(
         name=pg0_instance_name,
         port=pg0_instance_port,
@@ -305,6 +402,8 @@ def pg0_db_url(db_url, tmp_path_factory, worker_id) -> Iterator[str]:
                         loop.close()
                 url_file.write_text(url)
 
+        # Reused pg0 receipts and resolved URLs must pass before any DB operation.
+        _check_test_database_safety(url)
         run_migrations(url)
 
         # Serial instances persist between runs. Worker-owned instances are new,
