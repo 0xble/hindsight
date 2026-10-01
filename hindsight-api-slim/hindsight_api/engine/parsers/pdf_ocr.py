@@ -106,7 +106,7 @@ class _BoundedBuffer(io.BytesIO):
         self.limit = limit
 
     def write(self, data: ReadableBuffer) -> int:
-        if self.tell() + len(data) > self.limit:
+        if self.tell() + memoryview(data).nbytes > self.limit:
             raise RuntimeError("PDF rendered page exceeds byte limit")
         return super().write(data)
 
