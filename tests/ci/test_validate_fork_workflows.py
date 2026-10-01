@@ -219,8 +219,263 @@ class ForkWorkflowPolicyTests(unittest.TestCase):
 
     def test_repository_workflows_pass_policy(self) -> None:
         repo_root = SCRIPT.parents[2]
-        errors = [error for error in POLICY.validate(repo_root) if error.startswith(("gate.yml", "nightly.yml"))]
-        self.assertEqual(errors, [])
+        self.assertEqual(len(list((repo_root / ".github" / "workflows").glob("*.yml"))), 6)
+        self.assertEqual(POLICY.validate(repo_root), [])
+
+    def test_every_permission_scope_rejects_write_at_workflow_and_job_levels(self) -> None:
+        scopes = (
+            "actions",
+            "artifact-metadata",
+            "attestations",
+            "checks",
+            "contents",
+            "deployments",
+            "discussions",
+            "id-token",
+            "issues",
+            "models",
+            "packages",
+            "pages",
+            "pull-requests",
+            "security-events",
+            "statuses",
+            "future-scope",
+        )
+        for level in ("workflow", "job"):
+            for scope in scopes:
+                with self.subTest(level=level, scope=scope):
+                    root = self.make_root()
+                    path = root / ".github" / "workflows" / "fork-ci.yml"
+                    workflow = POLICY.load_workflow(path)
+                    owner = workflow if level == "workflow" else workflow["jobs"]["test"]
+                    owner["permissions"] = {scope: "write"}
+                    path.write_text(yaml.safe_dump(workflow, sort_keys=False), encoding="utf-8")
+                    errors = POLICY.validate(root)
+                    self.assertTrue(any("forbidden access 'write'" in error for error in errors), errors)
+
+    def test_permissions_must_be_explicit_mappings_at_every_authored_level(self) -> None:
+        for level in ("workflow", "job"):
+            for value in (
+                None,
+                "write-all",
+                "read-all",
+                "none",
+                [],
+                42,
+                True,
+                {"contents": []},
+                {"contents": None},
+                {"contents": "${{ inputs.access }}"},
+            ):
+                with self.subTest(level=level, value=value):
+                    root = self.make_root()
+                    path = root / ".github" / "workflows" / "fork-ci.yml"
+                    workflow = POLICY.load_workflow(path)
+                    owner = workflow if level == "workflow" else workflow["jobs"]["test"]
+                    owner["permissions"] = value
+                    path.write_text(yaml.safe_dump(workflow, sort_keys=False), encoding="utf-8")
+                    errors = POLICY.validate(root)
+                    self.assertTrue(any("permission" in error for error in errors), errors)
+        root = self.make_root()
+        path = root / ".github" / "workflows" / "fork-ci.yml"
+        workflow = POLICY.load_workflow(path)
+        del workflow["permissions"]
+        # An explicit safe job must not compensate for missing workflow authority.
+        workflow["jobs"]["test"]["permissions"] = {"contents": "read"}
+        path.write_text(yaml.safe_dump(workflow, sort_keys=False), encoding="utf-8")
+        self.assertTrue(any("top-level permissions" in error for error in POLICY.validate(root)))
+
+    def test_read_none_permissions_and_job_inheritance_pass(self) -> None:
+        for permissions in (
+            {},
+            {"contents": "none"},
+            {"contents": "read", "packages": "none"},
+            {"issues": "read", "id-token": "none"},
+        ):
+            for job_permissions in ("omitted", {}, {"contents": "read"}, {"packages": "none"}):
+                with self.subTest(permissions=permissions, job_permissions=job_permissions):
+                    root = self.make_root()
+                    path = root / ".github" / "workflows" / "fork-ci.yml"
+                    workflow = POLICY.load_workflow(path)
+                    workflow["permissions"] = permissions
+                    if job_permissions != "omitted":
+                        workflow["jobs"]["test"]["permissions"] = job_permissions
+                    path.write_text(yaml.safe_dump(workflow, sort_keys=False), encoding="utf-8")
+                    self.assertEqual(POLICY.validate(root), [])
+
+    def test_secret_capability_grid_allows_only_literal_github_token(self) -> None:
+        forbidden = (
+            "${{ secrets.PYPI_API_TOKEN }}",
+            "${{ secrets.NPM_TOKEN }}",
+            "${{ secrets.DOCKER_PASSWORD }}",
+            "${{ secrets.DEPLOY_TOKEN }}",
+            "${{ secrets.GITHUB_TOKEN_EXTRA }}",
+            "${{ secrets['GITHUB_TOKEN'] }}",
+            "${{ secrets[inputs.name] }}",
+            "${{ toJSON(secrets) }}",
+            "${{ secrets }}",
+            "${{ join(secrets.*, ',') }}",
+            "${{ secrets.GITHUB_TOKEN || secrets.NPM_TOKEN }}",
+            "${{ SECRETS.NPM_TOKEN }}",
+        )
+        for level in ("workflow", "job", "step"):
+            for reference in (*forbidden, "${{ secrets.GITHUB_TOKEN }}"):
+                with self.subTest(level=level, reference=reference):
+                    root = self.make_root()
+                    path = root / ".github" / "workflows" / "fork-ci.yml"
+                    workflow = POLICY.load_workflow(path)
+                    job = workflow["jobs"]["test"]
+                    owner = workflow if level == "workflow" else job if level == "job" else job["steps"][0]
+                    owner["env"] = {"TOKEN": reference}
+                    path.write_text(yaml.safe_dump(workflow, sort_keys=False), encoding="utf-8")
+                    errors = POLICY.validate(root)
+                    if reference in forbidden:
+                        self.assertTrue(any("secrets reference" in error for error in errors), errors)
+                    else:
+                        self.assertEqual(errors, [])
+        for secrets in ("inherit", {"TOKEN": "${{ secrets.GITHUB_TOKEN }}"}, {}):
+            with self.subTest(secrets=secrets):
+                root = self.make_root()
+                path = root / ".github" / "workflows" / "fork-ci.yml"
+                workflow = POLICY.load_workflow(path)
+                workflow["jobs"]["test"]["secrets"] = secrets
+                path.write_text(yaml.safe_dump(workflow, sort_keys=False), encoding="utf-8")
+                self.assertTrue(any("secrets capability" in error for error in POLICY.validate(root)))
+
+    def test_read_only_github_token_does_not_excuse_write_permissions(self) -> None:
+        root = self.make_root()
+        path = root / ".github" / "workflows" / "fork-ci.yml"
+        workflow = POLICY.load_workflow(path)
+        workflow["jobs"]["test"]["env"] = {"TOKEN": "${{ secrets.GITHUB_TOKEN }}"}
+        workflow["jobs"]["test"]["permissions"] = {"packages": "write"}
+        path.write_text(yaml.safe_dump(workflow, sort_keys=False), encoding="utf-8")
+        self.assertTrue(any("forbidden access 'write'" in error for error in POLICY.validate(root)))
+
+    def test_all_publish_actions_reject_independent_of_ref_or_command_text(self) -> None:
+        actions = (
+            "pypa/gh-action-pypi-publish",
+            "docker/login-action",
+            "docker/build-push-action",
+            "softprops/action-gh-release",
+            "ncipollo/release-action",
+            "actions/create-release",
+            "actions/upload-release-asset",
+            "JS-DevTools/npm-publish",
+            "rust-lang/crates-io-auth-action",
+            "goreleaser/goreleaser-action",
+            "actions/deploy-pages",
+            "peaceiris/actions-gh-pages",
+            "azure/webapps-deploy",
+            "google-github-actions/deploy-cloudrun",
+            "cloudflare/wrangler-action",
+        )
+        for action in actions:
+            for ref in ("v1", "main", "a" * 40):
+                with self.subTest(action=action, ref=ref):
+                    self.assert_publishing_step_rejected(f"uses: {action}@{ref}")
+        for value in (None, [], {}, 42):
+            with self.subTest(value=value):
+                self.assert_publishing_step_rejected(
+                    "uses: " + yaml.safe_dump(value, default_flow_style=True).splitlines()[0]
+                )
+
+    def test_all_reusable_workflows_reject_without_exceptions(self) -> None:
+        for uses in (
+            "./.github/workflows/gate.yml",
+            "./.github/workflows/deploy.yml",
+            "owner/repository/.github/workflows/gate.yml@main",
+            "owner/repository/.github/workflows/deploy.yml@" + "a" * 40,
+            "0xble/hindsight/.github/workflows/gate.yml@" + "a" * 40,
+        ):
+            with self.subTest(uses=uses):
+                root = self.make_root()
+                path = root / ".github" / "workflows" / "fork-ci.yml"
+                workflow = POLICY.load_workflow(path)
+                workflow["jobs"]["test"] = {"uses": uses}
+                path.write_text(yaml.safe_dump(workflow, sort_keys=False), encoding="utf-8")
+                self.assertTrue(any("reusable workflow call" in error for error in POLICY.validate(root)))
+                self.assert_publishing_step_rejected(f"uses: {uses}")
+
+    def test_capabilities_reject_even_when_shell_text_is_opaque(self) -> None:
+        # The shell layer cannot inspect scripts loaded from the candidate tree.
+        # Removing publishing authority must not depend on recognizing their text.
+        for capability in ("write", "secret", "action", "reusable"):
+            with self.subTest(capability=capability):
+                root = self.make_root()
+                path = root / ".github" / "workflows" / "fork-ci.yml"
+                workflow = POLICY.load_workflow(path)
+                job = workflow["jobs"]["test"]
+                job["steps"] = [{"run": "./scripts/opaque.sh"}]
+                path.write_text(yaml.safe_dump(workflow, sort_keys=False), encoding="utf-8")
+                self.assertEqual(POLICY.validate(root), [])
+                if capability == "write":
+                    job["permissions"] = {"packages": "write"}
+                elif capability == "secret":
+                    job["env"] = {"TOKEN": "${{ secrets.NPM_TOKEN }}"}
+                elif capability == "action":
+                    job["steps"].append({"uses": "docker/login-action@v4"})
+                else:
+                    job["uses"] = "./.github/workflows/gate.yml"
+                path.write_text(yaml.safe_dump(workflow, sort_keys=False), encoding="utf-8")
+                self.assertNotEqual(POLICY.validate(root), [])
+
+    def test_midword_hash_reviewer_reproductions_reject(self) -> None:
+        for command in (
+            "echo a#; npm $'publish'",
+            'echo a#; V=publish; uv "$V"',
+            "echo a#; uv publ$'i'sh",
+            "echo a#; docker buildx build --output type=regi$'s'try .",
+            "echo a#; gh release $'create' v1",
+            "echo a#; kubectl $'apply' -f x",
+        ):
+            with self.subTest(command=command):
+                self.assertTrue(POLICY.script_is_forbidden(command), command)
+                self.assert_publishing_step_rejected("run: |\n          " + command)
+
+    def test_hash_comments_start_only_at_word_boundaries(self) -> None:
+        for command, expected in (
+            ("echo a#; uv test", [["echo", "a#"], ["uv", "test"]]),
+            ("echo a#x", [["echo", "a#x"]]),
+            ("echo a # ignored; uv test", [["echo", "a"]]),
+            ("echo a;# ignored; uv test", [["echo", "a"]]),
+            ("echo 'a#'; uv test", [["echo", "a#"], ["uv", "test"]]),
+            ("echo ''#x; uv test", [["echo", "#x"], ["uv", "test"]]),
+            (r"echo \#x; uv test", [["echo", "#x"], ["uv", "test"]]),
+        ):
+            with self.subTest(command=command):
+                self.assertEqual(POLICY.shell_segments(command), expected)
+                self.assertFalse(POLICY.script_is_forbidden(command), command)
+
+    def test_raw_dynamic_provenance_scans_past_midword_hash(self) -> None:
+        for word in ("a#$V", "a#*", "a#?", "a#{b,c}", "a#`x`", r"a#\x", "a#$'x'", 'a#"$V"'):
+            with self.subTest(word=word):
+                self.assertTrue(POLICY.raw_word_is_dynamic(word), word)
+        for word in ("a#literal", "'a#$V'", '"a#literal"'):
+            with self.subTest(word=word):
+                self.assertFalse(POLICY.raw_word_is_dynamic(word), word)
+
+    def test_dollar_quote_grid_rejects_in_normalized_backstop(self) -> None:
+        prefixes = (
+            POLICY.FORBIDDEN_COMMAND_PREFIXES
+            | {("gh", "release", verb) for verb in POLICY.FORBIDDEN_GH_RELEASE_COMMANDS}
+            | {("kubectl", verb) for verb in POLICY.FORBIDDEN_KUBECTL_COMMANDS}
+        )
+        for prefix in sorted(prefixes):
+            for quote in ("'", '"'):
+                for position in range(len(prefix)):
+                    word = prefix[position]
+                    for replacement in (f"${quote}{word}{quote}", word[:1] + f"${quote}{word[1:]}{quote}"):
+                        words = list(prefix)
+                        words[position] = replacement
+                        command = "echo a#; " + " ".join(words)
+                        with self.subTest(command=command):
+                            self.assertTrue(POLICY.normalized_publisher_text_is_forbidden(command), command)
+                            self.assertTrue(POLICY.script_is_forbidden(command), command)
+        for quote in ("'", '"'):
+            for word in (f"type=regi${quote}stry{quote}", f"type=image,push=${quote}true{quote}"):
+                command = "echo a#; docker buildx build --output " + word + " ."
+                with self.subTest(command=command):
+                    self.assertTrue(POLICY.normalized_publisher_text_is_forbidden(command), command)
 
     def test_candidate_cannot_select_executed_policy_code(self) -> None:
         root = self.make_root()

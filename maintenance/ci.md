@@ -18,12 +18,32 @@ intentional fork infrastructure policy, not upstream deployment ownership.
   (`Guard upstream recovery paths in fork CI (#9)`).
 - **Surfaces:** `.github/workflows/`, `scripts/ci/validate_fork_workflows.py`,
   `bin/ci`, `.githooks/pre-push`
-- **Behavior:** The exact six-workflow inventory uses only read-only permissions
-  and standard runners. Publishing, release, and deployment command checks cover
-  step `run`, step `shell`, and workflow/job `defaults.run.shell`, including
-  authored defaults overridden by a safer shell. Automatic CI covers active
-  patch regressions, lint, types, and package/import smoke tests; Windows and
-  performance checks are manual-only.
+- **Behavior:** The exact six-workflow inventory uses standard runners and a
+  fail-closed capability boundary as the authoritative publish ban. Every
+  workflow requires an explicit top-level `permissions` mapping containing only
+  `read` or `none`; every authored job-level block has the same rule. Jobs without
+  a block inherit the workflow permissions. Missing workflow blocks, nulls,
+  non-mappings, `read-all`, `write-all`, and every scope with `write` are rejected,
+  including `packages` and `id-token`. There are no write exceptions.
+  The only permitted secret reference is literal `secrets.GITHUB_TOKEN`, whose
+  authority is read-only under this rule. Every other secret, dynamic
+  `secrets[...]`, whole-context access such as `toJSON(secrets)`, and authored
+  `secrets` blocks (including `inherit`) are rejected. Deployment environments
+  remain forbidden. The positive step-action allowlist rejects known publishing
+  actions and every unreviewed/local action, regardless of version or inputs;
+  all reusable workflow calls are forbidden, even to a governed workflow. There
+  are no credential or reusable-workflow exceptions. All six workflows currently
+  use `permissions: {contents: read}`, need no secrets or write scope, and make
+  no reusable-workflow calls. No workflow edits are required.
+  With no write permission, no publishing credentials beyond a read-only
+  GITHUB_TOKEN, no OIDC token, and no publishing actions, publication using the
+  governed workflow's credentials cannot succeed however command text is written.
+  Command-text checks are best-effort defense in depth, not the authoritative
+  guarantee or a complete shell parser. Bypasses of that layer alone are not
+  policy failures. They cover step `run`, step `shell`, and workflow/job
+  `defaults.run.shell`, including authored defaults overridden by a safer shell.
+  Automatic CI covers active patch regressions, lint, types, and package/import
+  smoke tests; Windows and performance checks are manual-only.
   The repository CI contract lives in `bin/ci`: `gate.yml` runs `./bin/ci gate`
   on the exact PR head and its `qualification` job is the only required status
   check on `main`; `nightly.yml` runs `./bin/ci nightly` (the full offline suite)
@@ -116,15 +136,15 @@ intentional fork infrastructure policy, not upstream deployment ownership.
   The expansion/provenance regressions exposed the class before repair. The
   owning workflow-boundary test covers all six reported brace bypasses plus
   escapes, tilde and backticks.
-- **Fail-closed backstop (follow-up H):** Three reviews found shell-parser
+- **Best-effort text backstop (follow-up H):** Three reviews found shell-parser
   mismatches, most recently double-quoted split spellings of `uv`, `publish`,
   and `type=registry`. Stop relying on exact shell emulation: reject a backslash
   immediately followed by LF or CRLF in every `run`, step `shell`, and
   workflow/job `defaults.run.shell`, regardless of quoting, comments, or command.
   Use YAML multiline block scalars or shell arrays without continuations instead.
   In addition to all existing precise checks, remove quote characters,
-  backslashes, braces, brackets, and glob characters, then collapse whitespace
-  and scan the entire normalized text for registered publisher/deployer token
+  backslashes, dollar signs, braces, brackets, and glob characters, then collapse
+  whitespace and scan the entire normalized text for registered publisher/deployer token
   sequences, `buildx ... --push`, `type=registry`, and enabled push attributes.
   A bare `publish`/`push` adjacent to a registered tool in either order also
   rejects. Comments and quoted data intentionally have no exemption from this
@@ -132,15 +152,29 @@ intentional fork infrastructure policy, not upstream deployment ownership.
   prose rather than weakening the rule. Ordinary build/test verbs, local
   exporters, and `--push=false` retain coverage. All six repository workflows
   pass unchanged; none uses continuations and no exemption was needed.
-- **Proof and limits:** The 53-test suite at `fcbb8cf` preceded this repair;
-  all three new quoted-continuation reviewer cases reproduce there. The current
-  expanded 58-test suite and all six repository workflows pass, with scoped
-  Ruff lint/format and type checks. Regression grids exercise normalization
-  independently of the precise parser across every registered tool and verb,
-  plus both quote contexts, LF/CRLF, and all shell scopes. The validator remains
-  a static workflow check, not a sandbox for arbitrary candidate scripts. Keep
-  the qualification-only protection and exact-head trusted-policy pre-merge
-  requirement above; the parent checks that policy result. Manual merges that
-  skip it remain the explicitly accepted residual risk. This repair changes no
-  workflows, protection settings, or runtime behavior.
+- **Mid-word hash and dollar quoting (follow-up H/M/L):** Mask `#` comments only
+  at word boundaries before shlex tokenization; a mid-word `#` is literal as in
+  Bash. Scan the whole raw word for expansion evidence, including text after
+  `#`. The normalized backstop removes `$` so `$'...'` and `$"..."` cannot hide
+  registered literal sequences. Preserve ordinary comments, quoted hashes, safe
+  build/test verbs, and literal local exporters. These repairs improve the
+  best-effort layer without making it a complete shell parser.
+- **Proof and limits:** The 58-test suite at `cc2f069` preceded the capability
+  amendment. Its six mid-word-hash/dollar-quote reviewer repros were accepted;
+  all now reject. The expanded 70-test suite covers write at workflow/job levels
+  for every permission scope (and a future-scope control), explicit mapping
+  requirements, read/none and inherited-job controls, credential forms, publishing
+  actions at version/branch/SHA refs, and local/remote reusable calls. Opaque
+  script controls show capability rejection does not depend on shell matching.
+  Normalization grids exercise `$'...'` and `$"..."` independently across
+  registered tools/verbs, alongside quoted-continuation LF/CRLF and shell-scope
+  coverage. All six repository workflows pass both the candidate validator and
+  the trusted `origin/main` validator with zero false positives; workflow bytes,
+  including trusted policy configuration and the perf fingerprint, are unchanged.
+  The validator is not a sandbox for arbitrary candidate scripts or hard-coded,
+  externally obtained credentials. Keep the qualification-only protection and
+  exact-head trusted-policy pre-merge requirement above; the parent checks that
+  policy result. Manual merges that skip it remain the explicitly accepted
+  residual risk. This repair changes no workflows, protection settings, or
+  runtime behavior.
 

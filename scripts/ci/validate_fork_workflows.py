@@ -136,8 +136,7 @@ FORBIDDEN_COMMAND_PREFIXES = {
 }
 FORBIDDEN_GH_RELEASE_COMMANDS = {"create", "delete", "edit", "upload"}
 FORBIDDEN_KUBECTL_COMMANDS = {"apply", "create", "delete", "patch", "replace", "rollout", "set"}
-SECRET_ACCESS = re.compile(r"(?<![A-Za-z0-9_])secrets\s*(?:\.|\[)", re.IGNORECASE)
-ACTIONS_EXPRESSION = re.compile(r"\$\{\{(.*?)\}\}", re.DOTALL)
+READ_ONLY_TOKEN_REFERENCE = re.compile(r"(?<![A-Za-z0-9_])secrets\s*\.\s*GITHUB_TOKEN(?![A-Za-z0-9_]|\s*[.\[])")
 SECRET_IDENTIFIER = re.compile(r"(?<![A-Za-z0-9_])secrets(?![A-Za-z0-9_])", re.IGNORECASE)
 SHELL_INTERPRETERS = {"bash", "dash", "ksh", "sh", "zsh"}
 COMMAND_BOOLEAN_OPTIONS = {
@@ -225,27 +224,26 @@ def workflow_events(workflow: dict[str, Any]) -> set[str]:
 
 
 def permission_errors(scope: str, permissions: Any) -> list[str]:
-    if permissions is None:
-        return []
-    if isinstance(permissions, str):
-        return [] if permissions == "read-all" else [f"{scope}: permission shorthand {permissions!r} is forbidden"]
+    # Missing workflow authority and any authored shorthand fail closed. Jobs
+    # without this key inherit the explicit workflow block; callers distinguish
+    # omission from an authored null before invoking this check.
     if not isinstance(permissions, dict):
-        return [f"{scope}: permissions must be a mapping or 'read-all'"]
+        return [f"{scope}: permissions must be an explicit read/none-only mapping"]
     errors = []
     for permission, access in permissions.items():
-        if access not in {"read", "none"}:
+        if access not in ("read", "none"):
             errors.append(f"{scope}: permission {permission!r} has forbidden access {access!r}")
     return errors
 
 
 def contains_secret_reference(value: str) -> bool:
-    return bool(SECRET_ACCESS.search(value)) or any(
-        SECRET_IDENTIFIER.search(expression) for expression in ACTIONS_EXPRESSION.findall(value)
-    )
+    # Only the literal read-only job token is approved. Leave dynamic indexing,
+    # whole-context access (including toJSON), and every other secret visible.
+    return bool(SECRET_IDENTIFIER.search(READ_ONLY_TOKEN_REFERENCE.sub("", value)))
 
 
 def sensitive_capability_errors(scope: str, value: Any, path: str = "workflow") -> list[str]:
-    """Reject secret access and deployment environments anywhere in a workflow."""
+    """Reject publishing credentials and deployment environments at every scope."""
     errors: list[str] = []
     if isinstance(value, dict):
         for key, child in value.items():
@@ -295,10 +293,6 @@ def raw_word_is_dynamic(raw: str) -> bool:
                 index += 1  # Quoted escape: shlex already decoded the literal word.
             elif character in "$`":
                 return True  # Double quotes do not suppress shell substitutions.
-        elif character.isspace():
-            break  # The consumed separator is outside this word.
-        elif character == "#":
-            break  # shlex may consume a trailing comment with the current token.
         elif character in "'\"":
             quote = character
         elif character in "$`*?[{}\\" or character == "~" and index == 0:
@@ -320,10 +314,42 @@ class PolicyShellLexer(shlex.shlex):
     _pushback_chars: deque[str]
 
     def __init__(self, source: str) -> None:
+        # shlex incorrectly starts comments at mid-word '#'. Mask only comments
+        # that begin a word, preserving offsets for the raw provenance scan.
+        characters = list(source)
+        quote: str | None = None
+        word_started = False
+        index = 0
+        while index < len(source):
+            character = source[index]
+            if quote == "'":
+                if character == "'":
+                    quote = None
+            elif character == "\\":
+                word_started = True
+                index += 1
+            elif quote == '"':
+                if character == '"':
+                    quote = None
+            elif character in "'\"":
+                quote = character
+                word_started = True
+            elif character.isspace() or character in ";&|()":
+                word_started = False
+            elif character == "#" and not word_started:
+                while index < len(source) and source[index] != "\n":
+                    characters[index] = " "
+                    index += 1
+                continue
+            else:
+                word_started = True
+            index += 1
+        source = "".join(characters)
         self.source_stream = StringIO(source)
         super().__init__(self.source_stream, posix=True, punctuation_chars=";&|()")
         self.source_text = source
         self.whitespace_split = True
+        self.commenters = ""
 
     def read_token(self) -> str | None:
         # shlex reads one character ahead at punctuation boundaries. Account for
@@ -394,11 +420,11 @@ def nested_command_payloads(tokens: list[str]) -> list[str]:
 
 
 def normalized_publisher_text_is_forbidden(script: str) -> bool:
-    """Coarse fail-closed backstop, deliberately independent of shell parsing."""
+    """Best-effort text backstop, deliberately independent of shell parsing."""
     # Quote/escape provenance has repeatedly exposed parser mismatches. Treat even
     # comments and quoted data as suspect when normalization exposes a publisher;
     # this is a workflow policy, not an attempt to interpret arbitrary shell code.
-    normalized = " ".join(script.translate(str.maketrans("", "", "'\"`\\{}[]*?")).lower().split())
+    normalized = " ".join(script.translate(str.maketrans("", "", "'\"`\\{}[]*?$")).lower().split())
     prefixes = (
         FORBIDDEN_COMMAND_PREFIXES
         | {("gh", "release", verb) for verb in FORBIDDEN_GH_RELEASE_COMMANDS}
@@ -718,9 +744,10 @@ def step_policy_errors(scope: str, step: Any) -> list[str]:
         return [f"{scope}: step must be a mapping"]
 
     uses = step.get("uses")
-    if isinstance(uses, str):
-        # Step actions are executable code, so additions require explicit review.
-        if uses.lower() not in ALLOWED_STEP_ACTIONS:
+    if "uses" in step:
+        # A positive executable-action allowlist also rejects every publisher,
+        # local action, and reusable workflow, regardless of its ref or inputs.
+        if not isinstance(uses, str) or uses.lower() not in ALLOWED_STEP_ACTIONS:
             return [f"{scope}: publishing, release, or deployment step {uses!r} is forbidden"]
 
     # The runner executes the shell template too; inspecting only run misses publishing there.
@@ -822,10 +849,9 @@ def validate(root: Path) -> list[str]:
         errors.extend(sensitive_capability_errors(name, workflow))
         # Check every authored default, even when a job or step overrides it.
         errors.extend(default_shell_policy_errors(name, workflow.get("defaults")))
-        workflow_permissions = workflow.get("permissions")
-        if workflow_permissions != {"contents": "read"}:
-            errors.append(f"{name}: top-level permissions must be exactly {{'contents': 'read'}}")
-        errors.extend(permission_errors(f"{name} workflow", workflow_permissions))
+        # Authoritative capability boundary: no write scope (including OIDC or
+        # packages), no publishing credentials, and only reviewed safe actions.
+        errors.extend(permission_errors(f"{name}: top-level permissions", workflow.get("permissions")))
 
         jobs = workflow.get("jobs")
         if not isinstance(jobs, dict) or not jobs:
@@ -835,10 +861,11 @@ def validate(root: Path) -> list[str]:
                 if not isinstance(job, dict):
                     errors.append(f"{name} job {job_name!r}: job must be a mapping")
                     continue
+                if "permissions" in job:
+                    errors.extend(permission_errors(f"{name} job {job_name!r}", job["permissions"]))
                 if "uses" in job:
                     errors.append(f"{name} job {job_name!r}: reusable workflow call is forbidden")
                     continue
-                errors.extend(permission_errors(f"{name} job {job_name!r}", job.get("permissions")))
                 errors.extend(default_shell_policy_errors(f"{name} job {job_name!r}", job.get("defaults")))
                 runner = job.get("runs-on")
                 if runner not in STANDARD_RUNNERS:
