@@ -113,6 +113,7 @@ class FileParserRegistry:
         """
         last_error: Exception | None = None
         nonempty_error: Exception | None = None
+        nonterminal_error: Exception | None = None
         empty_parsers: list[str] = []
         all_empty = bool(parsers)
         for name in parsers:
@@ -157,17 +158,22 @@ class FileParserRegistry:
                 logger.warning(f"Parser '{name}' does not support '{filename}', trying next: {e}")
                 last_error = e
                 nonempty_error = e
+                nonterminal_error = e
             except Exception as e:
                 all_empty = False
                 logger.warning(f"Parser '{name}' failed for '{filename}', trying next: {e}")
                 last_error = e
                 nonempty_error = e
+                nonterminal_error = e
 
         # Only a chain whose every outcome is empty can be a terminal no-text result.
-        # An earlier provider/transport failure must not be hidden by a later empty parser.
+        # Preserve unclassified errors separately: a later empty result OR OCR
+        # rejection cannot prove the artifact is terminally unusable after a timeout.
         if all_empty:
             raise NoExtractableContentError(f"No content extracted from '{filename}'", parsers=empty_parsers)
-        raise nonempty_error or last_error or RuntimeError(f"No parsers available for '{filename}'")
+        raise (
+            nonterminal_error or nonempty_error or last_error or RuntimeError(f"No parsers available for '{filename}'")
+        )
 
     def list_parsers(self) -> list[str]:
         """Get list of registered parser names."""

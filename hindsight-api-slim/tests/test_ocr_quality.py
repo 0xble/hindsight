@@ -2,8 +2,11 @@
 
 import pytest
 
+from hindsight_api.engine.memory_engine import _file_convert_failure_metadata
 from hindsight_api.engine.parsers import FileParser, FileParserRegistry, LowQualityOcrError
+from hindsight_api.engine.parsers.base import UnsupportedFileTypeError
 from hindsight_api.engine.parsers.ocr_quality import OcrQualityReason, evaluate_ocr_quality
+from tests.test_no_extractable_text import StubParser
 
 
 class StaticParser(FileParser):
@@ -208,3 +211,53 @@ async def test_non_image_content_is_not_subject_to_ocr_quality_gate():
 
     assert result.content == "No visible text"
     assert result.parser_name == "text"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("transient_first", [True, False])
+@pytest.mark.parametrize("error_type", [TimeoutError, ConnectionError, RuntimeError, UnsupportedFileTypeError])
+async def test_mixed_ocr_chain_preserves_nonterminal_error(transient_first: bool, error_type: type[Exception]):
+    registry = FileParserRegistry()
+    transient = error_type("provider unavailable")
+    registry.register(StubParser("transient", transient))
+    registry.register(StaticParser("weak", "No visible text"))
+    registry.register(StaticParser("empty", ""))
+    chain = ["transient", "weak"] if transient_first else ["weak", "transient"]
+    chain.append("empty")
+
+    with pytest.raises(error_type) as caught:
+        await registry.convert_with_fallback(chain, b"image", "scan.png")
+
+    assert caught.value is transient
+    assert _file_convert_failure_metadata(caught.value) == {}
+    wrapped = RuntimeError("file failed")
+    wrapped.__cause__ = caught.value
+    assert _file_convert_failure_metadata(wrapped) == {}
+
+
+@pytest.mark.asyncio
+async def test_low_quality_only_chain_still_has_terminal_ocr_details():
+    registry = FileParserRegistry()
+    registry.register(StaticParser("first", "No visible text"))
+    registry.register(StaticParser("second", "[unclear]"))
+
+    with pytest.raises(LowQualityOcrError) as caught:
+        await registry.convert_with_fallback(["first", "second"], b"image", "scan.png")
+
+    assert _file_convert_failure_metadata(caught.value) == {
+        "failure_class": "low_quality_ocr",
+        "failure_reason": OcrQualityReason.EXCESSIVE_UNCERTAINTY.value,
+    }
+
+
+@pytest.mark.asyncio
+async def test_mixed_ocr_chain_can_still_succeed():
+    registry = FileParserRegistry()
+    registry.register(StubParser("transient", TimeoutError("timeout")))
+    registry.register(StaticParser("weak", "No visible text"))
+    registry.register(StaticParser("useful", "EXIT"))
+
+    result = await registry.convert_with_fallback(["transient", "weak", "useful"], b"image", "scan.png")
+
+    assert result.content == "EXIT"
+    assert result.parser_name == "useful"

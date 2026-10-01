@@ -47,16 +47,18 @@ class OperationResponseDetails(BaseModel):
 
     @model_validator(mode='before')
     @classmethod
-    def validate_wire_details(cls, value):
-        # Generated oneOf wrappers otherwise ignore the raw wire fields and
-        # construct actual_instance=None when nested in operation responses.
+    def validate_wire_details(cls, value: Any) -> Any:
+        # Generated oneOf wrappers otherwise ignore raw wire fields when nested,
+        # and trial-decode JSON null as a successful match for EVERY variant.
+        if value is None:
+            return {'actual_instance': None}
         if isinstance(value, dict) and 'actual_instance' not in value:
             operation_type = value.get('operation_type')
             variants = {
                 'file_convert_retain': FileConvertRetainOperationDetails,
                 'refresh_mental_model': RefreshMentalModelOperationDetails,
             }
-            if operation_type not in variants:
+            if not isinstance(operation_type, str) or operation_type not in variants:
                 raise ValueError(f'Unknown operation details type: {operation_type!r}')
             return {'actual_instance': variants[operation_type].model_validate(value)}
         return value
@@ -99,40 +101,13 @@ class OperationResponseDetails(BaseModel):
             return v
 
     @classmethod
-    def from_dict(cls, obj: Union[str, Dict[str, Any]]) -> Self:
-        return cls.from_json(json.dumps(obj))
+    def from_dict(cls, obj: Optional[Union[str, Dict[str, Any]]]) -> Self:
+        return cls.model_validate(obj)
 
     @classmethod
     def from_json(cls, json_str: Optional[str]) -> Self:
-        """Returns the object represented by the json string"""
-        instance = cls.model_construct()
-        if json_str is None:
-            return instance
-
-        error_messages = []
-        match = 0
-
-        # deserialize data into RefreshMentalModelOperationDetails
-        try:
-            instance.actual_instance = RefreshMentalModelOperationDetails.from_json(json_str)
-            match += 1
-        except (ValidationError, ValueError) as e:
-            error_messages.append(str(e))
-        # deserialize data into FileConvertRetainOperationDetails
-        try:
-            instance.actual_instance = FileConvertRetainOperationDetails.from_json(json_str)
-            match += 1
-        except (ValidationError, ValueError) as e:
-            error_messages.append(str(e))
-
-        if match > 1:
-            # more than 1 match
-            raise ValueError("Multiple matches found when deserializing the JSON string into OperationResponseDetails with oneOf schemas: FileConvertRetainOperationDetails, RefreshMentalModelOperationDetails. Details: " + ", ".join(error_messages))
-        elif match == 0:
-            # no match
-            raise ValueError("No match found when deserializing the JSON string into OperationResponseDetails with oneOf schemas: FileConvertRetainOperationDetails, RefreshMentalModelOperationDetails. Details: " + ", ".join(error_messages))
-        else:
-            return instance
+        """Decode null once, otherwise select by the wire discriminator."""
+        return cls.from_dict(None if json_str is None else json.loads(json_str))
 
     def to_json(self) -> str:
         """Returns the JSON representation of the actual instance"""
