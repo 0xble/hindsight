@@ -61,6 +61,13 @@ remain compatible for callers.
 - **Retire when:** A released upstream build extracts image-only PDFs or exposes an
   equivalent typed empty-content failure.
 
+The terminal `failure_reason` remains a scalar string on the wire. Its OpenAPI
+schema flattens OCR reasons and `empty_content` into one string enum while the
+API retains the typed union and failure-class validation. An `anyOf(enum,
+const)` emitted a generated Python wrapper that rejected raw nested reason
+strings. The generated operation-detail regression checks raw dictionary/JSON
+validation and preserves the reason value through serialization.
+
 
 Run API-local pytest commands from `hindsight-api-slim`; run generation from
 the repository root.

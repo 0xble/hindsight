@@ -4,9 +4,14 @@
 
 Maintained fork: `0xble/hindsight` of `vectorize-io/hindsight`, branch `main`.
 Canonical checkout: `/Users/brianle/Repos/hindsight`. Accepted upstream baseline:
-`4cc131c0b238c8f206def60804d7b6591f6a45e7`. Publish only to `origin`; never
+`acfd15776469c6e5586cc7384830729138bcb0a8`. Publish only to `origin`; never
 push to `upstream`. Source synchronization, publication, installation, and
 runtime activation are separate stages.
+
+The 2026-09-30 baseline is a human-authorized, one-run checkpoint beyond
+`v0.10.2`, before the subsequent memories-store refactor. Recurring maintenance
+continues to use the stable-release rule below. Do not roll back this accepted
+baseline merely because its code is newer than the latest release tag.
 
 ## Preserve
 

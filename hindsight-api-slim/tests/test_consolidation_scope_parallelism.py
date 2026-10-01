@@ -586,7 +586,7 @@ async def test_overlapping_scopes_serialise_under_parallelism(memory: MemoryEngi
     tracker_lock = asyncio.Lock()
     orig_find = consolidator_mod._find_related_observations
 
-    async def tracked_find(*, memory_engine, bank_id, query, request_context, tags=None):
+    async def tracked_find(*, memory_engine, bank_id, query, request_context, tags=None, config=None):
         scope = frozenset(tags or [])
         async with tracker_lock:
             in_flight[scope] += 1
@@ -601,6 +601,7 @@ async def test_overlapping_scopes_serialise_under_parallelism(memory: MemoryEngi
                 query=query,
                 request_context=request_context,
                 tags=tags,
+                config=config,
             )
         finally:
             async with tracker_lock:
@@ -994,7 +995,7 @@ async def test_same_lane_stale_update_retries_fresh_recall(memory: MemoryEngine,
         recall_count = 0
         initial_recalls_ready = asyncio.Event()
 
-        async def fake_find(*, memory_engine, bank_id, query, request_context, tags=None):
+        async def fake_find(*, memory_engine, bank_id, query, request_context, tags=None, config=None):
             nonlocal recall_count
             recall_count += 1
             if recall_count == 2:
@@ -1257,7 +1258,7 @@ async def test_lane_partial_invalid_reply_and_stale_sibling_retry(memory: Memory
         initial_recalls = 0
         both_recalled = asyncio.Event()
 
-        async def fake_find(*, memory_engine, bank_id, query, request_context, tags=None):
+        async def fake_find(*, memory_engine, bank_id, query, request_context, tags=None, config=None):
             nonlocal initial_recalls
             initial_recalls += 1
             if initial_recalls == 2:
@@ -1858,7 +1859,7 @@ async def test_disjoint_scopes_run_concurrently(memory: MemoryEngine, request_co
     sample_lock = asyncio.Lock()
     orig_find = consolidator_mod._find_related_observations
 
-    async def tracked_find(*, memory_engine, bank_id, query, request_context, tags=None):
+    async def tracked_find(*, memory_engine, bank_id, query, request_context, tags=None, config=None):
         nonlocal distinct_concurrent_scopes_seen
         scope = frozenset(tags or [])
         async with sample_lock:
@@ -1873,6 +1874,7 @@ async def test_disjoint_scopes_run_concurrently(memory: MemoryEngine, request_co
                 query=query,
                 request_context=request_context,
                 tags=tags,
+                config=config,
             )
         finally:
             async with sample_lock:

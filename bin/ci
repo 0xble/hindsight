@@ -95,11 +95,24 @@ PATCH_REGRESSIONS=(
   tests/test_language_code_spans.py
   tests/test_consolidation_language_sources.py
   tests/test_consolidation_batch_atomicity.py
+  tests/test_observation_invalidation.py
   tests/test_consolidation_dedup.py
   tests/test_worker_retry_knobs.py
   tests/test_content_policy_refusal_permanent.py
   tests/test_operation_status.py
   tests/test_response_schema_validation.py
+  tests/test_consolidation_schema_correction.py
+  tests/test_consolidation_deadlock_order.py
+  tests/test_consolidation_scope_parallelism.py
+  tests/test_consolidation_fair_selection.py
+  tests/test_consolidation_fair_fetch.py
+  tests/test_consolidation_lane_benchmark.py
+  tests/test_append_after_chunking_change.py
+  tests/test_retain_append_mode.py
+  tests/test_no_extractable_text.py
+  tests/test_openrouter_null_content.py
+  tests/test_llm_trace.py
+  tests/test_hierarchical_config.py
   tests/test_metrics.py
   tests/test_batch_api.py
 )
@@ -130,7 +143,7 @@ run lint api uv run --frozen ruff check .
 run format api uv run --frozen ruff format --check .
 run types api uv run --frozen ty check hindsight_api
 if [[ "$profile" == gate ]]; then
-  run patch-regressions api uv run --frozen --extra all pytest "${PATCH_REGRESSIONS[@]}"
+  run patch-regressions api uv run --frozen --extra all pytest -m "$OFFLINE_MARKERS" "${PATCH_REGRESSIONS[@]}"
 else
   run offline-suite api uv run --frozen --extra all pytest -m "$OFFLINE_MARKERS" "${LIVE_LLM_TESTS[@]}"
 fi

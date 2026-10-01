@@ -142,7 +142,11 @@ def create_worker_app(poller: WorkerPoller, memory):
     )
     async def metrics_endpoint():
         """Return Prometheus metrics."""
-        metrics_data = generate_latest()
+        # Render off the event loop, same as the API's /metrics: generate_latest() is synchronous
+        # and its cost scales with registry size. Inline, a large scrape freezes this loop -- and
+        # this app also serves /health/live, so a stalled probe gets the worker restarted and its
+        # claimed operations requeued. See the longer note in api/http.py's metrics_endpoint.
+        metrics_data = await asyncio.to_thread(generate_latest)
         return Response(content=metrics_data, media_type=CONTENT_TYPE_LATEST)
 
     @app.get(
@@ -309,7 +313,9 @@ def main():
 
         schema = None if config.database_schema == DEFAULT_DATABASE_SCHEMA else config.database_schema
         poller = WorkerPoller(
-            backend=memory._backend,
+            # Not `_backend` directly: it is Optional only because `close()` clears it, and
+            # this runs while the engine is live.
+            backend=memory._require_backend(),
             worker_id=worker_id,
             executor=memory.execute_task,
             poll_interval_ms=args.poll_interval,

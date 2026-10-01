@@ -239,7 +239,7 @@ async def test_default_size_requeued_rounds_share_per_1000_fact_bound(provider, 
 
     conn.transaction = transaction
 
-    async def fetch(conn, bank_id, fact_types, limit, scopes, deferred):
+    async def fetch(conn, bank_id, fact_types, limit, scopes, deferred, **kwargs):
         return list(pending[:limit])
 
     async def count(*args, **kwargs):

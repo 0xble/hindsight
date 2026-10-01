@@ -40,6 +40,7 @@ from hindsight_api.extensions.operation_validator import (
     # Bank Management operations
     BankListContext,
     BankListResult,
+    BankListScope,
     BankReadContext,
     BankReadOperation,
     BankWriteContext,
@@ -50,6 +51,10 @@ from hindsight_api.extensions.operation_validator import (
     CreateBankContext,
     # File Conversion
     FileConvertResult,
+    # Memory curation
+    MemoryCurationAction,
+    MemoryUpdateContext,
+    MemoryUpdateResult,
     # Mental Model operations
     MentalModelGetContext,
     MentalModelGetResult,
@@ -107,6 +112,7 @@ __all__ = [
     # Operation Validator - Bank Management
     "BankListContext",
     "BankListResult",
+    "BankListScope",
     "BankReadContext",
     "BankReadOperation",
     "BankWriteContext",
@@ -117,6 +123,10 @@ __all__ = [
     "ConsolidateResult",
     # Operation Validator - File Conversion
     "FileConvertResult",
+    # Operation Validator - Memory curation
+    "MemoryCurationAction",
+    "MemoryUpdateContext",
+    "MemoryUpdateResult",
     # Operation Validator - Mental Model
     "MentalModelGetContext",
     "MentalModelGetResult",

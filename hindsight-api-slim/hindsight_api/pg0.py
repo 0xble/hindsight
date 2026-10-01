@@ -3,7 +3,8 @@ from __future__ import annotations
 import asyncio
 import logging
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
+from urllib.parse import parse_qsl
 
 if TYPE_CHECKING:
     from pg0 import Pg0
@@ -49,7 +50,10 @@ class EmbeddedPostgres:
                     "pg0-embedded is required for embedded PostgreSQL. "
                     "Install it with: pip install 'hindsight-api-slim[embedded-db]'"
                 )
-            kwargs = {
+            # A kwargs BAG, assembled conditionally below. Inferred, its value type is the union
+            # of everything in it, so the `**` unpack is checked as if every key could be every
+            # type -- one diagnostic per parameter of the callee, none of them real.
+            kwargs: dict[str, Any] = {
                 "name": self.name,
                 "username": self.username,
                 "password": self.password,
@@ -144,6 +148,8 @@ class Pg0Url:
     port: int | None = None
     username: str | None = None
     password: str | None = None
+    # postgresql.conf settings from the query string, e.g. ?max_connections=300
+    config: dict[str, str] | None = None
 
 
 def parse_pg0_url(db_url: str) -> Pg0Url:
@@ -156,6 +162,8 @@ def parse_pg0_url(db_url: str) -> Pg0Url:
     - "pg0://instance-name:port" -> named instance with explicit port
     - "pg0://user:pwd@instance-name:port" -> named instance with credentials
       (``user`` or ``user:pwd``; either half may be present)
+    - "...?max_connections=300&shared_buffers=256MB" -> postgresql.conf settings
+      for any of the forms above
     - Any other URL (e.g., postgresql://) -> not a pg0 URL
 
     Args:
@@ -164,8 +172,9 @@ def parse_pg0_url(db_url: str) -> Pg0Url:
     Returns:
         A :class:`Pg0Url`. When ``is_pg0`` is False the remaining fields are None.
     """
-    if db_url == "pg0":
-        return Pg0Url(is_pg0=True, instance_name="hindsight")
+    if db_url == "pg0" or db_url.startswith("pg0?"):
+        config = dict(parse_qsl(db_url[4:])) or None
+        return Pg0Url(is_pg0=True, instance_name="hindsight", config=config)
 
     if not db_url.startswith("pg0://"):
         return Pg0Url(is_pg0=False)
@@ -182,6 +191,10 @@ def parse_pg0_url(db_url: str) -> Pg0Url:
         username = user_part or None
         password = pwd_part if sep else None
 
+    # Query string after the host so a "?" inside the password is left alone.
+    url_part, _, query = url_part.partition("?")
+    config = dict(parse_qsl(query)) or None
+
     if ":" in url_part:
         instance_name, port_str = url_part.rsplit(":", 1)
         port: int | None = int(port_str)
@@ -194,6 +207,7 @@ def parse_pg0_url(db_url: str) -> Pg0Url:
         port=port,
         username=username,
         password=password,
+        config=config,
     )
 
 
@@ -212,7 +226,10 @@ async def resolve_database_url(db_url: str) -> str:
     """
     parsed = parse_pg0_url(db_url)
     if parsed.is_pg0:
-        kwargs: dict[str, object] = {"name": parsed.instance_name, "port": parsed.port}
+        # A kwargs BAG, assembled conditionally below. Inferred, its value type is the union of
+        # everything in it, so the `**` unpack is checked as if every key could be every type --
+        # one diagnostic per parameter of the callee, none of them real.
+        kwargs: dict[str, Any] = {"name": parsed.instance_name, "port": parsed.port, "config": parsed.config}
         if parsed.username is not None:
             kwargs["username"] = parsed.username
         if parsed.password is not None:
