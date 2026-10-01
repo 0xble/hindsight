@@ -25,14 +25,38 @@ _NUMBER_WORDS = dict(
 _MARKERS = re.compile(r"\b(?:must(?: not| only)?|never|only|otherwise|not|no|neither|without|requires?|authorized)\b")
 _PATTERNS = {
     "date": re.compile(r"\b\d{4}-\d{2}-\d{2}\b"),
-    "money": re.compile(r"[$€£]\s*\d[\d,]*(?:\.\d+)?[kmbt]?"),
     "version": re.compile(r"\bv?\d+(?:\.\d+){2,}(?:[-+][\w.-]+)?\b"),
     "identifier": re.compile(
         r"\b(?:[a-f0-9]{7,64}|[\w]+(?:[._][\w]+)+|[A-Z]+-\d+|[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12})\b", re.I
     ),
-    "number": re.compile(r"(?<![\w])\d[\d,]*(?:\.\d+)?(?:%|st|nd|rd|th)?(?![\w])"),
+    "number": re.compile(r"(?<![\w])\d+(?:,\d{3})*(?:\.\d+)?(?:%|st|nd|rd|th)?(?![\w])"),
     "literal": re.compile(r'`([^`\n]{1,160})`|"([^"\n]{1,160})"|“([^”\n]{1,160})”'),
 }
+# One complete quantity owns its span; partial numeric/identifier matches must
+# not survive underneath canonical amounts and reject equivalent spellings.
+_SCALE = r"(?:[kmbt]|thousand|million|billion|trillion)"
+_DIGITS = r"\d+(?:,\d{3})*(?:\.\d+)?"
+_CURRENCY = r"(?:usd|cad|aud|nzd|eur|gbp|jpy|chf)"
+_MONEY = re.compile(
+    rf"(?<![a-z])(?P<prefix>{_CURRENCY}\s*|(?:us|ca|c|au|a|nz)?[$€£]\s*)"
+    rf"(?P<amount>{_DIGITS})(?P<scale>\s*{_SCALE}(?=\b|{_CURRENCY}\b))?(?P<suffix>\s*{_CURRENCY}\b)?"
+)
+_SCALED_NUMBER = re.compile(rf"(?<![\w])(?P<amount>{_DIGITS})(?P<scale>\s*{_SCALE}\b)(?![\w])")
+_SCALE_PLACES = {"k": 3, "thousand": 3, "m": 6, "million": 6, "b": 9, "billion": 9, "t": 12, "trillion": 12}
+_CURRENCY_NAMES = {
+    "us$": "usd",
+    "c$": "cad",
+    "ca$": "cad",
+    "a$": "aud",
+    "au$": "aud",
+    "nz$": "nzd",
+    "€": "eur",
+    "£": "gbp",
+}
+_LIST_PREFIX = re.compile(r"^(?:[-*•]\s+|\d+[.)]\s+)")
+_HEADER = re.compile(r"^([^:]{1,100}):")
+
+
 _STOP = set(
     "the a an as of at on in to for from with and or is are was were has have had been by it its this that current latest now new old fact facts said states stated about successful succeeded fixed updated".split()
 )
@@ -62,8 +86,11 @@ class Evidence:
 
 
 def normalize(text: str) -> str:
-    text = unicodedata.normalize("NFKC", text).translate(str.maketrans("‐‑‒–—−", "------")).casefold()
-    text = re.sub(r"\s+", " ", text)
+    text = unicodedata.normalize("NFKC", text).casefold()
+    # Statement dashes are hard boundaries; date/version/range hyphens are not.
+    text = re.sub(r"(?<=\s)[–—](?=\s)", ";", text)
+    text = text.translate(str.maketrans("‐‑‒–—−", "------"))
+    text = re.sub(r"[^\S\n]+", " ", text)
     text = _MONTH_DATE.sub(lambda m: f"{m[3]}-{_MONTHS.index(m[1].lower()) + 1:02d}-{int(m[2]):02d}", text)
     text = re.sub(r"\b(" + "|".join(_NUMBER_WORDS) + r")\b", lambda m: str(_NUMBER_WORDS[m[0]]), text)
     return re.sub(r"\b(\d+)(?:st|nd|rd|th)\b", r"\1", text)
@@ -81,16 +108,53 @@ class _AnchorOccurrence:
     end: int
 
 
+def _canonical_amount(amount: str, scale: str = "") -> str:
+    # Decimal-point movement on strings is exact and linear, independent of
+    # floating point, Decimal context, and Python's large-integer conversion cap.
+    whole, _, fraction = amount.replace(",", "").partition(".")
+    digits = whole + fraction
+    point = len(whole) + _SCALE_PLACES.get(scale.strip(), 0)
+    digits += "0" * max(0, point - len(digits))
+    whole = digits[:point].lstrip("0") or "0"
+    fraction = digits[point:].rstrip("0")
+    return whole + ("." + fraction if fraction else "")
+
+
 def _extract_occurrences(normalized: str) -> list[_AnchorOccurrence]:
     result: list[_AnchorOccurrence] = []
+    quantities: list[tuple[int, int]] = []
+    money_starts: list[int] = []
+    for pattern, kind in ((_MONEY, "money"), (_SCALED_NUMBER, "number")):
+        money_starts = [start for start, _ in quantities]
+        for match in pattern.finditer(normalized):
+            parent = bisect_right(money_starts, match.start()) - 1
+            if kind == "number" and parent >= 0 and match.end() <= quantities[parent][1]:
+                continue
+            value = _canonical_amount(match["amount"], match["scale"] or "")
+            if kind == "money":
+                prefix = _CURRENCY_NAMES.get(match["prefix"].strip(), match["prefix"].strip())
+                suffix = (match["suffix"] or "").strip()
+                # Explicit suffixes qualify an otherwise unspecified dollar.
+                # Conflicting qualifiers remain distinct instead of guessing.
+                currency = suffix if prefix == "$" and suffix else prefix
+                if suffix and suffix != currency:
+                    currency += "/" + suffix
+                value = (currency if currency == "$" else currency + ":") + value
+            result.append(_AnchorOccurrence(Anchor(kind, value), match.start(), match.end()))
+            quantities.append((match.start(), match.end()))
+    quantities.sort()
+    starts = [start for start, _ in quantities]
     for kind, pattern in _PATTERNS.items():
         for match in pattern.finditer(normalized):
             group = next((i for i, g in enumerate(match.groups(), 1) if g is not None), 0)
             value = match[group]
+            quantity = bisect_right(starts, match.start(group)) - 1
+            if kind in {"number", "identifier"} and quantity >= 0 and match.end(group) <= quantities[quantity][1]:
+                continue
             if kind == "identifier" and value.isalpha() and "." not in value and "_" not in value:
-                continue  # ordinary words composed of a-f are not hashes
-            # Literal spans exclude their quotes. All other kinds use exactly
-            # the extractor's match, never a second, incompatible boundary rule.
+                continue
+            if kind == "number":
+                value = _canonical_amount(value.removesuffix("%")) + ("%" if value.endswith("%") else "")
             result.append(_AnchorOccurrence(Anchor(kind, value), match.start(group), match.end(group)))
     result.extend(_AnchorOccurrence(Anchor("marker", m[0]), m.start(), m.end()) for m in _MARKERS.finditer(normalized))
     return result
@@ -133,9 +197,11 @@ class _ValueTrie:
 @dataclass
 class _Clause:
     end: int
-    snapshot_labels: set[str] = field(default_factory=set)
-    snapshot_header: bool = False
-    credit_labels: set[str] = field(default_factory=set)
+    label: str = ""
+    snapshot: bool = False
+    single_value: bool = False
+    values: set[Anchor] = field(default_factory=set)
+    credit_identity: str = ""
     available: bool = False
     consumed_last: bool = False
 
@@ -151,6 +217,7 @@ class _TextIndex:
     occurrence_clauses: dict[str, list[int | None]] = field(default_factory=dict)
     historical: bool = False
     replacements: dict[str, list[Anchor]] = field(default_factory=dict)
+    replacement_targets: dict[Anchor, "_ReplacementTarget | None"] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -172,20 +239,67 @@ def _context_at(
 
 
 def _clause_boundaries(text: str) -> list[int]:
+    """Structural factual slots; no inherited snapshot/credit authority.
+
+    Commas inside grouped digits are part of amounts. A colon header (including
+    its conjunctions) is one unit until a hard boundary. Outside headers retain
+    ordinary coordinated-slot separation and numeric 'between X and Y' ranges.
+    """
     boundaries: list[int] = []
+    start = 0
     between = False
-    for match in re.finditer(r"[.;!?](?=\s|$)|,(?=\s+(?:the|a|an|current)\b)|\b(?:between|and)\b", text):
-        if match[0] == "between":
-            between = True
-            continue
-        # A range's "between X and Y" is not a new factual slot. Scan once;
-        # rescanning the prefix for each conjunction could be quadratic.
-        if match[0] == "and" and between:
-            between = False
-            continue
+    header_end = -1
+    for match in re.finditer(r"\n|[.;!?](?=\s|$)|(?<!\d),|,(?!\d{3}(?!\d))|\b(?:between|and)\b", text):
+        if match[0] in {"between", "and"}:
+            if header_end < start:
+                prefix = _LIST_PREFIX.sub("", text[start : start + 120].lstrip(), count=1)
+                header = _HEADER.match(prefix)
+                header_end = start + header.end() if header else start
+            if header_end > start:
+                continue
+            if match[0] == "between":
+                between = True
+                continue
+            if between:
+                between = False
+                continue
         boundaries.append(match.end())
+        start = match.end()
+        header_end = -1
         between = False
     return boundaries
+
+
+def _single_snapshot_value(text: str) -> bool:
+    # Deliberately small value grammar, not another predicate detector. Anything
+    # outside a bare value, quantity/range, or repeated total fails closed.
+    occurrences = _extract_occurrences(text)
+    masked: list[str] = []
+    end = 0
+    for occurrence in sorted(occurrences, key=lambda o: (o.start, -o.end)):
+        if occurrence.start < end:
+            continue
+        masked.extend((text[end : occurrence.start], "#"))
+        end = occurrence.end
+    masked.append(text[end:])
+    value = "".join(masked).strip().rstrip(".;!?").strip()
+    return bool(re.fullmatch(r"(?:#|between # and #)(?: [a-z-]+){0,2}(?: \(# total\))?", value))
+
+
+def _credit_identity(text: str, consumed: bool) -> str:
+    if consumed:
+        match = re.fullmatch(
+            r".+?\b(?:used|consumed) (?:the )?(?:last|remaining)(?: remaining)? "
+            r"([a-z][a-z -]*?(?:credit|token|voucher))",
+            text,
+        )
+    else:
+        match = re.fullmatch(
+            r"(?:the |a |an )?([a-z][a-z -]*?(?:credit|token|voucher)) is available "
+            r"(?:until \d{4}-\d{2}-\d{2}|for \d+ days?)",
+            text,
+        )
+    return match[1].strip() if match else ""
 
 
 def _index_occurrences(index: _TextIndex, trie: _ValueTrie, budget: _Budget) -> None:
@@ -199,7 +313,7 @@ def _index_occurrences(index: _TextIndex, trie: _ValueTrie, budget: _Budget) -> 
     text = index.normalized
     main_end = text.find(" | ")
     main_end = len(text) if main_end < 0 else main_end
-    words = list(re.compile(r"[a-z]+").finditer(text, endpos=main_end))
+    words = list(re.compile(r"[a-z][a-z0-9_]*").finditer(text, endpos=main_end))
     starts, ends = [m.start() for m in words], [m.end() for m in words]
     # Do not borrow another slot's labels across a sentence or coordinated clause.
     # Decimal/version dots are not sentence boundaries.
@@ -257,36 +371,26 @@ def _prepare(texts: list[str], budget: _Budget) -> dict[str, _TextIndex]:
             index.spans.setdefault(occurrence.anchor.value, set()).add((occurrence.start, occurrence.end))
         main = normalized.split(" | ")[0]
         boundaries = [0] + _clause_boundaries(main) + [len(main)]
-        snapshot_labels: set[str] = set()
         for start, end in zip(boundaries, boundaries[1:]):
-            clause_text = main[start:end].strip()
+            clause_text = main[start:end].strip().rstrip(".;!?").strip()
+            clause_text = _LIST_PREFIX.sub("", clause_text, count=1)
             clause = _Clause(end)
-            header = re.match(r"current ([^:,.]{1,80})", clause_text)
+            header = _HEADER.match(clause_text)
             if header:
-                clause.snapshot_header = True
-                clause.snapshot_labels = {
-                    w.removesuffix("s") for w in re.findall(r"[a-z]+", header[1])[:6] if w not in _STOP
-                }
-                snapshot_labels = clause.snapshot_labels
-            elif snapshot_labels:
-                continuation = re.match(r"(?:the )?([a-z]+) (?:decreased|increased|changed|grew|fell)\b", clause_text)
-                # Only an explicit same-subject trend continues the snapshot.
-                # Merely mentioning "commit" in a timeout sentence is ambiguous.
-                if continuation and continuation[1].removesuffix("s") in snapshot_labels:
-                    clause.snapshot_labels = snapshot_labels
-            clause.available = bool(re.search(r"\bavailable\b", clause_text))
-            # Linear scan; used.*last backtracks quadratically on dense prose.
-            seen_consumption = False
-            for marker in re.finditer(r"\b(?:used|consumed|last|remaining)\b", clause_text):
-                if marker[0] in {"used", "consumed"}:
-                    seen_consumption = True
-                elif seen_consumption:
-                    clause.consumed_last = True
-                    break
-            clause.credit_labels = {
-                label for label in ("reset", "credit", "token", "voucher") if re.search(rf"\b{label}\b", clause_text)
-            }
+                clause.label = header[1].strip()
+                clause.snapshot = clause.label.startswith("current ")
+                clause.single_value = _single_snapshot_value(clause_text[header.end() :].strip())
+            clause.credit_identity = _credit_identity(clause_text, consumed=False)
+            clause.available = bool(clause.credit_identity)
+            if not clause.available:
+                clause.credit_identity = _credit_identity(clause_text, consumed=True)
+                clause.consumed_last = bool(clause.credit_identity)
             index.clauses.append(clause)
+        slot_ends = boundaries[1:-1]
+        for occurrence in extracted:
+            slot = bisect_right(slot_ends, occurrence.start)
+            if occurrence.end <= index.clauses[slot].end:
+                index.clauses[slot].values.add(occurrence.anchor)
         index.historical = bool(re.search(r"\b(?:incorporated|historical|previously)\b", normalized))
         indexes[text] = index
         values.update(anchor.value for anchor in counts if anchor.kind == "literal")
@@ -335,10 +439,46 @@ def _unmatched_occurrences(anchor: Anchor, before: _TextIndex, after: _TextIndex
     return sorted(remaining)
 
 
-def _same_snapshot_labels(first: set[str], second: set[str]) -> bool:
-    # "Hindsight backlog" -> "backlog" is the same snapshot, but merely
-    # sharing "deployment" does not identify commit versus timeout slots.
-    return bool(first and second and (first <= second or second <= first))
+@dataclass(frozen=True)
+class _ReplacementTarget:
+    anchor: Anchor
+    occurrence: int
+
+
+def _replacement_target(
+    replacement: Anchor, source: _TextIndex, before: _TextIndex, budget: _Budget
+) -> _ReplacementTarget | None:
+    if replacement in source.replacement_targets:
+        return source.replacement_targets[replacement]
+    winners: set[_ReplacementTarget] = set()
+    for source_i, context in enumerate(source.contexts.get(replacement.value, [])):
+        best = 0
+        candidates: list[_ReplacementTarget] = []
+        for old in before.counts:
+            if old.kind != replacement.kind:
+                continue
+            for i, old_context in enumerate(before.contexts[old.value]):
+                budget.spend()
+                score = len(context & old_context)
+                # Exact colon labels also support single-token names (slot0).
+                old_slot = before.occurrence_clauses[old.value][i]
+                source_slot = source.occurrence_clauses[replacement.value][source_i]
+                if old_slot is not None and before.clauses[old_slot].label:
+                    label = before.clauses[old_slot].label
+                    if source_slot is not None and source.clauses[source_slot].label == label:
+                        score += 100
+                if score > best:
+                    best, candidates = score, [_ReplacementTarget(old, i)]
+                elif score == best:
+                    candidates.append(_ReplacementTarget(old, i))
+        if best >= 2 and len(candidates) == 1:
+            winners.add(candidates[0])
+        else:
+            source.replacement_targets[replacement] = None
+            return None
+    target = next(iter(winners)) if len(winners) == 1 else None
+    source.replacement_targets[replacement] = target
+    return target
 
 
 def _superseded(
@@ -361,98 +501,74 @@ def _superseded(
         when, new = source.when, source.text
         if when is None or when < newest_support:
             continue
-        # A directed state transition can waive only the occurrences in its
-        # replaced clause. The old whole-text flags also waived unrelated slots.
         exempt: set[int] = set()
         for i in unmatched:
             budget.spend()
             clause_id = before.occurrence_clauses[anchor.value][i]
             if clause_id is None:
-                continue  # literals spanning clauses/metadata are ambiguous
+                continue
             clause = before.clauses[clause_id]
-            if anchor.kind in {"number", "date"} and clause.available and clause.credit_labels:
-                cited_clauses = [c for c in new.clauses if c.consumed_last and c.credit_labels == clause.credit_labels]
-                output_clauses = [
-                    c for c in after.clauses if c.consumed_last and c.credit_labels == clause.credit_labels
-                ]
-                budget.spend(len(new.clauses) + len(after.clauses))
-                old_clauses = [c for c in before.clauses if c.available and c.credit_labels == clause.credit_labels]
-                budget.spend(len(before.clauses))
-                if len(old_clauses) == len(cited_clauses) == len(output_clauses) == 1:
-                    exempt.add(i)
-            if (
-                when > newest_support
-                and clause.snapshot_labels
-                and (anchor.kind != "marker" or anchor.value in {"no", "not"})
-            ):
+            if anchor.kind in {"number", "date"} and clause.available:
+                old_clauses = [c for c in before.clauses if c.available and c.credit_identity == clause.credit_identity]
                 cited_clauses = [
-                    c
-                    for c in new.clauses
-                    if c.snapshot_header and _same_snapshot_labels(c.snapshot_labels, clause.snapshot_labels)
+                    c for c in new.clauses if c.consumed_last and c.credit_identity == clause.credit_identity
                 ]
                 output_clauses = [
-                    c
-                    for c in after.clauses
-                    if c.snapshot_header and _same_snapshot_labels(c.snapshot_labels, clause.snapshot_labels)
+                    c for c in after.clauses if c.consumed_last and c.credit_identity == clause.credit_identity
                 ]
-                # Resolve the citation against ALL old state headers. A generic
-                # "deployment count" cannot consume both primary and backup.
-                old_clauses = (
-                    [
-                        c
-                        for c in before.clauses
-                        if c.snapshot_header
-                        and _same_snapshot_labels(c.snapshot_labels, cited_clauses[0].snapshot_labels)
-                    ]
-                    if len(cited_clauses) == 1
-                    else []
-                )
+                budget.spend(len(before.clauses) + len(new.clauses) + len(after.clauses))
+                identity_mentions = re.findall(r"\b" + re.escape(clause.credit_identity) + r"\b", before.normalized)
+                if len(identity_mentions) == len(old_clauses) == len(cited_clauses) == len(output_clauses) == 1:
+                    exempt.add(i)
+            if when > newest_support and clause.snapshot and clause.single_value:
+                old_clauses = [c for c in before.clauses if c.label == clause.label]
+                cited_clauses = [c for c in new.clauses if c.label == clause.label and c.single_value]
+                output_clauses = [c for c in after.clauses if c.label == clause.label and c.single_value]
                 budget.spend(len(before.clauses) + len(new.clauses) + len(after.clauses))
                 if len(old_clauses) == len(cited_clauses) == len(output_clauses) == 1:
-                    exempt.add(i)
+                    replacements = cited_clauses[0].values & output_clauses[0].values
+                    if any(a.kind == anchor.kind and a != anchor for a in replacements):
+                        exempt.add(i)
         if len(exempt) >= missing:
             return len(exempt)
-        if when <= newest_support:
+        if when <= newest_support or anchor.kind == "marker":
             continue
-        if anchor.kind == "marker":
-            continue  # absence never rescinds an obligation or authorization
         if anchor.kind == "version" and any(s.text.historical for s in supporters):
             continue
         for replacement in new.replacements.get(anchor.kind, []):
             budget.spend()
             if replacement.value == anchor.value:
                 continue
-            for replacement_context in new.contexts.get(replacement.value, []):
-                budget.spend(len(contexts))
-                scores = [len(context & replacement_context) for context in contexts]
-                best = max(scores, default=0)
-                candidates = [i for i, score in enumerate(scores) if score == best]
-                # Attribute the replacement against every old occurrence first.
-                # A preserved/historical timeout cannot excuse a missing retry,
-                # and tied slot attribution must fail closed.
-                if not best or len(candidates) != 1 or candidates[0] not in unmatched:
-                    continue
-                context = contexts[candidates[0]]
-                for supporter in supporters:
-                    for supported_context in supporter.text.contexts.get(anchor.value, []):
+            target = _replacement_target(replacement, new, before, budget)
+            output_target = _replacement_target(replacement, after, before, budget)
+            if (
+                target is None
+                or target != output_target
+                or target.anchor != anchor
+                or target.occurrence not in unmatched
+            ):
+                continue
+            clause_id = before.occurrence_clauses[anchor.value][target.occurrence]
+            if clause_id is None:
+                continue
+            clause = before.clauses[clause_id]
+            # Generic overlap must never circumvent stricter header/credit
+            # identity, cardinality, same-kind, or single-predicate rules.
+            if clause.snapshot or clause.available:
+                continue
+            context = contexts[target.occurrence]
+            for supporter in supporters:
+                for supported_context in supporter.text.contexts.get(anchor.value, []):
+                    budget.spend()
+                    for replacement_context in new.contexts.get(replacement.value, []):
                         budget.spend()
                         overlap = context & supported_context & replacement_context
                         for output_context in after.contexts.get(replacement.value, []):
                             budget.spend()
-                            # A cited replacement merely appearing elsewhere in
-                            # the output does not mean this slot was replaced.
-                            output_overlap = overlap & output_context
-                            if len(output_overlap) >= 2:
+                            if len(overlap & output_context) >= 2 or (
+                                clause.label and clause.label in {c.label for c in new.clauses}
+                            ):
                                 return 1
-                            if anchor.kind == "identifier" and "commit" in output_overlap:
-                                for other in supporter.text.counts:
-                                    budget.spend()
-                                    if (
-                                        other.value != anchor.value
-                                        and other.kind in {"identifier", "number"}
-                                        and new.occurrences[other.value]
-                                    ):
-                                        return 1
     return 0
 
 
@@ -463,8 +579,9 @@ def dropped_supported_anchors(before: str, after: str, existing: list[Evidence],
     deadline's occurred_start. A missing/older/tied timestamp cannot authorize a
     different value. A same-slot replacement exempts at most ONE unmatched
     occurrence; preservation and replacement attribution must be unambiguous.
-    Other occurrences of that value must survive. Snapshot/credit transitions
-    exempt only occurrences attributed to the replaced state clause.
+    Other occurrences of that value must survive. Replacement authority is
+    resolved across all old values of its kind; snapshot/credit identities are
+    exact, unique, slot-local, and fail closed on ambiguous predicates.
     """
     try:
         if len(existing) + len(cited) > _MAX_SOURCES:
