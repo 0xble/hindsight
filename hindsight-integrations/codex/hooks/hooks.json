@@ -16,7 +16,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 \"__SCRIPTS_DIR__/recall.py\"",
+            "command": "python3 \"__SCRIPTS_DIR__/recall_launcher.py\"",
             "timeout": 45
           }
         ]

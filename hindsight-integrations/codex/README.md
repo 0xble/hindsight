@@ -85,12 +85,14 @@ export ANTHROPIC_API_KEY=your-key
 | `retainMode` | `"full-session"` | `"full-session"` or `"chunked"` |
 | `retainEveryNTurns` | `10` | Retain every N turns (1 = every turn) |
 | `recallBudget` | `"mid"` | Recall depth: `"low"`, `"mid"`, `"high"` |
-| `recallMaxTokens` | `1024` | Max tokens for injected memories |
+| `recallMaxTokens` | `1024` | Positive integer cap for the complete injected memory context, including preamble, time, fact metadata and wrappers |
 | `recallMinScores` | `{}` | Optional score floors applied after recall, keyed by score field (for example `{"semantic": 0.65, "reranker": 0.2}`). Missing or `null` scores pass so BM25-only and passthrough-reranker hits are not accidentally suppressed. When a cross-encoder reranker is active, the `reranker` floor is the main precision gate; treat reranker scores as query-local and not calibrated across queries. |
 | `recallTimeout` | `10` | Timeout in seconds for recall API calls |
 | `dynamicBankId` | `false` | Separate bank per project/session |
 | `dynamicBankGranularity` | `["agent", "project"]` | Fields for dynamic bank ID |
 | `debug` | `false` | Log debug info to stderr |
+
+The installer prepares a private `~/.hindsight/codex/tokenizer-venv` with `tiktoken==0.12.0` and a SHA-256-verified local `o200k_base` encoding asset. A launcher checks that the private interpreter starts before executing recall once. If a Python upgrade breaks the private interpreter, it selects the current `python3` instead. Recall counts the complete context with the tokenizer without making network requests. If setup fails, or the pinned package or verified asset is unavailable, the standalone hook uses UTF-8 byte length as a conservative upper bound for Codex's byte-BPE tokens. This fallback may leave token capacity unused. Facts retain their complete text, type and date, in API rank order. Oversized facts are skipped, and no context is emitted if the wrapper or every complete fact exceeds the cap.
 
 ### Environment variable overrides
 

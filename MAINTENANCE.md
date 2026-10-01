@@ -22,7 +22,7 @@ signing, release, or publishing. Source inclusion never implies runtime adoption
 
 ## Required maintenance support
 
-Evaluate all four responsibilities every maintenance run, including no-change
+Evaluate these support units every maintenance run, including no-change
 runs; these extend this sole enrollment and scheduling unit:
 
 - [OCR admission and typed failures](maintenance/ocr.md): HINDSIGHT-001, HINDSIGHT-004 and HINDSIGHT-006.
@@ -30,6 +30,7 @@ runs; these extend this sole enrollment and scheduling unit:
 - [Fork CI governance](maintenance/ci.md): HINDSIGHT-003.
 - [Generated-language integrity](maintenance/language-integrity.md): HINDSIGHT-005.
 - [Bounded consolidation schema correction](maintenance/schema-correction.md): consolidation-only divergence.
+- [Codex injection budget](maintenance/codex-injection-budget.md): every run, preserve the complete-context cap and offline tokenizer recovery.
 
 ## Upstream-owned recovery
 
