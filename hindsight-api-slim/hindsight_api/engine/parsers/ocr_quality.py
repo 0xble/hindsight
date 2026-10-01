@@ -12,7 +12,11 @@ _IMAGE_EXTENSIONS = {".bmp", ".gif", ".heic", ".heif", ".jpeg", ".jpg", ".png", 
 _UNCLEAR_PATTERN = re.compile(r"\[\s*unclear\s*\]", re.IGNORECASE)
 _TOKEN_PATTERN = re.compile(r"[^\W_]+(?:['’.-][^\W_]+)*", re.UNICODE)
 _TIMESTAMP_PATTERN = re.compile(r"(?:[01]?\d|2[0-3]):[0-5]\d(?:\s*[ap]m)?", re.IGNORECASE)
-_FENCED_BLOCK_PATTERN = re.compile(r"\A```(?P<language>[\w+-]*)\s*\n?(?P<body>.*?)\n?```\Z", re.DOTALL)
+# A language tag needs its own newline-terminated opening line. Otherwise
+# single-line transcriptions such as ```EXIT``` must remain body text.
+_FENCED_BLOCK_PATTERN = re.compile(
+    r"\A```(?:(?P<language>[A-Za-z][A-Za-z0-9_+-]*)?[ \t]*\r?\n)?(?P<body>.*?)```\Z", re.DOTALL
+)
 _REFUSAL_PATTERNS = (
     re.compile(
         r"(?:based on the image provided )?(?:there is )?no (?:visible |readable |legible )?text"
@@ -173,6 +177,10 @@ def evaluate_ocr_quality(content: str) -> OcrQualityResult:
     )
     repetition_ratio = max(Counter(tokens).values()) / token_count if tokens else 0.0
     ui_chrome_ratio = _ui_chrome_ratio(normalized_content)
+    distinct_lines = {_normalize_phrase(line) for line in normalized_content.splitlines() if line.strip()}
+    # One label, repeated copies of it, or timestamps alone can be legitimate
+    # evidence. Require distinct cues, including a known UI control, to reject.
+    has_ui_context = len(distinct_lines) >= 2 and bool(distinct_lines & _UI_CHROME_LINES)
 
     features = OcrQualityFeatures(
         normalized_character_count=normalized_character_count,
@@ -186,8 +194,8 @@ def evaluate_ocr_quality(content: str) -> OcrQualityResult:
 
     # Sparse OCR can be legitimate (for example, an elevator floor, grade, one-time
     # code, or error code), so alphanumeric content is preserved unless another
-    # dominant, high-confidence failure signal applies. UI chrome rejects only when
-    # every nonempty line is a known control or timestamp, preserving substantive lines.
+    # dominant, high-confidence failure signal applies. UI chrome rejects only with
+    # corroborating cues and when every nonempty line is a known control or timestamp.
     reason: OcrQualityReason | None = None
     if _is_refusal(normalized_refusal):
         reason = OcrQualityReason.REFUSAL
@@ -205,7 +213,7 @@ def evaluate_ocr_quality(content: str) -> OcrQualityResult:
         reason = OcrQualityReason.NO_MEANINGFUL_TEXT
     elif token_count >= 8 and repetition_ratio >= 0.8:
         reason = OcrQualityReason.REPETITION
-    elif ui_chrome_ratio == 1.0:
+    elif ui_chrome_ratio == 1.0 and has_ui_context:
         reason = OcrQualityReason.UI_CHROME
 
     return OcrQualityResult(accepted=reason is None, reason=reason, features=features)
@@ -219,7 +227,7 @@ def _strip_ocr_wrappers(content: str) -> str:
         return normalized
 
     body = fenced.group("body").strip()
-    if fenced.group("language").casefold() != "json":
+    if (fenced.group("language") or "").casefold() != "json":
         return body
 
     try:

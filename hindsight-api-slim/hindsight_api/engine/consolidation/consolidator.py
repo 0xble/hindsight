@@ -3368,6 +3368,9 @@ async def _process_memory_batch(
     # "consolidation_dedup" (routes through the consolidation concurrency bucket via llm_wrapper's
     # "consolidation" prefix; recorded distinctly in llm_requests).
     dedup_enabled = _dedup_active(config)
+    # Exact folds remain available with semantic dedup disabled on PostgreSQL,
+    # but use the same PostgreSQL-only merge SQL and must never run on Oracle.
+    exact_fold_enabled = get_config().database_backend != "oracle"
     dedup_llm_config = (
         memory_engine._consolidation_llm_config.with_config(config, bank_id=bank_id, operation="consolidation_dedup")
         if dedup_enabled
@@ -3495,7 +3498,7 @@ async def _process_memory_batch(
         # The probe reads the state the batch started from, so two near-twin CREATEs in ONE
         # response can both land; the next round's probe sees them and folds them, and the
         # exact-text guard above already covers the common case.
-        if shown_duplicate is not None:
+        if exact_fold_enabled and shown_duplicate is not None:
             prepared_create.source_only_fold = True
             prepared_create.dedup = _DedupOutcome(
                 best_id=str(shown_duplicate.id),
@@ -3503,7 +3506,7 @@ async def _process_memory_batch(
                 should_merge=True,
                 best_text=shown_duplicate.text,
             )
-        elif reply_duplicate is not None:
+        elif exact_fold_enabled and reply_duplicate is not None:
             # This future target is valid only if the UPDATE actually writes it.
             # The apply-time CAS falls back to CREATE if that UPDATE is skipped.
             prepared_create.source_only_fold = True
@@ -3750,7 +3753,7 @@ async def _process_memory_batch(
                         # whitespace-normalized, case-sensitive semantics while avoiding a
                         # materialization of every observation in a shared scope.
                         exact_by_scope: dict[tuple[str, ...], dict[str, Any]] = {}
-                        if apply_turn is not None:
+                        if apply_turn is not None and exact_fold_enabled:
                             normalized_by_scope: dict[tuple[str, ...], list[str]] = {}
                             for prepared_create in prepared_creates:
                                 scope = tuple(sorted(prepared_create.source_fact_tags or []))
@@ -3815,7 +3818,10 @@ async def _process_memory_batch(
                                     logger.info("[CONSOLIDATION] folded exact duplicate CREATE during serialized apply")
                                     for m in prepared_create.source_mems:
                                         per_memory_created.add(str(m["id"]))
-                                continue
+                                    continue
+                                # A prior fold in this response may have rewritten
+                                # the exact snapshot. A missed CAS is not coverage:
+                                # fall through to semantic folding or insertion.
                             if apply_dedup is not None:
                                 merged_into = await _apply_dedup_create_fold(
                                     conn,

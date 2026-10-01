@@ -79,4 +79,13 @@ the fork's unmatched-rechunk tail handling, exercised by
 `tests/test_retain_append_mode.py` coverage.
 
 
+## Exact CREATE Fold Fallback And Dialect Boundary
+
+The fork lane exact-fold snapshot can become stale after an earlier CREATE in the same response semantically rewrites its twin. A failed text CAS must fall through to the normal fold/create path; it is not durable coverage for stamping sources. Shown/reply twins and serialized exact probes must also respect the PostgreSQL-only fold SQL boundary. Exact folding stays enabled on PostgreSQL even when the semantic threshold is 1.0; Oracle preserves CREATE sources through insertion instead.
+
+- **Surfaces:** `engine/consolidation/consolidator.py` and `tests/test_consolidation_fold_fallback.py`.
+- **Provenance:** Fork lane snapshot behavior `d7024db7df`; shown/reply preparation `3a44d762c8` and `7fe8846125`.
+- **Regression:** `uv run --frozen --extra all pytest tests/test_consolidation_fold_fallback.py tests/test_consolidation_scope_parallelism.py tests/test_consolidation_dedup.py` in a disposable PostgreSQL database. The Oracle case verifies dialect routing, not live Oracle execution.
+- **Retire when:** Released upstream provides equivalent exact-fold fallback, dialect routing, and source-coverage guarantees.
+
 Run the API-local regression commands from `hindsight-api-slim`.

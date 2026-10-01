@@ -12,7 +12,15 @@ remain compatible for callers.
 - **Commits:** `2fa19ab`, `83d7ad3`, `8c107c6`, `19357a9`, `b684912`, `60128d9`
 - **Surfaces:** `engine/parsers/{__init__,ocr_quality}.py`, `tests/test_ocr_quality.py`
 - **Upstream issue:** https://github.com/vectorize-io/hindsight/issues/3897
-- **Upstream PR:** None after checked 2026-09-11
+- **Upstream PR:** [#4047](https://github.com/vectorize-io/hindsight/pull/4047),
+  closed unmerged: the maintainer preferred explicit MarkItDown flags over heuristics.
+  The admission policy remains an intentional fork divergence.
+- **Fence/sparse-text provenance:** The optional-newline wrapper bug originated
+  in fork commit `f7a140b6ad68e5ab9e56fcc6ef7bddb0c572bd2a`; unconditional
+  UI-only rejection originated in `08de007103ba1de80a805301ded41847de8e8f11`.
+  Preserve single-line fenced transcriptions. UI rejection requires distinct
+  corroborating cues including a control; a lone label or timestamps alone
+  are not sufficient evidence of unusable OCR.
 - **Regression:** `uv run --frozen pytest tests/test_ocr_quality.py`
 - **Rollback:** Revert the listed commits in reverse order and rerun the regression.
 - **Retire when:** A released upstream build provides equivalent admission,
@@ -29,9 +37,23 @@ remain compatible for callers.
   deterministic evidence exclusions without parsing error prose. Retries clear
   stale terminal details, and generated clients accept both supported detail types,
   including raw dictionary and JSON Pydantic validation nested in operation responses.
+- **Oracle adaptation:** Brian Le's retry-clear change
+  `c343c30c202466a636f4d4560d09954e3c618362` introduced CASE/chained JSONB merges
+  the Oracle adapter cannot translate. Keep native CLOB `JSON_MERGEPATCH` in the
+  existing failure/retry methods without changing PostgreSQL merges or atomic status
+  guards. Oracle removes null-valued failure keys; PostgreSQL keeps nulls. Both
+  suppress stale details without clearing unrelated metadata.
+- **Upstream disposition:** Fork-only correction; no contribution opened. Guidance
+  checked at `752fcf512d44a47bd0f2876e8c308074da5abb4e` (`AGENTS.md` → `CLAUDE.md`).
+  Related [#4628](https://github.com/vectorize-io/hindsight/pull/4628) requires CLOB
+  merge results; [#5040](https://github.com/vectorize-io/hindsight/pull/5040) fixes a
+  different operation checkpoint. Neither replaces the typed-failure contract.
 - **Upstream issue:** None after checked 2026-09-11
 - **Upstream PR:** None after checked 2026-09-11
-- **Regression:** `uv run --frozen pytest tests/test_operation_status.py`; generated
+- **Regression:** `uv run --frozen pytest tests/test_operation_status.py tests/test_operation_metadata_sql.py`;
+  the latter captures actual engine statements through Oracle rewriting and checks
+  PostgreSQL merge/status/rollback behavior. Oracle coverage is translator-only,
+  not live-database execution. Generated
   client discriminator tests in `hindsight-clients/{python,go}`; and a successful
   `./scripts/generate-openapi.sh && ./scripts/generate-clients.sh` run.
 - **Rollback:** Revert the HINDSIGHT-004 commits and restore callers to treating
@@ -43,7 +65,7 @@ remain compatible for callers.
 
 - **Status:** Active
 - **Commits:** `27fcb7b`
-- **Surfaces:** `engine/parsers/{__init__,base,markitdown}.py`, `engine/memory_engine.py`,
+- **Surfaces:** `engine/parsers/{__init__,base,markitdown,iris,llama_parse}.py`, `engine/memory_engine.py`,
   `engine/operation_details.py`, checked-in OpenAPI contracts, generated
   Python/TypeScript/Go clients, and `tests/test_no_extractable_text.py`
 - **Behavior:** When every parser in the chain returns empty content, the failed
@@ -51,10 +73,19 @@ remain compatible for callers.
   `failure_reason=empty_content`, and the ordered `parsers` chain it tried. Mixed
   chains and transient errors stay unclassified. Callers can settle image-only PDFs
   without resubmitting them, and re-probe when the parser chain changes.
+- **Adapter integration:** Empty-success `RuntimeError` paths originated upstream
+  in Iris `7eafba661e15fa1f6c35f827099b215dc10fbfbe` and LlamaParse
+  `91106f30ef8eb2e192664acf33dad986569bd731`, before the released base
+  `5fc4ce20917b916240cef27c212c387a177f115b`. The fork typed-chain contract
+  introduced by `27fcb7b95013afaf4fb4253927b4dcca390921ba` requires adapting
+  successful null/empty/whitespace results to `NoExtractableContentError`.
+  Keep provider, transport, and job failures unclassified; do not infer no-text
+  from arbitrary exception messages. The registry already preserves mixed chains.
 - **Upstream issue:** https://github.com/vectorize-io/hindsight/issues/3255 (scanned
   PDFs; the typed failure is fork-only)
 - **Upstream PR:** None. Upstream closed PDF OCR in #3442 pending a better parser.
 - **Regression:** `uv run --frozen pytest tests/test_no_extractable_text.py tests/test_operation_status.py`
+  `tests/test_iris_parser_stub.py tests/test_llama_parse_parser.py tests/test_parser_empty_output.py`
   and the generated client discriminator tests in `hindsight-clients/{python,go}`.
 - **Rollback:** Revert the listed commit; callers fall back to treating the failure
   as transient.

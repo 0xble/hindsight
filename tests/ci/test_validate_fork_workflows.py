@@ -388,6 +388,53 @@ class ForkWorkflowPolicyTests(unittest.TestCase):
             with self.subTest(command=command):
                 self.assert_publishing_step_rejected(f"run: {command}")
 
+    def test_publishing_step_shell_templates_fail(self) -> None:
+        for shell in ("uv publish {0}", "bash -c 'uv publish' {0}", "gh release create v1 {0}"):
+            with self.subTest(shell=shell):
+                self.assert_publishing_step_rejected(f"run: echo safe\n        shell: {shell}")
+
+    def test_publishing_default_shell_templates_fail(self) -> None:
+        for scope in ("workflow", "job"):
+            for overridden in (False, True):
+                with self.subTest(scope=scope, overridden=overridden):
+                    root = self.make_root()
+                    workflow = root / ".github" / "workflows" / "fork-ci.yml"
+                    candidate = POLICY.load_workflow(workflow)
+                    job = candidate["jobs"]["test"]
+                    owner = candidate if scope == "workflow" else job
+                    owner["defaults"] = {"run": {"shell": "uv publish {0}"}}
+                    job["steps"] = [{"run": "echo safe"}]
+                    if overridden:
+                        # Safe overrides must not hide unsafe authored defaults from the policy.
+                        job["steps"][0]["shell"] = "bash"
+                    workflow.write_text(yaml.safe_dump(candidate, sort_keys=False), encoding="utf-8")
+
+                    errors = POLICY.validate(root)
+                    self.assertTrue(
+                        any(
+                            "defaults.run.shell" in error and "publishing, release, or deployment" in error
+                            for error in errors
+                        ),
+                        f"{scope} shell template was accepted: {errors}",
+                    )
+
+    def test_safe_shell_templates_are_allowed_at_every_scope(self) -> None:
+        for scope in ("step", "workflow", "job"):
+            for shell in ("bash", "pwsh", "bash --noprofile --norc -e -o pipefail {0}", "python {0}"):
+                with self.subTest(scope=scope, shell=shell):
+                    root = self.make_root()
+                    workflow = root / ".github" / "workflows" / "fork-ci.yml"
+                    candidate = POLICY.load_workflow(workflow)
+                    job = candidate["jobs"]["test"]
+                    job["steps"] = [{"run": "echo safe"}]
+                    if scope == "step":
+                        job["steps"][0]["shell"] = shell
+                    else:
+                        owner = candidate if scope == "workflow" else job
+                        owner["defaults"] = {"run": {"shell": shell, "working-directory": "."}}
+                    workflow.write_text(yaml.safe_dump(candidate, sort_keys=False), encoding="utf-8")
+                    self.assertEqual(POLICY.validate(root), [])
+
     def test_publishing_command_aliases_fail(self) -> None:
         for command in (
             "python -m twine upload dist/*",
