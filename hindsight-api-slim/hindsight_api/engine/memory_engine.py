@@ -4880,6 +4880,22 @@ class MemoryEngine(MemoryEngineInterface):
             full_error = f"{error_message}\n\nTraceback:\n{error_traceback}"
             truncated_error = full_error[:5000] if len(full_error) > 5000 else full_error
 
+            from .schema import _is_oracle  # noqa: PLC0415
+
+            metadata_merge = (
+                "COALESCE(result_metadata, '{}'::jsonb) "
+                "|| CASE WHEN operation_type = 'file_convert_retain' THEN $3::jsonb ELSE '{}'::jsonb END "
+                "|| $4::jsonb"
+            )
+            if _is_oracle():
+                # The adapter cannot rewrite CASE/chained JSONB merges. Keep the
+                # conditional clear and new metadata in the same guarded UPDATE.
+                metadata_merge = (
+                    "JSON_MERGEPATCH(CASE WHEN operation_type = 'file_convert_retain' "
+                    "THEN JSON_MERGEPATCH(COALESCE(result_metadata, TO_CLOB('{}')), $3 RETURNING CLOB) "
+                    "ELSE COALESCE(result_metadata, TO_CLOB('{}')) END, $4 RETURNING CLOB)"
+                )
+
             async with acquire_with_retry(backend) as conn:
                 async with conn.transaction():
                     # Mark this operation as failed. Terminal rows are immutable,
@@ -4888,10 +4904,7 @@ class MemoryEngine(MemoryEngineInterface):
                         f"""
                         UPDATE {fq_table("async_operations")}
                         SET status = 'failed', error_message = $2,
-                            result_metadata = COALESCE(result_metadata, '{{}}'::jsonb)
-                                || CASE WHEN operation_type = 'file_convert_retain'
-                                    THEN $3::jsonb ELSE '{{}}'::jsonb END
-                                || $4::jsonb,
+                            result_metadata = {metadata_merge},
                             updated_at = NOW(), completed_at = NOW()
                         WHERE operation_id = $1 AND status NOT IN ('completed', 'failed', 'cancelled')
                         RETURNING operation_id
@@ -21936,6 +21949,21 @@ class MemoryEngine(MemoryEngineInterface):
 
         op_uuid = uuid.UUID(operation_id)
 
+        from .schema import _is_oracle  # noqa: PLC0415
+
+        metadata_merge = (
+            "COALESCE(result_metadata, '{}'::jsonb) "
+            "|| CASE WHEN operation_type = 'file_convert_retain' THEN $3::jsonb ELSE '{}'::jsonb END"
+        )
+        if _is_oracle():
+            # Use native CLOB JSON merging rather than the adapter's unsupported
+            # CASE operand; retry remains one atomic, status-conditional write.
+            metadata_merge = (
+                "CASE WHEN operation_type = 'file_convert_retain' "
+                "THEN JSON_MERGEPATCH(COALESCE(result_metadata, TO_CLOB('{}')), $3 RETURNING CLOB) "
+                "ELSE COALESCE(result_metadata, TO_CLOB('{}')) END"
+            )
+
         async with acquire_with_retry(backend) as conn:
             # Make the retry transition a single conditional write. This
             # coordinates with retention cleanup's row locks: either retry wins
@@ -21951,9 +21979,7 @@ class MemoryEngine(MemoryEngineInterface):
                     worker_id = NULL,
                     claimed_at = NULL,
                     retry_count = 0,
-                    result_metadata = COALESCE(result_metadata, '{{}}'::jsonb)
-                        || CASE WHEN operation_type = 'file_convert_retain'
-                            THEN $3::jsonb ELSE '{{}}'::jsonb END,
+                    result_metadata = {metadata_merge},
                     updated_at = NOW()
                 WHERE operation_id = $1
                   AND bank_id = $2

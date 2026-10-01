@@ -19,8 +19,11 @@ intentional fork infrastructure policy, not upstream deployment ownership.
 - **Surfaces:** `.github/workflows/`, `scripts/ci/validate_fork_workflows.py`,
   `bin/ci`, `.githooks/pre-push`
 - **Behavior:** The exact six-workflow inventory uses only read-only permissions
-  and standard runners. Automatic CI covers active patch regressions, lint, types,
-  and package/import smoke tests; Windows and performance checks are manual-only.
+  and standard runners. Publishing, release, and deployment command checks cover
+  step `run`, step `shell`, and workflow/job `defaults.run.shell`, including
+  authored defaults overridden by a safer shell. Automatic CI covers active
+  patch regressions, lint, types, and package/import smoke tests; Windows and
+  performance checks are manual-only.
   The repository CI contract lives in `bin/ci`: `gate.yml` runs `./bin/ci gate`
   on the exact PR head and its `qualification` job is the only required status
   check on `main`; `nightly.yml` runs `./bin/ci nightly` (the full offline suite)

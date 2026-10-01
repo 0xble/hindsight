@@ -112,6 +112,11 @@ PATCH_REGRESSIONS=(
   tests/test_append_after_chunking_change.py
   tests/test_retain_append_mode.py
   tests/test_no_extractable_text.py
+  tests/test_parser_empty_output.py
+  tests/test_iris_parser_stub.py
+  tests/test_llama_parse_parser.py
+  tests/test_operation_metadata_sql.py
+  tests/test_consolidation_fold_fallback.py
   tests/test_openrouter_null_content.py
   tests/test_llm_trace.py
   tests/test_hierarchical_config.py

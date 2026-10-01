@@ -459,9 +459,14 @@ def _without_code(text: str) -> str:
             # it before trimming preserves an untagged fence's first body line.
             fenced_content = match.group()[3:-3]
             opening_line_end = fenced_content.find("\n")
-            # Without an opening-line terminator there is no distinct info
-            # token; preserve the entire fence content for normal classification.
-            body = fenced_content[opening_line_end + 1 :] if opening_line_end >= 0 else fenced_content
+            # Strip only an empty opening line or a syntactic language tag.
+            # A newline alone does not make preceding natural-language prose
+            # an info string; dropping it would bypass generated-language checks.
+            opening_line = fenced_content[:opening_line_end].strip() if opening_line_end >= 0 else None
+            has_info_line = opening_line is not None and (
+                not opening_line or re.fullmatch(r"[A-Za-z][A-Za-z0-9_+-]*", opening_line) is not None
+            )
+            body = fenced_content[opening_line_end + 1 :] if has_info_line else fenced_content
         else:
             body = match.group().strip("`").strip()
         if not fenced:

@@ -349,6 +349,26 @@ def command_is_forbidden(tokens: list[str], depth: int = 0) -> bool:
     return any(script_is_forbidden(payload, depth + 1) for payload in payloads)
 
 
+def command_text_policy_errors(scope: str, value: Any) -> list[str]:
+    if isinstance(value, str):
+        try:
+            forbidden = script_is_forbidden(value)
+        except ValueError:
+            forbidden = True
+        if forbidden:
+            return [f"{scope}: publishing, release, or deployment step is forbidden"]
+    return []
+
+
+def default_shell_policy_errors(scope: str, defaults: Any) -> list[str]:
+    if not isinstance(defaults, dict):
+        return []
+    run = defaults.get("run")
+    if not isinstance(run, dict):
+        return []
+    return command_text_policy_errors(f"{scope} defaults.run.shell", run.get("shell"))
+
+
 def step_policy_errors(scope: str, step: Any) -> list[str]:
     if not isinstance(step, dict):
         return [f"{scope}: step must be a mapping"]
@@ -359,15 +379,10 @@ def step_policy_errors(scope: str, step: Any) -> list[str]:
         if uses.lower() not in ALLOWED_STEP_ACTIONS:
             return [f"{scope}: publishing, release, or deployment step {uses!r} is forbidden"]
 
-    run = step.get("run")
-    if isinstance(run, str):
-        try:
-            forbidden = script_is_forbidden(run)
-        except ValueError:
-            forbidden = True
-        if forbidden:
-            return [f"{scope}: publishing, release, or deployment step is forbidden"]
-    return []
+    # The runner executes the shell template too; inspecting only run misses publishing there.
+    return command_text_policy_errors(f"{scope} run", step.get("run")) + command_text_policy_errors(
+        f"{scope} shell", step.get("shell")
+    )
 
 
 def validate(root: Path) -> list[str]:
@@ -461,6 +476,8 @@ def validate(root: Path) -> list[str]:
         if name == "fork-policy.yml" and workflow != EXPECTED_FORK_POLICY_WORKFLOW:
             errors.append(f"{name}: trusted policy workflow must exactly match the reviewed configuration")
         errors.extend(sensitive_capability_errors(name, workflow))
+        # Check every authored default, even when a job or step overrides it.
+        errors.extend(default_shell_policy_errors(name, workflow.get("defaults")))
         workflow_permissions = workflow.get("permissions")
         if workflow_permissions != {"contents": "read"}:
             errors.append(f"{name}: top-level permissions must be exactly {{'contents': 'read'}}")
@@ -478,6 +495,7 @@ def validate(root: Path) -> list[str]:
                     errors.append(f"{name} job {job_name!r}: reusable workflow call is forbidden")
                     continue
                 errors.extend(permission_errors(f"{name} job {job_name!r}", job.get("permissions")))
+                errors.extend(default_shell_policy_errors(f"{name} job {job_name!r}", job.get("defaults")))
                 runner = job.get("runs-on")
                 if runner not in STANDARD_RUNNERS:
                     errors.append(f"{name} job {job_name!r}: nonstandard runner {runner!r}")

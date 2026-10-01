@@ -49,6 +49,11 @@ use the configurable policy below without destructive changes to source facts.
   before any batch write. Recognizable fenced or inline code and
   source-evidenced quotations stay exempt. `tests/LANGUAGE_PREVENTION.md` holds
   the full contract and the rollout and recovery procedure.
+- **Fence provenance:** Fork commit `7a970264dab927b53df9e2faa3efe0f07cd28dc9`
+  still dropped any newline-terminated opening text, even prose. Strip an opening
+  line only when empty or a syntactic language tag; retain prose before the first
+  newline for classification, including when followed by genuine code. This is
+  fork-owned and covered by `tests/test_language_code_spans.py`.
 - **Enforcement gate:** prevention is only in effect with
   `HINDSIGHT_API_LLM_LANGUAGE_INTEGRITY=reject` and `HINDSIGHT_API_LLM_OUTPUT_LANGUAGE`
   unset. The shipped default stays `observe`, which records verdicts and accepts
