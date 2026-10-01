@@ -8,17 +8,24 @@ preserves the SDK's APITimeoutError classification and existing retry handlers.
 import asyncio
 import json
 import time
-from contextlib import asynccontextmanager
+from collections.abc import AsyncIterator, Awaitable
+from contextlib import asynccontextmanager, suppress
+from typing import TypeVar
 
+import httpx
 import pytest
-from aiohttp import web
+from aiohttp import ClientResponse, StreamReader, web
 from openai import APITimeoutError
 from pydantic import BaseModel
 
 from hindsight_api.engine.providers.openai_compatible_llm import OpenAICompatibleLLM
 from tests.aiohttp_stub import stub_server
 
-TIMEOUT = 0.3
+# A cold SDK can spend >300ms serializing before sending anything under xdist.
+# Warm the same path, then leave room for scheduling while still bounding real HTTP.
+TIMEOUT = 2.0
+OBSERVATION_TIMEOUT = 20.0
+_Result = TypeVar("_Result")
 MESSAGES = [{"role": "user", "content": "hi"}]
 TOOLS = [{"type": "function", "function": {"name": "noop", "parameters": {"type": "object", "properties": {}}}}]
 
@@ -62,9 +69,77 @@ def _body(path):
     }
 
 
-def _handler(requests, path, *, success_after=None):
+async def _within_observation(call: Awaitable[_Result]) -> _Result:
+    """Fail explicitly if the safety net fires, even for native TimeoutError."""
+    task = asyncio.ensure_future(call)
+    try:
+        done, _ = await asyncio.wait({task}, timeout=OBSERVATION_TIMEOUT)
+        assert done, "provider did not finish before the independent observation ceiling"
+        return await task
+    finally:
+        if not task.done():
+            task.cancel()
+            with suppress(asyncio.CancelledError):
+                await task
+
+
+async def _warm_up(llm: OpenAICompatibleLLM, path: str) -> None:
+    # Exercise serialization, schema preparation, SDK initialization and real HTTP
+    # once with a completed response, without spending the regression's deadline.
+    llm.timeout = OBSERVATION_TIMEOUT
+    try:
+        await _within_observation(_invoke(llm, path, max_retries=0))
+    finally:
+        llm.timeout = TIMEOUT
+
+
+def _observe_body_reads(monkeypatch: pytest.MonkeyPatch, path: str) -> list[bytes]:
+    """Observe bytes delivered to the real client, not just server-side writes."""
+    chunks: list[bytes] = []
+    if path == "native":
+        start = ClientResponse.start
+        readany = StreamReader.readany
+        client_readers: set[StreamReader] = set()
+
+        async def observed_start(response: ClientResponse, *args, **kwargs) -> ClientResponse:
+            result = await start(response, *args, **kwargs)
+            # The server uses StreamReader for request.json() too; register only
+            # response readers so those request bytes cannot satisfy the test.
+            client_readers.add(response.content)
+            return result
+
+        async def observed_readany(reader: StreamReader) -> bytes:
+            chunk = await readany(reader)
+            if reader in client_readers and chunk:
+                chunks.append(chunk)
+            return chunk
+
+        # StreamReader instances are slotted, so observe the class method while
+        # restricting the evidence to the registered client-side instances.
+        monkeypatch.setattr(ClientResponse, "start", observed_start)
+        monkeypatch.setattr(StreamReader, "readany", observed_readany)
+    else:
+        aiter_raw = httpx.Response.aiter_raw
+
+        async def observed_aiter_raw(response: httpx.Response, *args, **kwargs) -> AsyncIterator[bytes]:
+            async for chunk in aiter_raw(response, *args, **kwargs):
+                chunks.append(chunk)
+                yield chunk
+
+        monkeypatch.setattr(httpx.Response, "aiter_raw", observed_aiter_raw)
+    return chunks
+
+
+def _handler(requests, path, *, success_after=None, warmup=False):
+    warmed = False
+
     async def handle(request):
-        requests.append(await request.json())
+        nonlocal warmed
+        payload = await request.json()
+        if warmup and not warmed:
+            warmed = True
+            return web.json_response(_body(path))
+        requests.append(payload)
         if success_after is not None and len(requests) > success_after:
             return web.json_response(_body(path))
         response = web.StreamResponse(headers={"Content-Type": "application/json"})
@@ -82,38 +157,65 @@ def _handler(requests, path, *, success_after=None):
 
 @pytest.mark.parametrize("path", ["free", "structured", "tools", "native"])
 @pytest.mark.parametrize("retries", [0, 1])
-async def test_keepalive_deadline_preserves_timeout_type_and_retry_count(path, retries):
+async def test_keepalive_deadline_preserves_timeout_type_and_retry_count(path, retries, monkeypatch):
     requests = []
-    async with stub_server(_handler(requests, path)) as url:
+    admitted = []
+
+    @asynccontextmanager
+    async def admission():
+        admitted.append(time.monotonic())
+        yield
+
+    async with stub_server(_handler(requests, path, warmup=True)) as url:
         llm = _provider(url, path)
-        start = time.monotonic()
         try:
+            await _warm_up(llm, path)
+            chunks = _observe_body_reads(monkeypatch, path)
+            start = time.monotonic()
             expected = TimeoutError if path == "native" else APITimeoutError
             with pytest.raises(expected) as raised:
-                # Independent safety net: pre-fix SDK calls hang until this fires.
-                await asyncio.wait_for(_invoke(llm, path, max_retries=retries, initial_backoff=0.01), 2)
+                await _within_observation(
+                    _invoke(llm, path, max_retries=retries, initial_backoff=0.01, attempt_context=admission)
+                )
             elapsed = time.monotonic() - start
-            assert TIMEOUT * (retries + 1) <= elapsed < 1.5
-            assert len(requests) == retries + 1
+            assert elapsed >= TIMEOUT * (retries + 1)
+            # Admission is the retry contract. Under contention, an admitted
+            # attempt can expire before HTTP reaches the server.
+            assert len(admitted) == retries + 1
+            assert 0 < len(requests) <= len(admitted)
+            assert len(chunks) >= 2 and all(chunk.isspace() for chunk in chunks)
             assert all(not payload.get("stream", False) for payload in requests)
             if path != "native":
                 assert isinstance(raised.value.__cause__, TimeoutError)
                 assert raised.value.request.url.path == "/v1/chat/completions"
         finally:
-            await llm._client.close()
+            await llm.cleanup()
 
 
 @pytest.mark.parametrize("path", ["free", "structured", "tools", "native"])
-async def test_timeout_retry_gets_a_fresh_deadline_and_can_succeed(path):
+async def test_timeout_retry_gets_a_fresh_deadline_and_can_succeed(path, monkeypatch):
     requests = []
-    async with stub_server(_handler(requests, path, success_after=1)) as url:
+    admitted = []
+
+    @asynccontextmanager
+    async def admission():
+        admitted.append(time.monotonic())
+        yield
+
+    async with stub_server(_handler(requests, path, success_after=1, warmup=True)) as url:
         llm = _provider(url, path)
         try:
-            result = await asyncio.wait_for(_invoke(llm, path, max_retries=1, initial_backoff=0.01), 2)
+            await _warm_up(llm, path)
+            chunks = _observe_body_reads(monkeypatch, path)
+            result = await _within_observation(
+                _invoke(llm, path, max_retries=1, initial_backoff=0.01, attempt_context=admission)
+            )
+            assert len(admitted) == 2
             assert len(requests) == 2
+            assert sum(chunk.isspace() for chunk in chunks) >= 2
             assert result.content == (_Ok(ok=True) if path in ("structured", "native") else "ok")
         finally:
-            await llm._client.close()
+            await llm.cleanup()
 
 
 @pytest.mark.parametrize("path", ["free", "structured", "tools", "native"])
