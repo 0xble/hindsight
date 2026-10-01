@@ -600,6 +600,78 @@ async def test_empty_response_classification_is_not_schema_correction(provider, 
 
 @pytest.mark.asyncio
 @pytest.mark.memory_backend_incompatible
+@pytest.mark.parametrize("later_failure", ["budget", "invalid", "stale"])
+async def test_job_counts_committed_scope_actions_when_a_later_scope_fails(
+    memory, request_context, provider, later_failure
+):
+    import uuid
+
+    from hindsight_api.config import _get_raw_config
+    from hindsight_api.engine.response_models import RecallResult
+
+    bank_id = f"schema-partial-count-{uuid.uuid4().hex[:8]}"
+    await memory.ensure_bank_profile(bank_id=bank_id, request_context=request_context)
+    original = memory._consolidation_llm_config
+    try:
+        fact_id = uuid.uuid4()
+        async with memory._pool.acquire() as conn:
+            await conn.execute(
+                "INSERT INTO memory_units (id, bank_id, text, fact_type, tags, observation_scopes, created_at) "
+                "VALUES ($1, $2, $3, 'experience', $4, $5::jsonb, now())",
+                fact_id,
+                bank_id,
+                "Synthetic fact",
+                ["scope:a", "scope:b"],
+                json.dumps("per_tag"),
+            )
+        valid = {"creates": [{"text": "Synthetic scoped observation", "source_fact_ids": [str(fact_id)]}]}
+        install(provider, [MISSING, valid, MISSING])
+        raw = _get_raw_config()
+        job_config = type(raw)(
+            **{
+                **{name: getattr(raw, name) for name in raw.__dataclass_fields__},
+                "enable_observations": True,
+                "consolidation_llm_batch_size": 1,
+                # One correction credit: scope a commits, scope b cannot correct.
+                "consolidation_max_memories_per_round": 100,
+                "llm_language_integrity": "off",
+                "consolidation_dedup_threshold": 1.0,
+            }
+        )
+        memory._consolidation_llm_config = SimpleNamespace(with_config=lambda config, **kwargs: provider)
+        process_batch = c._process_memory_batch
+
+        async def fail_later_scope(**kwargs):
+            if kwargs["obs_tags_override"] == ["scope:b"]:
+                if later_failure == "invalid":
+                    raise c._InvalidConsolidationReferences("synthetic invalid later scope")
+                if later_failure == "stale":
+                    raise c._StaleConsolidationReference("synthetic stale later scope")
+            return await process_batch(**kwargs)
+
+        with (
+            patch.object(memory._config_resolver, "resolve_full_config", return_value=job_config),
+            patch.object(c, "_find_related_observations", new=AsyncMock(return_value=RecallResult(results=[]))),
+            patch.object(c, "_process_memory_batch", new=fail_later_scope),
+            patch.object(memory, "submit_async_consolidation"),
+        ):
+            result = await c.run_consolidation_job(memory, bank_id, request_context)
+        observations = await memory.list_memory_units(
+            bank_id, fact_type="observation", limit=100, request_context=request_context
+        )
+        assert observations["total"] == result["observations_created"] == result["actions_executed"] == 1
+        assert observations["items"][0]["tags"] == ["scope:a"]
+        assert result["memories_processed"] == result["memories_failed"] == (0 if later_failure == "stale" else 1)
+        if later_failure == "budget":
+            assert result["schema_correction_attempts"] == 1
+            assert result["schema_correction_budget_exhausted"] > 0
+    finally:
+        memory._consolidation_llm_config = original
+        await memory.delete_bank(bank_id, request_context=request_context)
+
+
+@pytest.mark.asyncio
+@pytest.mark.memory_backend_incompatible
 async def test_corrected_committed_scope_is_not_replayed_on_later_apply_failure(memory, request_context, provider):
     import uuid
 

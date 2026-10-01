@@ -2459,6 +2459,7 @@ async def _run_consolidation_job(
             # down to batch_size=1. Only if a single-memory batch still fails is
             # the memory marked with consolidation_failed_at.
             all_results: list[dict[str, Any]] = []
+            committed_scope_results: list[dict[str, Any]] = []
             all_deleted = 0
             succeeded_ids: list[Any] = []
             failed_ids: list[Any] = []
@@ -2501,9 +2502,9 @@ async def _run_consolidation_job(
                 sub_deleted: int = 0
                 sub_llm_failed = False
                 sub_ids = [m["id"] for m in sub_batch]
+                sub_results: list[dict[str, Any]] = []
                 try:
                     if obs_tags_list:
-                        sub_results: list[dict[str, Any]] = []
                         pending_pass_ids: set[str] = set()
                         for pass_index, obs_tags in enumerate(obs_tags_list):
                             # A memory consolidated at several tag scopes gets one LLM call per
@@ -2527,8 +2528,8 @@ async def _run_consolidation_job(
                             )
                             if pass_failed:
                                 # Stop the remaining scopes: the sub-batch is going to be bisected
-                                # and re-run in full, and every write this pass made is already
-                                # committed. Running the rest would only add writes to discard.
+                                # and re-run in full. Earlier scope writes already committed
+                                # and are retained in the action accounting below.
                                 sub_llm_failed = True
                                 break
                             # An earlier scope whose action was dropped remains pending even
@@ -2562,6 +2563,7 @@ async def _run_consolidation_job(
                         )
 
                 except _StaleConsolidationReference:
+                    committed_scope_results.extend(sub_results)
                     # No stamp or failure marker: leave these facts for a later job.
                     # This batch's ordered apply turn still advances in the dispatch
                     # finally block, allowing the remaining batches to drain.
@@ -2580,8 +2582,12 @@ async def _run_consolidation_job(
                     # Detector/infrastructure failures still propagate without holding
                     # an entire bank's healthy facts.
                     sub_llm_failed = True
-                    sub_results = []
                 all_deleted += sub_deleted
+                if obs_tags_list and sub_llm_failed:
+                    # Earlier scope passes committed independently. A later
+                    # failure retries the facts but must not erase their writes
+                    # from this job's action counters.
+                    committed_scope_results.extend(sub_results)
 
                 if sub_llm_failed and len(sub_batch) > 1:
                     mid = len(sub_batch) // 2
@@ -2611,6 +2617,8 @@ async def _run_consolidation_job(
                             obs_tags_list and mid in pending_pass_ids
                         ):
                             uncovered.append(memory)
+                            if obs_tags_list:
+                                committed_scope_results.append(result)
                         else:
                             succeeded_ids.append(memory["id"])
                             all_results.append(result)
@@ -2676,11 +2684,14 @@ async def _run_consolidation_job(
                 "memories_deferred": 0,
                 "memories_failed": 0,
             }
-            for result in all_results:
+            for result_index, result in enumerate([*committed_scope_results, *all_results]):
+                terminal_result = result_index >= len(committed_scope_results)
                 if result.get("reason") == "invalid_references_pending":
-                    local_stats["memories_deferred"] += 1
+                    if terminal_result:
+                        local_stats["memories_deferred"] += 1
                     continue
-                local_stats["memories_processed"] += 1
+                if terminal_result:
+                    local_stats["memories_processed"] += 1
                 action = result.get("action")
                 if action == "created":
                     local_stats["observations_created"] += 1
@@ -2697,7 +2708,8 @@ async def _run_consolidation_job(
                     local_stats["observations_merged"] += result.get("merged", 0)
                     local_stats["actions_executed"] += result.get("total_actions", 0)
                 elif action == "skipped":
-                    local_stats["skipped"] += 1
+                    if terminal_result:
+                        local_stats["skipped"] += 1
                 elif action == "failed":
                     local_stats["memories_failed"] += 1
 

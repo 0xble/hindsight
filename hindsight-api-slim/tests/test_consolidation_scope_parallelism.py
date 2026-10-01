@@ -1331,6 +1331,7 @@ async def test_lane_limit_is_independent_of_global_limit(memory: MemoryEngine, r
     in_flight = {"a": 0, "b": 0}
     peak = {"a": 0, "b": 0}
     global_peak = 0
+    first_wave = asyncio.Event()
     original = consolidator_mod._consolidate_batch_with_llm
 
     async def tracked(*args, **kwargs):
@@ -1340,7 +1341,11 @@ async def test_lane_limit_is_independent_of_global_limit(memory: MemoryEngine, r
         peak[lane] = max(peak[lane], in_flight[lane])
         global_peak = max(global_peak, sum(in_flight.values()))
         try:
-            await asyncio.sleep(0.08)
+            # Synchronize the first calls instead of assuming database reads
+            # finish within an 80ms overlap window on a busy CI worker.
+            if all(value >= 2 for value in peak.values()):
+                first_wave.set()
+            await asyncio.wait_for(first_wave.wait(), timeout=30)
             return await original(*args, **kwargs)
         finally:
             in_flight[lane] -= 1

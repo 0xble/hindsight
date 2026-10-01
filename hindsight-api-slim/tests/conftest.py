@@ -290,14 +290,19 @@ def pg0_db_url(db_url, tmp_path_factory, worker_id) -> Iterator[str]:
 
     try:
         with filelock.FileLock(str(lock_file)):
-            if url_file.exists():
+            if url_file.exists() and not owns_instance:
                 url = url_file.read_text().strip()
             else:
-                loop = asyncio.new_event_loop()
-                try:
-                    url = loop.run_until_complete(pg0.ensure_running())
-                finally:
-                    loop.close()
+                # pg0 selects a free port before PostgreSQL starts listening.
+                # Serialize only startup across workers and pytest sessions,
+                # otherwise two fresh instances can select the same port.
+                startup_lock = root_tmp_dir.parent / "hindsight_pg0_start.lock"
+                with filelock.FileLock(str(startup_lock)):
+                    loop = asyncio.new_event_loop()
+                    try:
+                        url = loop.run_until_complete(pg0.ensure_running())
+                    finally:
+                        loop.close()
                 url_file.write_text(url)
 
         run_migrations(url)
@@ -310,15 +315,7 @@ def pg0_db_url(db_url, tmp_path_factory, worker_id) -> Iterator[str]:
             if not cleanup_done.exists():
                 _cleanup_stale_test_data(url)
                 cleanup_done.write_text("done")
-        with pytest.MonkeyPatch.context() as session_env:
-            if owns_instance:
-                # Engines created through config defaults must use the same
-                # worker database as engines receiving this fixture's URL.
-                from hindsight_api.config import clear_config_cache
-
-                session_env.setenv("HINDSIGHT_API_DATABASE_URL", url)
-                clear_config_cache()
-            yield url
+        yield url
     finally:
         if owns_instance:
             loop = asyncio.new_event_loop()
