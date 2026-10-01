@@ -35,8 +35,8 @@ from hindsight_api.config import _get_raw_config
 from hindsight_api.engine.consolidation.consolidator import (
     _ConsolidationBatchResponse,
     _CreateAction,
-    _UpdateAction,
     _effective_lane_parallelism,
+    _UpdateAction,
     run_consolidation_job,
 )
 from hindsight_api.engine.memory_engine import MemoryEngine
@@ -586,7 +586,7 @@ async def test_overlapping_scopes_serialise_under_parallelism(memory: MemoryEngi
     tracker_lock = asyncio.Lock()
     orig_find = consolidator_mod._find_related_observations
 
-    async def tracked_find(*, memory_engine, bank_id, query, request_context, tags=None):
+    async def tracked_find(*, memory_engine, bank_id, query, request_context, tags=None, config=None):
         scope = frozenset(tags or [])
         async with tracker_lock:
             in_flight[scope] += 1
@@ -601,6 +601,7 @@ async def test_overlapping_scopes_serialise_under_parallelism(memory: MemoryEngi
                 query=query,
                 request_context=request_context,
                 tags=tags,
+                config=config,
             )
         finally:
             async with tracker_lock:
@@ -781,20 +782,47 @@ async def test_same_lane_parallelizes_llm_but_serializes_apply(memory: MemoryEng
     apply_in_flight = 0
     max_apply_in_flight = 0
     tracker_lock = asyncio.Lock()
+    all_llm_entered = asyncio.Event()
+    all_apply_ready = asyncio.Event()
+    apply_ready: set[str] = set()
+    apply_order: list[str] = []
     original_llm = consolidator_mod._consolidate_batch_with_llm
     original_apply = consolidator_mod._apply_create_action
+    original_process = consolidator_mod._process_memory_batch
 
-    async def delayed_llm(*args, **kwargs):
+    async def synchronized_llm(*args, **kwargs):
         nonlocal llm_in_flight, max_llm_in_flight
         async with tracker_lock:
             llm_in_flight += 1
             max_llm_in_flight = max(max_llm_in_flight, llm_in_flight)
+            if llm_in_flight == 4:
+                all_llm_entered.set()
         try:
-            await asyncio.sleep(0.05)
+            # Hold actual LLM calls until all four preparations reach this
+            # boundary. Database/embedding latency cannot shorten the overlap.
+            await asyncio.wait_for(all_llm_entered.wait(), timeout=10)
             return await original_llm(*args, **kwargs)
         finally:
             async with tracker_lock:
                 llm_in_flight -= 1
+
+    async def tracked_process(*args, **kwargs):
+        if kwargs["apply_turn"] is None:
+            # A regression to the serial path must fail the LLM rendezvous,
+            # rather than failing solely because instrumentation requires a lane.
+            return await original_process(*args, **kwargs)
+        turn, successor = kwargs["apply_turn"]
+        text = kwargs["memories"][0]["text"]
+
+        class TrackedTurn:
+            async def wait(self):
+                apply_ready.add(text)
+                if len(apply_ready) == 4:
+                    all_apply_ready.set()
+                await turn.wait()
+
+        kwargs["apply_turn"] = (TrackedTurn(), successor)
+        return await original_process(*args, **kwargs)
 
     async def tracked_apply(*args, **kwargs):
         nonlocal apply_in_flight, max_apply_in_flight
@@ -802,7 +830,11 @@ async def test_same_lane_parallelizes_llm_but_serializes_apply(memory: MemoryEng
             apply_in_flight += 1
             max_apply_in_flight = max(max_apply_in_flight, apply_in_flight)
         try:
-            await asyncio.sleep(0.01)
+            # Keep the first transaction open until every contender reaches its
+            # apply turn. A missing serialization fence now overlaps or reorders
+            # these real writes instead of depending on a short sleep.
+            await asyncio.wait_for(all_apply_ready.wait(), timeout=10)
+            apply_order.append(kwargs["prepared"].source_mems[0]["text"])
             return await original_apply(*args, **kwargs)
         finally:
             async with tracker_lock:
@@ -825,17 +857,20 @@ async def test_same_lane_parallelizes_llm_but_serializes_apply(memory: MemoryEng
                     consolidation_dedup_threshold=1.0,
                 ),
                 patch.object(memory, "submit_async_consolidation"),
-                patch.object(consolidator_mod, "_consolidate_batch_with_llm", delayed_llm),
+                patch.object(consolidator_mod, "_consolidate_batch_with_llm", synchronized_llm),
+                patch.object(consolidator_mod, "_process_memory_batch", tracked_process),
                 patch.object(consolidator_mod, "_apply_create_action", tracked_apply),
             ):
-                result = await run_consolidation_job(
-                    memory_engine=memory, bank_id=bank_id, request_context=request_context
+                result = await asyncio.wait_for(
+                    run_consolidation_job(memory_engine=memory, bank_id=bank_id, request_context=request_context),
+                    timeout=30,
                 )
         finally:
             memory._consolidation_llm_config = original_config_llm
         assert result["status"] == "completed"
-        assert max_llm_in_flight > 1
+        assert max_llm_in_flight == 4
         assert max_apply_in_flight == 1
+        assert apply_order == [f"Shared fact {index}" for index in range(4)]
     finally:
         await memory.delete_bank(bank_id, request_context=request_context)
 
@@ -994,7 +1029,7 @@ async def test_same_lane_stale_update_retries_fresh_recall(memory: MemoryEngine,
         recall_count = 0
         initial_recalls_ready = asyncio.Event()
 
-        async def fake_find(*, memory_engine, bank_id, query, request_context, tags=None):
+        async def fake_find(*, memory_engine, bank_id, query, request_context, tags=None, config=None):
             nonlocal recall_count
             recall_count += 1
             if recall_count == 2:
@@ -1257,7 +1292,7 @@ async def test_lane_partial_invalid_reply_and_stale_sibling_retry(memory: Memory
         initial_recalls = 0
         both_recalled = asyncio.Event()
 
-        async def fake_find(*, memory_engine, bank_id, query, request_context, tags=None):
+        async def fake_find(*, memory_engine, bank_id, query, request_context, tags=None, config=None):
             nonlocal initial_recalls
             initial_recalls += 1
             if initial_recalls == 2:
@@ -1330,6 +1365,7 @@ async def test_lane_limit_is_independent_of_global_limit(memory: MemoryEngine, r
     in_flight = {"a": 0, "b": 0}
     peak = {"a": 0, "b": 0}
     global_peak = 0
+    first_wave = asyncio.Event()
     original = consolidator_mod._consolidate_batch_with_llm
 
     async def tracked(*args, **kwargs):
@@ -1339,7 +1375,11 @@ async def test_lane_limit_is_independent_of_global_limit(memory: MemoryEngine, r
         peak[lane] = max(peak[lane], in_flight[lane])
         global_peak = max(global_peak, sum(in_flight.values()))
         try:
-            await asyncio.sleep(0.08)
+            # Synchronize the first calls instead of assuming database reads
+            # finish within an 80ms overlap window on a busy CI worker.
+            if all(value >= 2 for value in peak.values()):
+                first_wave.set()
+            await asyncio.wait_for(first_wave.wait(), timeout=30)
             return await original(*args, **kwargs)
         finally:
             in_flight[lane] -= 1
@@ -1536,8 +1576,37 @@ async def test_per_batch_log_line_attributes_only_own_work(memory: MemoryEngine,
 
 @pytest.mark.asyncio
 @pytest.mark.memory_backend_incompatible
-async def test_same_lane_apply_rechecks_create_dedup(memory: MemoryEngine, request_context):
-    """Concurrent CREATE preparation must not duplicate an identical committed observation."""
+@pytest.mark.parametrize("lane_parallelism,preparation", [(2, "overlapped"), (2, "committed"), (1, "committed")])
+async def test_same_lane_apply_rechecks_create_dedup(
+    memory: MemoryEngine, request_context, lane_parallelism, preparation
+):
+    """Both current and prompt-shown twins preserve the two valid source facts."""
+    from hindsight_api.engine.consolidation import consolidator as mod
+
+    first_committed = asyncio.Event()
+    both_recalled = asyncio.Event()
+    recalls = 0
+    original_find = mod._find_related_observations
+    original_process = mod._process_memory_batch
+
+    async def ordered_find(**kwargs):
+        nonlocal recalls
+        if preparation == "committed" and kwargs["query"] == "Fact two":
+            await asyncio.wait_for(first_committed.wait(), 10)
+        result = await original_find(**kwargs)
+        recalls += 1
+        if preparation == "overlapped":
+            if recalls == 2:
+                both_recalled.set()
+            await asyncio.wait_for(both_recalled.wait(), 10)
+        return result
+
+    async def tracked_process(*args, **kwargs):
+        result = await original_process(*args, **kwargs)
+        if kwargs["memories"][0]["text"] == "Fact one":
+            first_committed.set()
+        return result
+
     bank_id = f"test-lane-create-dedup-{uuid.uuid4().hex[:8]}"
     await memory.ensure_bank_profile(bank_id=bank_id, request_context=request_context)
     try:
@@ -1568,14 +1637,16 @@ async def test_same_lane_apply_rechecks_create_dedup(memory: MemoryEngine, reque
                 _override_config(
                     memory,
                     consolidation_llm_parallelism=2,
-                    consolidation_lane_llm_parallelism=2,
+                    consolidation_lane_llm_parallelism=lane_parallelism,
                     consolidation_llm_batch_size=1,
                     consolidation_dedup_threshold=0.97,
                 ),
                 patch.object(memory, "submit_async_consolidation"),
+                patch.object(mod, "_find_related_observations", ordered_find),
+                patch.object(mod, "_process_memory_batch", tracked_process),
             ):
-                result = await run_consolidation_job(
-                    memory_engine=memory, bank_id=bank_id, request_context=request_context
+                result = await asyncio.wait_for(
+                    run_consolidation_job(memory_engine=memory, bank_id=bank_id, request_context=request_context), 30
                 )
         finally:
             memory._consolidation_llm_config = original_llm
@@ -1588,6 +1659,267 @@ async def test_same_lane_apply_rechecks_create_dedup(memory: MemoryEngine, reque
             )
         assert len(observations) == 1
         assert set(observations[0]["source_memory_ids"]) == set(facts)
+    finally:
+        await memory.delete_bank(bank_id, request_context=request_context)
+
+
+@pytest.mark.asyncio
+@pytest.mark.memory_backend_incompatible
+@pytest.mark.parametrize(
+    "lane,change",
+    [
+        (lane, change)
+        for change in (
+            "delete",
+            "rewrite",
+            "source-edit",
+            "reply-update",
+            "reply-fold",
+            "reply-text",
+            "reply-fold-chain",
+            "reply-fold-miss",
+            "reply-fold-retry",
+        )
+        for lane in (False, True)
+    ]
+    + [(False, "store-delete"), (False, "store-rewrite")],
+)
+async def test_shown_create_fold_preserves_current_state(memory: MemoryEngine, request_context, lane, change):
+    """A shown twin is a guarded fold target, never unconditional durable coverage."""
+    from hindsight_api.engine.consolidation import consolidator as mod
+
+    bank_id = f"test-shown-fold-{uuid.uuid4().hex[:8]}"
+    twin_id = uuid.uuid4()
+    survivor_id = uuid.uuid4()
+    final_id = uuid.uuid4()
+    semantic = change.startswith("reply-fold")
+    separate_sources = semantic or change == "reply-text"
+    store_owned = change.startswith("store-")
+    await memory.ensure_bank_profile(bank_id=bank_id, request_context=request_context)
+    try:
+        async with memory._pool.acquire() as conn:
+            old_id = await _insert_memory(conn, bank_id, "Original source", [], "shared")
+            new_id = await _insert_memory(conn, bank_id, "New source", [], "shared")
+            create_id = await _insert_memory(conn, bank_id, "Separate CREATE source", [], "shared")
+            survivor_source_id = await _insert_memory(conn, bank_id, "Survivor source", [], "shared")
+            await conn.execute("UPDATE memory_units SET updated_at=now() WHERE id=$1", new_id)
+            await conn.execute(
+                "INSERT INTO memory_units (id,bank_id,text,fact_type,tags,source_memory_ids,created_at) "
+                "VALUES ($1,$2,'Original observation','observation','{}',$3,now())",
+                twin_id,
+                bank_id,
+                [str(old_id)],
+            )
+            new_fact = dict(await conn.fetchrow("SELECT * FROM memory_units WHERE id=$1", new_id))
+            create_fact = dict(await conn.fetchrow("SELECT * FROM memory_units WHERE id=$1", create_id))
+            if semantic:
+                embedding = await mod._embed_observation_text(memory, "Updated observation", None)
+                await conn.execute(
+                    "INSERT INTO memory_units (id,bank_id,text,fact_type,tags,source_memory_ids,embedding,created_at) "
+                    "VALUES ($1,$2,'Merge survivor','observation','{}',$3,$4::vector,now())",
+                    survivor_id,
+                    bank_id,
+                    [str(survivor_source_id)],
+                    embedding,
+                )
+            if change == "reply-fold-chain":
+                embedding = await mod._embed_observation_text(memory, "Chain update", None)
+                await conn.execute(
+                    "INSERT INTO memory_units (id,bank_id,text,fact_type,tags,source_memory_ids,embedding,created_at) "
+                    "VALUES ($1,$2,'Final merge survivor','observation','{}',$3,$4::vector,now())",
+                    final_id,
+                    bank_id,
+                    [str(survivor_source_id)],
+                    embedding,
+                )
+        shown = MemoryFact.model_construct(
+            id=str(twin_id),
+            text="Original observation",
+            fact_type="observation",
+            tags=[],
+            source_fact_ids=[str(old_id)],
+        )
+        wrapper, mock = _mock_llm_one_obs_per_fact()
+        store = mod.get_memories()
+        if store_owned:
+            from tests.test_memories_extension import InMemoryMemories, _stored
+
+            store = InMemoryMemories({})
+            store.rows[str(old_id)] = _stored(str(old_id), "Original source", "experience")
+            store.rows[str(new_id)] = _stored(str(new_id), "New source", "experience")
+            store.rows[str(twin_id)] = _stored(
+                str(twin_id), "Original observation", "observation", source_memory_ids=[str(old_id)]
+            )
+        shown_observations = [shown]
+        if change == "reply-fold-chain":
+            shown_observations.append(
+                MemoryFact.model_construct(
+                    id=str(survivor_id),
+                    text="Merge survivor",
+                    fact_type="observation",
+                    tags=[],
+                    source_fact_ids=[str(survivor_source_id)],
+                )
+            )
+
+        def response(messages, scope):
+            if scope == "consolidation_dedup":
+                prompt = "\n".join(m.get("content", "") for m in messages)
+                return mod._DedupDecision(
+                    action="merge",
+                    text="Final merged observation" if "Chain update" in prompt else "Merged observation",
+                )
+            return _ConsolidationBatchResponse(
+                creates=[
+                    _CreateAction(
+                        text="Updated observation" if change == "reply-text" else "Original observation",
+                        source_fact_ids=[str(create_id if separate_sources else new_id)],
+                    )
+                ],
+                updates=[
+                    _UpdateAction(
+                        observation_id=str(twin_id), text="Updated observation", source_fact_ids=[str(new_id)]
+                    )
+                ]
+                + (
+                    [_UpdateAction(observation_id=str(survivor_id), text="Chain update", source_fact_ids=[str(new_id)])]
+                    if change == "reply-fold-chain"
+                    else []
+                )
+                if change.startswith("reply-")
+                else [],
+            )
+
+        mock.set_response_callback(response)
+        original_llm = mod._consolidate_batch_with_llm
+
+        async def mutate_after_reply(*args, **kwargs):
+            result = await original_llm(*args, **kwargs)
+            if store_owned:
+                if change == "store-delete":
+                    del store.rows[str(twin_id)]
+                else:
+                    store.rows[str(twin_id)].text = "Rewritten observation"
+                return result
+            async with memory._pool.acquire() as conn:
+                if change == "delete":
+                    await conn.execute("DELETE FROM memory_units WHERE id=$1", twin_id)
+                elif change == "rewrite":
+                    await conn.execute("UPDATE memory_units SET text='Rewritten observation' WHERE id=$1", twin_id)
+                elif change == "source-edit":
+                    await conn.execute(
+                        "UPDATE memory_units SET text='Edited source', updated_at=now() WHERE id=$1", new_id
+                    )
+            return result
+
+        original_adjudicate = mod._dedup_adjudicate
+
+        async def adjudicate_then_rewrite(*args, **kwargs):
+            outcome = await original_adjudicate(*args, **kwargs)
+            if change == "reply-fold-miss":
+                async with memory._pool.acquire() as conn:
+                    await conn.execute("UPDATE memory_units SET text='Rewritten survivor' WHERE id=$1", survivor_id)
+            return outcome
+
+        original_stamp = store.mark_consolidated
+        stamp_attempts = 0
+
+        async def stamp_with_retry(**kwargs):
+            nonlocal stamp_attempts
+            stamp_attempts += 1
+            if change == "reply-fold-retry" and stamp_attempts == 1:
+                # Real transaction rollback after the CREATE fold selected its
+                # survivor, followed by the production apply retry loop.
+                import asyncpg
+
+                raise asyncpg.DeadlockDetectedError("controlled post-fold rollback")
+            return await original_stamp(**kwargs)
+
+        ready = asyncio.Event()
+        ready.set()
+        with (
+            patch.object(mod, "get_memories", return_value=store),
+            patch.object(memory, "_consolidation_llm_config", wrapper),
+            patch.object(
+                mod, "_find_related_observations", return_value=RecallResult.model_construct(results=shown_observations)
+            ),
+            patch.object(mod, "_consolidate_batch_with_llm", mutate_after_reply),
+            patch.object(mod, "_dedup_adjudicate", adjudicate_then_rewrite),
+            patch.object(store, "mark_consolidated", stamp_with_retry),
+        ):
+            await mod._process_memory_batch(
+                pool=memory._backend,
+                memory_engine=memory,
+                llm_config=wrapper.with_config(),
+                bank_id=bank_id,
+                memories=[new_fact, create_fact] if separate_sources else [new_fact],
+                request_context=request_context,
+                config=type(_get_raw_config())(
+                    **{
+                        **{f: getattr(_get_raw_config(), f) for f in _get_raw_config().__dataclass_fields__},
+                        "consolidation_dedup_threshold": 0.9999 if semantic else 1.0,
+                        "llm_language_integrity": "off",
+                    }
+                ),
+                mark_consolidated_ids=[new_id, create_id] if separate_sources else [new_id],
+                obs_tags_override=[],
+                apply_turn=(ready, asyncio.Event()) if lane else None,
+            )
+        async with memory._pool.acquire() as conn:
+            rows = await conn.fetch(
+                "SELECT id,text,source_memory_ids FROM memory_units WHERE bank_id=$1 AND fact_type='observation'",
+                bank_id,
+            )
+            stamp = await conn.fetchval("SELECT consolidated_at FROM memory_units WHERE id=$1", new_id)
+        if store_owned:
+            rows = [
+                {
+                    "id": uuid.UUID(row.unit_id),
+                    "text": row.text,
+                    "source_memory_ids": [uuid.UUID(s) for s in row.source_memory_ids or []],
+                }
+                for row in store.rows.values()
+                if row.fact_type == "observation"
+            ]
+            stamp = store.rows[str(new_id)].consolidated_at
+        if change == "source-edit":
+            assert [(row["id"], row["text"], row["source_memory_ids"]) for row in rows] == [
+                (twin_id, "Original observation", [old_id])
+            ]
+            assert stamp is None
+        elif change.startswith("reply-"):
+            if change == "reply-fold-miss":
+                preserved = next(row for row in rows if row["id"] == survivor_id)
+                assert preserved["text"] == "Rewritten survivor"
+                assert preserved["source_memory_ids"] == [survivor_source_id]
+                rows = [row for row in rows if row["id"] != survivor_id]
+            merged = semantic and change != "reply-fold-miss"
+            assert [(row["id"], row["text"], set(row["source_memory_ids"])) for row in rows] == [
+                (
+                    final_id if change == "reply-fold-chain" else survivor_id if merged else twin_id,
+                    "Final merged observation"
+                    if change == "reply-fold-chain"
+                    else "Merged observation"
+                    if merged
+                    else "Updated observation",
+                    {old_id, new_id}
+                    | ({create_id} if separate_sources else set())
+                    | ({survivor_source_id} if merged else set()),
+                )
+            ]
+            assert stamp is not None
+            if change == "reply-fold-retry":
+                assert stamp_attempts == 2
+        else:
+            recreated = [row for row in rows if row["text"] == "Original observation"]
+            assert len(recreated) == 1 and recreated[0]["id"] != twin_id
+            assert recreated[0]["source_memory_ids"] == [new_id]
+            assert stamp is not None
+            if change in ("rewrite", "store-rewrite"):
+                preserved = next(row for row in rows if row["id"] == twin_id)
+                assert preserved["text"] == "Rewritten observation" and preserved["source_memory_ids"] == [old_id]
+            else:
+                assert len(rows) == 1
     finally:
         await memory.delete_bank(bank_id, request_context=request_context)
 
@@ -1856,23 +2188,27 @@ async def test_disjoint_scopes_run_concurrently(memory: MemoryEngine, request_co
     distinct_concurrent_scopes_seen = 0
     in_flight_scopes: set[frozenset[str]] = set()
     sample_lock = asyncio.Lock()
+    all_scopes_entered = asyncio.Event()
     orig_find = consolidator_mod._find_related_observations
 
-    async def tracked_find(*, memory_engine, bank_id, query, request_context, tags=None):
+    async def tracked_find(*, memory_engine, bank_id, query, request_context, tags=None, config=None):
         nonlocal distinct_concurrent_scopes_seen
         scope = frozenset(tags or [])
         async with sample_lock:
             in_flight_scopes.add(scope)
             if len(in_flight_scopes) > distinct_concurrent_scopes_seen:
                 distinct_concurrent_scopes_seen = len(in_flight_scopes)
+            if len(in_flight_scopes) == 3:
+                all_scopes_entered.set()
         try:
-            await asyncio.sleep(0.1)  # widen the window so concurrency is observable
+            await asyncio.wait_for(all_scopes_entered.wait(), timeout=10)
             return await orig_find(
                 memory_engine=memory_engine,
                 bank_id=bank_id,
                 query=query,
                 request_context=request_context,
                 tags=tags,
+                config=config,
             )
         finally:
             async with sample_lock:

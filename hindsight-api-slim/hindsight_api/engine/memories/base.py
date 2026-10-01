@@ -42,9 +42,15 @@ import uuid
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 from ...extensions.base import Extension
+
+# The five tag-matching modes, as the HTTP layer already validates them. Declared here
+# rather than `str` so a store implementing this seam is checked against the modes that
+# actually exist -- the SQL builders below take this exact type, and a bare `str` made
+# every hop between them unverifiable.
+from ..search.tags import TagsMatch
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from ..search.retrieval import GraphRetriever
@@ -290,7 +296,7 @@ class DeletePredicate:
     fact_types: list[str] | None = None
     metadata_equals: dict[str, str] | None = None
     tags: list[str] | None = None
-    tags_match: str = "any"
+    tags_match: TagsMatch = "any"
     delete_all: bool = False
 
     def is_empty(self) -> bool:
@@ -310,6 +316,26 @@ class ScanPage:
     """
 
     memories: list[StoredMemory] = field(default_factory=list)
+    next_page_token: str = ""
+
+
+@dataclass
+class BankWriteTime:
+    """When one bank was last written, as the store records it."""
+
+    bank_id: str
+    last_write_at: datetime
+
+
+@dataclass
+class BankWritePage:
+    """One page of :meth:`MemoriesExtension.list_banks_by_write`, newest-written first.
+
+    Same shape as :class:`ScanPage`: ``next_page_token`` is a position and is empty exactly when
+    the walk is exhausted.
+    """
+
+    banks: list[BankWriteTime] = field(default_factory=list)
     next_page_token: str = ""
 
 
@@ -583,7 +609,7 @@ class MemoryScopeWatermark:
     since: datetime
     fact_types: list[str] | None = None
     tags: list[str] | None = None
-    tags_match: str = "any"
+    tags_match: TagsMatch = "any"
     tag_groups: list | None = None
 
 
@@ -656,7 +682,7 @@ class FullRecallRequest:
     temporal_window: "tuple[datetime, datetime] | None" = None
     temporal_semantic_threshold: float = 0.1
     tags: "list[str] | None" = None
-    tags_match: str = "any"
+    tags_match: TagsMatch = "any"
     tag_groups: "list | None" = None
     created_after: "datetime | None" = None
     created_before: "datetime | None" = None
@@ -898,7 +924,7 @@ class MemoriesExtension(Extension, ABC):
         text: str,
         limit: int,
         tags: list[str] | None = None,
-        tags_match: str = "any",
+        tags_match: TagsMatch = "any",
         tag_groups: list | None = None,
     ) -> list["KnowledgePageMatch"]:
         """Hybrid search over the bank's pages: text and (when given) embedding, fused BY THE STORE.
@@ -920,7 +946,7 @@ class MemoriesExtension(Extension, ABC):
         embedding: list[float],
         limit: int,
         tags: list[str] | None = None,
-        tags_match: str = "any",
+        tags_match: TagsMatch = "any",
         tag_groups: list | None = None,
         exclude_ids: list[str] | None = None,
     ) -> list["KnowledgePageMatch"]:
@@ -1157,7 +1183,7 @@ class MemoriesExtension(Extension, ABC):
         bank_id: str,
         search_query: "str | None" = None,
         tags: "list[str] | None" = None,
-        tags_match: str = "any_strict",
+        tags_match: TagsMatch = "any_strict",
         time_field: str | None = None,
         start_date: "datetime | None" = None,
         end_date: "datetime | None" = None,
@@ -1236,6 +1262,77 @@ class MemoriesExtension(Extension, ABC):
             if counts:
                 out[bank_id] = counts
         return out
+
+    async def list_banks_by_write(self, *, limit: int = 100, page_token: str = "") -> "BankWritePage":
+        """One page of this store's banks, most recently written first, plus the next cursor.
+
+        The ORDER over a bank list, which is the part a store owning the memories has to supply.
+        ``last_write_at_many`` answers the same question one bank at a time, and a list ordered by
+        it therefore has to ask about EVERY bank before it can cut page 1 — O(total banks) per
+        request, which on a large tenant is the entire cost of the endpoint. This hands back the
+        page already ordered, so the caller hydrates the rows it will show rather than ranking the
+        whole tenant to find them.
+
+        It is an ordering, not a listing: names, settings and everything else about a bank stay
+        wherever they live, and the caller joins them onto this page.
+
+        **Scoped to the calling tenant.** This is the only method here that LISTS bank ids rather
+        than being handed them — every other one (:meth:`last_write_at_many`,
+        :meth:`count_memories_many`, …) is tenant-scoped by construction, through the ids its
+        caller passes in. An id from outside the tenant has no row in that tenant's ``banks``
+        table, so it consumes a slot of the page and hands the caller a short one.
+
+        An empty ``page_token`` starts at the most recently written bank; the returned
+        ``next_page_token`` is empty exactly when the walk is exhausted.
+
+        Empty by default, and that is a meaningful answer: a store with no ordering of its own
+        leaves the caller's SQL ordering in place rather than replacing it with a worse one.
+        """
+        return BankWritePage(banks=[], next_page_token="")
+
+    async def run_store_migration(self, *, migration_id: str) -> "tuple[int, int]":
+        """Apply a named migration of the STORE's own derived state to this tenant.
+
+        Returns ``(started, total)`` — how many units of the store's work this call set going, out
+        of how many it found. Both are the store's own units and mean nothing to the caller beyond
+        progress; :meth:`store_migration_status` is what says when it is finished.
+
+        A store that owns the memory rows also owns state derived from them — orderings, counts,
+        auxiliary indexes — and a release that adds such state leaves every PRE-EXISTING bank
+        without it. Writing a bank is usually what builds it, so a bank nobody writes to would
+        never acquire it at all. This is the hook that reaches those banks, called once per tenant
+        from a migration, next to the schema changes the same release makes to Postgres.
+
+        **Not required to do the work before returning, and usually should not.** A store free to
+        make this a trigger keeps the call O(1) in the tenant's size, which is what allows it in a
+        pre-upgrade hook at all: a migration whose duration grows with the largest tenant turns
+        "slow" into "failed release". The caller polls instead.
+
+        **Migrations are NAMED, not numbered.** A store handed an id it does not have must raise,
+        not return quietly: that turns a deploy which rolled this side ahead of the store into a
+        loud failure rather than one that reports success and migrates nothing. Numbering would
+        make the same mistake a silent no-op, which is why it is not the interface.
+
+        Expected to be idempotent, and to detect per unit what is already done — a caller may
+        retry freely, and recovers a partial run by calling again rather than by recording how far
+        it got. **This side keeps the record of what has run**, in the migration that calls it; a
+        second watermark in the store would only disagree with it.
+
+        ``(0, 0)`` by default: a store with no derived state of its own has nothing to migrate.
+        """
+        return (0, 0)
+
+    async def store_migration_status(self, *, migration_id: str) -> "tuple[int, int]":
+        """How far a store migration has got in this tenant — ``(remaining, stuck)``.
+
+        Done when ``remaining`` is 0. ``stuck`` counts units the store has tried repeatedly without
+        finishing; it is not a failure the store gives up on, but without it one poison unit would
+        make a caller poll forever.
+
+        ``(0, 0)`` by default, which reads as "finished" — correct for a store that never started
+        anything.
+        """
+        return (0, 0)
 
     async def last_write_at_many(self, *, bank_ids: "list[str]") -> "dict[str, datetime]":
         """When each bank was last written — ``{bank_id: datetime}``, for many banks at once.
@@ -1353,7 +1450,7 @@ class MemoriesExtension(Extension, ABC):
         temporal_window: "tuple[datetime, datetime] | None" = None,
         temporal_semantic_threshold: float = 0.1,
         tags: list[str] | None = None,
-        tags_match: str = "any",
+        tags_match: TagsMatch = "any",
         tag_groups: list | None = None,
         created_after: datetime | None = None,
         created_before: datetime | None = None,
@@ -1437,7 +1534,7 @@ class MemoriesExtension(Extension, ABC):
         limit: int = 100,
         page_token: str = "",
         tags: list[str] | None = None,
-        tags_match: str = "any",
+        tags_match: TagsMatch = "any",
         tag_groups: list | None = None,
         document_id: str | None = None,
         metadata_equals: dict[str, str] | None = None,
@@ -1606,7 +1703,7 @@ class MemoriesExtension(Extension, ABC):
         since: datetime,
         fact_types: list[str] | None = None,
         tags: list[str] | None = None,
-        tags_match: str = "any",
+        tags_match: TagsMatch = "any",
         tag_groups: list | None = None,
     ) -> bool:
         """Whether any memory in the given scope was written after ``since``.
@@ -1650,6 +1747,34 @@ class MemoriesExtension(Extension, ABC):
             )
             for scope in scopes
         }
+
+    @abstractmethod
+    async def newest_memory_updated_at(
+        self,
+        *,
+        conn,
+        fq_table,
+        bank_id: str,
+        until: datetime,
+        since: datetime | None = None,
+        fact_types: list[str] | None = None,
+        tags: list[str] | None = None,
+        tags_match: TagsMatch = "any",
+        tag_groups: list | None = None,
+    ) -> datetime | None:
+        """The newest ``updated_at`` in the given scope within ``(since, until]``, or None.
+
+        Backs the mental-model refresh, which reads it for two answers: whether the
+        scope holds anything to reflect over at all (None means no), and the
+        watermark the refresh persists — the newest memory it could have read, so the
+        next staleness check asks about writes after it. ``since`` is the delta
+        window's lower bound (None for a full refresh), which is also what lets a
+        store bound the read to the writes since the last refresh.
+
+        The scope is the same as :meth:`any_memory_updated_since`'s. Abstract rather
+        than defaulted: a store that answered None here would leave every refresh
+        with nothing to read, which is silent rather than wrong-looking.
+        """
 
     async def latest_memory_write_at(self, *, conn, fq_table, bank_id: str) -> datetime | None:
         """The newest ``updated_at`` across the bank's memories, or None if it has none.
@@ -1775,7 +1900,7 @@ class MemoriesExtension(Extension, ABC):
         document_id: str | None = None,
         entity_id: str | None = None,
         tags: list[str] | None = None,
-        tags_match: str = "any",
+        tags_match: TagsMatch = "any",
         created_before: "datetime | None" = None,
         time_field: str | None = None,
         start_date: "datetime | None" = None,
@@ -1963,7 +2088,7 @@ class MemoriesExtension(Extension, ABC):
         document_id: str | None = None,
         chunk_id: str | None = None,
         tags: list[str] | None = None,
-        tags_match: str = "all_strict",
+        tags_match: TagsMatch = "all_strict",
         limit: int = 1000,
     ) -> dict[str, Any]:
         """Memory nodes for the graph view, plus the total matching count.
@@ -1992,7 +2117,7 @@ class MemoriesExtension(Extension, ABC):
         document_id: str | None = None,
         chunk_id: str | None = None,
         tags: list[str] | None = None,
-        tags_match: str = "all_strict",
+        tags_match: TagsMatch = "all_strict",
         limit: int = 1000,
     ) -> dict[str, Any]:
         """Everything one graph render reads, in one pass:
@@ -2013,7 +2138,10 @@ class MemoriesExtension(Extension, ABC):
             conn=conn,
             fq_table=fq_table,
             bank_id=bank_id,
-            fact_type=fact_type,
+            # `graph_view` accepts a list of fact types; `graph_units`, which stores override,
+            # declares a single one. Widening `graph_units` would land on every implementer, so
+            # the mismatch is stated here -- a list caller reaches a store that cannot take one.
+            fact_type=cast("str | None", fact_type),
             search_query=search_query,
             document_id=document_id,
             chunk_id=chunk_id,

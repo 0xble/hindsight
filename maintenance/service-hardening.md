@@ -57,5 +57,26 @@ in the root contract.
 - **Retire when:** Released upstream orders both lock paths or retries consolidation
   deadlocks, and passes this regression.
 
+## Consolidation Adaptation At The Accepted Checkpoint
+
+Upstream source-edit validation (#4831) now runs within the fork's retried apply
+transaction. Source locks keep `ORDER BY id`, and a response computed from edited
+facts writes neither observations nor consolidation stamps. Source versions come
+from `StoredMemory.updated_at` on both strict and fair fetch paths.
+
+Keep the fork's large-backlog fair selector and its opt-in configuration. The
+upstream overfetch selector bounds its window to sixteen rounds, while the fork
+examines up to 100,000 candidate facts. Use the upstream store helper as the
+fallback without widening the configured scope filter. Lane serialization,
+stale-reference recovery, atomic language validation and bounded schema correction
+remain intentional divergences. Retain their existing regression suites when
+upstream changes consolidation signatures or typed store models.
+
+Append strategy retention is now upstream-owned: the append path carries the
+complete caller item instead of copying individual fields (#4590). Keep only
+the fork's unmatched-rechunk tail handling, exercised by
+`tests/test_append_after_chunking_change.py`, alongside upstream's
+`tests/test_retain_append_mode.py` coverage.
+
 
 Run the API-local regression commands from `hindsight-api-slim`.

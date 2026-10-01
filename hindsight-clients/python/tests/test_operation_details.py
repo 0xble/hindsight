@@ -62,3 +62,6 @@ def test_operation_details_deserialize_by_discriminator(payload, expected_type):
     })
     assert response.details is not None
     assert isinstance(response.details.actual_instance, expected_type)
+    if expected_type is FileConvertRetainOperationDetails:
+        assert response.details.actual_instance.failure_reason == payload["failure_reason"]
+        assert response.details.actual_instance.model_dump(mode="json")["failure_reason"] == payload["failure_reason"]

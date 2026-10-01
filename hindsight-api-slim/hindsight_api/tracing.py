@@ -14,7 +14,7 @@ import json
 import logging
 import time
 from contextlib import contextmanager
-from typing import TYPE_CHECKING, Any, Optional
+from typing import TYPE_CHECKING, Any, Optional, cast
 
 from opentelemetry import trace
 from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
@@ -422,6 +422,7 @@ class LLMSpanRecorder:
         error: Optional[Exception] = None,
         tool_calls: Optional[list[dict[str, Any]]] = None,
         cached_tokens: int = 0,
+        thoughts_tokens: Optional[int] = None,
         **_extra: Any,
     ) -> None:
         """
@@ -444,6 +445,8 @@ class LLMSpanRecorder:
             error: Exception if call failed
             tool_calls: List of tool calls made (for function calling)
             cached_tokens: Cached/cache-read prompt tokens, when reported by the provider.
+            thoughts_tokens: Reasoning tokens, when reported by the provider. Not part of
+                ``output_tokens``, which is visible-only.
             _extra: Tolerated forward-compatible kwargs from other recorders.
         """
         try:
@@ -480,6 +483,11 @@ class LLMSpanRecorder:
                 span.set_attribute(GenAIAttributes.USAGE_OUTPUT_TOKENS, output_tokens)
                 if cached_tokens:
                     span.set_attribute("gen_ai.usage.cached_tokens", cached_tokens)
+                # Providers pass this alongside cached_tokens; without an explicit
+                # parameter it fell into **_extra and never reached the span, so the
+                # reasoning half of the billed output was invisible to OTel consumers.
+                if thoughts_tokens:
+                    span.set_attribute("gen_ai.usage.reasoning_tokens", thoughts_tokens)
 
                 # Add custom attributes for Hindsight context
                 span.set_attribute("hindsight.scope", scope)
@@ -669,6 +677,8 @@ def create_span_recorder() -> LLMSpanRecorder:
     tracer = get_tracer()
     if tracer is None:
         raise RuntimeError("Tracing not initialized. Call initialize_tracing() first.")
-    _span_recorder = LLMSpanRecorder(tracer)
+    # The None case is raised above; a NoOpTracer presents the same API and is what a
+    # tracing-disabled deployment gets.
+    _span_recorder = LLMSpanRecorder(cast("Tracer", tracer))
     register_span_recorder(_span_recorder)
     return _span_recorder

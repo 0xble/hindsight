@@ -188,7 +188,9 @@ def create_mcp_server(memory: MemoryEngine, multi_bank: bool = True) -> FastMCP:
         mcp_authenticated_resolver=get_current_mcp_authenticated,  # Propagate MCP pre-auth flag
         extra_headers_resolver=get_current_extra_headers,  # Propagate allowlisted headers to extensions
         include_bank_id_param=multi_bank,
-        tools=base_tools,
+        # `set(...)`: the parameter declares a mutable set and `base_tools` is frozen. Copying is
+        # what the callee's declaration asks for, and it cannot then alias our constant.
+        tools=set(base_tools) if base_tools is not None else None,
         retain_description=retain_description,
         recall_description=recall_description,
     )
@@ -516,6 +518,21 @@ class MCPMiddleware:
         # - Path-based bank_id → single-bank app (no bank_id param, scoped tools)
         # - Header/env bank_id → multi-bank app (bank_id param, all tools)
         target_app = self.single_bank_app if bank_id_from_path else self.multi_bank_app
+
+        # An alias is resolved here, where the id ENTERS the process, exactly as the
+        # HTTP route class does for a routed path (see api/unknown_params.py). Doing
+        # it once at the edge means the contextvar below — and therefore every tool
+        # that reads it — only ever holds a bank's own id. The schema contextvar is
+        # already set above, which the per-schema alias lookup needs.
+        # Best-effort: a lookup that cannot run must not turn a session for a real
+        # bank into a failed connection, and an unresolved id behaves as it did
+        # before aliases existed.
+        try:
+            bank_id = await self.memory.resolve_bank_alias(
+                bank_id, request_context=RequestContext(api_key=auth_token, mcp_authenticated=mcp_pre_authenticated)
+            )
+        except Exception:
+            logger.warning("Bank alias resolution failed for %r; using it as-is", bank_id, exc_info=True)
 
         # Set bank_id, api_key, tenant_id, api_key_id, and mcp_authenticated context
         bank_id_token = _current_bank_id.set(bank_id)

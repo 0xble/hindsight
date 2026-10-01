@@ -1,3 +1,5 @@
 # OpenAPI Generator emits an intentional extra newline at EOF.
 hindsight-clients/go/*.go whitespace=-blank-at-eof
 hindsight-clients/python/hindsight_client_api/models/*.py whitespace=-blank-at-eof
+# Its generated API methods also indent blank lines in optional-argument blocks.
+hindsight-clients/python/hindsight_client_api/api/*.py whitespace=-blank-at-eol

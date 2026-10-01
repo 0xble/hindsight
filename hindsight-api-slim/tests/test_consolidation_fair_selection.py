@@ -227,7 +227,7 @@ async def test_fair_selection_runs_groups_concurrently_without_same_scope_overla
     lock = asyncio.Lock()
     orig_find = consolidator_mod._find_related_observations
 
-    async def tracked_find(*, memory_engine, bank_id, query, request_context, tags=None):
+    async def tracked_find(*, memory_engine, bank_id, query, request_context, tags=None, config=None):
         nonlocal max_distinct
         scope = frozenset(tags or [])
         async with lock:
@@ -238,7 +238,12 @@ async def test_fair_selection_runs_groups_concurrently_without_same_scope_overla
         try:
             await asyncio.sleep(0.05)
             return await orig_find(
-                memory_engine=memory_engine, bank_id=bank_id, query=query, request_context=request_context, tags=tags
+                memory_engine=memory_engine,
+                bank_id=bank_id,
+                query=query,
+                request_context=request_context,
+                tags=tags,
+                config=config,
             )
         finally:
             async with lock:

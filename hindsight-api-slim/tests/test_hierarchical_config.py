@@ -137,6 +137,7 @@ async def test_hierarchical_fields_categorization():
     assert "retain_strategies" in configurable
     assert "max_observations_per_scope" in configurable
     assert "observation_scope_limits" in configurable
+    assert "consolidation_strategies" in configurable
     assert "reflect_source_facts_max_tokens" in configurable
     assert "llm_gemini_safety_settings" in configurable
     assert "mcp_enabled_tools" in configurable
@@ -155,9 +156,9 @@ async def test_hierarchical_fields_categorization():
     assert "reflect_default_options" in configurable
 
     # Verify count is correct
-    # 50 upstream fields plus the fork's consolidation_max_context_tokens (HINDSIGHT-002),
+    # 51 upstream fields plus the fork's consolidation_max_context_tokens (HINDSIGHT-002),
     # consolidation_fair_group_selection, and consolidation_lane_llm_parallelism.
-    assert len(configurable) == 53
+    assert len(configurable) == 54
 
     # Verify credential fields (NEVER exposed)
     assert "llm_api_key" in credentials

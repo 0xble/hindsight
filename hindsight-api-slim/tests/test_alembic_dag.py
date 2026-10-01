@@ -18,21 +18,26 @@ def _script_directory() -> ScriptDirectory:
     return ScriptDirectory.from_config(cfg)
 
 
-def test_single_head() -> None:
-    """The DAG must have exactly one head.
+def test_one_upstream_head_plus_designated_fork_index_head() -> None:
+    """Reject accidental heads while preserving the fork index's separate lineage.
 
-    A second head means a branch was added without a merge revision, which
+    An unexpected head means a branch was added without a merge revision, which
     makes ``alembic upgrade head`` (singular) ambiguous and forces the next
     migration author to orphan whichever head they don't pick as parent.
     v0.5.3 shipped in exactly that state; this test would have caught it.
 
-    Fix for a new head: ``alembic merge heads -m "<reason>"``.
+    The maintained fork's normalized-observation index has an intentional second
+    head. The runtime upgrades plural ``heads``, and keeping this revision lineage
+    preserves compatibility with already-installed databases. Apart from that
+    designated fork head, upstream must still have exactly one head.
     """
     script = _script_directory()
     heads = script.get_heads()
-    assert len(heads) == 1, (
-        f"Alembic has {len(heads)} heads ({heads}); expected exactly 1. "
-        "Unify them with ``alembic merge heads -m '<reason>'``."
+    assert "e6f7a8b9c0d1" in heads, "the fork normalized-observation index head must remain in the migration DAG"
+    upstream_heads = set(heads) - {"e6f7a8b9c0d1"}
+    assert len(upstream_heads) == 1, (
+        f"Alembic has unexpected heads ({heads}); expected one upstream head "
+        "plus the designated fork normalized-observation index head."
     )
 
 
