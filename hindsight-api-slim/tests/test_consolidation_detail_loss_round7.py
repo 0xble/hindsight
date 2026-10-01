@@ -125,6 +125,62 @@ async def test_a2_identifier_apposition_and_predicate_restatements(provider, con
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("cited", [None, ADDITIVE], ids=["same-text-evidence", "unrelated-additive-evidence"])
+@pytest.mark.parametrize(
+    "before,after",
+    [
+        ("The API key Abcd is active.", "Abcd is the active API key."),
+        ("The API key PROD is active.", "PROD is the active API key."),
+        ("The key Face is active.", "Face is the active key."),
+        ("The API key Abcd is active.", "The active API key has value Abcd."),
+    ],
+)
+async def test_explicit_identifier_retained_whole_token_anywhere(provider, config, before, after, cited):
+    await assert_batch_action(
+        provider, config, before, after, "update", before if cited is None else cited, correction=True
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("cited", [None, ADDITIVE], ids=["same-text-evidence", "unrelated-additive-evidence"])
+@pytest.mark.parametrize(
+    "value,output",
+    [
+        ("Abcd", "abcd"),
+        ("PROD", "prod"),
+        ("Abcd", "Abcde"),
+        ("Abcd", "xAbcd"),
+        ("Abcd", "Abcd_x"),
+        ("Abcd", "x_Abcd"),
+        ("Abcd", "Abcd.x"),
+        ("Abcd", "x.Abcd"),
+        ("Abcd", "Abcd-x"),
+        ("Abcd", "x-Abcd"),
+    ],
+)
+async def test_explicit_identifier_case_and_longer_tokens_still_veto(provider, config, value, output, cited):
+    before = f"The API key {value} is active."
+    await assert_batch_action(
+        provider,
+        config,
+        before,
+        f"{output} is the active API key.",
+        "fallback",
+        before if cited is None else cited,
+        correction=True,
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("cited", [None, ADDITIVE], ids=["same-text-evidence", "unrelated-additive-evidence"])
+async def test_generic_identifier_repeated_occurrence_still_veto(provider, config, cited):
+    before = "Alpha uses abc1234 and beta uses abc1234."
+    await assert_batch_action(
+        provider, config, before, "Alpha uses abc1234.", "fallback", before if cited is None else cited, correction=True
+    )
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("predicate", ["is", "are", "was", "were", "equals", "set to", ":", "="])
 @pytest.mark.parametrize("state", ["revoked", "active", "expired", "valid", "rotated"])
 async def test_a2_lowercase_binding_complement_is_not_an_identifier(provider, config, predicate, state):

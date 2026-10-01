@@ -122,8 +122,8 @@ _OPAQUE = re.compile(
 # Explicit case-sensitive contexts and literals do not need that shape signal.
 # Known limits: lowercase "key is prod" can change case unnoticed, and an
 # ordinary capitalized apposition ("API key Rotation policy") can falsely veto.
-# Generic UUID extraction can split a retained value when its key noun disappears,
-# so a full UUID captured by apposition may also falsely veto that restatement.
+# UPDATE retention checks established identifiers in raw output even when the
+# key noun disappears; extraction itself remains context-sensitive.
 _IDENTIFIER_SHAPE = re.compile(r"[A-Z0-9_]|[A-Za-z0-9][.-][A-Za-z0-9]")
 _IDENTIFIER_CONTEXT = (
     r"(?:\bcase-sensitive(?:\s+(?:API\s+)?(?:key|token|identifier|id|secret name|env var|flag))?"
@@ -1000,7 +1000,21 @@ def dropped_supported_anchors(before: str, after: str, existing: list[Evidence],
                 and _superseded(anchor, missing, old, new, unmatched, supporters, cited_indexes, budget) < missing
             ):
                 dropped.append(anchor)
-        return dropped
+        # Key-context extraction can miss a lossless reorder ("key Abcd" ->
+        # "Abcd is the key"). Check established identifiers in raw output so
+        # normalization cannot erase case. Dots/hyphens join token components,
+        # but a trailing sentence period does not. All analysis budgets above
+        # still apply; generic identifiers, other kinds and folds are unchanged.
+        if not any(anchor.kind == "identifier" for anchor in dropped):
+            return dropped
+        explicit_values = {match["value"] for match in _explicit_identifiers(before)}
+        return [
+            anchor
+            for anchor in dropped
+            if anchor.kind != "identifier"
+            or anchor.value not in explicit_values
+            or re.search(r"(?<!\w)(?<!\w[.-])" + re.escape(anchor.value) + r"(?!\w|[.-]\w)", after) is None
+        ]
     except _WorkLimit:
         return [_LIMIT_ANCHOR]
 
