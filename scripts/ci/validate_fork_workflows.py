@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import copy
+import hashlib
 import re
 import shlex
 import sys
@@ -17,9 +18,13 @@ EXPECTED_EVENTS = {
     "fork-policy.yml": {"pull_request_target"},
     "gate.yml": {"pull_request"},
     "nightly.yml": {"schedule", "workflow_dispatch"},
-    "fork-perf.yml": {"workflow_dispatch"},
+    "perf-test.yml": {"workflow_dispatch"},
     "windows-smoke.yml": {"workflow_dispatch"},
 }
+# Permit the reviewed fork owner to take a name distinct from upstream's perf
+# workflow. Pin trusted bytes here, never to a reference chosen by the candidate.
+# SHA256 of .github/workflows/perf-test.yml at c7c4be93ec7411feaf448233b5d7d2b12c3f60c9.
+RENAMED_PERF_SHA256 = "61e1bdd9772c2000b497f385bb4f9a10f0e7975db10d20e80a77ce2e8d1630b1"
 EXPECTED_FORK_CI_TRIGGER = {
     "push": {"branches": ["main"]},
     "pull_request": {"branches": ["main"]},
@@ -412,7 +417,17 @@ def validate(root: Path) -> list[str]:
         return errors
 
     actual = {path.name for path in entries if path.is_file() and path.suffix in {".yml", ".yaml"}}
-    expected = set(EXPECTED_EVENTS)
+    expected_events = dict(EXPECTED_EVENTS)
+    if "fork-perf.yml" in actual and "perf-test.yml" not in actual:
+        expected_events["fork-perf.yml"] = expected_events.pop("perf-test.yml")
+        try:
+            digest = hashlib.sha256((workflow_dir / "fork-perf.yml").read_bytes()).hexdigest()
+        except OSError as exc:
+            errors.append(f"fork-perf.yml: cannot read renamed workflow: {exc}")
+        else:
+            if digest != RENAMED_PERF_SHA256:
+                errors.append("fork-perf.yml: renamed workflow must match the reviewed perf-test.yml bytes")
+    expected = set(expected_events)
 
     missing = expected - actual
     extra = actual - expected
@@ -433,9 +448,9 @@ def validate(root: Path) -> list[str]:
             errors.append(f"{name}: invalid workflow YAML: {exc}")
             continue
 
-        if events != EXPECTED_EVENTS[name]:
+        if events != expected_events[name]:
             errors.append(
-                f"{name}: events {sorted(events)} do not match allowed events {sorted(EXPECTED_EVENTS[name])}"
+                f"{name}: events {sorted(events)} do not match allowed events {sorted(expected_events[name])}"
             )
         if name == "fork-ci.yml" and workflow.get("on") != EXPECTED_FORK_CI_TRIGGER:
             errors.append(f"{name}: trigger configuration must exactly target main and allow manual dispatch")

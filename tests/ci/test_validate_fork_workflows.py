@@ -51,6 +51,59 @@ class ForkWorkflowPolicyTests(unittest.TestCase):
     def test_inline_on_syntax_is_parsed_and_allowed(self) -> None:
         self.assertEqual(POLICY.validate(self.make_root()), [])
 
+    def test_byte_identical_perf_owner_rename_is_allowed(self) -> None:
+        root = self.make_root()
+        workflows = root / ".github" / "workflows"
+        trusted_workflows = SCRIPT.parents[2] / ".github" / "workflows"
+        owner = trusted_workflows / "perf-test.yml"
+        if not owner.exists():
+            owner = trusted_workflows / "fork-perf.yml"
+        (workflows / "perf-test.yml").write_bytes(owner.read_bytes())
+        self.assertEqual(POLICY.validate(root), [])
+        (workflows / "perf-test.yml").rename(workflows / "fork-perf.yml")
+        self.assertEqual(len(list(workflows.glob("*.yml"))), 6)
+        self.assertEqual(POLICY.validate(root), [])
+
+    def test_perf_rename_cannot_widen_trusted_policy(self) -> None:
+        trusted_workflows = SCRIPT.parents[2] / ".github" / "workflows"
+        owner = trusted_workflows / "perf-test.yml"
+        if not owner.exists():
+            owner = trusted_workflows / "fork-perf.yml"
+        for case, expected_error in (
+            ("altered", "must match the reviewed"),
+            ("unsafe-alias", "top-level permissions"),
+            ("duplicate", "unapproved workflow entrypoints"),
+            ("unapproved", "unapproved workflow entrypoints"),
+            ("symlink", "symbolic link"),
+            ("unsafe-companion", "windows-smoke.yml: top-level permissions"),
+        ):
+            with self.subTest(case=case):
+                root = self.make_root()
+                workflows = root / ".github" / "workflows"
+                original = workflows / "perf-test.yml"
+                alias = workflows / "fork-perf.yml"
+                original.write_bytes(owner.read_bytes())
+                original.rename(alias)
+                if case == "altered":
+                    alias.write_bytes(alias.read_bytes() + b"\n# safe content change\n")
+                elif case == "unsafe-alias":
+                    alias.write_text(alias.read_text().replace("contents: read", "contents: write"), encoding="utf-8")
+                elif case == "duplicate":
+                    original.write_bytes(alias.read_bytes())
+                elif case == "unapproved":
+                    alias.rename(workflows / "other-perf.yml")
+                elif case == "symlink":
+                    target = root / "perf-owner.yml"
+                    alias.rename(target)
+                    alias.symlink_to(target)
+                else:
+                    companion = workflows / "windows-smoke.yml"
+                    companion.write_text(
+                        companion.read_text().replace("contents: read", "contents: write"), encoding="utf-8"
+                    )
+                errors = POLICY.validate(root)
+                self.assertTrue(any(expected_error in error for error in errors), errors)
+
     def test_restored_upstream_workflow_fails(self) -> None:
         root = self.make_root()
         (root / ".github" / "workflows" / "release.yml").write_text("name: Release\n", encoding="utf-8")
@@ -102,7 +155,7 @@ class ForkWorkflowPolicyTests(unittest.TestCase):
 
     def test_inline_schedule_fails(self) -> None:
         root = self.make_root()
-        workflow = root / ".github" / "workflows" / "fork-perf.yml"
+        workflow = root / ".github" / "workflows" / "perf-test.yml"
         workflow.write_text(
             workflow.read_text(encoding="utf-8").replace(
                 "on: [workflow_dispatch]", "on: [workflow_dispatch, schedule]"
@@ -114,7 +167,7 @@ class ForkWorkflowPolicyTests(unittest.TestCase):
 
     def test_manual_workflow_inputs_are_preserved(self) -> None:
         root = self.make_root()
-        workflow = root / ".github" / "workflows" / "fork-perf.yml"
+        workflow = root / ".github" / "workflows" / "perf-test.yml"
         workflow.write_text(
             workflow.read_text(encoding="utf-8").replace(
                 "on: [workflow_dispatch]",
@@ -166,11 +219,7 @@ class ForkWorkflowPolicyTests(unittest.TestCase):
 
     def test_repository_workflows_pass_policy(self) -> None:
         repo_root = SCRIPT.parents[2]
-        errors = [
-            error
-            for error in POLICY.validate(repo_root)
-            if error.startswith(("gate.yml", "nightly.yml"))
-        ]
+        errors = [error for error in POLICY.validate(repo_root) if error.startswith(("gate.yml", "nightly.yml"))]
         self.assertEqual(errors, [])
 
     def test_candidate_cannot_select_executed_policy_code(self) -> None:
@@ -240,7 +289,7 @@ class ForkWorkflowPolicyTests(unittest.TestCase):
 
     def test_secrets_inherit_fails(self) -> None:
         root = self.make_root()
-        workflow = root / ".github" / "workflows" / "fork-perf.yml"
+        workflow = root / ".github" / "workflows" / "perf-test.yml"
         workflow.write_text(
             workflow.read_text(encoding="utf-8").replace(
                 "    runs-on: ubuntu-latest", "    secrets: inherit\n    runs-on: ubuntu-latest"
