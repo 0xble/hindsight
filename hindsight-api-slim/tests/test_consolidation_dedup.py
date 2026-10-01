@@ -5,7 +5,6 @@ guard the fix in CI — unlike the real-LLM integration test, which only trigger
 the path stochastically.
 """
 
-from hindsight_api.engine.response_models import LLMCallResult, TokenUsage
 import hashlib
 import logging
 import types
@@ -33,6 +32,7 @@ from hindsight_api.engine.consolidation.consolidator import (
 )
 from hindsight_api.engine.db_utils import acquire_with_retry
 from hindsight_api.engine.memories import RecallArms
+from hindsight_api.engine.response_models import LLMCallResult, TokenUsage
 from hindsight_api.engine.search.types import RetrievalResult
 
 #: Dates the skipped CREATE would have been stamped with; the fold must carry them onto the twin.
@@ -324,6 +324,68 @@ async def test_dedup_llm_missing_action_defaults_to_keep() -> None:
     assert result is None
     llm.call.assert_awaited_once()
     conn.fetchval.assert_not_called()  # missing action is a conservative no-merge
+
+
+@pytest.mark.parametrize("shape", ["US$500", "C$500", "$500USD", "$500K+", "$3k/week", "$11.2k–$11.6k"])
+async def test_process_batch_unchanged_currency_merge_has_one_request(shape: str) -> None:
+    from hindsight_api.engine.consolidation import consolidator as C
+
+    text = "The purchase price is " + shape + "."
+    kwargs, conn, llm = _ctx()
+    source_id = str(kwargs["create_source_ids"][0])
+    llm.call.return_value = LLMCallResult(content=_DedupDecision(action="merge", text=text), usage=TokenUsage())
+    engine = types.SimpleNamespace(
+        embeddings=object(),
+        _consolidation_llm_config=types.SimpleNamespace(with_config=lambda *a, **k: llm),
+    )
+    # Drive the real prepare/adjudicate/apply batch path from one parsed CREATE.
+    # Only the unrelated initial consolidation response is supplied, not dedup.
+    with (
+        patch.object(
+            C,
+            "_find_related_observations",
+            new=AsyncMock(return_value=types.SimpleNamespace(results=[], source_facts={})),
+        ),
+        patch.object(
+            C,
+            "_consolidate_batch_with_llm",
+            new=AsyncMock(
+                return_value=C._BatchLLMResult(creates=[C._CreateAction(text=text, source_fact_ids=[source_id])])
+            ),
+        ),
+        patch.object(C, "_effective_scope_limit", return_value=-1),
+        patch.object(C, "_dedup_active", return_value=True),
+        patch.object(C, "_any_live_source_memory", new=AsyncMock(return_value=True)),
+        patch.object(C, "_embed_observation_text", new=AsyncMock(return_value="[0.1, 0.2, 0.3]")),
+        patch.object(C, "_apply_create_action", new=AsyncMock(side_effect=AssertionError("valid merge must fold"))),
+        _patch_probe([_obs(text, 0.99)]),
+    ):
+        result = await C._process_memory_batch(
+            pool=kwargs["pool"],
+            memory_engine=engine,
+            llm_config=object(),
+            bank_id="bank1",
+            memories=[{"id": source_id, "text": text, "tags": []}],
+            request_context=object(),
+            config=kwargs["config"],
+        )
+    assert result == ([{"action": "created"}], 0, False)
+    llm.call.assert_awaited_once()
+    conn.fetchval.assert_awaited_once()
+    assert conn.fetchval.await_args.args[4] == text
+
+
+async def test_dedup_merge_that_drops_detail_is_kept_separate() -> None:
+    kwargs, conn, llm = _ctx()
+    kwargs["create_text"] = "Due 2026-10-02, the assistant must call update_goal."
+    llm.call.return_value = LLMCallResult(
+        content=_DedupDecision(action="merge", text="The task remains open."),
+        usage=TokenUsage(),
+    )
+    with _patch_embed(), _patch_probe([_obs("Due 2026-10-02, the assistant must call update_goal.", 0.98)]):
+        result = await _dedup_reconcile_create(**kwargs)
+    assert result is None
+    conn.fetchval.assert_not_called()
 
 
 def test_dedup_decision_accepts_exact_valid_actions() -> None:

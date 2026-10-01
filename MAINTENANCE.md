@@ -30,6 +30,7 @@ runs; these extend this sole enrollment and scheduling unit:
 - [Fork CI governance](maintenance/ci.md): HINDSIGHT-003.
 - [Generated-language integrity](maintenance/language-integrity.md): HINDSIGHT-005.
 - [Bounded consolidation schema correction](maintenance/schema-correction.md): consolidation-only divergence.
+- [Supported-detail preservation](maintenance/detail-loss.md): every run, together with bounded schema correction and generated-language integrity.
 - [Codex injection budget](maintenance/codex-injection-budget.md): every run, preserve the complete-context cap and offline tokenizer recovery.
 - [Codex session attribution](maintenance/codex-session-attribution.md): when adopting Codex retain/config changes, preserve explicit strategy scope and source-status safeguards.
 

@@ -773,6 +773,24 @@ class KnowledgePageMatch:
     score: float
 
 
+@dataclass(frozen=True)
+class MemoryTextSize:
+    """Body-free size metadata for a bank-scoped source read."""
+
+    unit_id: str
+    text_chars: int
+    text_bytes: int
+
+
+@dataclass(frozen=True)
+class MemoryEvidence:
+    """Only the fields the consolidation detail guard needs."""
+
+    unit_id: str
+    text: str
+    mentioned_at: datetime | None = None
+
+
 class MemoriesExtension(Extension, ABC):
     """Storage + retrieval for memory units and their links, behind one interface.
 
@@ -1522,6 +1540,24 @@ class MemoriesExtension(Extension, ABC):
     @abstractmethod
     async def get_memories(self, *, conn, fq_table, bank_id: str, unit_ids: list[str]) -> list[StoredMemory]:
         """Fetch memories by id. Missing or deleted ids are simply absent."""
+
+    async def get_memory_text_sizes(self, *, conn, fq_table, bank_id: str, unit_ids: list[str]) -> list[MemoryTextSize]:
+        """Read sizes without bodies. Unsupported stores fail lineage closed.
+
+        Byte sizes must be exact UTF-8 bytes or a conservative upper bound.
+        Do not implement this by calling the unrestricted ``get_memories``.
+        """
+        return []
+
+    async def get_memory_evidence(
+        self, *, conn, fq_table, bank_id: str, sizes: list[MemoryTextSize]
+    ) -> list[MemoryEvidence]:
+        """Fetch only admitted bodies whose sizes still match the size read.
+
+        Enforce supplied size bounds in the store, before returning any text.
+        Missing or changed rows are absent, never truncated complete evidence.
+        """
+        return []
 
     @abstractmethod
     async def scan_memories(

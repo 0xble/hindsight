@@ -99,7 +99,9 @@ async def test_dedup_final_text_is_checked_before_any_write(memory, request_cont
                     source_fact_ids=[str(prior)],
                 )
             ],
-            source_facts={},
+            # Keep lineage complete so the test reaches the final dedup language
+            # boundary instead of the missing-provenance preservation fallback.
+            source_facts={str(prior): MemoryFact(id=str(prior), text=ENGLISH, fact_type="world")},
         )
         with (
             patch.object(memory, "_consolidation_llm_config", _llm(response)),

@@ -78,7 +78,11 @@ async def test_update_language_validation_uses_original_chunk_texts_for_new_and_
                 source_fact_ids=["prior-source"],
             )
         ],
-        union_source_facts={},
+        # Complete derived lineage lets this test exercise language authority;
+        # omitted provenance is separately required to veto UPDATEs fail closed.
+        union_source_facts={
+            "prior-source": MemoryFact(id="prior-source", text="translated prior fact text", fact_type="world")
+        },
         original_source_text_by_id={
             "new-source": "用户最近在深圳湾公园遛猫。",
             "prior-source": "用户周末经常带宠物去公园散步。",
@@ -404,7 +408,7 @@ async def test_update_recalled_for_a_cited_source_and_prior_provenance_remains_v
         llm_config=llm,
         memories=[{"id": "A", "text": "fact A"}, {"id": "B", "text": "fact B"}],
         union_observations=[MemoryFact(id="O", text="observation", fact_type="observation", source_fact_ids=["prior"])],
-        union_source_facts={},
+        union_source_facts={"prior": MemoryFact(id="prior", text="prior derived fact", fact_type="world")},
         original_source_text_by_id={"A": "original A", "B": "original B", "prior": "prior original"},
         per_fact_observation_ids={"A": set(), "B": {"O"}},
         config=config,
