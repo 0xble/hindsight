@@ -938,6 +938,23 @@ def _superseded(
     return 0
 
 
+def _standalone_tokens(text: str, budget: _Budget) -> Counter[str]:
+    """Count exact whitespace-delimited tokens, not components of opaque values."""
+    budget.spend(len(text))
+    counts: Counter[str] = Counter()
+    for token in text.split():
+        # Strip only one sentence punctuation mark at a whitespace/end boundary.
+        # Internal punctuation, parentheses, suffixes and combining marks remain
+        # part of the token, so no substring can masquerade as a retained value.
+        if token[-1] in ".,;:!?":
+            token = token[:-1]
+        if token and token[0] in "\"'`“‘":
+            token = token[1:]
+        if token:
+            counts[token] += 1
+    return counts
+
+
 def dropped_supported_anchors(before: str, after: str, existing: list[Evidence], cited: list[Evidence]) -> list[Anchor]:
     """Return missing supported anchors; an exhausted work budget also vetoes an UPDATE.
 
@@ -1000,20 +1017,27 @@ def dropped_supported_anchors(before: str, after: str, existing: list[Evidence],
                 and _superseded(anchor, missing, old, new, unmatched, supporters, cited_indexes, budget) < missing
             ):
                 dropped.append(anchor)
-        # Key-context extraction can miss a lossless reorder ("key Abcd" ->
-        # "Abcd is the key"). Check established identifiers in raw output so
-        # normalization cannot erase case. Dots/hyphens join token components,
-        # but a trailing sentence period does not. All analysis budgets above
-        # still apply; generic identifiers, other kinds and folds are unchanged.
+        # Key-context extraction can miss a pure reorder ("key Abcd" ->
+        # "Abcd is the key"). The former any-occurrence waiver erased slot and
+        # multiplicity losses, accepted combining-mark substrings, and rescanned
+        # all output per identifier. Only waive when ALL explicit output bindings
+        # disappeared and exact standalone cardinality survives. Charge the raw
+        # extraction and two shared token passes; other kinds/folds are unchanged.
         if not any(anchor.kind == "identifier" for anchor in dropped):
             return dropped
+        budget.spend(len(before) + len(after))
+        if next(_explicit_identifiers(after), None) is not None:
+            return dropped
         explicit_values = {match["value"] for match in _explicit_identifiers(before)}
+        before_tokens = _standalone_tokens(before, budget)
+        after_tokens = _standalone_tokens(after, budget)
         return [
             anchor
             for anchor in dropped
             if anchor.kind != "identifier"
             or anchor.value not in explicit_values
-            or re.search(r"(?<!\w)(?<!\w[.-])" + re.escape(anchor.value) + r"(?!\w|[.-]\w)", after) is None
+            or not before_tokens[anchor.value]
+            or after_tokens[anchor.value] < before_tokens[anchor.value]
         ]
     except _WorkLimit:
         return [_LIMIT_ANCHOR]

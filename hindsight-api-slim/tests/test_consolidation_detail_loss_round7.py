@@ -450,6 +450,107 @@ def test_accounting_preprocessing_is_cpu_bounded_on_256k_aggregate_input():
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("cited", [None, ADDITIVE], ids=["same-text-evidence", "unrelated-additive-evidence"])
+@pytest.mark.parametrize(
+    "before,after",
+    [
+        pytest.param(
+            "The primary API key is Abcd. The backup API key is Abcd.",
+            "The primary API key is Abcd.",
+            id="multiplicity-drop",
+        ),
+        pytest.param(
+            "The API key Abcd is active and the backup key Wxyz is revoked.",
+            "The API key Wxyz is active; Abcd was rotated out.",
+            id="role-swap",
+        ),
+        *[
+            pytest.param(
+                "The API key Abcd is active.",
+                f"The API key Wxyz is active; {tail}",
+                id=name,
+            )
+            for name, tail in [
+                ("url-only", "the archive URL is https://example.invalid/Abcd."),
+                ("path-only", "the archive path is /srv/Abcd/config."),
+                ("email-only", "contact Abcd@example.invalid."),
+                ("call-only", "`cache(Abcd)` returns true."),
+            ]
+        ],
+        *[
+            pytest.param("The API key Abcd is active.", f"{value} is the active API key.", id=name)
+            for name, value in [
+                ("combining-mark", "Abcd\u0301"),
+                ("substring", "Abcde"),
+                ("prefix", "xAbcd"),
+                ("underscore", "Abcd_2"),
+                ("hyphen", "Abcd-v2"),
+                ("dot", "Abcd.v2"),
+                ("case-change", "abcd"),
+                ("reorder-url-only", "https://example.invalid/Abcd"),
+                ("reorder-path-only", "/srv/Abcd/config"),
+                ("reorder-email-only", "Abcd@example.invalid"),
+                ("reorder-call-only", "cache(Abcd)"),
+            ]
+        ],
+        pytest.param(
+            "The primary API key is Abcd. The backup API key is Abcd.",
+            "Abcd is the active API key.",
+            id="reorder-multiplicity-drop",
+        ),
+    ],
+)
+async def test_pure_reorder_waiver_preserves_identifier_occurrences_and_boundaries(
+    provider, config, before, after, cited
+):
+    await assert_batch_action(
+        provider, config, before, after, "fallback", before if cited is None else cited, correction=True
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("cited", [None, ADDITIVE], ids=["same-text-evidence", "unrelated-additive-evidence"])
+@pytest.mark.parametrize(
+    "value,after",
+    [
+        ("Abcd", "Abcd is the active API key."),
+        ("PROD", "PROD is the active API key."),
+        ("Face", "Face is the active API key."),
+        ("Abcd", "The active API key has value Abcd."),
+        ("Abcd", "Abcd, the active API key, is used."),
+    ],
+)
+async def test_pure_reorder_waiver_accepts_exact_standalone_values(provider, config, value, after, cited):
+    before = f"The API key {value} is active."
+    await assert_batch_action(
+        provider, config, before, after, "update", before if cited is None else cited, correction=True
+    )
+
+
+def test_identifier_retention_filter_is_cpu_bounded_on_256k_aggregate_input():
+    from time import process_time
+
+    from hindsight_api.engine.consolidation import detail_loss as d
+
+    before = " ".join(f"The API key is Abcd{i:04d}." for i in range(1000))
+    n = 262144 - 2 * len(before) - len(ADDITIVE)
+    after = ("plain " * (n // 6 + 1))[: n - 1] + "."
+    assert 2 * len(before) + len(after) + len(ADDITIVE) == 262144
+    start = process_time()
+    drops = d.dropped_supported_anchors(
+        before,
+        after,
+        [d.Evidence(before, "2026-09-29T10:00:00Z")],
+        [d.Evidence(ADDITIVE, "2026-09-30T10:00:00Z")],
+    )
+    cpu = process_time() - start
+    print(f"IDENTIFIER_RETENTION_FILTER_256K_CPU_SECONDS={cpu:.6f}")
+    assert len(drops) == 1000
+    assert all(anchor.kind == "identifier" for anchor in drops)
+    assert cpu < 1.0
+
+
+@pytest.mark.asyncio
 async def test_grouped_number_scan_is_cpu_bounded_at_real_update_boundary(provider, config):
     from time import process_time
 
