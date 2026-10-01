@@ -75,7 +75,7 @@ class SDKStub:
 async def provider():
     llm = LLMProvider(
         provider="openai",
-        api_key="synthetic-not-a-credential",
+        api_key="test-key",
         base_url="https://example.invalid/v1",
         model="synthetic-model",
     )
@@ -179,7 +179,7 @@ async def test_concurrent_round_budget_caps_extra_completions(provider, config):
 
     # Alternate per-call local malformed/valid outputs without sharing a response queue.
     async def one():
-        llm = LLMProvider(provider="openai", api_key="synthetic", base_url="https://example.invalid", model="stub")
+        llm = LLMProvider(provider="openai", api_key="test-key", base_url="https://example.invalid", model="stub")
         await llm._provider_impl._client.close()
         stub = install(llm, [MISSING, VALID])
         result = await batch(llm, config, schema_correction_budget=budget)
@@ -343,7 +343,7 @@ async def test_codex_hidden_auth_retry_cannot_make_second_correction(provider, c
         patch.object(CodexLLM, "_load_codex_auth", return_value=("synthetic", "test-account")),
         patch.object(CodexLLM, "_load_codex_refresh_token", return_value="synthetic"),
     ):
-        impl = CodexLLM(provider="openai-codex", api_key="synthetic", base_url="", model="synthetic-model")
+        impl = CodexLLM(provider="openai-codex", api_key="test-key", base_url="", model="synthetic-model")
     provider._provider_impl = impl
     provider.provider = "openai-codex"
     first = "event: response.text.delta\ndata: " + json.dumps({"delta": json.dumps(MISSING)}) + "\n\n"

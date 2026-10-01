@@ -73,7 +73,7 @@ uv run perf-test --suite stats --scale huge
 
 ### CI
 
-The `perf-test.yml` workflow runs only on manual dispatch. Scale is configurable
+The `fork-perf.yml` workflow runs only on manual dispatch. Scale is configurable
 via workflow input (defaults to `tiny`). Results are uploaded as artifacts with
 14-day retention.
 

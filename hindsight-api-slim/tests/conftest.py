@@ -6,6 +6,7 @@ import asyncio
 import importlib.util
 import inspect
 import os
+from collections.abc import Iterator
 from pathlib import Path
 
 import filelock
@@ -224,21 +225,18 @@ def db_url():
 
 
 @pytest.fixture(scope="session")
-def pg0_db_url(db_url, tmp_path_factory, worker_id):
+def pg0_db_url(db_url, tmp_path_factory, worker_id) -> Iterator[str]:
     """
     Session-scoped fixture that ensures pg0 is running, migrations are applied,
     and returns the database URL.
 
     If HINDSIGHT_API_DATABASE_URL is a plain postgresql:// URL, uses it directly.
     If HINDSIGHT_API_DATABASE_URL is a pg0:// URL, resolves it to a real URL first.
-    Otherwise, starts pg0 once for the entire test session.
-
-    Uses filelock to ensure only one pytest-xdist worker starts pg0.
-    Migrations use PostgreSQL advisory locks internally, so they're safe to call
-    from multiple workers - only one will actually run migrations.
-
-    Note: We don't stop pg0 at the end because pytest-xdist runs workers in separate
-    processes that share the same pg0 instance. pg0 will persist for the next test run.
+    Serial runs retain the requested instance and port. Each xdist worker instead
+    owns a uniquely named pg0 instance on an available port, stopped at teardown.
+    Sharing memory_units across the whole offline suite accumulates per-bank HNSW
+    indexes and lets one worker's index DDL block every other's retain/recall. That
+    made otherwise short append regressions exceed the 300-second test timeout.
     """
     from hindsight_api.pg0 import parse_pg0_url as _parse_pg0_url
 
@@ -248,7 +246,8 @@ def pg0_db_url(db_url, tmp_path_factory, worker_id):
         from hindsight_api.migrations import run_migrations
 
         run_migrations(db_url)
-        return db_url
+        yield db_url
+        return
 
     if db_url:
         _parsed = _parse_pg0_url(db_url)
@@ -266,53 +265,67 @@ def pg0_db_url(db_url, tmp_path_factory, worker_id):
         # Running with xdist - use parent dir shared by all workers
         root_tmp_dir = tmp_path_factory.getbasetemp().parent
 
-    # Use a lock file to ensure only one worker starts pg0
+    owns_instance = worker_id != "master"
+    if owns_instance:
+        # The pytest session directory also separates concurrent runs/worktrees.
+        # Let pg0 allocate a free port, rather than assuming adjacent ports are
+        # available (a restored database or another service may already use one).
+        pg0_instance_name = f"{pg0_instance_name}-{root_tmp_dir.name}-{worker_id}"
+        pg0_instance_port = None
+
+    pg0 = EmbeddedPostgres(
+        name=pg0_instance_name,
+        port=pg0_instance_port,
+        config={"max_connections": "300"},
+    )
+
+    # Serial runs can reuse their instance. Worker names also distinguish
+    # parallel sessions, so their setup receipts are never shared.
     lock_file = root_tmp_dir / f"pg0_setup_{pg0_instance_name}.lock"
     url_file = root_tmp_dir / f"pg0_url_{pg0_instance_name}.txt"
-
-    with filelock.FileLock(str(lock_file)):
-        if url_file.exists():
-            # Another worker already started pg0
-            url = url_file.read_text().strip()
-        else:
-            # First worker - start pg0
-            # Bump max_connections so 8 xdist workers * pool_max_size=15 fits well
-            # under the cap (postgres default is 100, which is easy to exhaust now
-            # that consolidation_llm_parallelism=4 increases peak conns per op).
-            pg0 = EmbeddedPostgres(
-                name=pg0_instance_name,
-                port=pg0_instance_port,
-                config={"max_connections": "300"},
-            )
-
-            # Run ensure_running in a new event loop
-            loop = asyncio.new_event_loop()
-            try:
-                url = loop.run_until_complete(pg0.ensure_running())
-            finally:
-                loop.close()
-
-            # Save URL for other workers
-            url_file.write_text(url)
 
     # Run migrations - uses PostgreSQL advisory lock internally,
     # so safe to call from multiple workers (only one will actually run migrations)
     from hindsight_api.migrations import run_migrations
 
-    run_migrations(url)
+    try:
+        with filelock.FileLock(str(lock_file)):
+            if url_file.exists():
+                url = url_file.read_text().strip()
+            else:
+                loop = asyncio.new_event_loop()
+                try:
+                    url = loop.run_until_complete(pg0.ensure_running())
+                finally:
+                    loop.close()
+                url_file.write_text(url)
 
-    # Clean up stale test data from previous sessions. Per-bank vector indexes
-    # accumulate across runs (each test bank creates 3 HNSW indexes) and
-    # eventually exhaust pg0's shared memory / max_locks_per_transaction.
-    # Only one xdist worker needs to do this.
-    cleanup_lock = root_tmp_dir / f"pg0_cleanup_{pg0_instance_name}.lock"
-    cleanup_done = root_tmp_dir / f"pg0_cleanup_{pg0_instance_name}.done"
-    with filelock.FileLock(str(cleanup_lock)):
-        if not cleanup_done.exists():
-            _cleanup_stale_test_data(url)
-            cleanup_done.write_text("done")
+        run_migrations(url)
 
-    return url
+        # Serial instances persist between runs. Worker-owned instances are new,
+        # but use the same cleanup boundary before any test starts.
+        cleanup_lock = root_tmp_dir / f"pg0_cleanup_{pg0_instance_name}.lock"
+        cleanup_done = root_tmp_dir / f"pg0_cleanup_{pg0_instance_name}.done"
+        with filelock.FileLock(str(cleanup_lock)):
+            if not cleanup_done.exists():
+                _cleanup_stale_test_data(url)
+                cleanup_done.write_text("done")
+        with pytest.MonkeyPatch.context() as session_env:
+            if owns_instance:
+                # Engines created through config defaults must use the same
+                # worker database as engines receiving this fixture's URL.
+                from hindsight_api.config import clear_config_cache
+
+                session_env.setenv("HINDSIGHT_API_DATABASE_URL", url)
+                clear_config_cache()
+            yield url
+    finally:
+        if owns_instance:
+            loop = asyncio.new_event_loop()
+            try:
+                loop.run_until_complete(pg0.stop())
+            finally:
+                loop.close()
 
 
 def _cleanup_stale_test_data(db_url: str) -> None:

@@ -96,6 +96,8 @@ PATCH_REGRESSIONS=(
   tests/test_consolidation_language_sources.py
   tests/test_consolidation_batch_atomicity.py
   tests/test_observation_invalidation.py
+  tests/test_alembic_dag.py
+  tests/test_migration_entities_bank_trgm.py
   tests/test_consolidation_dedup.py
   tests/test_worker_retry_knobs.py
   tests/test_content_policy_refusal_permanent.py

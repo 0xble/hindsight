@@ -102,7 +102,7 @@ class ForkWorkflowPolicyTests(unittest.TestCase):
 
     def test_inline_schedule_fails(self) -> None:
         root = self.make_root()
-        workflow = root / ".github" / "workflows" / "perf-test.yml"
+        workflow = root / ".github" / "workflows" / "fork-perf.yml"
         workflow.write_text(
             workflow.read_text(encoding="utf-8").replace(
                 "on: [workflow_dispatch]", "on: [workflow_dispatch, schedule]"
@@ -114,7 +114,7 @@ class ForkWorkflowPolicyTests(unittest.TestCase):
 
     def test_manual_workflow_inputs_are_preserved(self) -> None:
         root = self.make_root()
-        workflow = root / ".github" / "workflows" / "perf-test.yml"
+        workflow = root / ".github" / "workflows" / "fork-perf.yml"
         workflow.write_text(
             workflow.read_text(encoding="utf-8").replace(
                 "on: [workflow_dispatch]",
@@ -240,7 +240,7 @@ class ForkWorkflowPolicyTests(unittest.TestCase):
 
     def test_secrets_inherit_fails(self) -> None:
         root = self.make_root()
-        workflow = root / ".github" / "workflows" / "perf-test.yml"
+        workflow = root / ".github" / "workflows" / "fork-perf.yml"
         workflow.write_text(
             workflow.read_text(encoding="utf-8").replace(
                 "    runs-on: ubuntu-latest", "    secrets: inherit\n    runs-on: ubuntu-latest"

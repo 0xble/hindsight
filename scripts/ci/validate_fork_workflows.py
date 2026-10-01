@@ -17,7 +17,7 @@ EXPECTED_EVENTS = {
     "fork-policy.yml": {"pull_request_target"},
     "gate.yml": {"pull_request"},
     "nightly.yml": {"schedule", "workflow_dispatch"},
-    "perf-test.yml": {"workflow_dispatch"},
+    "fork-perf.yml": {"workflow_dispatch"},
     "windows-smoke.yml": {"workflow_dispatch"},
 }
 EXPECTED_FORK_CI_TRIGGER = {

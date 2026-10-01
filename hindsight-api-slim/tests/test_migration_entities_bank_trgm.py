@@ -183,7 +183,10 @@ def test_upgrade_keeps_old_index_when_btree_gin_is_unavailable(head_db_url, monk
         with engine.connect() as conn:
             assert _index_def(conn, _OLD_INDEX) is not None, "the old index must stay when btree_gin is missing"
             assert _index_def(conn, _NEW_INDEX) is None
-            assert conn.execute(text("SELECT version_num FROM alembic_version")).scalar() == _REVISION
+            # The fork keeps its normalized-observation index on a separate
+            # migration head, so version rows also include that private lineage.
+            versions = set(conn.execute(text("SELECT version_num FROM alembic_version")).scalars())
+            assert _REVISION in versions
     finally:
         monkeypatch.undo()
         engine.dispose()
