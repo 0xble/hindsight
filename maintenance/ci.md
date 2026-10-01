@@ -101,6 +101,8 @@ intentional fork infrastructure policy, not upstream deployment ownership.
   substitutions. Preserve escaped-newline provenance inside command and exporter
   words, including split spellings such as `uv pub\\\nlish`; a continuation
   between words remains ordinary multiline formatting, not a dynamic word.
+  Parenthesized command groups and conditional/loop introducers cannot hide the
+  executable position; fixed shell test syntax remains syntax, not expansion.
   Preserve authored quote provenance through the existing shlex
   tokenizer rather than matching only its decoded words. Double-quoted parameter
   substitutions still expand and are forbidden; quoted literal command words

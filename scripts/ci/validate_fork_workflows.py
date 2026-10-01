@@ -167,6 +167,7 @@ COMMAND_BOOLEAN_OPTIONS = {
     "-vvv",
 }
 DYNAMIC_SHELL_SYNTAX = re.compile(r"\$\(|`|(?:<|>)\(")
+SHELL_COMMAND_PREFIXES = {"!", "if", "then", "elif", "else", "while", "until", "do"}
 DYNAMIC_COMMAND_WRAPPERS = {
     "builtin",
     "command",
@@ -320,7 +321,7 @@ class PolicyShellLexer(shlex.shlex):
 
     def __init__(self, source: str) -> None:
         self.source_stream = StringIO(source)
-        super().__init__(self.source_stream, posix=True, punctuation_chars=";&|")
+        super().__init__(self.source_stream, posix=True, punctuation_chars=";&|()")
         self.source_text = source
         self.whitespace_split = True
 
@@ -356,7 +357,8 @@ def shell_segments(script: str) -> list[list[str]]:
         for token in tokens:
             if not token:
                 continue  # A continuation between words does not create a word.
-            if all(character in ";&|" for character in token):
+            raw = token.raw if isinstance(token, ShellWord) else token
+            if all(character in ";&|()" for character in token) and raw.strip() == token:
                 if current:
                     segments.append(current)
                     current = []
@@ -573,9 +575,16 @@ def command_is_forbidden(tokens: list[str], depth: int = 0) -> bool:
     )
     if command_index is not None:
         command = normalized[command_index]
+        # Control-flow introducers are shell syntax, not executable words. The
+        # following word still selects an executable and needs expansion checks.
+        while command in SHELL_COMMAND_PREFIXES and command_index + 1 < len(tokens):
+            command_index += 1
+            command = normalized[command_index]
         # eval/source and variable command words can execute candidate-generated text that this
         # validator never sees. Reject the indirection rather than trying to emulate a shell.
-        if command in {".", "eval", "source"} or command_word_is_dynamic(tokens[command_index]):
+        if command in {".", "eval", "source"} or (
+            command not in {"[", "[["} and command_word_is_dynamic(tokens[command_index])
+        ):
             return True
         while command in DYNAMIC_COMMAND_WRAPPERS:
             # The former all-arguments check rejected `env pytest "$TESTS"`. Only the

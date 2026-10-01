@@ -701,6 +701,31 @@ class ForkWorkflowPolicyTests(unittest.TestCase):
             with self.subTest(command=command):
                 self.assertFalse(POLICY.script_is_forbidden(command), command)
 
+    def test_shell_structure_does_not_hide_expanded_executable_words(self) -> None:
+        for command in (
+            "(uv {publish,})",
+            "(u{v,} publish)",
+            "(uv publish)",
+            "if u{v,} test; then echo ok; fi",
+            "while u{v,} test; do echo ok; done",
+            "until u{v,} test; do echo ok; done",
+            "! u{v,} test",
+            "if true; then u{v,} test; fi",
+            "for item in items; do u{v,} test; done",
+            "if false; then echo ok; else u{v,} test; fi",
+        ):
+            with self.subTest(command=command):
+                self.assertTrue(POLICY.script_is_forbidden(command), command)
+        for command in (
+            "(uv test)",
+            'if [ "$VALUE" != all ]; then uv test; fi',
+            "while uv test; do echo ok; done",
+            "! uv test",
+            "echo '(uv test)'",
+        ):
+            with self.subTest(command=command):
+                self.assertFalse(POLICY.script_is_forbidden(command), command)
+
     def test_unquoted_expansions_fail_closed_across_publisher_paths(self) -> None:
         prefixes = POLICY.FORBIDDEN_COMMAND_PREFIXES | {
             ("gh", "release", "create"),
