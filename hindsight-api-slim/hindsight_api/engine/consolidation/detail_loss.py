@@ -115,8 +115,14 @@ _OPAQUE = re.compile(
 )
 
 
+# A key noun alone does not bind its next predicate ("token expires") as a
+# value. Retain explicit assignments and case-sensitive appositions; quoted
+# values are already protected by the literal path.
 _IDENTIFIER_CONTEXT = (
-    r"\b(?:key|token|case-sensitive|identifier|id|secret name|env var|flag)(?:\s*[:=]\s*|\s+(?:(?:is|equals)\s+)?)"
+    r"(?:\b(?:key|token|case-sensitive|identifier|id|secret name|env var|flag)"
+    r"(?:\s*[:=]\s*|\s+(?:is|are|was|were|equals|set to)\s+)"
+    r"|\bcase-sensitive(?:\s+(?:API\s+)?(?:key|token|identifier|id|secret name|env var|flag))?\s+"
+    r"|\buse\s+(?:the\s+)?(?:key|token|identifier|id|secret name|env var|flag)\s+)"
 )
 # Lookahead keeps a descriptive context from consuming the next explicit key:
 # "case-sensitive identifier is PROD" still discovers "identifier is PROD".
@@ -232,15 +238,17 @@ def _extract_occurrences(normalized: str) -> list[_AnchorOccurrence]:
     accounting_matches = list(_ACCOUNTING_NUMBER.finditer(normalized))
     if accounting_matches:
         boundaries = [0] + _clause_boundaries(normalized) + [len(normalized)]
+        # Cache each clause's first content position once. Slicing and stripping
+        # its growing prefix for every amount made dense single clauses quadratic.
         accounting_slots = {
-            i
+            i: next((pos for pos in range(start, end) if not normalized[pos].isspace()), end)
             for i, (start, end) in enumerate(zip(boundaries, boundaries[1:]))
             if _ACCOUNTING_CONTEXT.search(normalized, start, end)
         }
         for match in accounting_matches:
             slot = bisect_right(boundaries, match.start()) - 1
             # A leading parenthesized list index is never an accounting sign.
-            if slot in accounting_slots and normalized[boundaries[slot] : match.start()].strip():
+            if slot in accounting_slots and accounting_slots[slot] < match.start():
                 result.append(
                     _AnchorOccurrence(
                         Anchor("number", "-" + _canonical_amount(match["amount"])), match.start(), match.end()

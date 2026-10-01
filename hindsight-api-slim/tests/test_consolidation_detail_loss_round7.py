@@ -61,10 +61,31 @@ async def test_a1_accounting_equivalence_and_list_numbering(provider, config, be
         ("Use case-sensitive PROD.", "Use case-sensitive prod."),
         ('The value is "PROD".', 'The value is "prod".'),
         ("The value is `Face`.", "The value is `face`."),
+        ("The token was Face.", "The token was face."),
+        ("The token set to Abcd.", "The token set to abcd."),
+        ("Use the key Abcd for login.", "Use the key abcd for login."),
+        ("Use case-sensitive: PROD.", "Use case-sensitive: prod."),
+        ("Use case-sensitive=Face.", "Use case-sensitive=face."),
+        ('The key "PROD" is active.', 'The key "prod" is active.'),
+        ("The token `Face` is active.", "The token `face` is active."),
     ],
 )
 async def test_a2_explicit_identifier_case_is_exact(provider, config, before, after):
     await assert_batch_action(provider, config, before, after, "fallback", ADDITIVE, correction=True)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("noun", ["token", "key", "ID", "identifier", "flag", "secret name", "env var"])
+async def test_a2_ordinary_predicate_is_not_an_identifier(provider, config, noun):
+    await assert_batch_action(
+        provider,
+        config,
+        f"The {noun} expires in 7 days.",
+        f"The {noun} will expire in 7 days.",
+        "update",
+        ADDITIVE,
+        correction=True,
+    )
 
 
 @pytest.mark.asyncio
@@ -212,6 +233,22 @@ def test_new_regexes_are_cpu_bounded_on_256k_dense_input(dense):
     times["all_extraction"] = process_time() - start
     print(f"DENSE_REGEX_CPU_SECONDS={times}")
     assert max(times.values()) < 2.0
+
+
+def test_accounting_preprocessing_is_cpu_bounded_on_256k_aggregate_input():
+    from time import process_time
+
+    from hindsight_api.engine.consolidation import detail_loss as d
+
+    # Exact reviewer probe: one clause with many amounts, not isolated regexes.
+    text = ("balance " + "(1)" * (262144 // 3 + 1))[:262144]
+    times = []
+    for _ in range(5):
+        start = process_time()
+        d.dropped_supported_anchors(text[:-12], "Plain prose.", [], [])
+        times.append(process_time() - start)
+    print(f"ACCOUNTING_256K_AGGREGATE_CPU_SECONDS={times}")
+    assert max(times) < 1.0
 
 
 @pytest.mark.asyncio
