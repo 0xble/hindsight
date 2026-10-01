@@ -3,6 +3,8 @@
 import asyncio
 import io
 import json
+import subprocess
+import sys
 import threading
 import time
 from contextlib import closing, contextmanager
@@ -15,6 +17,66 @@ from hindsight_api.engine.parsers import FileParserRegistry
 from hindsight_api.engine.parsers.markitdown import MarkitdownParser
 from hindsight_api.engine.parsers.ocr_quality import LowQualityOcrError
 from tests.pdf_ocr_fixtures import SYNTHETIC_PASSWORD, encrypted_pdf
+
+
+def test_pdf_worker_import_does_not_load_application_or_local_ml():
+    # Spawn unpickles the worker target by importing this qualified module in
+    # a fresh interpreter. Parent pytest/engine imports must not mask its cost.
+    subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            "import sys; import hindsight_api.engine.parsers.pdf_ocr; "
+            "assert 'hindsight_api.engine.memory_engine' not in sys.modules; "
+            "assert 'hindsight_api.engine.llm_wrapper' not in sys.modules; "
+            "assert 'torch' not in sys.modules; "
+            "assert 'sentence_transformers' not in sys.modules",
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+
+def test_engine_public_exports_preserve_original_objects():
+    import importlib
+
+    import hindsight_api.engine as engine
+
+    exports = {
+        "cross_encoder": ["CrossEncoderModel", "LocalSTCrossEncoder", "RemoteTEICrossEncoder"],
+        "db_utils": ["acquire_with_retry"],
+        "embeddings": ["Embeddings", "LocalSTEmbeddings", "RemoteTEIEmbeddings"],
+        "llm_wrapper": ["LLMConfig"],
+        "memory_engine": [
+            "MemoryEngine",
+            "UnqualifiedTableError",
+            "fq_table",
+            "get_current_schema",
+            "validate_sql_schema",
+        ],
+        "response_models": ["MemoryFact", "RecallResult", "ReflectResult"],
+        "search.trace": [
+            "EntryPoint",
+            "NodeVisit",
+            "QueryInfo",
+            "SearchPhaseMetrics",
+            "SearchSummary",
+            "SearchTrace",
+            "WeightComponents",
+        ],
+        "search.tracer": ["SearchTracer"],
+    }
+    expected = {name for names in exports.values() for name in names}
+    assert set(engine.__all__) == expected
+    assert expected <= set(dir(engine))
+    for module, names in exports.items():
+        original = importlib.import_module(f"hindsight_api.engine.{module}")
+        for name in names:
+            assert getattr(engine, name) is getattr(original, name)
+            assert engine.__dict__[name] is getattr(original, name)
+    with pytest.raises(AttributeError):
+        engine.missing_public_export
 
 
 def scanned_pdf(pages=1, *, size=(240, 160)):
