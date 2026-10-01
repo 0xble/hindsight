@@ -114,6 +114,8 @@ export HINDSIGHT_DEBUG=true
 
 **Retain** — after each turn, Codex's conversation is stored to Hindsight. The memory engine extracts facts, relationships, and experiences — so you don't need to re-explain your stack, preferences, or past decisions.
 
+The standalone hook preserves each source record's timezone-aware `timestamp` as `source_timestamp`. This is the message or tool record time, not a claimed fact event date. Text retention labels it inside the role envelope. JSON retention keeps user message times and each assistant or tool block's own time, because grouped assistant content can span several days. Missing, malformed or timezone-naive times are omitted. The hook never substitutes ingestion time or assigns one date to the whole retained session.
+
 ### Explicit Agent-Session Retention
 
 Before selecting `agent-session`, provision and review that named strategy on the intended bank through its configuration owner, then read back the bank's strategy configuration. The hook does not create strategies or change a shared bank's default strategy. This preserves collectors' source-specific strategies and other clients' bank policy.
