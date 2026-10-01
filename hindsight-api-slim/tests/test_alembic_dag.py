@@ -37,11 +37,15 @@ def test_one_upstream_head_plus_designated_fork_index_head() -> None:
     """
     script = _script_directory()
     heads = script.get_heads()
-    assert "e6f7a8b9c0d1" in heads, "the fork normalized-observation index head must remain in the migration DAG"
-    upstream_heads = set(heads) - {"e6f7a8b9c0d1"}
+    fork_head = "f8e6c4b2a091"
+    assert fork_head in heads, "the fork curation-capsule head must remain in the migration DAG"
+    assert script.get_revision(fork_head).down_revision == "e6f7a8b9c0d1", (
+        "curation capsules must extend the installed normalized-observation index lineage"
+    )
+    upstream_heads = set(heads) - {fork_head}
     assert len(upstream_heads) == 1, (
         f"Alembic has unexpected heads ({heads}); expected one upstream head "
-        "plus the designated fork normalized-observation index head."
+        "plus the designated fork curation-capsule head."
     )
 
 

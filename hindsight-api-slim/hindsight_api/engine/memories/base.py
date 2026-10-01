@@ -43,8 +43,18 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any, cast
+from uuid import UUID
 
 from ...extensions.base import Extension
+from ..curation_batch import (
+    BatchCapsule,
+    ClosureScope,
+    CurationApplyRequest,
+    CurationReceipt,
+    CurationSnapshot,
+    PreparedCorrection,
+)
+from ..db.base import DatabaseConnection
 
 # The five tag-matching modes, as the HTTP layer already validates them. Declared here
 # rather than `str` so a store implementing this seam is checked against the modes that
@@ -2038,6 +2048,55 @@ class MemoriesExtension(Extension, ABC):
         A no-op for a store that keeps entity ids on the memory itself — the edit's
         rewrite replaces the whole set, so there is nothing to clear first.
         """
+
+    async def curation_v2_preview(
+        self, *, conn: DatabaseConnection, bank_id: str, target_ids: list[UUID]
+    ) -> CurationSnapshot:
+        from ..curation_batch import CurationBatchConflict
+
+        raise CurationBatchConflict("raw-curation-v2 requires the PostgreSQL memories store")
+
+    async def curation_v2_capture(
+        self, *, conn: DatabaseConnection, bank_id: str, scope: ClosureScope
+    ) -> CurationSnapshot:
+        from ..curation_batch import CurationBatchConflict
+
+        raise CurationBatchConflict("raw-curation-v2 requires the PostgreSQL memories store")
+
+    async def curation_v2_get(self, *, conn: DatabaseConnection, bank_id: str, batch_id: str) -> BatchCapsule | None:
+        from ..curation_batch import CurationBatchConflict
+
+        raise CurationBatchConflict("raw-curation-v2 requires the PostgreSQL memories store")
+
+    async def curation_v2_lock(self, *, conn: DatabaseConnection, bank_id: str) -> None:
+        from ..curation_batch import CurationBatchConflict
+
+        raise CurationBatchConflict("raw-curation-v2 requires the PostgreSQL memories store")
+
+    async def curation_v2_apply(
+        self,
+        *,
+        conn: DatabaseConnection,
+        bank_id: str,
+        batch_id: str,
+        request: CurationApplyRequest,
+        before: CurationSnapshot,
+        corrections: list[PreparedCorrection],
+    ) -> CurationReceipt:
+        from ..curation_batch import CurationBatchConflict
+
+        raise CurationBatchConflict("raw-curation-v2 requires the PostgreSQL memories store")
+
+    async def curation_v2_revert(
+        self, *, conn: DatabaseConnection, bank_id: str, batch_id: str, capsule: BatchCapsule, expected_receipt: str
+    ) -> CurationReceipt:
+        from ..curation_batch import CurationBatchConflict
+
+        raise CurationBatchConflict("raw-curation-v2 requires the PostgreSQL memories store")
+
+    async def curation_v2_assert_deletable(self, *, conn: DatabaseConnection, bank_id: str) -> None:
+        # Non-Postgres stores have no SQL capsule state.
+        return None
 
     async def apply_edit(
         self,
