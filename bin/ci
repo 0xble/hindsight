@@ -135,6 +135,9 @@ PATCH_REGRESSIONS=(
   tests/test_batch_api.py
   tests/test_migration_shape.py
   tests/test_curation_batch_http.py
+  tests/test_delete_missing_bank_store_owned.py
+  tests/test_list_banks_ordered_page.py
+  tests/test_memories_extension.py
 )
 
 OFFLINE_MARKERS="not oracle and not hs_llm_mat and not hs_llm_core and not integration and not slow"

@@ -337,7 +337,7 @@ async def discover(conn: DatabaseConnection, bank_id: str, targets: list[UUID]) 
     await assert_same_bank_dependencies(conn, bank_id, affected)
     links = await conn.fetch(
         f"SELECT from_unit_id,to_unit_id,entity_id FROM {fq_table('memory_links')} WHERE bank_id=$1 "
-        f"AND (from_unit_id=ANY($2::uuid[]) OR to_unit_id=ANY($2::uuid[])) ORDER BY from_unit_id,to_unit_id,link_type LIMIT {MAX_LINKS + 1}",
+        f"AND (from_unit_id=ANY($2::uuid[]) OR to_unit_id=ANY($2::uuid[])) ORDER BY from_unit_id,to_unit_id,link_type,entity_id NULLS FIRST LIMIT {MAX_LINKS + 1}",
         bank_id,
         affected,
     )
@@ -421,7 +421,7 @@ async def capture(conn: DatabaseConnection, bank_id: str, scope: ClosureScope) -
     )
     links = await bounded_snapshot(
         "memory_links",
-        f"SELECT to_jsonb(l)::text AS row FROM {fq_table('memory_links')} l WHERE bank_id=$1 AND (from_unit_id=ANY($2::uuid[]) OR to_unit_id=ANY($2::uuid[])) ORDER BY from_unit_id,to_unit_id,link_type",
+        f"SELECT to_jsonb(l)::text AS row FROM {fq_table('memory_links')} l WHERE bank_id=$1 AND (from_unit_id=ANY($2::uuid[]) OR to_unit_id=ANY($2::uuid[])) ORDER BY from_unit_id,to_unit_id,link_type,entity_id NULLS FIRST",
         bank_id,
         affected,
         cap=MAX_LINKS,

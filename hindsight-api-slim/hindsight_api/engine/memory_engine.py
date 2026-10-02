@@ -11650,15 +11650,18 @@ class MemoryEngine(MemoryEngineInterface):
             await conn.execute("SET SESSION CHARACTERISTICS AS TRANSACTION READ WRITE")
             async with conn.transaction():
                 try:
-                    # Serialize bank deletion with curation before checking capsules.
-                    # The advisory lock is bank-scoped and fail-fast, so ordinary
-                    # bank profile/config updates are not blocked by curation while
-                    # delete cannot race a capsule insert between its check and
-                    # cascade.
-                    if self._database_backend_type == "postgresql":
-                        from .memories import get_memories as _curation_store
+                    # Serialize bank deletion with raw curation before checking
+                    # capsules, so a curation cannot insert a capsule between the
+                    # check below and the cascade. This is a bank-keyed PostgreSQL
+                    # advisory try-lock: it never waits and does not block ordinary
+                    # bank updates. Capsules live in SQL whichever memories store owns
+                    # the bank, so call the PostgreSQL helpers directly instead of the
+                    # store interface, which store-owned and duck-typed stores do not
+                    # implement.
+                    from .memories.pg import curation_batch as _curation_sql
 
-                        await _curation_store().curation_v2_lock(conn=conn, bank_id=bank_id, check_pause=False)
+                    if self._database_backend_type == "postgresql":
+                        await _curation_sql.lock(conn, bank_id)
                     # Match delete_document's bank-before-data order. Otherwise a
                     # bank delete could hold its documents while waiting for the
                     # bank row held by a concurrent document delete.
@@ -11668,9 +11671,7 @@ class MemoryEngine(MemoryEngineInterface):
                     )
                     bank_present = bank_row is not None
                     if self._database_backend_type == "postgresql":
-                        from .memories import get_memories as _curation_store
-
-                        await _curation_store().curation_v2_assert_deletable(conn=conn, bank_id=bank_id)
+                        await _curation_sql.assert_deletable(conn, bank_id)
                     if fact_type:
                         from .memories import get_memories as _get_memories_for_scope
 

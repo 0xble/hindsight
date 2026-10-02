@@ -2094,10 +2094,6 @@ class MemoriesExtension(Extension, ABC):
 
         raise CurationBatchConflict("raw-curation-v2 requires the PostgreSQL memories store")
 
-    async def curation_v2_assert_deletable(self, *, conn: DatabaseConnection, bank_id: str) -> None:
-        # Non-Postgres stores have no SQL capsule state.
-        return None
-
     async def apply_edit(
         self,
         *,

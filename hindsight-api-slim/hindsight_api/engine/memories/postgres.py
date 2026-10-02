@@ -649,11 +649,6 @@ class PostgresMemories(MemoriesExtension):
 
         return await curation_batch.revert(conn, bank_id, batch_id, capsule, expected_receipt)
 
-    async def curation_v2_assert_deletable(self, *, conn: DatabaseConnection, bank_id: str) -> None:
-        from .pg import curation_batch
-
-        await curation_batch.assert_deletable(conn, bank_id)
-
     async def apply_edit(
         self,
         *,
