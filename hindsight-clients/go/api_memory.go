@@ -25,6 +25,141 @@ import (
 // MemoryAPIService MemoryAPI service
 type MemoryAPIService service
 
+type ApiApplyCurationBatchRequest struct {
+	ctx context.Context
+	ApiService *MemoryAPIService
+	bankId string
+	batchId string
+	curationApplyRequest *CurationApplyRequest
+	authorization *string
+}
+
+func (r ApiApplyCurationBatchRequest) CurationApplyRequest(curationApplyRequest CurationApplyRequest) ApiApplyCurationBatchRequest {
+	r.curationApplyRequest = &curationApplyRequest
+	return r
+}
+
+func (r ApiApplyCurationBatchRequest) Authorization(authorization string) ApiApplyCurationBatchRequest {
+	r.authorization = &authorization
+	return r
+}
+
+func (r ApiApplyCurationBatchRequest) Execute() (*CurationReceipt, *http.Response, error) {
+	return r.ApiService.ApplyCurationBatchExecute(r)
+}
+
+/*
+ApplyCurationBatch Atomically apply a bounded raw-curation-v2 manifest
+
+ @param ctx context.Context - for authentication, logging, cancellation, deadlines, tracing, etc. Passed from http.Request or context.Background().
+ @param bankId
+ @param batchId
+ @return ApiApplyCurationBatchRequest
+*/
+func (a *MemoryAPIService) ApplyCurationBatch(ctx context.Context, bankId string, batchId string) ApiApplyCurationBatchRequest {
+	return ApiApplyCurationBatchRequest{
+		ApiService: a,
+		ctx: ctx,
+		bankId: bankId,
+		batchId: batchId,
+	}
+}
+
+// Execute executes the request
+//  @return CurationReceipt
+func (a *MemoryAPIService) ApplyCurationBatchExecute(r ApiApplyCurationBatchRequest) (*CurationReceipt, *http.Response, error) {
+	var (
+		localVarHTTPMethod   = http.MethodPost
+		localVarPostBody     interface{}
+		formFiles            []formFile
+		localVarReturnValue  *CurationReceipt
+	)
+
+	localBasePath, err := a.client.cfg.ServerURLWithContext(r.ctx, "MemoryAPIService.ApplyCurationBatch")
+	if err != nil {
+		return localVarReturnValue, nil, &GenericOpenAPIError{error: err.Error()}
+	}
+
+	localVarPath := localBasePath + "/v1/default/banks/{bank_id}/curation-batches/{batch_id}"
+	localVarPath = strings.Replace(localVarPath, "{"+"bank_id"+"}", url.PathEscape(parameterValueToString(r.bankId, "bankId")), -1)
+	localVarPath = strings.Replace(localVarPath, "{"+"batch_id"+"}", url.PathEscape(parameterValueToString(r.batchId, "batchId")), -1)
+
+	localVarHeaderParams := make(map[string]string)
+	localVarQueryParams := url.Values{}
+	localVarFormParams := url.Values{}
+	if r.curationApplyRequest == nil {
+		return localVarReturnValue, nil, reportError("curationApplyRequest is required and must be specified")
+	}
+
+	// to determine the Content-Type header
+	localVarHTTPContentTypes := []string{"application/json"}
+
+	// set Content-Type header
+	localVarHTTPContentType := selectHeaderContentType(localVarHTTPContentTypes)
+	if localVarHTTPContentType != "" {
+		localVarHeaderParams["Content-Type"] = localVarHTTPContentType
+	}
+
+	// to determine the Accept header
+	localVarHTTPHeaderAccepts := []string{"application/json"}
+
+	// set Accept header
+	localVarHTTPHeaderAccept := selectHeaderAccept(localVarHTTPHeaderAccepts)
+	if localVarHTTPHeaderAccept != "" {
+		localVarHeaderParams["Accept"] = localVarHTTPHeaderAccept
+	}
+	if r.authorization != nil {
+		parameterAddToHeaderOrQuery(localVarHeaderParams, "authorization", r.authorization, "simple", "")
+	}
+	// body params
+	localVarPostBody = r.curationApplyRequest
+	req, err := a.client.prepareRequest(r.ctx, localVarPath, localVarHTTPMethod, localVarPostBody, localVarHeaderParams, localVarQueryParams, localVarFormParams, formFiles)
+	if err != nil {
+		return localVarReturnValue, nil, err
+	}
+
+	localVarHTTPResponse, err := a.client.callAPI(req)
+	if err != nil || localVarHTTPResponse == nil {
+		return localVarReturnValue, localVarHTTPResponse, err
+	}
+
+	localVarBody, err := io.ReadAll(localVarHTTPResponse.Body)
+	localVarHTTPResponse.Body.Close()
+	localVarHTTPResponse.Body = io.NopCloser(bytes.NewBuffer(localVarBody))
+	if err != nil {
+		return localVarReturnValue, localVarHTTPResponse, err
+	}
+
+	if localVarHTTPResponse.StatusCode >= 300 {
+		newErr := &GenericOpenAPIError{
+			body:  localVarBody,
+			error: localVarHTTPResponse.Status,
+		}
+		if localVarHTTPResponse.StatusCode == 422 {
+			var v HTTPValidationError
+			err = a.client.decode(&v, localVarBody, localVarHTTPResponse.Header.Get("Content-Type"))
+			if err != nil {
+				newErr.error = err.Error()
+				return localVarReturnValue, localVarHTTPResponse, newErr
+			}
+					newErr.error = formatErrorMessage(localVarHTTPResponse.Status, &v)
+					newErr.model = v
+		}
+		return localVarReturnValue, localVarHTTPResponse, newErr
+	}
+
+	err = a.client.decode(&localVarReturnValue, localVarBody, localVarHTTPResponse.Header.Get("Content-Type"))
+	if err != nil {
+		newErr := &GenericOpenAPIError{
+			body:  localVarBody,
+			error: err.Error(),
+		}
+		return localVarReturnValue, localVarHTTPResponse, newErr
+	}
+
+	return localVarReturnValue, localVarHTTPResponse, nil
+}
+
 type ApiClearBankMemoriesRequest struct {
 	ctx context.Context
 	ApiService *MemoryAPIService
@@ -488,6 +623,130 @@ func (a *MemoryAPIService) GetBankAttachmentExecute(r ApiGetBankAttachmentReques
 
 	// to determine the Accept header
 	localVarHTTPHeaderAccepts := []string{"application/octet-stream", "application/json"}
+
+	// set Accept header
+	localVarHTTPHeaderAccept := selectHeaderAccept(localVarHTTPHeaderAccepts)
+	if localVarHTTPHeaderAccept != "" {
+		localVarHeaderParams["Accept"] = localVarHTTPHeaderAccept
+	}
+	if r.authorization != nil {
+		parameterAddToHeaderOrQuery(localVarHeaderParams, "authorization", r.authorization, "simple", "")
+	}
+	req, err := a.client.prepareRequest(r.ctx, localVarPath, localVarHTTPMethod, localVarPostBody, localVarHeaderParams, localVarQueryParams, localVarFormParams, formFiles)
+	if err != nil {
+		return localVarReturnValue, nil, err
+	}
+
+	localVarHTTPResponse, err := a.client.callAPI(req)
+	if err != nil || localVarHTTPResponse == nil {
+		return localVarReturnValue, localVarHTTPResponse, err
+	}
+
+	localVarBody, err := io.ReadAll(localVarHTTPResponse.Body)
+	localVarHTTPResponse.Body.Close()
+	localVarHTTPResponse.Body = io.NopCloser(bytes.NewBuffer(localVarBody))
+	if err != nil {
+		return localVarReturnValue, localVarHTTPResponse, err
+	}
+
+	if localVarHTTPResponse.StatusCode >= 300 {
+		newErr := &GenericOpenAPIError{
+			body:  localVarBody,
+			error: localVarHTTPResponse.Status,
+		}
+		if localVarHTTPResponse.StatusCode == 422 {
+			var v HTTPValidationError
+			err = a.client.decode(&v, localVarBody, localVarHTTPResponse.Header.Get("Content-Type"))
+			if err != nil {
+				newErr.error = err.Error()
+				return localVarReturnValue, localVarHTTPResponse, newErr
+			}
+					newErr.error = formatErrorMessage(localVarHTTPResponse.Status, &v)
+					newErr.model = v
+		}
+		return localVarReturnValue, localVarHTTPResponse, newErr
+	}
+
+	err = a.client.decode(&localVarReturnValue, localVarBody, localVarHTTPResponse.Header.Get("Content-Type"))
+	if err != nil {
+		newErr := &GenericOpenAPIError{
+			body:  localVarBody,
+			error: err.Error(),
+		}
+		return localVarReturnValue, localVarHTTPResponse, newErr
+	}
+
+	return localVarReturnValue, localVarHTTPResponse, nil
+}
+
+type ApiGetCurationBatchRequest struct {
+	ctx context.Context
+	ApiService *MemoryAPIService
+	bankId string
+	batchId string
+	authorization *string
+}
+
+func (r ApiGetCurationBatchRequest) Authorization(authorization string) ApiGetCurationBatchRequest {
+	r.authorization = &authorization
+	return r
+}
+
+func (r ApiGetCurationBatchRequest) Execute() (*CurationReceipt, *http.Response, error) {
+	return r.ApiService.GetCurationBatchExecute(r)
+}
+
+/*
+GetCurationBatch Read a durable raw-curation-v2 receipt after a lost acknowledgement
+
+ @param ctx context.Context - for authentication, logging, cancellation, deadlines, tracing, etc. Passed from http.Request or context.Background().
+ @param bankId
+ @param batchId
+ @return ApiGetCurationBatchRequest
+*/
+func (a *MemoryAPIService) GetCurationBatch(ctx context.Context, bankId string, batchId string) ApiGetCurationBatchRequest {
+	return ApiGetCurationBatchRequest{
+		ApiService: a,
+		ctx: ctx,
+		bankId: bankId,
+		batchId: batchId,
+	}
+}
+
+// Execute executes the request
+//  @return CurationReceipt
+func (a *MemoryAPIService) GetCurationBatchExecute(r ApiGetCurationBatchRequest) (*CurationReceipt, *http.Response, error) {
+	var (
+		localVarHTTPMethod   = http.MethodGet
+		localVarPostBody     interface{}
+		formFiles            []formFile
+		localVarReturnValue  *CurationReceipt
+	)
+
+	localBasePath, err := a.client.cfg.ServerURLWithContext(r.ctx, "MemoryAPIService.GetCurationBatch")
+	if err != nil {
+		return localVarReturnValue, nil, &GenericOpenAPIError{error: err.Error()}
+	}
+
+	localVarPath := localBasePath + "/v1/default/banks/{bank_id}/curation-batches/{batch_id}"
+	localVarPath = strings.Replace(localVarPath, "{"+"bank_id"+"}", url.PathEscape(parameterValueToString(r.bankId, "bankId")), -1)
+	localVarPath = strings.Replace(localVarPath, "{"+"batch_id"+"}", url.PathEscape(parameterValueToString(r.batchId, "batchId")), -1)
+
+	localVarHeaderParams := make(map[string]string)
+	localVarQueryParams := url.Values{}
+	localVarFormParams := url.Values{}
+
+	// to determine the Content-Type header
+	localVarHTTPContentTypes := []string{}
+
+	// set Content-Type header
+	localVarHTTPContentType := selectHeaderContentType(localVarHTTPContentTypes)
+	if localVarHTTPContentType != "" {
+		localVarHeaderParams["Content-Type"] = localVarHTTPContentType
+	}
+
+	// to determine the Accept header
+	localVarHTTPHeaderAccepts := []string{"application/json"}
 
 	// set Accept header
 	localVarHTTPHeaderAccept := selectHeaderAccept(localVarHTTPHeaderAccepts)
@@ -1706,6 +1965,137 @@ func (a *MemoryAPIService) PreviewConsolidationStrategiesExecute(r ApiPreviewCon
 	return localVarReturnValue, localVarHTTPResponse, nil
 }
 
+type ApiPreviewCurationBatchRequest struct {
+	ctx context.Context
+	ApiService *MemoryAPIService
+	bankId string
+	curationPreviewRequest *CurationPreviewRequest
+	authorization *string
+}
+
+func (r ApiPreviewCurationBatchRequest) CurationPreviewRequest(curationPreviewRequest CurationPreviewRequest) ApiPreviewCurationBatchRequest {
+	r.curationPreviewRequest = &curationPreviewRequest
+	return r
+}
+
+func (r ApiPreviewCurationBatchRequest) Authorization(authorization string) ApiPreviewCurationBatchRequest {
+	r.authorization = &authorization
+	return r
+}
+
+func (r ApiPreviewCurationBatchRequest) Execute() (*CurationPreview, *http.Response, error) {
+	return r.ApiService.PreviewCurationBatchExecute(r)
+}
+
+/*
+PreviewCurationBatch Preview a bounded raw-curation-v2 dependency closure
+
+ @param ctx context.Context - for authentication, logging, cancellation, deadlines, tracing, etc. Passed from http.Request or context.Background().
+ @param bankId
+ @return ApiPreviewCurationBatchRequest
+*/
+func (a *MemoryAPIService) PreviewCurationBatch(ctx context.Context, bankId string) ApiPreviewCurationBatchRequest {
+	return ApiPreviewCurationBatchRequest{
+		ApiService: a,
+		ctx: ctx,
+		bankId: bankId,
+	}
+}
+
+// Execute executes the request
+//  @return CurationPreview
+func (a *MemoryAPIService) PreviewCurationBatchExecute(r ApiPreviewCurationBatchRequest) (*CurationPreview, *http.Response, error) {
+	var (
+		localVarHTTPMethod   = http.MethodPost
+		localVarPostBody     interface{}
+		formFiles            []formFile
+		localVarReturnValue  *CurationPreview
+	)
+
+	localBasePath, err := a.client.cfg.ServerURLWithContext(r.ctx, "MemoryAPIService.PreviewCurationBatch")
+	if err != nil {
+		return localVarReturnValue, nil, &GenericOpenAPIError{error: err.Error()}
+	}
+
+	localVarPath := localBasePath + "/v1/default/banks/{bank_id}/curation-batches/preview"
+	localVarPath = strings.Replace(localVarPath, "{"+"bank_id"+"}", url.PathEscape(parameterValueToString(r.bankId, "bankId")), -1)
+
+	localVarHeaderParams := make(map[string]string)
+	localVarQueryParams := url.Values{}
+	localVarFormParams := url.Values{}
+	if r.curationPreviewRequest == nil {
+		return localVarReturnValue, nil, reportError("curationPreviewRequest is required and must be specified")
+	}
+
+	// to determine the Content-Type header
+	localVarHTTPContentTypes := []string{"application/json"}
+
+	// set Content-Type header
+	localVarHTTPContentType := selectHeaderContentType(localVarHTTPContentTypes)
+	if localVarHTTPContentType != "" {
+		localVarHeaderParams["Content-Type"] = localVarHTTPContentType
+	}
+
+	// to determine the Accept header
+	localVarHTTPHeaderAccepts := []string{"application/json"}
+
+	// set Accept header
+	localVarHTTPHeaderAccept := selectHeaderAccept(localVarHTTPHeaderAccepts)
+	if localVarHTTPHeaderAccept != "" {
+		localVarHeaderParams["Accept"] = localVarHTTPHeaderAccept
+	}
+	if r.authorization != nil {
+		parameterAddToHeaderOrQuery(localVarHeaderParams, "authorization", r.authorization, "simple", "")
+	}
+	// body params
+	localVarPostBody = r.curationPreviewRequest
+	req, err := a.client.prepareRequest(r.ctx, localVarPath, localVarHTTPMethod, localVarPostBody, localVarHeaderParams, localVarQueryParams, localVarFormParams, formFiles)
+	if err != nil {
+		return localVarReturnValue, nil, err
+	}
+
+	localVarHTTPResponse, err := a.client.callAPI(req)
+	if err != nil || localVarHTTPResponse == nil {
+		return localVarReturnValue, localVarHTTPResponse, err
+	}
+
+	localVarBody, err := io.ReadAll(localVarHTTPResponse.Body)
+	localVarHTTPResponse.Body.Close()
+	localVarHTTPResponse.Body = io.NopCloser(bytes.NewBuffer(localVarBody))
+	if err != nil {
+		return localVarReturnValue, localVarHTTPResponse, err
+	}
+
+	if localVarHTTPResponse.StatusCode >= 300 {
+		newErr := &GenericOpenAPIError{
+			body:  localVarBody,
+			error: localVarHTTPResponse.Status,
+		}
+		if localVarHTTPResponse.StatusCode == 422 {
+			var v HTTPValidationError
+			err = a.client.decode(&v, localVarBody, localVarHTTPResponse.Header.Get("Content-Type"))
+			if err != nil {
+				newErr.error = err.Error()
+				return localVarReturnValue, localVarHTTPResponse, newErr
+			}
+					newErr.error = formatErrorMessage(localVarHTTPResponse.Status, &v)
+					newErr.model = v
+		}
+		return localVarReturnValue, localVarHTTPResponse, newErr
+	}
+
+	err = a.client.decode(&localVarReturnValue, localVarBody, localVarHTTPResponse.Header.Get("Content-Type"))
+	if err != nil {
+		newErr := &GenericOpenAPIError{
+			body:  localVarBody,
+			error: err.Error(),
+		}
+		return localVarReturnValue, localVarHTTPResponse, newErr
+	}
+
+	return localVarReturnValue, localVarHTTPResponse, nil
+}
+
 type ApiRecallMemoriesRequest struct {
 	ctx context.Context
 	ApiService *MemoryAPIService
@@ -2095,6 +2485,141 @@ func (a *MemoryAPIService) RetainMemoriesExecute(r ApiRetainMemoriesRequest) (*R
 	}
 	// body params
 	localVarPostBody = r.retainRequest
+	req, err := a.client.prepareRequest(r.ctx, localVarPath, localVarHTTPMethod, localVarPostBody, localVarHeaderParams, localVarQueryParams, localVarFormParams, formFiles)
+	if err != nil {
+		return localVarReturnValue, nil, err
+	}
+
+	localVarHTTPResponse, err := a.client.callAPI(req)
+	if err != nil || localVarHTTPResponse == nil {
+		return localVarReturnValue, localVarHTTPResponse, err
+	}
+
+	localVarBody, err := io.ReadAll(localVarHTTPResponse.Body)
+	localVarHTTPResponse.Body.Close()
+	localVarHTTPResponse.Body = io.NopCloser(bytes.NewBuffer(localVarBody))
+	if err != nil {
+		return localVarReturnValue, localVarHTTPResponse, err
+	}
+
+	if localVarHTTPResponse.StatusCode >= 300 {
+		newErr := &GenericOpenAPIError{
+			body:  localVarBody,
+			error: localVarHTTPResponse.Status,
+		}
+		if localVarHTTPResponse.StatusCode == 422 {
+			var v HTTPValidationError
+			err = a.client.decode(&v, localVarBody, localVarHTTPResponse.Header.Get("Content-Type"))
+			if err != nil {
+				newErr.error = err.Error()
+				return localVarReturnValue, localVarHTTPResponse, newErr
+			}
+					newErr.error = formatErrorMessage(localVarHTTPResponse.Status, &v)
+					newErr.model = v
+		}
+		return localVarReturnValue, localVarHTTPResponse, newErr
+	}
+
+	err = a.client.decode(&localVarReturnValue, localVarBody, localVarHTTPResponse.Header.Get("Content-Type"))
+	if err != nil {
+		newErr := &GenericOpenAPIError{
+			body:  localVarBody,
+			error: err.Error(),
+		}
+		return localVarReturnValue, localVarHTTPResponse, newErr
+	}
+
+	return localVarReturnValue, localVarHTTPResponse, nil
+}
+
+type ApiRevertCurationBatchRequest struct {
+	ctx context.Context
+	ApiService *MemoryAPIService
+	bankId string
+	batchId string
+	curationRevertRequest *CurationRevertRequest
+	authorization *string
+}
+
+func (r ApiRevertCurationBatchRequest) CurationRevertRequest(curationRevertRequest CurationRevertRequest) ApiRevertCurationBatchRequest {
+	r.curationRevertRequest = &curationRevertRequest
+	return r
+}
+
+func (r ApiRevertCurationBatchRequest) Authorization(authorization string) ApiRevertCurationBatchRequest {
+	r.authorization = &authorization
+	return r
+}
+
+func (r ApiRevertCurationBatchRequest) Execute() (*CurationReceipt, *http.Response, error) {
+	return r.ApiService.RevertCurationBatchExecute(r)
+}
+
+/*
+RevertCurationBatch Conditionally restore a raw-curation-v2 capsule without overwriting later work
+
+ @param ctx context.Context - for authentication, logging, cancellation, deadlines, tracing, etc. Passed from http.Request or context.Background().
+ @param bankId
+ @param batchId
+ @return ApiRevertCurationBatchRequest
+*/
+func (a *MemoryAPIService) RevertCurationBatch(ctx context.Context, bankId string, batchId string) ApiRevertCurationBatchRequest {
+	return ApiRevertCurationBatchRequest{
+		ApiService: a,
+		ctx: ctx,
+		bankId: bankId,
+		batchId: batchId,
+	}
+}
+
+// Execute executes the request
+//  @return CurationReceipt
+func (a *MemoryAPIService) RevertCurationBatchExecute(r ApiRevertCurationBatchRequest) (*CurationReceipt, *http.Response, error) {
+	var (
+		localVarHTTPMethod   = http.MethodPost
+		localVarPostBody     interface{}
+		formFiles            []formFile
+		localVarReturnValue  *CurationReceipt
+	)
+
+	localBasePath, err := a.client.cfg.ServerURLWithContext(r.ctx, "MemoryAPIService.RevertCurationBatch")
+	if err != nil {
+		return localVarReturnValue, nil, &GenericOpenAPIError{error: err.Error()}
+	}
+
+	localVarPath := localBasePath + "/v1/default/banks/{bank_id}/curation-batches/{batch_id}/revert"
+	localVarPath = strings.Replace(localVarPath, "{"+"bank_id"+"}", url.PathEscape(parameterValueToString(r.bankId, "bankId")), -1)
+	localVarPath = strings.Replace(localVarPath, "{"+"batch_id"+"}", url.PathEscape(parameterValueToString(r.batchId, "batchId")), -1)
+
+	localVarHeaderParams := make(map[string]string)
+	localVarQueryParams := url.Values{}
+	localVarFormParams := url.Values{}
+	if r.curationRevertRequest == nil {
+		return localVarReturnValue, nil, reportError("curationRevertRequest is required and must be specified")
+	}
+
+	// to determine the Content-Type header
+	localVarHTTPContentTypes := []string{"application/json"}
+
+	// set Content-Type header
+	localVarHTTPContentType := selectHeaderContentType(localVarHTTPContentTypes)
+	if localVarHTTPContentType != "" {
+		localVarHeaderParams["Content-Type"] = localVarHTTPContentType
+	}
+
+	// to determine the Accept header
+	localVarHTTPHeaderAccepts := []string{"application/json"}
+
+	// set Accept header
+	localVarHTTPHeaderAccept := selectHeaderAccept(localVarHTTPHeaderAccepts)
+	if localVarHTTPHeaderAccept != "" {
+		localVarHeaderParams["Accept"] = localVarHTTPHeaderAccept
+	}
+	if r.authorization != nil {
+		parameterAddToHeaderOrQuery(localVarHeaderParams, "authorization", r.authorization, "simple", "")
+	}
+	// body params
+	localVarPostBody = r.curationRevertRequest
 	req, err := a.client.prepareRequest(r.ctx, localVarPath, localVarHTTPMethod, localVarPostBody, localVarHeaderParams, localVarQueryParams, localVarFormParams, formFiles)
 	if err != nil {
 		return localVarReturnValue, nil, err

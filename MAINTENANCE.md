@@ -35,6 +35,7 @@ runs; these extend this sole enrollment and scheduling unit:
 - [Original file preservation](maintenance/file-preservation.md): preserve bank-scoped policy, fail-closed worker reads and template roundtrips when adopting file/config changes.
 - [Codex session attribution](maintenance/codex-session-attribution.md): when adopting Codex retain/config changes, preserve explicit strategy scope and source-status safeguards.
 - [Guarded raw curation](maintenance/raw-curation.md): optional atomic PATCH preconditions.
+- [Bounded raw curation](maintenance/raw-curation-v2.md): preserve durable capsules, indexed pins, conditional recovery and deferred maintenance.
 
 ## Upstream-owned recovery
 

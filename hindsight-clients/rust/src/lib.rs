@@ -22,6 +22,67 @@
 // Include the generated client code (which already exports Error and ResponseValue)
 include!(concat!(env!("OUT_DIR"), "/hindsight_client_generated.rs"));
 
+/// Three-state patch value: omit a field, clear it, or replace its value.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub enum NullablePatch<T> {
+    /// Leave the stored field unchanged.
+    #[default]
+    Unset,
+    /// Set the stored field to null.
+    Clear,
+    /// Set the stored field to this value.
+    Value(T),
+}
+
+impl<T> NullablePatch<T> {
+    /// Whether this value should be omitted from the serialized patch.
+    pub fn is_unset(&self) -> bool {
+        matches!(self, Self::Unset)
+    }
+}
+
+impl<T: serde::Serialize> serde::Serialize for NullablePatch<T> {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        match self {
+            Self::Unset | Self::Clear => serializer.serialize_none(),
+            Self::Value(value) => value.serialize(serializer),
+        }
+    }
+}
+
+impl<'de, T: serde::Deserialize<'de>> serde::Deserialize<'de> for NullablePatch<T> {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        Ok(match Option::<T>::deserialize(deserializer)? {
+            None => Self::Clear,
+            Some(value) => Self::Value(value),
+        })
+    }
+}
+
+/// Bounded raw-curation-v2 correction fields.
+///
+/// Omitted fields are unchanged. Context and occurrence dates can be explicitly
+/// cleared with [`NullablePatch::Clear`]. Entity associations are preserved.
+#[derive(Clone, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CurationFields {
+    /// Nonblank replacement text, at most 100000 characters.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub text: Option<String>,
+    /// Replacement context, or explicit null to clear.
+    #[serde(default, skip_serializing_if = "NullablePatch::is_unset")]
+    pub context: NullablePatch<String>,
+    /// Raw world or experience classification.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fact_type: Option<types::CurationFactType>,
+    /// Event start, including timezone, or explicit null to clear.
+    #[serde(default, skip_serializing_if = "NullablePatch::is_unset")]
+    pub occurred_start: NullablePatch<chrono::DateTime<chrono::Utc>>,
+    /// Event end, including timezone, or explicit null to clear.
+    #[serde(default, skip_serializing_if = "NullablePatch::is_unset")]
+    pub occurred_end: NullablePatch<chrono::DateTime<chrono::Utc>>,
+}
+
 /// Semantic version of this Rust client, kept in sync with the other language
 /// wrappers when a coordinated release is cut.
 pub const CLIENT_VERSION: &str = env!("CARGO_PKG_VERSION");

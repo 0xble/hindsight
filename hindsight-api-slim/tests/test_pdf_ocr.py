@@ -508,9 +508,7 @@ async def test_sparse_evidence_is_admitted_and_provably_blank_pages_need_no_ocr(
     "page_response,succeeds",
     [("Alice completed the source review on Monday.", True), ("No readable text in this image.", False)],
 )
-async def test_real_conversion_handler_preserves_provenance_and_queues_only_complete_pdf(
-    monkeypatch, page_response, succeeds
-):
+async def test_real_conversion_handler_preserves_provenance_and_queues_only_complete_pdf(page_response, succeeds):
     import copy
     import hashlib
     from types import SimpleNamespace
@@ -564,8 +562,10 @@ async def test_real_conversion_handler_preserves_provenance_and_queues_only_comp
         _operation_validator=None,
         _get_backend=AsyncMock(return_value=backend),
         _task_backend=task_backend,
+        _config_resolver=SimpleNamespace(
+            resolve_full_config=AsyncMock(return_value=SimpleNamespace(file_delete_after_retain=False))
+        ),
     )
-    monkeypatch.setattr("hindsight_api.config.get_config", lambda: SimpleNamespace(file_delete_after_retain=False))
     with ocr_server(["First scanned source page approved by Bob.", page_response]) as (url, calls):
         registry.register(parser(url))
         if succeeds:
