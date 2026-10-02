@@ -12981,12 +12981,7 @@ class MemoryEngine(MemoryEngineInterface):
             async with acquire_with_retry(backend) as conn:
                 async with conn.transaction():
                     if curation_guard is not None:
-                        try:
-                            await lock_curation_tables(conn, fq_table)
-                        except asyncpg.LockNotAvailableError as exc:
-                            raise CurationConflictError(
-                                "Curation write window is busy, no guarded write applied."
-                            ) from exc
+                        await lock_curation_tables(conn, fq_table)
                         current_snapshot = await store.get_memory_unit(
                             conn=conn,
                             ops=self._backend.ops,
@@ -13180,6 +13175,13 @@ class MemoryEngine(MemoryEngineInterface):
                         need_graph = True
 
                 phase2_committed = True
+        except asyncpg.LockNotAvailableError as exc:
+            # PostgreSQL uses 55P03 for both NOWAIT and lock_timeout. Catch
+            # outside the entire transaction: row/FK locks can contend after
+            # the table guard succeeds, and all preceding writes must roll back.
+            if curation_guard is not None:
+                raise CurationConflictError("Curation write window is busy, no guarded write applied.") from exc
+            raise
         finally:
             # Entities were resolved (and possibly autocommitted) in Phase 1 but the edit did not
             # durably apply (row concurrently invalidated → live2 None, or Phase 2 raised), so the
@@ -13200,8 +13202,10 @@ class MemoryEngine(MemoryEngineInterface):
                     logger.warning(f"Failed to submit orphan-entity cleanup after a failed edit in bank {bank_id}: {e}")
 
         consolidation_submitted = False
-        if need_consolidation:
-            config = await self._config_resolver.resolve_full_config(bank_id, request_context)
+        # Guarded writes never schedule consolidation, even if another process
+        # resumes the bank after commit or this process caches an enabled flag.
+        if need_consolidation and curation_guard is None:
+            config = await self._config_resolver.resolve_full_config(bank_id, request_context, cached=False)
             if config.enable_auto_consolidation:
                 try:
                     await self.submit_async_consolidation(bank_id=bank_id, request_context=request_context)
