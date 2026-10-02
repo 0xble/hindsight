@@ -516,6 +516,11 @@ paths:
         name: batch_id
         required: true
         schema:
+          description: Unique batch ID; the exact case-sensitive value 'preview' is
+            reserved for the preview route
+          not:
+            enum:
+            - preview
           pattern: "^[a-zA-Z0-9][a-zA-Z0-9_-]{0,79}$"
           title: Batch Id
           type: string
@@ -560,6 +565,11 @@ paths:
         name: batch_id
         required: true
         schema:
+          description: Unique batch ID; the exact case-sensitive value 'preview' is
+            reserved for the preview route
+          not:
+            enum:
+            - preview
           pattern: "^[a-zA-Z0-9][a-zA-Z0-9_-]{0,79}$"
           title: Batch Id
           type: string
@@ -611,6 +621,11 @@ paths:
         name: batch_id
         required: true
         schema:
+          description: Unique batch ID; the exact case-sensitive value 'preview' is
+            reserved for the preview route
+          not:
+            enum:
+            - preview
           pattern: "^[a-zA-Z0-9][a-zA-Z0-9_-]{0,79}$"
           title: Batch Id
           type: string
@@ -7803,6 +7818,11 @@ components:
         bank_id:
           title: Bank Id
         batch_id:
+          description: Unique batch ID; the exact case-sensitive value 'preview' is
+            reserved for the preview route
+          not:
+            enum:
+            - preview
           pattern: "^[a-zA-Z0-9][a-zA-Z0-9_-]{0,79}$"
           title: Batch Id
         manifest_revision:

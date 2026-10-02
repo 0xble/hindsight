@@ -31,7 +31,7 @@ class CurationReceipt(BaseModel):
     """ # noqa: E501
     protocol: Optional[StrictStr] = 'raw-curation-v2'
     bank_id: StrictStr
-    batch_id: Annotated[str, Field(strict=True)]
+    batch_id: Annotated[str, Field(strict=True)] = Field(description="Unique batch ID; the exact case-sensitive value 'preview' is reserved for the preview route")
     manifest_revision: Annotated[str, Field(strict=True)]
     receipt_revision: Annotated[str, Field(strict=True)]
     status: StrictStr

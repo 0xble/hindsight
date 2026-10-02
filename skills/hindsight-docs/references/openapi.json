@@ -790,6 +790,12 @@
             "schema": {
               "type": "string",
               "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_-]{0,79}$",
+              "description": "Unique batch ID; the exact case-sensitive value 'preview' is reserved for the preview route",
+              "not": {
+                "enum": [
+                  "preview"
+                ]
+              },
               "title": "Batch Id"
             }
           },
@@ -866,6 +872,12 @@
             "schema": {
               "type": "string",
               "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_-]{0,79}$",
+              "description": "Unique batch ID; the exact case-sensitive value 'preview' is reserved for the preview route",
+              "not": {
+                "enum": [
+                  "preview"
+                ]
+              },
               "title": "Batch Id"
             }
           },
@@ -934,6 +946,12 @@
             "schema": {
               "type": "string",
               "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_-]{0,79}$",
+              "description": "Unique batch ID; the exact case-sensitive value 'preview' is reserved for the preview route",
+              "not": {
+                "enum": [
+                  "preview"
+                ]
+              },
               "title": "Batch Id"
             }
           },
@@ -11417,9 +11435,15 @@
             "title": "Bank Id"
           },
           "batch_id": {
+            "not": {
+              "enum": [
+                "preview"
+              ]
+            },
             "type": "string",
             "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_-]{0,79}$",
-            "title": "Batch Id"
+            "title": "Batch Id",
+            "description": "Unique batch ID; the exact case-sensitive value 'preview' is reserved for the preview route"
           },
           "manifest_revision": {
             "type": "string",

@@ -35,6 +35,7 @@ from ...curation_batch import (
     SourceRevision,
     TableSnapshot,
     canonical_bytes,
+    curation_pin_ids,
     revision,
     snapshot_revision,
 )
@@ -323,6 +324,9 @@ async def capture(conn: DatabaseConnection, bank_id: str, scope: ClosureScope) -
         source_bytes=source_bytes,
         dependencies=dependencies.rows,
     )
+    # Capture is used by preview and again under phase-2 locks. Reject expanded
+    # pin overflow before provider work/admission or any mutation.
+    curation_pin_ids(snapshot)
     if len(canonical_bytes(snapshot)) + source_bytes > MAX_BYTES:
         raise CurationBatchConflict("Snapshot and source content exceed 8MiB cap")
     return snapshot
@@ -333,7 +337,7 @@ def inventory(snapshot: CurationSnapshot) -> CurationInventory:
         targets=len(snapshot.scope.targets),
         observations=len(snapshot.scope.affected) - len(snapshot.scope.targets),
         peers=len(snapshot.scope.peers),
-        entities=len(snapshot.scope.entities),
+        entities=len(curation_pin_ids(snapshot)),
         links=len(snapshot.links.rows),
         history_rows=len(snapshot.history.rows),
         snapshot_bytes=len(canonical_bytes(snapshot)),
@@ -386,15 +390,6 @@ async def _posting_delta(
             raise CurationBatchConflict("Entity posting counter conflict")
 
 
-def _curation_pin_ids(snapshot: CurationSnapshot) -> list[str]:
-    """Pin every endpoint of each captured cooccurrence, not just seed entities."""
-    pinned = {str(entity_id) for entity_id in snapshot.scope.entities}
-    for row in snapshot.cooccurrences.rows:
-        pinned.add(str(row["entity_id_1"]))
-        pinned.add(str(row["entity_id_2"]))
-    return sorted(pinned)
-
-
 async def apply(
     conn: DatabaseConnection,
     bank_id: str,
@@ -422,7 +417,7 @@ async def apply(
         batch_id,
         manifest_revision,
     )
-    for eid in _curation_pin_ids(before):
+    for eid in curation_pin_ids(before):
         await conn.execute(
             f"INSERT INTO {fq_table('curation_entity_pins')}(bank_id,batch_id,entity_id) VALUES ($1,$2,$3)",
             bank_id,

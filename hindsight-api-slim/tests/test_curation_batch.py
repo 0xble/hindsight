@@ -708,6 +708,125 @@ async def test_per_memory_validator_guards_batch_apply_and_revert_without_corrup
         )
 
 
+@pytest.mark.parametrize("fields", [CurationFields(text="corrected raw"), CurationFields(context="corrected context")])
+async def test_correction_revert_requires_edit_permission_but_invalidation_restore_does_not(memory, seeded, fields):
+    from types import SimpleNamespace
+
+    from hindsight_api.extensions import ValidationResult
+
+    original = await snapshot(memory, seeded)
+    original_text = next(r["text"] for r in original.memories.rows if r["id"] == str(seeded.raw))
+    receipt = await apply(memory, seeded, manifest(await preview(memory, seeded), correction=fields), "edit-guard")
+    corrected = await snapshot(memory, seeded, original.scope)
+    async with memory._pool.acquire() as conn:
+        capsule_before = await conn.fetchval(
+            "SELECT capsule::text FROM curation_batches WHERE bank_id=$1 AND batch_id='edit-guard'", seeded.bank
+        )
+
+    def restore_only(ctx):
+        return (
+            ValidationResult.reject("field edits denied", status_code=403)
+            if ctx.edits_fields
+            else ValidationResult.accept()
+        )
+
+    validator = SimpleNamespace(
+        validate_bank_write=AsyncMock(return_value=ValidationResult.accept()),
+        validate_memory_update=AsyncMock(side_effect=restore_only),
+    )
+    app = create_app(memory, initialize_memory=False)
+    url = f"/v1/default/banks/{seeded.bank}/curation-batches"
+    with patch.object(memory, "_operation_validator", validator):
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
+            response = await client.post(
+                url + "/edit-guard/revert",
+                json={"protocol": "raw-curation-v2", "expected_receipt_revision": receipt.receipt_revision},
+            )
+        assert response.status_code == 403, response.text
+        assert "field edits denied" in response.json()["detail"]
+    ctx = validator.validate_memory_update.await_args.args[0]
+    assert ctx.edits_fields and ctx.text == original_text and ctx.state == "valid"
+    assert snapshot_revision(await snapshot(memory, seeded, original.scope)) == snapshot_revision(corrected)
+    async with memory._pool.acquire() as conn:
+        assert (
+            await conn.fetchval(
+                "SELECT capsule::text FROM curation_batches WHERE bank_id=$1 AND batch_id='edit-guard'", seeded.bank
+            )
+            == capsule_before
+        )
+    await revert(memory, seeded, receipt, "edit-guard")
+
+    invalidation = await apply(memory, seeded, manifest(await preview(memory, seeded)), "restore-guard")
+    validator.validate_memory_update.reset_mock()
+    with patch.object(memory, "_operation_validator", validator):
+        assert (await revert(memory, seeded, invalidation, "restore-guard")).status == "reverted"
+    ctx = validator.validate_memory_update.await_args.args[0]
+    assert not ctx.edits_fields and ctx.text is None and ctx.state == "valid"
+    assert snapshot_revision(await snapshot(memory, seeded, original.scope)) == snapshot_revision(original)
+
+
+async def _add_incident_entity_partners(memory, seed, count):
+    partners = [uuid.uuid4() for _ in range(count)]
+    async with memory._pool.acquire() as conn:
+        await conn.executemany(
+            "INSERT INTO entities(id,bank_id,canonical_name,mention_count) VALUES($1,$2,$3,0)",
+            [(partner, seed.bank, f"incident-{partner}") for partner in partners],
+        )
+        await conn.executemany(
+            "INSERT INTO entity_cooccurrences(entity_id_1,entity_id_2,cooccurrence_count) VALUES($1,$2,1)",
+            [sorted((seed.entities[0], partner)) for partner in partners],
+        )
+
+
+async def test_expanded_entity_pin_limit_admits_boundary_and_reports_actual_pins(memory, seeded):
+    from hindsight_api.engine.curation_batch import MAX_ENTITIES
+
+    await _add_incident_entity_partners(memory, seeded, MAX_ENTITIES - len(seeded.entities))
+    view = await preview(memory, seeded)
+    assert view.inventory.entities == MAX_ENTITIES
+    receipt = await apply(memory, seeded, manifest(view), "pin-boundary")
+    assert receipt.inventory.entities == MAX_ENTITIES
+    async with memory._pool.acquire() as conn:
+        assert (
+            await conn.fetchval(
+                "SELECT count(*) FROM curation_entity_pins WHERE bank_id=$1 AND batch_id='pin-boundary'", seeded.bank
+            )
+            == MAX_ENTITIES
+        )
+    assert (await revert(memory, seeded, receipt, "pin-boundary")).status == "reverted"
+
+
+@pytest.mark.parametrize("stage", ["preview", "preparation"])
+async def test_expanded_entity_pin_limit_rejects_overflow_before_mutation(memory, seeded, stage):
+    from hindsight_api.engine.curation_batch import MAX_ENTITIES
+
+    view = await preview(memory, seeded)
+    original = await snapshot(memory, seeded)
+    request = manifest(view, correction=CurationFields(text="corrected raw"))
+
+    async def expand(*args, **kwargs):
+        await _add_incident_entity_partners(memory, seeded, MAX_ENTITIES - len(seeded.entities) + 1)
+        return str([0.25] * 384)
+
+    if stage == "preview":
+        await expand()
+        with pytest.raises(CurationBatchConflict, match="Entity pin cap exceeded"):
+            await preview(memory, seeded)
+        with pytest.raises(CurationBatchConflict, match="Entity pin cap exceeded"):
+            await apply(memory, seeded, request, "pin-overflow")
+    else:
+        with patch.object(memory, "_reembed_memory_text", new=expand):
+            with pytest.raises(CurationBatchConflict, match="Entity pin cap exceeded"):
+                await apply(memory, seeded, request, "pin-overflow")
+    async with memory._pool.acquire() as conn:
+        assert await conn.fetchval("SELECT count(*) FROM curation_batches WHERE bank_id=$1", seeded.bank) == 0
+        assert await conn.fetchval("SELECT count(*) FROM curation_entity_pins WHERE bank_id=$1", seeded.bank) == 0
+        assert await conn.fetchval("SELECT text FROM memory_units WHERE id=$1", seeded.raw) == next(
+            r["text"] for r in original.memories.rows if r["id"] == str(seeded.raw)
+        )
+        assert await conn.fetchval("SELECT 1 FROM memory_units WHERE id=$1", seeded.observation)
+
+
 async def test_non_postgres_and_non_sql_stores_fail_closed(memory, seeded):
     with patch.object(memory, "_database_backend_type", "oracle"):
         with pytest.raises(CurationBatchConflict, match="PostgreSQL"):

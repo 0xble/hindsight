@@ -62,6 +62,7 @@ from .audit import AuditLogger, audit_context
 from .bank_stats_cache import BankStatsCache, DistributedBankStatsCache
 from .chunk_ids import build_chunk_id, parse_chunk_id, resolve_chunk_id_in
 from .curation_batch import (
+    BatchCapsule,
     CurationApplyRequest,
     CurationChange,
     CurationPreview,
@@ -12367,24 +12368,37 @@ class MemoryEngine(MemoryEngineInterface):
     async def _validate_curation_batch_revert(
         self,
         bank_id: str,
-        changes: list[CurationChange],
+        capsule: BatchCapsule,
         request_context: "RequestContext",
     ) -> None:
-        """Apply the ordinary restore guard to every target before batch revert."""
+        """Restoring a corrected live row needs edit permission, not just restore permission."""
         if self._operation_validator is None:
             return
 
+        from pydantic import TypeAdapter
+
         from hindsight_api.extensions import MemoryUpdateContext
 
-        for change in changes:
+        rows = {str(row["id"]): row for row in capsule.before.memories.rows}
+        for change in capsule.manifest.changes:
+            # Corrections overwrite fields on a live row. Supply the original
+            # text even for context/date-only corrections; archive restoration
+            # retains the ordinary non-edit guard.
+            correcting = change.action == "correct"
+            restored_text = (
+                TypeAdapter(str).validate_python(rows[str(change.memory_id)]["text"], strict=True)
+                if correcting
+                else None
+            )
             await self._validate_operation(
                 self._operation_validator.validate_memory_update(
                     MemoryUpdateContext(
                         bank_id=bank_id,
                         memory_id=str(change.memory_id),
                         request_context=request_context,
+                        text=restored_text,
                         state="valid",
-                        edits_fields=False,
+                        edits_fields=correcting,
                     )
                 )
             )
@@ -12398,6 +12412,7 @@ class MemoryEngine(MemoryEngineInterface):
             CurationPreview,
             CurationTargetRevision,
             canonical_bytes,
+            curation_pin_ids,
             revision,
             snapshot_revision,
         )
@@ -12422,7 +12437,7 @@ class MemoryEngine(MemoryEngineInterface):
                 targets=len(snapshot.scope.targets),
                 observations=len(snapshot.scope.affected) - len(snapshot.scope.targets),
                 peers=len(snapshot.scope.peers),
-                entities=len(snapshot.scope.entities),
+                entities=len(curation_pin_ids(snapshot)),
                 links=len(snapshot.links.rows),
                 history_rows=len(snapshot.history.rows),
                 snapshot_bytes=len(canonical_bytes(snapshot)),
@@ -12595,7 +12610,7 @@ class MemoryEngine(MemoryEngineInterface):
                     capsule = await store.curation_v2_get(conn=conn, bank_id=bank_id, batch_id=batch_id)
                     if capsule is None:
                         return None
-                    await self._validate_curation_batch_revert(bank_id, capsule.manifest.changes, request_context)
+                    await self._validate_curation_batch_revert(bank_id, capsule, request_context)
                     result = await store.curation_v2_revert(
                         conn=conn,
                         bank_id=bank_id,

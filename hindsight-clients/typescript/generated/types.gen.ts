@@ -1993,6 +1993,8 @@ export type CurationReceipt = {
   bank_id: string;
   /**
    * Batch Id
+   *
+   * Unique batch ID; the exact case-sensitive value 'preview' is reserved for the preview route
    */
   batch_id: string;
   /**
@@ -7809,6 +7811,8 @@ export type GetCurationBatchData = {
     bank_id: string;
     /**
      * Batch Id
+     *
+     * Unique batch ID; the exact case-sensitive value 'preview' is reserved for the preview route
      */
     batch_id: string;
   };
@@ -7849,6 +7853,8 @@ export type ApplyCurationBatchData = {
     bank_id: string;
     /**
      * Batch Id
+     *
+     * Unique batch ID; the exact case-sensitive value 'preview' is reserved for the preview route
      */
     batch_id: string;
   };
@@ -7890,6 +7896,8 @@ export type RevertCurationBatchData = {
     bank_id: string;
     /**
      * Batch Id
+     *
+     * Unique batch ID; the exact case-sensitive value 'preview' is reserved for the preview route
      */
     batch_id: string;
   };

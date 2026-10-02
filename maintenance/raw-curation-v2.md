@@ -29,9 +29,16 @@ unchanged. Logical bank transfer is not capsule backup.
   The protocol does not submit ordinary jobs. The caller coordinates maintenance
   with the consolidation owner after the curation window.
 - Indexed pins protect identities and cooccurrences from already queued pruning.
+  The 2000-pin bound includes both endpoints of captured incident cooccurrences;
+  preview and receipt entity inventories count that complete pin set. Recheck
+  this bound during phase-2 capture before admission or mutation.
   Pins remain until successful revert. Active capsules prevent bank deletion.
   Shared mention counters change only by the batch's posting delta. Compatible
   unrelated references must not conflict solely because their counters changed.
+- Per-memory validators gate both apply and revert. Correction revert is a field
+  edit with the original capsule text, even for context/date-only corrections.
+  Invalidation revert keeps ordinary archive-restoration semantics.
+- Reserve the exact case-sensitive batch ID `preview` for the preview route.
 - Revert compares committed closure, provenance, dependencies and schema before
   restoring exact rows/history/postings/links. Drift or identity collisions fail
   atomically with 409 and keep the capsule and pins. It is conditional recovery,
@@ -54,6 +61,21 @@ A schema downgrade refuses applied capsules. Revert each accepted capsule before
 retiring this migration. Do not delete capsules/pins, discard the backup or
 force a downgrade to make the guard pass. Keep API/source rollback separate
 from restoring live data.
+
+## Upstream Alignment
+
+The review fixes follow upstream guidance at
+`017b3f5d888d67341e70f43c102cb8155bb9f51e` (root `AGENTS.md`, `CLAUDE.md`
+and `CONTRIBUTING.md`). The independent proposal was to reuse the existing
+per-memory validator, cap the complete pin set, and reserve the static preview
+route's ID without replacing the protocol or its routes.
+
+Upstream [#4889](https://github.com/vectorize-io/hindsight/pull/4889) establishes
+`text`, `state` and `edits_fields` as the curation permission boundary.
+[#1951](https://github.com/vectorize-io/hindsight/issues/1951) explicitly treats
+ordinary recovery as state-level rather than byte-level. These fixes preserve
+both contracts; exact bounded capsule recovery remains the intentional fork
+extension described above.
 
 ## Verification And Retirement
 

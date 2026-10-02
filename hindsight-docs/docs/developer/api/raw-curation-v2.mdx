@@ -19,7 +19,10 @@ the caller to coordinate with the worker owner after the window.
 
 The initial bounds are 50 raw targets, 200 one-hop observations, 500 co-sources
 or graph peers, 2000 entity pins/postings, 4000 links/cooccurrences and 2000 history
-rows. Snapshot and unique source document/chunk bytes together must fit 8 MiB.
+rows. Entity pins include both endpoints of every captured incident cooccurrence;
+preview and receipt entity inventories count the complete pin set. Its bound is
+checked again during apply, before mutation. Snapshot and unique source
+document/chunk bytes together must fit 8 MiB.
 Each source document/chunk must fit 1 MiB. Missing provenance, cross-bank sources,
 transitive observations, Oracle and non-SQL memories stores are rejected.
 Cross-bank links and observations are checked again under the apply and revert
@@ -51,9 +54,11 @@ The durable capsule retains the full manifest, including each reason and the
 distinction between omitted fields and explicit nulls.
 
 Use a unique batch ID of 1–80 alphanumeric, underscore or hyphen characters,
-starting with an alphanumeric character. Replaying its identical manifest
-returns the existing receipt, including after revert. A different manifest for
-that ID returns 409. The server hashes numeric values, so clients must pass
+starting with an alphanumeric character. The exact, case-sensitive ID `preview`
+is reserved for the preview route and is invalid as a batch ID. Replaying a
+valid ID's identical manifest returns the existing receipt, including after
+revert. A different manifest for that ID returns 409. The server hashes numeric
+values, so clients must pass
 opaque revisions unchanged rather than recreate hashes from serialized JSON.
 PostgreSQL JSONB fractional numbers and large integers retain their exact values
 through capture, hashing, durable capsule storage and recovery. Numeric changes
@@ -66,6 +71,11 @@ using the applied receipt revision. Exact retries return the current reverted
 receipt. Successful revert restores original memory and history IDs, rows,
 vectors, postings and links and releases that batch's entity pins. It adjusts
 shared entity counters only by the batch's own postings.
+
+Per-memory validators must allow a field edit to revert a correction. The
+validator receives the original capsule text, including for context/date-only
+corrections. Reverting an invalidation retains ordinary archive-restoration
+permissions; allowing restoration does not authorize field edits.
 
 A conflicting edit, source change, schema change, reconsolidation, new dependency
 or identity collision returns 409 without partial restoration. The capsule and

@@ -15,6 +15,7 @@ from typing import Annotated, Any, Literal
 from uuid import UUID
 
 from pydantic import (
+    AfterValidator,
     BaseModel,
     ConfigDict,
     Field,
@@ -35,8 +36,26 @@ LosslessJsonValue = TypeAliasType(
     "dict[str, LosslessJsonValue] | list[LosslessJsonValue] | str | int | float | Decimal | bool | None",
 )
 
+
+def _unreserved_batch_id(value: str) -> str:
+    # POST /curation-batches/preview already owns this exact path. Keep the
+    # existing ID pattern (and its Rust/Go-compatible regex) for every other ID.
+    if value == "preview":
+        raise ValueError("Batch ID 'preview' is reserved for the preview route")
+    return value
+
+
 Hash = Annotated[str, Field(pattern=r"^[0-9a-f]{64}$")]
-BatchId = Annotated[str, Field(pattern=r"^[a-zA-Z0-9][a-zA-Z0-9_-]{0,79}$")]
+BatchId = Annotated[
+    str,
+    Field(
+        pattern=r"^[a-zA-Z0-9][a-zA-Z0-9_-]{0,79}$",
+        description="Unique batch ID; the exact case-sensitive value 'preview' is reserved for the preview route",
+        # The pinned client generator drops const, but preserves not/enum.
+        json_schema_extra={"not": {"enum": ["preview"]}},
+    ),
+    AfterValidator(_unreserved_batch_id),
+]
 MAX_BYTES = 8 * 1024 * 1024
 MAX_OBSERVATIONS = 200
 MAX_PEERS = 500
@@ -268,6 +287,17 @@ class BatchCapsule(StrictModel):
     after: CurationSnapshot
     receipt: CurationReceipt
     applied_receipt_revision: Hash
+
+
+def curation_pin_ids(snapshot: CurationSnapshot) -> list[str]:
+    """Bound all identity pins, including both ends of incident cooccurrences."""
+    pinned = {str(entity_id) for entity_id in snapshot.scope.entities}
+    for row in snapshot.cooccurrences.rows:
+        pinned.add(str(row["entity_id_1"]))
+        pinned.add(str(row["entity_id_2"]))
+    if len(pinned) > MAX_ENTITIES:
+        raise CurationBatchConflict("Entity pin cap exceeded")
+    return sorted(pinned)
 
 
 def canonical_bytes(value: BaseModel | LosslessJsonValue | list[dict[str, LosslessJsonValue]]) -> bytes:

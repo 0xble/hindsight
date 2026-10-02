@@ -22,6 +22,7 @@ var _ MappedNullable = &CurationReceipt{}
 type CurationReceipt struct {
 	Protocol *string `json:"protocol,omitempty"`
 	BankId string `json:"bank_id"`
+	// Unique batch ID; the exact case-sensitive value 'preview' is reserved for the preview route
 	BatchId string `json:"batch_id" validate:"regexp=^[a-zA-Z0-9][a-zA-Z0-9_-]{0,79}$"`
 	ManifestRevision string `json:"manifest_revision" validate:"regexp=^[0-9a-f]{64}$"`
 	ReceiptRevision string `json:"receipt_revision" validate:"regexp=^[0-9a-f]{64}$"`
