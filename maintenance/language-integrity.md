@@ -172,6 +172,12 @@ use the configurable policy below without destructive changes to source facts.
   rather than reaching the operation. Null modes inherit at every override layer,
   including strategies, so a null cannot silently turn an inherited reject into
   observe. Other nullable strategy fields preserve their existing behavior.
+  Retain and consolidation read the enforcement policy uncached at operation
+  boundaries, then overlay only `llm_language_integrity` onto the otherwise cached
+  configuration. Retain's policy read also resolves current explicit/default
+  strategy overrides uncached, so stale strategy modes or a changed default cannot
+  bypass a newer reject. Remote edits affect the next operation without waiting
+  for the worker's bank-info TTL; they do not change an already-running operation.
 - **Upstream:** Pinned preflight at `ec39e10900c6a971f1a73cd37402228d5cccaa25`.
   [Issue #4016](https://github.com/vectorize-io/hindsight/issues/4016) and the
   [unmerged predecessor #4018](https://github.com/vectorize-io/hindsight/pull/4018)

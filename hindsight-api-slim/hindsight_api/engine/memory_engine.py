@@ -6610,7 +6610,15 @@ class MemoryEngine(MemoryEngineInterface):
         effective_strategy = strategy or resolved_config.retain_default_strategy
         if effective_strategy:
             resolved_config = apply_strategy(resolved_config, effective_strategy)
-        return resolved_config
+
+        # The per-process cache can lag a policy edit made by another API/worker.
+        # Keep ordinary settings cached, but resolve the enforcement gate (including
+        # its current explicit/default strategy) fresh at this operation boundary.
+        policy_config = await self._config_resolver.resolve_full_config(bank_id, request_context, cached=False)
+        policy_strategy = strategy or policy_config.retain_default_strategy
+        if policy_strategy:
+            policy_config = apply_strategy(policy_config, policy_strategy)
+        return replace(resolved_config, llm_language_integrity=policy_config.llm_language_integrity)
 
     @staticmethod
     def _retain_chunking_config(config: HindsightConfig) -> _RetainChunkingConfig:
@@ -7156,6 +7164,12 @@ class MemoryEngine(MemoryEngineInterface):
         effective_strategy = strategy or resolved_config.retain_default_strategy
         if effective_strategy:
             resolved_config = apply_strategy(resolved_config, effective_strategy)
+
+        # This worker path resolves independently of the splitting caller. Reuse
+        # its fresh enforcement policy without changing the provider/strategy order
+        # above or making ordinary settings opt out of the cache.
+        policy_config = await self._resolve_retain_config(bank_id, request_context, strategy)
+        resolved_config = replace(resolved_config, llm_language_integrity=policy_config.llm_language_integrity)
 
         # Create parent span for retain operation
         with create_operation_span("retain", bank_id):
