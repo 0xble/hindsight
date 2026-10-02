@@ -63,6 +63,7 @@ from .bank_stats_cache import BankStatsCache, DistributedBankStatsCache
 from .chunk_ids import build_chunk_id, parse_chunk_id, resolve_chunk_id_in
 from .curation_batch import (
     CurationApplyRequest,
+    CurationChange,
     CurationPreview,
     CurationPreviewRequest,
     CurationReceipt,
@@ -12329,6 +12330,65 @@ class MemoryEngine(MemoryEngineInterface):
             raise CurationBatchConflict("raw-curation-v2 supports SQL-owned PostgreSQL banks only")
         return store
 
+    async def _validate_curation_batch_changes(
+        self,
+        bank_id: str,
+        changes: list[CurationChange],
+        request_context: "RequestContext",
+    ) -> None:
+        """Apply the ordinary per-memory curation guard to every batch target.
+
+        ``validate_bank_write`` is the bank-wide access check; it does not replace
+        ``validate_memory_update``, which may enforce per-memory permissions or
+        quotas. Keep the existing validator wiring for internal/system contexts:
+        ``internal`` skips tenant re-authentication, but it does not skip operation
+        validation, just as ordinary ``update_memory_unit`` does not.
+        """
+        if self._operation_validator is None:
+            return
+
+        from hindsight_api.extensions import MemoryUpdateContext
+
+        for change in changes:
+            fields = change.fields
+            await self._validate_operation(
+                self._operation_validator.validate_memory_update(
+                    MemoryUpdateContext(
+                        bank_id=bank_id,
+                        memory_id=str(change.memory_id),
+                        request_context=request_context,
+                        text=(fields.text if fields is not None and "text" in fields.model_fields_set else None),
+                        state="invalidated" if change.action == "invalidate" else None,
+                        edits_fields=change.action == "correct",
+                    )
+                )
+            )
+
+    async def _validate_curation_batch_revert(
+        self,
+        bank_id: str,
+        changes: list[CurationChange],
+        request_context: "RequestContext",
+    ) -> None:
+        """Apply the ordinary restore guard to every target before batch revert."""
+        if self._operation_validator is None:
+            return
+
+        from hindsight_api.extensions import MemoryUpdateContext
+
+        for change in changes:
+            await self._validate_operation(
+                self._operation_validator.validate_memory_update(
+                    MemoryUpdateContext(
+                        bank_id=bank_id,
+                        memory_id=str(change.memory_id),
+                        request_context=request_context,
+                        state="valid",
+                        edits_fields=False,
+                    )
+                )
+            )
+
     @_bind_bank_id()
     async def preview_curation_batch(
         self, bank_id: str, request: CurationPreviewRequest, *, request_context: "RequestContext"
@@ -12408,6 +12468,7 @@ class MemoryEngine(MemoryEngineInterface):
                     )
                 )
             )
+        await self._validate_curation_batch_changes(bank_id, request.changes, request_context)
         backend = await self._get_backend()
         async with acquire_with_retry(backend) as conn:
             async with conn.transaction():
@@ -12534,6 +12595,7 @@ class MemoryEngine(MemoryEngineInterface):
                     capsule = await store.curation_v2_get(conn=conn, bank_id=bank_id, batch_id=batch_id)
                     if capsule is None:
                         return None
+                    await self._validate_curation_batch_revert(bank_id, capsule.manifest.changes, request_context)
                     result = await store.curation_v2_revert(
                         conn=conn,
                         bank_id=bank_id,

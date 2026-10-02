@@ -299,6 +299,39 @@ async def test_queued_prune_keeps_pinned_orphans_and_cooccurrences(memory, seede
     await revert(memory, seeded, receipt)
 
 
+async def test_asymmetric_captured_cooccurrence_pin_protects_orphan_partner(memory, seeded):
+    orphan = uuid.uuid4()
+    left, right = sorted((seeded.entities[0], orphan))
+    async with memory._pool.acquire() as conn:
+        await conn.execute(
+            "INSERT INTO entities(id,bank_id,canonical_name,mention_count) VALUES($1,$2,'orphan partner',0)",
+            orphan,
+            seeded.bank,
+        )
+        await conn.execute(
+            "INSERT INTO entity_cooccurrences(entity_id_1,entity_id_2,cooccurrence_count) VALUES($1,$2,1)",
+            left,
+            right,
+        )
+        await conn.execute("INSERT INTO entity_maintenance_queue(bank_id,entity_id) VALUES($1,$2)", seeded.bank, orphan)
+
+    receipt = await apply(memory, seeded, manifest(await preview(memory, seeded)), "asymmetric-pin")
+    result = await graph.entity_prune_pass(backend=memory._backend, fq_table=fq_table, bank_id=seeded.bank)
+    assert result.orphan_entities_pruned == 0 and result.stale_cooccurrences_pruned == 0
+    async with memory._pool.acquire() as conn:
+        assert await conn.fetchval("SELECT 1 FROM entities WHERE id=$1", orphan)
+        assert await conn.fetchval(
+            "SELECT 1 FROM entity_cooccurrences WHERE entity_id_1=$1 AND entity_id_2=$2", left, right
+        )
+        assert await conn.fetchval(
+            "SELECT 1 FROM curation_entity_pins WHERE bank_id=$1 AND batch_id=$2 AND entity_id=$3",
+            seeded.bank,
+            "asymmetric-pin",
+            orphan,
+        )
+    assert (await revert(memory, seeded, receipt, "asymmetric-pin")).status == "reverted"
+
+
 async def test_shared_entity_two_capsules_and_unrelated_posting_counter(memory, seeded):
     async with memory._pool.acquire() as conn:
         second = await raw(conn, seeded.bank, "Independent second target")
@@ -612,6 +645,67 @@ async def test_read_and_write_authorization_guards(memory, seeded):
             ).status_code == 403
     async with memory._pool.acquire() as conn:
         assert await conn.fetchval("SELECT count(*) FROM curation_batches WHERE bank_id=$1", seeded.bank) == 0
+
+
+async def test_per_memory_validator_guards_batch_apply_and_revert_without_corruption(memory, seeded):
+    from types import SimpleNamespace
+
+    from hindsight_api.extensions import OperationValidationError, ValidationResult
+
+    view = await preview(memory, seeded)
+    request = manifest(view, correction=CurationFields(text="corrected raw"))
+    before = await snapshot(memory, seeded)
+    provider = AsyncMock(return_value=str([0.25] * 384))
+    validator = SimpleNamespace(
+        validate_bank_write=AsyncMock(return_value=ValidationResult.accept()),
+        validate_memory_update=AsyncMock(
+            return_value=ValidationResult.reject("memory curation denied", status_code=403)
+        ),
+    )
+    with (
+        patch.object(memory, "_reembed_memory_text", new=provider),
+        patch.object(memory, "_operation_validator", validator),
+    ):
+        with pytest.raises(OperationValidationError) as denied_apply:
+            await apply(memory, seeded, request)
+    assert denied_apply.value.status_code == 403
+    provider.assert_not_awaited()
+    assert snapshot_revision(await snapshot(memory, seeded, before.scope)) == snapshot_revision(before)
+    async with memory._pool.acquire() as conn:
+        assert await conn.fetchval("SELECT count(*) FROM curation_batches WHERE bank_id=$1", seeded.bank) == 0
+
+    receipt = await apply(memory, seeded, manifest(await preview(memory, seeded)), "guarded-revert")
+    async with memory._pool.acquire() as conn:
+        capsule_before = await conn.fetchval(
+            "SELECT capsule::text FROM curation_batches WHERE bank_id=$1 AND batch_id=$2",
+            seeded.bank,
+            "guarded-revert",
+        )
+    with patch.object(memory, "_operation_validator", validator):
+        with pytest.raises(OperationValidationError) as denied_revert:
+            await memory.revert_curation_batch(
+                seeded.bank,
+                "guarded-revert",
+                CurationRevertRequest(protocol="raw-curation-v2", expected_receipt_revision=receipt.receipt_revision),
+                request_context=CTX,
+            )
+    assert denied_revert.value.status_code == 403
+    async with memory._pool.acquire() as conn:
+        assert (
+            await conn.fetchval(
+                "SELECT capsule::text FROM curation_batches WHERE bank_id=$1 AND batch_id=$2",
+                seeded.bank,
+                "guarded-revert",
+            )
+            == capsule_before
+        )
+        assert await conn.fetchval("SELECT 1 FROM invalidated_memory_units WHERE id=$1", seeded.raw)
+        assert (
+            await conn.fetchval(
+                "SELECT status FROM curation_batches WHERE bank_id=$1 AND batch_id=$2", seeded.bank, "guarded-revert"
+            )
+            == "applied"
+        )
 
 
 async def test_non_postgres_and_non_sql_stores_fail_closed(memory, seeded):

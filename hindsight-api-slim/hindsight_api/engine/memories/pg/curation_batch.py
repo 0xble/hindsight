@@ -386,6 +386,15 @@ async def _posting_delta(
             raise CurationBatchConflict("Entity posting counter conflict")
 
 
+def _curation_pin_ids(snapshot: CurationSnapshot) -> list[str]:
+    """Pin every endpoint of each captured cooccurrence, not just seed entities."""
+    pinned = {str(entity_id) for entity_id in snapshot.scope.entities}
+    for row in snapshot.cooccurrences.rows:
+        pinned.add(str(row["entity_id_1"]))
+        pinned.add(str(row["entity_id_2"]))
+    return sorted(pinned)
+
+
 async def apply(
     conn: DatabaseConnection,
     bank_id: str,
@@ -413,12 +422,12 @@ async def apply(
         batch_id,
         manifest_revision,
     )
-    for eid in before.scope.entities:
+    for eid in _curation_pin_ids(before):
         await conn.execute(
             f"INSERT INTO {fq_table('curation_entity_pins')}(bank_id,batch_id,entity_id) VALUES ($1,$2,$3)",
             bank_id,
             batch_id,
-            str(eid),
+            eid,
         )
     target_ids = {str(i) for i in before.scope.targets}
     observations = [str(i) for i in before.scope.affected if str(i) not in target_ids]
