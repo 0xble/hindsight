@@ -93,7 +93,7 @@ def scanned_pdf(pages=1, *, size=(240, 160)):
 
 
 @contextmanager
-def ocr_server(responses):
+def ocr_server(responses, *, disconnected=None, request_times=None):
     calls = []
     scripted = iter(responses)
 
@@ -102,20 +102,35 @@ def ocr_server(responses):
             pass
 
         def do_POST(self):
+            if request_times is not None:
+                request_times.append(time.monotonic())
             calls.append(json.loads(self.rfile.read(int(self.headers["Content-Length"]))))
             response = next(scripted)
             if isinstance(response, float):
                 time.sleep(response)
                 response = "Alice completed the review."
+            interval = 0.0
+            if isinstance(response, tuple):
+                response, interval = response
             status = 500 if response is None else 200
             payload = {"choices": [{"message": {"role": "assistant", "content": response}}]}
             self.send_response(status)
             self.send_header("Content-Type", "application/json")
             self.end_headers()
             try:
-                self.wfile.write(json.dumps(payload).encode())
-            except BrokenPipeError:
-                pass
+                body = json.dumps(payload).encode()
+                if interval:
+                    # Each byte arrives within the SDK's inactivity timeout,
+                    # but the complete response exceeds the elapsed deadline.
+                    for byte in body:
+                        self.wfile.write(bytes([byte]))
+                        self.wfile.flush()
+                        time.sleep(interval)
+                else:
+                    self.wfile.write(body)
+            except (BrokenPipeError, ConnectionResetError):
+                if disconnected is not None:
+                    disconnected.set()
 
     server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
     server.daemon_threads = True
@@ -161,6 +176,78 @@ async def test_a_bad_page_rejects_whole_document_including_after_good_page():
         with pytest.raises(LowQualityOcrError):
             await parser(url).convert(scanned_pdf(2), "original.pdf")
     assert len(calls) == 2
+
+
+@pytest.mark.parametrize("response", ["No readable text in this image.", "", "Alice completed the review."])
+def test_rendered_page_admission_ignores_exiftool_metadata(monkeypatch, tmp_path, response):
+    from pathlib import Path
+
+    import markitdown.converters._image_converter as images
+
+    from hindsight_api.engine.parsers.base import NoExtractableContentError
+    from hindsight_api.engine.parsers.pdf_ocr import PDF_OCR_LIMITS, PdfOcrConfig, _convert_pages
+
+    # Exercise the real ImageConverter's metadata + description assembly, not
+    # a fabricated final result. Ignore the disabling flag in this stub to prove
+    # metadata cannot contaminate admission even if a converter includes it.
+    metadata_paths = []
+
+    def metadata(stream, *, exiftool_path):
+        metadata_paths.append(exiftool_path)
+        return {"ImageSize": "480x320", "Description": "Synthetic metadata, not source evidence."}
+
+    monkeypatch.setenv("EXIFTOOL_PATH", "/synthetic/exiftool")
+    monkeypatch.setattr(images, "exiftool_metadata", metadata)
+    source = Path(tmp_path) / "source.pdf"
+    source.write_bytes(scanned_pdf())
+    with ocr_server([response]) as (url, calls):
+        config = PdfOcrConfig(
+            api_key="synthetic-key", base_url=url, model="existing-ocr-model", prompt=None, default_headers=None
+        )
+        if not response:
+            with pytest.raises(NoExtractableContentError):
+                _convert_pages(source, config, PDF_OCR_LIMITS, time.monotonic() + 20)
+        elif response.startswith("No readable"):
+            with pytest.raises(LowQualityOcrError):
+                _convert_pages(source, config, PDF_OCR_LIMITS, time.monotonic() + 20)
+        else:
+            result = _convert_pages(source, config, PDF_OCR_LIMITS, time.monotonic() + 20)
+            assert result.content == response
+    assert len(calls) == 1
+    assert metadata_paths == [None], "internally rendered pages must disable ExifTool extraction"
+
+
+def test_slow_trickle_request_deadline_cancels_http_without_retry(tmp_path):
+    from dataclasses import replace
+
+    from hindsight_api.engine.parsers.pdf_ocr import PDF_OCR_LIMITS, PdfOcrConfig, _convert_pages
+
+    source = tmp_path / "source.pdf"
+    source.write_bytes(scanned_pdf())
+    disconnected = threading.Event()
+    request_times = []
+    # Full body takes several seconds, every byte arrives within read timeout.
+    limits = replace(PDF_OCR_LIMITS, request_seconds=0.2)
+    with ocr_server(
+        ["Alice completed the review.", ("Alice completed the review.", 0.025)],
+        disconnected=disconnected,
+        request_times=request_times,
+    ) as (url, calls):
+        config = PdfOcrConfig(
+            api_key="synthetic-key", base_url=url, model="existing-ocr-model", prompt=None, default_headers=None
+        )
+        # Warm lazy SDK schema imports with a real successful request so the
+        # 200 ms regression measures trickling HTTP, not first-call setup.
+        assert _convert_pages(source, config, PDF_OCR_LIMITS, time.monotonic() + 20).kind == "ok"
+        started = time.monotonic()
+        with pytest.raises(TimeoutError):
+            # The independent document ceiling is much later. This regression
+            # excludes subprocess startup from the elapsed request measurement.
+            _convert_pages(source, config, limits, started + 20)
+        assert len(request_times) == 2
+        assert time.monotonic() - request_times[1] < 1.0
+        assert disconnected.wait(1.0), "timeout must close the in-flight socket, not abandon a worker thread"
+    assert len(calls) == 2, "one successful warmup and one timed request, with no retry"
 
 
 @pytest.mark.asyncio
@@ -467,11 +554,34 @@ async def test_request_timeout_is_bounded_without_provider_retries(monkeypatch):
 
     from hindsight_api.engine.parsers import pdf_ocr
 
-    monkeypatch.setattr(pdf_ocr, "PDF_OCR_LIMITS", replace(pdf_ocr.PDF_OCR_LIMITS, request_seconds=0.15))
+    monkeypatch.setattr(pdf_ocr, "PDF_OCR_LIMITS", replace(pdf_ocr.PDF_OCR_LIMITS, request_seconds=1.0))
     with ocr_server([5.0]) as (url, calls):
         with pytest.raises(RuntimeError):
             await parser(url).convert(scanned_pdf(), "source.pdf")
     assert len(calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_slow_trickle_after_good_page_rejects_document_and_cleans_worker(monkeypatch, tmp_path):
+    import multiprocessing
+    import tempfile
+    from dataclasses import replace
+
+    from hindsight_api.engine.parsers import pdf_ocr
+
+    monkeypatch.setattr(tempfile, "tempdir", str(tmp_path))
+    monkeypatch.setattr(pdf_ocr, "PDF_OCR_LIMITS", replace(pdf_ocr.PDF_OCR_LIMITS, seconds=20, request_seconds=1.0))
+    before = {child.pid for child in multiprocessing.active_children()}
+    disconnected = threading.Event()
+    with ocr_server(
+        ["Alice completed the review.", ("Bob approved the changes.", 0.025)], disconnected=disconnected
+    ) as (url, calls):
+        with pytest.raises(RuntimeError, match="TimeoutError"):
+            await parser(url).convert(scanned_pdf(2), "source.pdf")
+        assert disconnected.wait(1.0)
+    assert len(calls) == 2
+    assert {child.pid for child in multiprocessing.active_children()} == before
+    assert list(tmp_path.glob("hindsight-pdf-ocr-*")) == []
 
 
 @pytest.mark.asyncio

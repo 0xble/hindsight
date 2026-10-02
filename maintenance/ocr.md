@@ -166,7 +166,10 @@ validation and preserves the reason value through serialization.
   model, headers and prompt. Text-only conversion preserves the existing
   whole-document converter. Mixed documents preserve text and scanned-page order.
   Every OCR page passes existing evidence admission before any result returns.
-  A failed, refused or unusable page rejects the whole conversion. Invalid or
+  Only the provider description is admitted and retained, not ImageConverter
+  metadata or its Markdown wrapper. Internally rendered PNGs explicitly disable
+  ExifTool, independent of installation or `EXIFTOOL_PATH`. A failed, refused or
+  unusable page rejects the whole conversion. Invalid or
   encrypted PDFs do not become scans. Disabled OCR invokes no provider.
 - **Bounds:** Scanned and mixed PDFs have a 32 MiB input, 20-page, 10-million-pixel page,
   50-million-pixel rendered total, 16 MiB rendered page, 64 MiB rendered total,
@@ -175,8 +178,12 @@ validation and preserves the reason value through serialization.
   converter without these input, page or output caps. Rendering uses scale 2. All
   OCR-enabled PDF conversions, including text-only classification/extraction,
   remain process-isolated with CPU, scratch-write and sampled RSS protection. The document
-  deadline is 120 seconds, individual requests at most 30 seconds with SDK retries
-  disabled. Parent polling every 50 ms samples a 1 GiB RSS ceiling. This is sampled
+  deadline is 120 seconds. Individual requests have a 30-second elapsed-time
+  deadline around an async SDK call, with SDK retries disabled. Deadline expiry
+  cancels the HTTP read and closes its connection, including slow-trickle
+  responses that do not trigger an inactivity timeout. The independent document
+  watchdog still covers native work and process startup. Parent polling every
+  50 ms samples a 1 GiB RSS ceiling. This is sampled
   protection, with possible between-sample overshoot, not an OS hard memory cap.
   Unavailable RSS measurement fails closed. Both Linux and Darwin use the sampled
   RSS watchdog, with no virtual-address-space limit. POSIX CPU (60 seconds) and
@@ -219,7 +226,16 @@ validation and preserves the reason value through serialization.
   The successful public-API story lets ordinary background consolidation run,
   verifies its completed operation and observation evidence link, and preserves
   the original uploaded bytes. No observation/consolidation enablement is disabled
-  to make the story deterministic.
+  to make the story deterministic. Metadata-prefix regressions exercise the
+  real ImageConverter with synthetic ExifTool metadata and refused, empty and
+  usable descriptions. Local HTTP slow-trickle tests require elapsed expiry,
+  socket closure, no retry, whole-document rejection and worker/scratch cleanup.
+- **Review-fix preflight:** Governing upstream guidance checked at
+  `0be6c02b2aafc2b6bdb188ef1842ac507e0cfa2b`. Independent proposal: admit the
+  raw provider description and adapt the existing image hook to a cancellable
+  async SDK request. Issue #3255 and closed-unmerged PR #3442 still describe
+  the scanned-PDF gap and preference for a separate provider; neither replaces
+  this fork-owned metadata/deadline correction. No upstream write is included.
 - **Rollback:** Revert this extension and its dependency pins. Existing raster
   OCR, parser fallback and no-extractable-text behavior remain available.
 - **Retire when:** A released upstream parser provides equivalent bounded,
