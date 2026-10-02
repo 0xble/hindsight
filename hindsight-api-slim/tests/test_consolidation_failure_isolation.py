@@ -24,7 +24,8 @@ import asyncio
 import json
 import re
 import uuid
-from unittest.mock import MagicMock, patch
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import asyncpg
 import pytest
@@ -37,6 +38,8 @@ from hindsight_api.engine.consolidation.consolidator import (
     _gather_or_cancel,
     run_consolidation_job,
 )
+from hindsight_api.engine.llm_interface import OutputTooLongError
+from hindsight_api.engine.llm_wrapper import LLMProvider
 from hindsight_api.engine.memory_engine import (
     MemoryEngine,
     MentalModelRefreshError,
@@ -251,4 +254,99 @@ async def test_recall_failure_cancels_sibling_tag_groups(memory: MemoryEngine, r
         await asyncio.sleep(0.2)
         assert await _count_observations(memory, bank_id, request_context) == 0
     finally:
+        await memory.delete_bank(bank_id, request_context=request_context)
+
+
+@pytest.mark.asyncio
+@pytest.mark.memory_backend_incompatible
+@pytest.mark.parametrize("failure", ["round_budget", "output_too_long"])
+async def test_round_budget_defers_facts_but_input_failure_still_marks_failed(memory, request_context, failure):
+    """Drive provider attempt guards through a real round and inspect durable fact state."""
+    bank_id = f"test-budget-defer-{uuid.uuid4().hex[:8]}"
+    await memory.ensure_bank_profile(bank_id=bank_id, request_context=request_context)
+    llm = LLMProvider(provider="openai", api_key="synthetic", base_url="https://example.invalid", model="stub")
+    await llm._provider_impl._client.close()
+    requests = []
+
+    async def complete(**kwargs):
+        requests.append(kwargs)
+        if failure == "output_too_long":
+            raise OutputTooLongError("synthetic single-fact output limit")
+        prompt = kwargs["messages"][-1]["content"]
+        fact_ids = re.findall(r"\[([0-9a-f-]{36})\]", prompt)
+        response = (
+            {"creates": [{"text": f"Observation about {fact_ids[0]}", "source_fact_ids": fact_ids}]}
+            if "Return a COMPLETE replacement" in prompt
+            else {"creates": [{}]}
+        )
+        return SimpleNamespace(
+            choices=[SimpleNamespace(message=SimpleNamespace(content=json.dumps(response)), finish_reason="stop")],
+            usage=SimpleNamespace(
+                prompt_tokens=10,
+                completion_tokens=12,
+                total_tokens=22,
+                prompt_tokens_details=None,
+                completion_tokens_details=None,
+            ),
+        )
+
+    llm._provider_impl._client = SimpleNamespace(chat=SimpleNamespace(completions=SimpleNamespace(create=complete)))
+    original_llm = memory._consolidation_llm_config
+    memory._consolidation_llm_config = SimpleNamespace(with_config=lambda *args, **kwargs: llm)
+    fact_count = 4 if failure == "round_budget" else 1
+    try:
+        async with memory._pool.acquire() as conn:
+            ids = [await _insert_memory(conn, bank_id, f"Synthetic fact {index}", []) for index in range(fact_count)]
+        with (
+            _override_config(
+                memory,
+                consolidation_max_memories_per_round=100,  # One shared correction credit.
+                consolidation_batch_size=2,  # More than one fetch, including deferred ids.
+                consolidation_llm_batch_size=2,
+                consolidation_llm_parallelism=2,
+                consolidation_lane_llm_parallelism=2,
+                consolidation_dedup_threshold=1.0,
+                llm_language_integrity="off",
+            ),
+            patch.object(
+                consolidator_module, "_find_related_observations", AsyncMock(return_value=RecallResult(results=[]))
+            ),
+            patch.object(memory, "submit_async_consolidation"),
+        ):
+            result = await asyncio.wait_for(run_consolidation_job(memory, bank_id, request_context), timeout=20)
+            async with memory._pool.acquire() as conn:
+                rows = await conn.fetch(
+                    "SELECT id, consolidated_at, consolidation_failed_at FROM memory_units WHERE id = ANY($1)", ids
+                )
+            assert result["status"] == "completed"
+            if failure == "output_too_long":
+                assert len(requests) == 1
+                assert rows[0]["consolidated_at"] is None
+                assert rows[0]["consolidation_failed_at"] is not None
+                assert result["memories_failed"] == 1
+            else:
+                assert all(row["consolidation_failed_at"] is None for row in rows)
+                pending_ids = [row["id"] for row in rows if row["consolidated_at"] is None]
+                assert len(pending_ids) == 2
+                assert result["memories_failed"] == 0
+                assert result["schema_correction_attempts"] == 1
+                assert result["schema_correction_budget_exhausted"] == 1
+                # No bisection or re-fetch churn for the deferred two-fact batch.
+                assert len(requests) == 3
+                # A fresh round may use a new credit and consolidate the same facts.
+                next_result = await asyncio.wait_for(
+                    run_consolidation_job(memory, bank_id, request_context), timeout=20
+                )
+                assert next_result["memories_failed"] == 0
+                async with memory._pool.acquire() as conn:
+                    assert (
+                        await conn.fetchval(
+                            "SELECT count(*) FROM memory_units WHERE id = ANY($1) "
+                            "AND consolidated_at IS NOT NULL AND consolidation_failed_at IS NULL",
+                            pending_ids,
+                        )
+                        == 2
+                    )
+    finally:
+        memory._consolidation_llm_config = original_llm
         await memory.delete_bank(bank_id, request_context=request_context)
