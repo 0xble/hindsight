@@ -29,13 +29,21 @@ It requires PostgreSQL, an explicit paused automatic-consolidation override,
 no pending or processing consolidation for the target bank, source bodies at
 most 1 MiB each, and zero dependent observations. Source drift, memory drift,
 entity-name drift or lock contention returns HTTP 409 without mutation.
-External memory stores and entity edits are unsupported. Unguarded PATCH
-retains existing behavior.
+Guarded writes never submit post-commit automatic consolidation, regardless of
+cached configuration or a pause being lifted after commit. Ordinary memory
+PATCH scheduling also reads uncached configuration to honor a persisted pause.
+External memory stores and entity edits are unsupported. Other unguarded PATCH
+behavior is unchanged.
 
 Array-valued observation dependencies lack a row-level foreign-key lock
 discipline. The opt-in transaction therefore acquires fixed-order
-`SHARE ROW EXCLUSIVE NOWAIT` table locks through commit. This briefly blocks
-competing writes across banks in the same database. Reads continue. No network
+`SHARE ROW EXCLUSIVE NOWAIT` table locks through commit. A transaction-local
+100 ms `lock_timeout` also bounds row and foreign-key lock waits: existing
+`SELECT ... FOR UPDATE` locks are compatible with the table locks but can block
+later writes. PostgreSQL `55P03` from anywhere in the guarded transaction becomes
+HTTP 409 after rollback, including these timeouts. The timeout does not persist
+on pooled connections. This briefly blocks competing writes across banks in the
+same database. Reads continue. No network
 embedding occurs under these locks. The consolidation owner coordinates the
 quiescent deployment and curation window. This is a deliberate fork divergence,
 not a per-bank locking guarantee or server enforcement of a host-local lease.
