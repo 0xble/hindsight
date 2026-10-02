@@ -95,6 +95,10 @@ async def lock_curation_tables(conn: DatabaseConnection, fq_table: Callable[[str
     """
     if conn.backend_type != "postgresql":
         raise CurationConflictError("Guarded curation requires the PostgreSQL memory store.")
+    # SELECT ... FOR UPDATE takes a compatible ROW SHARE table lock: NOWAIT
+    # table locks alone cannot stop a later DML statement waiting on its rows.
+    # Bound every lock acquisition until commit, without leaking to pool reuse.
+    await conn.execute("SET LOCAL lock_timeout = '100ms'")
     for table in (
         "async_operations",
         "banks",

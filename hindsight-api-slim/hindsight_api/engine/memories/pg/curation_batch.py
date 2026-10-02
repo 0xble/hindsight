@@ -5,11 +5,12 @@ from __future__ import annotations
 import json
 from collections import Counter
 from collections.abc import Iterable
+from decimal import Decimal
 from typing import Any
 from uuid import UUID
 
 import asyncpg
-from pydantic import JsonValue, TypeAdapter
+from pydantic import TypeAdapter
 
 from ...curation_batch import (
     MAX_BYTES,
@@ -28,6 +29,7 @@ from ...curation_batch import (
     CurationReceipt,
     CurationSnapshot,
     CurationTargetRevision,
+    LosslessJsonValue,
     MaintenanceDebt,
     PreparedCorrection,
     SourceRevision,
@@ -99,11 +101,13 @@ async def table_snapshot(conn: DatabaseConnection, table: str, query: str, *args
     rows = await conn.fetch(query + f" LIMIT {cap + 1}", *args)
     if len(rows) > cap:
         raise CurationBatchConflict(f"Closure exceeds {table} row cap")
-    parsed = [json.loads(r["row"]) if isinstance(r["row"], str) else r["row"] for r in rows]
+    # Queries select JSONB as text so even a driver-level JSON codec cannot
+    # round numbers before this lossless decoder sees them.
+    parsed = [json.loads(r["row"], parse_float=Decimal) for r in rows]
     return TableSnapshot(columns=columns, rows=parsed)
 
 
-async def source_revision(conn: DatabaseConnection, bank_id: str, row: dict[str, JsonValue]) -> SourceRevision:
+async def source_revision(conn: DatabaseConnection, bank_id: str, row: dict[str, LosslessJsonValue]) -> SourceRevision:
     if not row["document_id"] or not row["chunk_id"]:
         raise CurationBatchConflict("Closure source has no document/chunk provenance")
     src = await conn.fetchrow(
@@ -166,18 +170,7 @@ async def discover(conn: DatabaseConnection, bank_id: str, targets: list[UUID]) 
     ):
         raise CurationBatchConflict("Transitive observations are unsupported")
     affected = _ids([*ids, *obs_ids])
-    if await conn.fetchval(
-        f"SELECT 1 FROM {fq_table('memory_links')} WHERE bank_id IS DISTINCT FROM $1 "
-        "AND (from_unit_id=ANY($2::uuid[]) OR to_unit_id=ANY($2::uuid[])) LIMIT 1",
-        bank_id,
-        affected,
-    ) or await conn.fetchval(
-        f"SELECT 1 FROM {fq_table('memory_units')} WHERE bank_id<>$1 AND fact_type='observation' "
-        "AND source_memory_ids && $2::uuid[] LIMIT 1",
-        bank_id,
-        affected,
-    ):
-        raise CurationBatchConflict("Cross-bank dependency is outside the recoverable closure")
+    await assert_same_bank_dependencies(conn, bank_id, affected)
     links = await conn.fetch(
         f"SELECT from_unit_id,to_unit_id,entity_id FROM {fq_table('memory_links')} WHERE bank_id=$1 "
         f"AND (from_unit_id=ANY($2::uuid[]) OR to_unit_id=ANY($2::uuid[])) ORDER BY from_unit_id,to_unit_id,link_type LIMIT {MAX_LINKS + 1}",
@@ -204,14 +197,32 @@ async def discover(conn: DatabaseConnection, bank_id: str, targets: list[UUID]) 
     return ClosureScope.model_validate({"targets": ids, "affected": affected, "peers": peers, "entities": entities})
 
 
+async def assert_same_bank_dependencies(conn: DatabaseConnection, bank_id: str, affected: list[str]) -> None:
+    if await conn.fetchval(
+        f"SELECT 1 FROM {fq_table('memory_links')} WHERE bank_id IS DISTINCT FROM $1 "
+        "AND (from_unit_id=ANY($2::uuid[]) OR to_unit_id=ANY($2::uuid[])) LIMIT 1",
+        bank_id,
+        affected,
+    ) or await conn.fetchval(
+        f"SELECT 1 FROM {fq_table('memory_units')} WHERE bank_id<>$1 AND fact_type='observation' "
+        "AND source_memory_ids && $2::uuid[] LIMIT 1",
+        bank_id,
+        affected,
+    ):
+        raise CurationBatchConflict("Cross-bank dependency is outside the recoverable closure")
+
+
 async def capture(conn: DatabaseConnection, bank_id: str, scope: ClosureScope) -> CurationSnapshot:
     affected = _ids(scope.affected)
+    # Discovery is not a lasting admission decision: provider work releases
+    # locks. Recheck under phase-2/revert locks before any cascade or restore.
+    await assert_same_bank_dependencies(conn, bank_id, affected)
     all_ids = _ids([*scope.affected, *scope.peers])
     ents = _ids(scope.entities)
     memories = await table_snapshot(
         conn,
         "memory_units",
-        f"SELECT to_jsonb(m) AS row FROM {fq_table('memory_units')} m WHERE bank_id=$1 AND id=ANY($2::uuid[]) ORDER BY id",
+        f"SELECT to_jsonb(m)::text AS row FROM {fq_table('memory_units')} m WHERE bank_id=$1 AND id=ANY($2::uuid[]) ORDER BY id",
         bank_id,
         all_ids,
         cap=MAX_PEERS + 250,
@@ -219,7 +230,7 @@ async def capture(conn: DatabaseConnection, bank_id: str, scope: ClosureScope) -
     archives = await table_snapshot(
         conn,
         "invalidated_memory_units",
-        f"SELECT to_jsonb(m) AS row FROM {fq_table('invalidated_memory_units')} m WHERE bank_id=$1 AND id=ANY($2::uuid[]) ORDER BY id",
+        f"SELECT to_jsonb(m)::text AS row FROM {fq_table('invalidated_memory_units')} m WHERE bank_id=$1 AND id=ANY($2::uuid[]) ORDER BY id",
         bank_id,
         affected,
         cap=250,
@@ -227,14 +238,14 @@ async def capture(conn: DatabaseConnection, bank_id: str, scope: ClosureScope) -
     postings = await table_snapshot(
         conn,
         "unit_entities",
-        f"SELECT to_jsonb(u) AS row FROM {fq_table('unit_entities')} u WHERE unit_id=ANY($1::uuid[]) ORDER BY unit_id,entity_id",
+        f"SELECT to_jsonb(u)::text AS row FROM {fq_table('unit_entities')} u WHERE unit_id=ANY($1::uuid[]) ORDER BY unit_id,entity_id",
         affected,
         cap=MAX_ENTITIES,
     )
     links = await table_snapshot(
         conn,
         "memory_links",
-        f"SELECT to_jsonb(l) AS row FROM {fq_table('memory_links')} l WHERE bank_id=$1 AND (from_unit_id=ANY($2::uuid[]) OR to_unit_id=ANY($2::uuid[])) ORDER BY from_unit_id,to_unit_id,link_type",
+        f"SELECT to_jsonb(l)::text AS row FROM {fq_table('memory_links')} l WHERE bank_id=$1 AND (from_unit_id=ANY($2::uuid[]) OR to_unit_id=ANY($2::uuid[])) ORDER BY from_unit_id,to_unit_id,link_type",
         bank_id,
         affected,
         cap=MAX_LINKS,
@@ -242,7 +253,7 @@ async def capture(conn: DatabaseConnection, bank_id: str, scope: ClosureScope) -
     entities = await table_snapshot(
         conn,
         "entities",
-        f"SELECT to_jsonb(e) AS row FROM {fq_table('entities')} e WHERE bank_id=$1 AND id=ANY($2::uuid[]) ORDER BY id",
+        f"SELECT to_jsonb(e)::text AS row FROM {fq_table('entities')} e WHERE bank_id=$1 AND id=ANY($2::uuid[]) ORDER BY id",
         bank_id,
         ents,
         cap=MAX_ENTITIES,
@@ -252,14 +263,14 @@ async def capture(conn: DatabaseConnection, bank_id: str, scope: ClosureScope) -
     cooccurrences = await table_snapshot(
         conn,
         "entity_cooccurrences",
-        f"SELECT to_jsonb(c) AS row FROM {fq_table('entity_cooccurrences')} c WHERE entity_id_1=ANY($1::uuid[]) OR entity_id_2=ANY($1::uuid[]) ORDER BY entity_id_1,entity_id_2",
+        f"SELECT to_jsonb(c)::text AS row FROM {fq_table('entity_cooccurrences')} c WHERE entity_id_1=ANY($1::uuid[]) OR entity_id_2=ANY($1::uuid[]) ORDER BY entity_id_1,entity_id_2",
         ents,
         cap=MAX_LINKS,
     )
     history = await table_snapshot(
         conn,
         "observation_history",
-        f"SELECT to_jsonb(h) AS row FROM {fq_table('observation_history')} h WHERE bank_id=$1 AND observation_id=ANY($2::uuid[]) ORDER BY id",
+        f"SELECT to_jsonb(h)::text AS row FROM {fq_table('observation_history')} h WHERE bank_id=$1 AND observation_id=ANY($2::uuid[]) ORDER BY id",
         bank_id,
         affected,
         cap=MAX_HISTORY,
@@ -289,7 +300,7 @@ async def capture(conn: DatabaseConnection, bank_id: str, scope: ClosureScope) -
     dependencies = await table_snapshot(
         conn,
         "memory_units",
-        f"SELECT to_jsonb(o) AS row FROM {fq_table('memory_units')} o WHERE bank_id=$1 AND fact_type='observation' AND (source_memory_ids && $2::uuid[] OR id=ANY($3::uuid[])) ORDER BY id",
+        f"SELECT to_jsonb(o)::text AS row FROM {fq_table('memory_units')} o WHERE bank_id=$1 AND fact_type='observation' AND (source_memory_ids && $2::uuid[] OR id=ANY($3::uuid[])) ORDER BY id",
         bank_id,
         all_ids,
         affected,
@@ -346,11 +357,11 @@ def preview(snapshot: CurationSnapshot) -> CurationPreview:
 
 async def get_capsule(conn: DatabaseConnection, bank_id: str, batch_id: str) -> BatchCapsule | None:
     value = await conn.fetchval(
-        f"SELECT capsule FROM {fq_table('curation_batches')} WHERE bank_id=$1 AND batch_id=$2", bank_id, batch_id
+        f"SELECT capsule::text FROM {fq_table('curation_batches')} WHERE bank_id=$1 AND batch_id=$2", bank_id, batch_id
     )
     if value is None:
         return None
-    return BatchCapsule.model_validate_json(value) if isinstance(value, str) else BatchCapsule.model_validate(value)
+    return BatchCapsule.model_validate(json.loads(value, parse_float=Decimal))
 
 
 async def assert_deletable(conn: DatabaseConnection, bank_id: str) -> None:
@@ -361,7 +372,7 @@ async def assert_deletable(conn: DatabaseConnection, bank_id: str) -> None:
 
 
 async def _posting_delta(
-    conn: DatabaseConnection, bank_id: str, postings: list[dict[str, JsonValue]], sign: int
+    conn: DatabaseConnection, bank_id: str, postings: list[dict[str, LosslessJsonValue]], sign: int
 ) -> None:
     counts = Counter(str(r["entity_id"]) for r in postings)
     for eid, count in sorted(counts.items()):
@@ -373,6 +384,15 @@ async def _posting_delta(
         )
         if value is None or value < 0:
             raise CurationBatchConflict("Entity posting counter conflict")
+
+
+def _curation_pin_ids(snapshot: CurationSnapshot) -> list[str]:
+    """Pin every endpoint of each captured cooccurrence, not just seed entities."""
+    pinned = {str(entity_id) for entity_id in snapshot.scope.entities}
+    for row in snapshot.cooccurrences.rows:
+        pinned.add(str(row["entity_id_1"]))
+        pinned.add(str(row["entity_id_2"]))
+    return sorted(pinned)
 
 
 async def apply(
@@ -402,12 +422,12 @@ async def apply(
         batch_id,
         manifest_revision,
     )
-    for eid in before.scope.entities:
+    for eid in _curation_pin_ids(before):
         await conn.execute(
             f"INSERT INTO {fq_table('curation_entity_pins')}(bank_id,batch_id,entity_id) VALUES ($1,$2,$3)",
             bank_id,
             batch_id,
-            str(eid),
+            eid,
         )
     target_ids = {str(i) for i in before.scope.targets}
     observations = [str(i) for i in before.scope.affected if str(i) not in target_ids]
@@ -479,20 +499,20 @@ async def apply(
         f"UPDATE {fq_table('curation_batches')} SET capsule=$3::jsonb WHERE bank_id=$1 AND batch_id=$2",
         bank_id,
         batch_id,
-        capsule.model_dump_json(),
+        canonical_bytes(capsule).decode(),
     )
     return receipt
 
 
 async def _insert_rows(
-    conn: DatabaseConnection, table: str, snapshot: TableSnapshot, rows: list[dict[str, JsonValue]]
+    conn: DatabaseConnection, table: str, snapshot: TableSnapshot, rows: list[dict[str, LosslessJsonValue]]
 ) -> None:
     if not rows:
         return
     columns = ",".join('"' + c.name.replace('"', '""') + '"' for c in snapshot.columns if not c.generated)
     await conn.execute(
         f"INSERT INTO {fq_table(table)} ({columns}) SELECT {columns} FROM jsonb_populate_recordset(NULL::{fq_table(table)},$1::jsonb)",
-        json.dumps(rows),
+        canonical_bytes(rows).decode(),
     )
 
 
@@ -528,7 +548,7 @@ async def revert(
             f"UPDATE {fq_table('memory_units')} m SET {assignments} FROM jsonb_populate_recordset(NULL::{fq_table('memory_units')},$3::jsonb) r WHERE m.bank_id=$1 AND r.bank_id=$1 AND m.id=r.id AND m.id=ANY($2::uuid[])",
             bank_id,
             _ids(str(r["id"]) for r in changed),
-            json.dumps(changed),
+            canonical_bytes(changed).decode(),
         )
     # The CAS proved current associations unchanged since apply. Missing tuples
     # are ours, so only their actual insertion contributes a counter increment.
@@ -537,7 +557,7 @@ async def revert(
     await _insert_rows(conn, "unit_entities", before.postings, restore_postings)
     await _posting_delta(conn, bank_id, restore_postings, 1)
 
-    def link_key(row: dict[str, JsonValue]) -> str:
+    def link_key(row: dict[str, LosslessJsonValue]) -> str:
         return revision({key: row[key] for key in ("from_unit_id", "to_unit_id", "link_type")})
 
     present_links = {link_key(r) for r in current.links.rows}
@@ -568,7 +588,7 @@ async def revert(
         f"UPDATE {fq_table('curation_batches')} SET status='reverted',capsule=$3::jsonb,updated_at=now() WHERE bank_id=$1 AND batch_id=$2",
         bank_id,
         batch_id,
-        capsule.model_dump_json(),
+        canonical_bytes(capsule).decode(),
     )
     await conn.execute(
         f"DELETE FROM {fq_table('curation_entity_pins')} WHERE bank_id=$1 AND batch_id=$2", bank_id, batch_id

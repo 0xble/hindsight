@@ -20,7 +20,8 @@ unchanged. Logical bank transfer is not capsule backup.
   graph peers, 2000 entity pins/postings, 4000 incident links/cooccurrences and
   2000 history rows. Snapshot plus unique document/chunk content is at most 8 MiB.
   Each source document and chunk is at most 1 MiB. Reject transitive observations,
-  missing provenance and cross-bank dependencies.
+  missing provenance and cross-bank dependencies. Recheck foreign links and
+  observations under the same phase-2 apply and revert locks, before mutation.
 - Corrections retain entity associations. Provider work happens outside pooled
   connections and locks. Fixed-order NOWAIT table locks protect closure CAS and
   atomic apply/revert. Do not add advisory locks or ordinary postcommit hooks.
@@ -35,6 +36,11 @@ unchanged. Logical bank transfer is not capsule backup.
   restoring exact rows/history/postings/links. Drift or identity collisions fail
   atomically with 409 and keep the capsule and pins. It is conditional recovery,
   not permission to overwrite later consolidation or edits.
+- Preserve PostgreSQL JSONB numbers losslessly through capture, deterministic
+  hashing, capsule persistence/loading and reconstruction. Fractional numbers
+  must never pass through binary floats or become quoted numeric strings.
+  Verify high-precision fractions, large integers and 20th-decimal drift against
+  PostgreSQL's own JSONB text, not a potentially rounded snapshot.
 
 ## Backup And Rollback
 

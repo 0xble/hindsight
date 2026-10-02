@@ -63,6 +63,7 @@ from .bank_stats_cache import BankStatsCache, DistributedBankStatsCache
 from .chunk_ids import build_chunk_id, parse_chunk_id, resolve_chunk_id_in
 from .curation_batch import (
     CurationApplyRequest,
+    CurationChange,
     CurationPreview,
     CurationPreviewRequest,
     CurationReceipt,
@@ -12335,6 +12336,65 @@ class MemoryEngine(MemoryEngineInterface):
             raise CurationBatchConflict("raw-curation-v2 supports SQL-owned PostgreSQL banks only")
         return store
 
+    async def _validate_curation_batch_changes(
+        self,
+        bank_id: str,
+        changes: list[CurationChange],
+        request_context: "RequestContext",
+    ) -> None:
+        """Apply the ordinary per-memory curation guard to every batch target.
+
+        ``validate_bank_write`` is the bank-wide access check; it does not replace
+        ``validate_memory_update``, which may enforce per-memory permissions or
+        quotas. Keep the existing validator wiring for internal/system contexts:
+        ``internal`` skips tenant re-authentication, but it does not skip operation
+        validation, just as ordinary ``update_memory_unit`` does not.
+        """
+        if self._operation_validator is None:
+            return
+
+        from hindsight_api.extensions import MemoryUpdateContext
+
+        for change in changes:
+            fields = change.fields
+            await self._validate_operation(
+                self._operation_validator.validate_memory_update(
+                    MemoryUpdateContext(
+                        bank_id=bank_id,
+                        memory_id=str(change.memory_id),
+                        request_context=request_context,
+                        text=(fields.text if fields is not None and "text" in fields.model_fields_set else None),
+                        state="invalidated" if change.action == "invalidate" else None,
+                        edits_fields=change.action == "correct",
+                    )
+                )
+            )
+
+    async def _validate_curation_batch_revert(
+        self,
+        bank_id: str,
+        changes: list[CurationChange],
+        request_context: "RequestContext",
+    ) -> None:
+        """Apply the ordinary restore guard to every target before batch revert."""
+        if self._operation_validator is None:
+            return
+
+        from hindsight_api.extensions import MemoryUpdateContext
+
+        for change in changes:
+            await self._validate_operation(
+                self._operation_validator.validate_memory_update(
+                    MemoryUpdateContext(
+                        bank_id=bank_id,
+                        memory_id=str(change.memory_id),
+                        request_context=request_context,
+                        state="valid",
+                        edits_fields=False,
+                    )
+                )
+            )
+
     @_bind_bank_id()
     async def preview_curation_batch(
         self, bank_id: str, request: CurationPreviewRequest, *, request_context: "RequestContext"
@@ -12390,11 +12450,12 @@ class MemoryEngine(MemoryEngineInterface):
     async def apply_curation_batch(
         self, bank_id: str, batch_id: str, request: CurationApplyRequest, *, request_context: "RequestContext"
     ) -> CurationReceipt:
-        from pydantic import JsonValue, TypeAdapter
+        from pydantic import TypeAdapter
 
         from .curation_batch import (
             CurationBatchConflict,
             CurationFactType,
+            LosslessJsonValue,
             PreparedCorrection,
             revision,
             snapshot_revision,
@@ -12413,6 +12474,7 @@ class MemoryEngine(MemoryEngineInterface):
                     )
                 )
             )
+        await self._validate_curation_batch_changes(bank_id, request.changes, request_context)
         backend = await self._get_backend()
         async with acquire_with_retry(backend) as conn:
             async with conn.transaction():
@@ -12440,7 +12502,7 @@ class MemoryEngine(MemoryEngineInterface):
             row = rows[str(change.memory_id)]
             present = fields.model_fields_set
 
-            def snapshot_date(value: JsonValue) -> datetime | None:
+            def snapshot_date(value: LosslessJsonValue) -> datetime | None:
                 if value is None:
                     return None
                 if not isinstance(value, str):
@@ -12539,6 +12601,7 @@ class MemoryEngine(MemoryEngineInterface):
                     capsule = await store.curation_v2_get(conn=conn, bank_id=bank_id, batch_id=batch_id)
                     if capsule is None:
                         return None
+                    await self._validate_curation_batch_revert(bank_id, capsule.manifest.changes, request_context)
                     result = await store.curation_v2_revert(
                         conn=conn,
                         bank_id=bank_id,
@@ -12894,12 +12957,7 @@ class MemoryEngine(MemoryEngineInterface):
             async with acquire_with_retry(backend) as conn:
                 async with conn.transaction():
                     if curation_guard is not None:
-                        try:
-                            await lock_curation_tables(conn, fq_table)
-                        except asyncpg.LockNotAvailableError as exc:
-                            raise CurationConflictError(
-                                "Curation write window is busy, no guarded write applied."
-                            ) from exc
+                        await lock_curation_tables(conn, fq_table)
                         current_snapshot = await store.get_memory_unit(
                             conn=conn,
                             ops=self._backend.ops,
@@ -13093,6 +13151,13 @@ class MemoryEngine(MemoryEngineInterface):
                         need_graph = True
 
                 phase2_committed = True
+        except asyncpg.LockNotAvailableError as exc:
+            # PostgreSQL uses 55P03 for both NOWAIT and lock_timeout. Catch
+            # outside the entire transaction: row/FK locks can contend after
+            # the table guard succeeds, and all preceding writes must roll back.
+            if curation_guard is not None:
+                raise CurationConflictError("Curation write window is busy, no guarded write applied.") from exc
+            raise
         finally:
             # Entities were resolved (and possibly autocommitted) in Phase 1 but the edit did not
             # durably apply (row concurrently invalidated → live2 None, or Phase 2 raised), so the
@@ -13113,8 +13178,10 @@ class MemoryEngine(MemoryEngineInterface):
                     logger.warning(f"Failed to submit orphan-entity cleanup after a failed edit in bank {bank_id}: {e}")
 
         consolidation_submitted = False
-        if need_consolidation:
-            config = await self._config_resolver.resolve_full_config(bank_id, request_context)
+        # Guarded writes never schedule consolidation, even if another process
+        # resumes the bank after commit or this process caches an enabled flag.
+        if need_consolidation and curation_guard is None:
+            config = await self._config_resolver.resolve_full_config(bank_id, request_context, cached=False)
             if config.enable_auto_consolidation:
                 try:
                     await self.submit_async_consolidation(bank_id=bank_id, request_context=request_context)

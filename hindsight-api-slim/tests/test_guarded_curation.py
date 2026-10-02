@@ -1,5 +1,6 @@
 """Guarded PATCH rejects stale evidence and preserves dependent observations."""
 
+import asyncio
 import hashlib
 import uuid
 from dataclasses import dataclass
@@ -9,6 +10,7 @@ from unittest.mock import patch
 import pytest
 import pytest_asyncio
 
+from hindsight_api.engine import bank_info_cache
 from hindsight_api.engine.chunk_ids import build_chunk_id
 from hindsight_api.engine.curation_guard import (
     CurationGuard,
@@ -93,22 +95,44 @@ async def guard_for(client, case: Case) -> CurationGuard:
     )
 
 
-async def test_invalidate_and_restore_guarded_round_trip(api_client, case):
+@pytest.mark.parametrize("guarded", [True, False])
+async def test_invalidate_and_restore_round_trip_honors_uncached_pause(
+    api_client, case, memory, request_context, guarded
+):
+    # Another API process pauses the bank without invalidating this process's
+    # warm cache. Both guarded and ordinary curation must honor that pause.
+    async with memory._backend.acquire() as conn:
+        await conn.execute(
+            "UPDATE banks SET config = '{\"enable_auto_consolidation\":true}' WHERE bank_id = $1", case.bank
+        )
+    await bank_info_cache.invalidate(case.bank, "config")
+    assert (await memory._config_resolver.resolve_full_config(case.bank, request_context)).enable_auto_consolidation
+    async with memory._backend.acquire() as conn:
+        await conn.execute(
+            "UPDATE banks SET config = '{\"enable_auto_consolidation\":false}' WHERE bank_id = $1", case.bank
+        )
+    assert (await memory._config_resolver.resolve_full_config(case.bank, request_context)).enable_auto_consolidation
+
     before = (await api_client.get(case.path)).json()
     guard = await guard_for(api_client, case)
-    response = await api_client.patch(
-        case.path,
-        json={
-            "state": "invalidated",
-            "reason": "batch:test, unsupported outcome",
-            "curation_guard": guard.model_dump(),
-        },
-    )
-    assert response.status_code == 200, response.text
-    assert response.json()["state"] == "invalidated"
-    archived_guard = await guard_for(api_client, case)
-    restored = await api_client.patch(case.path, json={"state": "valid", "curation_guard": archived_guard.model_dump()})
-    assert restored.status_code == 200, restored.text
+    with patch.object(memory, "submit_async_consolidation") as submit:
+        response = await api_client.patch(
+            case.path,
+            json={
+                "state": "invalidated",
+                "reason": "batch:test, unsupported outcome",
+                **({"curation_guard": guard.model_dump()} if guarded else {}),
+            },
+        )
+        assert response.status_code == 200, response.text
+        assert response.json()["state"] == "invalidated"
+        archived_guard = await guard_for(api_client, case)
+        restored = await api_client.patch(
+            case.path,
+            json={"state": "valid", **({"curation_guard": archived_guard.model_dump()} if guarded else {})},
+        )
+        assert restored.status_code == 200, restored.text
+        submit.assert_not_awaited()
     after = (await api_client.get(case.path)).json()
     for field in ("text", "context", "type", "date", "entities", "document_id", "chunk_id", "tags", "metadata"):
         assert after[field] == before[field]
@@ -185,6 +209,52 @@ async def test_busy_write_window_fails_without_waiting_or_mutation(api_client, c
             )
             assert response.status_code == 409, response.text
     assert (await api_client.get(case.path)).json()["state"] == "valid"
+
+
+@pytest.mark.parametrize("action", ["invalidate", "edit", "restore", "reason"])
+async def test_row_lock_contention_returns_prompt_conflict_and_rolls_back(api_client, case, memory, action):
+    if action in ("restore", "reason"):
+        guard = await guard_for(api_client, case)
+        response = await api_client.patch(
+            case.path, json={"state": "invalidated", "curation_guard": guard.model_dump()}
+        )
+        assert response.status_code == 200, response.text
+    before = (await api_client.get(case.path)).json()
+    guard = await guard_for(api_client, case)
+    table = "invalidated_memory_units" if action in ("restore", "reason") else "memory_units"
+    changes = {
+        "invalidate": {"state": "invalidated"},
+        "edit": {"text": "The migration was only proposed."},
+        "restore": {"state": "valid"},
+        "reason": {"state": "invalidated", "reason": "A newer reason"},
+    }[action]
+    with patch.object(memory, "submit_async_consolidation") as submit:
+        async with memory._backend.acquire() as conn:
+            async with conn.transaction():
+                # FOR UPDATE only takes a ROW SHARE table lock, compatible with
+                # the guard's table locks. The later write must still fail fast.
+                await conn.fetchrow(
+                    f"SELECT id FROM {table} WHERE bank_id=$1 AND id=$2 FOR UPDATE", case.bank, case.memory_id
+                )
+                response = await asyncio.wait_for(
+                    api_client.patch(case.path, json={**changes, "curation_guard": guard.model_dump()}), timeout=1.0
+                )
+                assert response.status_code == 409, response.text
+                assert "busy" in response.json()["detail"]
+                # Read while the competing row lock is still held: the guard
+                # transaction has rolled back, not waited for the lock release.
+                assert (await api_client.get(case.path)).json() == before
+                # GET prefers the live row and cannot expose a partial duplicate
+                # left in the archive (or vice versa). Check both stores too.
+                assert await conn.fetchval(
+                    "SELECT count(*) FROM memory_units WHERE bank_id=$1 AND id=$2", case.bank, case.memory_id
+                ) == (0 if action in ("restore", "reason") else 1)
+                assert await conn.fetchval(
+                    "SELECT count(*) FROM invalidated_memory_units WHERE bank_id=$1 AND id=$2",
+                    case.bank,
+                    case.memory_id,
+                ) == (1 if action in ("restore", "reason") else 0)
+        submit.assert_not_awaited()
 
 
 async def test_guard_is_advertised_and_entity_changes_rejected(api_client, case):
