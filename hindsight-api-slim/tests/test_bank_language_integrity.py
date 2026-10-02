@@ -3,13 +3,15 @@
 import dataclasses
 import json
 from datetime import datetime, timezone
-from types import SimpleNamespace
+from types import MethodType, SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 from hindsight_api.config import HindsightConfig, _get_raw_config, get_config
 from hindsight_api.config_resolver import ConfigResolver, _coerce_stored_bank_overrides, apply_strategy
+from hindsight_api.engine import bank_info_cache
+from hindsight_api.engine.bank_stats_cache import BankStatsCache
 from hindsight_api.engine.language_integrity import GeneratedLanguageMismatch
 from hindsight_api.engine.llm_wrapper import LLMProvider
 from hindsight_api.engine.memory_engine import MemoryEngine
@@ -35,7 +37,7 @@ class BankBackend:
         return None
 
     async def fetchrow(self, query, bank_id):
-        return {"config": self.configs.get(bank_id, {})}
+        return {"config": json.loads(json.dumps(self.configs.get(bank_id, {})))}
 
     async def execute(self, query, updates_json, bank_id):
         self.configs.setdefault(bank_id, {}).update(json.loads(updates_json))
@@ -187,6 +189,87 @@ async def test_resolved_reject_fails_after_retry_while_other_bank_accepts():
                 facts, _ = await call
                 assert facts[0].fact == drift
         assert llm.call.await_count == 2
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("warm_mode", ["off", "observe"])
+@pytest.mark.parametrize(
+    "boundary",
+    [
+        "retain",
+        "strategy",
+        "default_strategy",
+        "changed_default",
+        "retain_batch",
+        "retain_batch_strategy",
+        "consolidation",
+    ],
+)
+async def test_operation_policy_bypasses_another_workers_warm_cache(warm_mode, boundary):
+    from hindsight_api.engine.consolidation import consolidator
+
+    bank = "synthetic-warm-worker"
+    backend = BankBackend()
+    worker = resolver(mode=warm_mode)
+    writer = resolver(mode=warm_mode)
+    worker._backend = writer._backend = backend
+    context = RequestContext(api_key=None, api_key_id=None, tenant_id=None, internal=False)
+    worker_cache = BankStatsCache(ttl_seconds=3600, max_entries=16)
+    writer_cache = BankStatsCache(ttl_seconds=3600, max_entries=16)
+    uses_strategy = boundary in {"strategy", "default_strategy", "changed_default", "retain_batch_strategy"}
+    backend.configs[bank] = {
+        "llm_language_integrity": warm_mode,
+        "retain_chunk_size": 2048,
+        "retain_default_strategy": "session" if uses_strategy else None,
+        "retain_strategies": {"session": {"llm_language_integrity": warm_mode}},
+    }
+    with patch.object(bank_info_cache, "_cache", worker_cache):
+        warm = await worker.resolve_full_config(bank, context)
+        assert warm.llm_language_integrity == warm_mode
+
+    updates: dict[str, object] = {"retain_chunk_size": 4096}
+    if uses_strategy:
+        name = "enforced" if boundary == "changed_default" else "session"
+        updates["retain_strategies"] = {name: {"llm_language_integrity": "reject"}}
+        updates["retain_default_strategy"] = name
+    else:
+        updates["llm_language_integrity"] = "reject"
+    # Invalidation affects only the API process that writes the persisted override.
+    with patch.object(bank_info_cache, "_cache", writer_cache):
+        await writer.update_bank_config(bank, updates, context)
+
+    engine = SimpleNamespace(_config_resolver=worker, _consolidation_llm_config=MagicMock())
+    with patch.object(bank_info_cache, "_cache", worker_cache):
+        readback = await worker.resolve_full_config(bank, context, cached=False)
+        if uses_strategy:
+            readback = apply_strategy(readback, readback.retain_default_strategy)
+        assert readback.llm_language_integrity == "reject"
+        # Prove the stale entry survives the remote write AND the fresh API readback.
+        assert (await worker.resolve_full_config(bank, context)).llm_language_integrity == warm_mode
+        if boundary == "consolidation":
+            with (
+                patch.object(consolidator, "trace_context_of", return_value=None),
+                patch.object(consolidator, "_run_consolidation_job", new_callable=AsyncMock) as run,
+            ):
+                await consolidator.run_consolidation_job(engine, bank, context)
+                effective = run.await_args.args[3]
+                assert engine._consolidation_llm_config.with_config.call_args.args[0] is effective
+        elif boundary.startswith("retain_batch"):
+            engine._resolve_retain_config = MethodType(MemoryEngine._resolve_retain_config, engine)
+            engine._get_backend = AsyncMock()
+            engine._llm_config = SimpleNamespace(provider="mock")
+            engine._retain_llm_config = MagicMock()
+            # Capture the real orchestrator boundary before any generated work starts.
+            engine._retain_llm_config.with_config.side_effect = RuntimeError("retain boundary captured")
+            with pytest.raises(RuntimeError, match="retain boundary captured"):
+                await MemoryEngine._retain_batch_async_internal(engine, bank, [], context, strategy=None)
+            effective = engine._retain_llm_config.with_config.call_args.args[0]
+        else:
+            strategy = "session" if boundary == "strategy" else None
+            effective = await MemoryEngine._resolve_retain_config(engine, bank, context, strategy)
+        assert effective.llm_language_integrity == "reject"
+        assert effective.retain_chunk_size == 2048  # Non-gate fields still use the warm cache.
+        assert (await worker.resolve_full_config(bank, context)).llm_language_integrity == warm_mode
 
 
 @pytest.mark.asyncio

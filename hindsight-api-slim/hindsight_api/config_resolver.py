@@ -428,12 +428,12 @@ class ConfigResolver:
 
         Args:
             bank_id: Bank identifier
-            cached: read through the per-process cache. True on the RETAIN path, where this runs
-                once per sub-batch and a bank config that lags by one TTL changes nothing a caller
-                can see. False for anything that answers a reader about the bank's own config: the
-                cache is per PROCESS, so a write served by one pod is invisible to the others until
-                their entry expires, and a deployment runs several. Read-your-writes on a config
-                edit is not a race a user should have to lose.
+            cached: read through the per-process cache for ordinary operation settings.
+                Retain and consolidation separately read their language enforcement policy with
+                False: a correctness gate must not lag a remote edit by the cache TTL. False also
+                for anything that answers a reader about the bank's own config: the cache is per
+                PROCESS, so a write served by one pod is invisible to the others until their entry
+                expires. Read-your-writes on a config edit is not a race a user should have to lose.
 
         Returns:
             Dict of config overrides (only configurable fields, normalized keys)
