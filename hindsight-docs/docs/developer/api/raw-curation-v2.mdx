@@ -25,8 +25,9 @@ checked again during apply, before mutation. Snapshot and unique source
 document/chunk bytes together must fit 8 MiB.
 Each source document/chunk must fit 1 MiB. Missing provenance, cross-bank sources,
 transitive observations, Oracle and non-SQL memories stores are rejected.
-Cross-bank links and observations are checked again under the apply and revert
-transaction locks; dependencies added after preview return 409 before mutation.
+Cross-bank links and observations are checked again after deterministic,
+bank-scoped `FOR UPDATE NOWAIT` closure-row locks in the apply and revert
+transactions; dependencies added after preview return 409 before mutation.
 
 ## Preview, Apply And Reconcile
 

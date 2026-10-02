@@ -23,8 +23,11 @@ unchanged. Logical bank transfer is not capsule backup.
   missing provenance and cross-bank dependencies. Recheck foreign links and
   observations under the same phase-2 apply and revert locks, before mutation.
 - Corrections retain entity associations. Provider work happens outside pooled
-  connections and locks. Fixed-order NOWAIT table locks protect closure CAS and
-  atomic apply/revert. Do not add advisory locks or ordinary postcommit hooks.
+  connections and locks. A bank-keyed advisory transaction lock serializes
+  curation operations; fixed-order `FOR UPDATE NOWAIT` row locks protect the
+  captured closure during CAS and atomic apply/revert. Row locks are bank-scoped,
+  so unrelated-bank DML remains unblocked. Do not replace these locks with
+  ordinary postcommit hooks.
 - Persist consolidation, graph and model-refresh debt in the durable receipt.
   The protocol does not submit ordinary jobs. The caller coordinates maintenance
   with the consolidation owner after the curation window.

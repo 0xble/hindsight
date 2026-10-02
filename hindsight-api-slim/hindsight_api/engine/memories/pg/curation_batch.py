@@ -9,6 +9,7 @@ from decimal import Decimal
 from typing import Any
 from uuid import UUID
 
+import asyncpg
 from pydantic import TypeAdapter
 
 from ...curation_batch import (
@@ -78,6 +79,97 @@ async def lock(conn: DatabaseConnection, bank_id: str) -> None:
     )
     if not acquired:
         raise CurationBatchConflict("Curation window is busy")
+
+
+async def lock_closure(conn: DatabaseConnection, bank_id: str, scope: ClosureScope) -> None:
+    """Take fail-fast writer locks for every row in the recoverable closure.
+
+    The bank advisory lock only serializes curation operations. Ordinary writers
+    do not take it, so the CAS must also hold deterministic row locks while the
+    closure is captured and mutated. ``FOR UPDATE`` conflicts with PostgreSQL's
+    foreign-key ``FOR KEY SHARE`` checks, which also prevents new links and
+    postings from being added to captured memory/entity identities during the
+    curation transaction. The lock order is shared by every curation phase to
+    avoid curation-induced deadlocks; NOWAIT preserves the API's non-waiting 409
+    behavior when an ordinary writer already owns one of these rows.
+    """
+    memory_ids = _ids([*scope.affected, *scope.peers])
+    affected_ids = _ids(scope.affected)
+    try:
+        # Parent identities are locked before their dependent rows. Keep every
+        # SELECT ordered so two curation transactions cannot deadlock while
+        # acquiring overlapping closures. The archive is a second parent store
+        # for the same identities and is locked in this first parent phase too.
+        await conn.fetch(
+            f"SELECT id FROM {fq_table('memory_units')} "
+            "WHERE bank_id=$1 AND id=ANY($2::uuid[]) ORDER BY id FOR UPDATE NOWAIT",
+            bank_id,
+            memory_ids,
+        )
+        await conn.fetch(
+            f"SELECT id FROM {fq_table('invalidated_memory_units')} "
+            "WHERE bank_id=$1 AND id=ANY($2::uuid[]) ORDER BY id FOR UPDATE NOWAIT",
+            bank_id,
+            affected_ids,
+        )
+
+        # Entity cooccurrences may pin an entity that is not present in the
+        # initial scope (the asymmetric partner case). Discover all endpoints
+        # before locking entities so ordinary posting/cooccurrence writers are
+        # also forced to wait or fail rather than changing the CAS inputs.
+        closure_entity_rows = await conn.fetch(
+            f"SELECT entity_id FROM {fq_table('unit_entities')} WHERE unit_id=ANY($1::uuid[]) "
+            "UNION "
+            f"SELECT entity_id FROM {fq_table('memory_links')} WHERE bank_id=$2 "
+            "AND (from_unit_id=ANY($1::uuid[]) OR to_unit_id=ANY($1::uuid[])) "
+            "UNION "
+            f"SELECT entity_id_1 FROM {fq_table('entity_cooccurrences')} "
+            "WHERE entity_id_1=ANY($3::uuid[]) OR entity_id_2=ANY($3::uuid[]) "
+            "UNION "
+            f"SELECT entity_id_2 FROM {fq_table('entity_cooccurrences')} "
+            "WHERE entity_id_1=ANY($3::uuid[]) OR entity_id_2=ANY($3::uuid[])",
+            affected_ids,
+            bank_id,
+            _ids(scope.entities),
+        )
+        entity_ids = _ids([*scope.entities, *(row["entity_id"] for row in closure_entity_rows)])
+        await conn.fetch(
+            f"SELECT id FROM {fq_table('entities')} "
+            "WHERE bank_id=$1 AND id=ANY($2::uuid[]) ORDER BY id FOR UPDATE NOWAIT",
+            bank_id,
+            entity_ids,
+        )
+
+        # Dependent closure rows are locked after both parent families. New FK
+        # references to a locked memory/entity row therefore cannot be admitted
+        # silently; the dependency probes below run only after this lock set is
+        # complete and immediately precede the phase-2 mutation.
+        await conn.fetch(
+            f"SELECT unit_id,entity_id FROM {fq_table('unit_entities')} "
+            "WHERE unit_id=ANY($1::uuid[]) ORDER BY unit_id,entity_id FOR UPDATE NOWAIT",
+            affected_ids,
+        )
+        await conn.fetch(
+            f"SELECT from_unit_id,to_unit_id,link_type,entity_id FROM {fq_table('memory_links')} "
+            "WHERE bank_id=$1 AND (from_unit_id=ANY($2::uuid[]) OR to_unit_id=ANY($2::uuid[])) "
+            "ORDER BY from_unit_id,to_unit_id,link_type,entity_id NULLS FIRST FOR UPDATE NOWAIT",
+            bank_id,
+            affected_ids,
+        )
+        await conn.fetch(
+            f"SELECT entity_id_1,entity_id_2 FROM {fq_table('entity_cooccurrences')} "
+            "WHERE entity_id_1=ANY($1::uuid[]) OR entity_id_2=ANY($1::uuid[]) "
+            "ORDER BY entity_id_1,entity_id_2 FOR UPDATE NOWAIT",
+            entity_ids,
+        )
+        await conn.fetch(
+            f"SELECT id FROM {fq_table('observation_history')} "
+            "WHERE bank_id=$1 AND observation_id=ANY($2::uuid[]) ORDER BY id FOR UPDATE NOWAIT",
+            bank_id,
+            affected_ids,
+        )
+    except asyncpg.exceptions.LockNotAvailableError as exc:
+        raise CurationBatchConflict("Curation closure is busy") from exc
 
 
 async def assert_paused(conn: DatabaseConnection, bank_id: str) -> None:
@@ -253,7 +345,8 @@ async def assert_same_bank_dependencies(conn: DatabaseConnection, bank_id: str, 
 async def capture(conn: DatabaseConnection, bank_id: str, scope: ClosureScope) -> CurationSnapshot:
     affected = _ids(scope.affected)
     # Discovery is not a lasting admission decision: provider work releases
-    # locks. Recheck under phase-2/revert locks before any cascade or restore.
+    # locks. Recheck under phase-2/revert row locks before any cascade or restore.
+    await lock_closure(conn, bank_id, scope)
     await assert_same_bank_dependencies(conn, bank_id, affected)
     all_ids = _ids([*scope.affected, *scope.peers])
     ents = _ids(scope.entities)

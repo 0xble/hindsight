@@ -5,6 +5,7 @@ engine/HTTP boundaries. The system story separately exercises client and worker
 composition without SQL or internal imports.
 """
 
+import asyncio
 import json
 import uuid
 from dataclasses import dataclass
@@ -1127,6 +1128,8 @@ async def test_curation_lock_does_not_block_unrelated_bank_writes(memory, seeded
         async with memory._pool.acquire() as blocker:
             async with blocker.transaction():
                 await store.lock(blocker, seeded.bank)
+                scope = await store.discover(blocker, seeded.bank, [seeded.raw])
+                await store.lock_closure(blocker, seeded.bank, scope)
                 async with memory._pool.acquire() as writer:
                     async with writer.transaction():
                         await raw(writer, another, "unrelated bank write")
@@ -1139,6 +1142,86 @@ async def test_curation_lock_does_not_block_unrelated_bank_writes(memory, seeded
             )
     finally:
         await memory.delete_bank(another, request_context=CTX)
+
+
+async def test_same_bank_writer_race_apply_is_rejected_without_overwrite(memory, seeded):
+    view = await preview(memory, seeded)
+    request = manifest(view, correction=CurationFields(text="curation correction"))
+    provider_started = asyncio.Event()
+    allow_provider = asyncio.Event()
+
+    async def provider(**kwargs):
+        provider_started.set()
+        await allow_provider.wait()
+        return str([0.25] * 384)
+
+    async def writer():
+        async with memory._pool.acquire() as conn:
+            async with conn.transaction():
+                await conn.execute(
+                    "UPDATE memory_units SET text='ordinary writer' WHERE bank_id=$1 AND id=$2",
+                    seeded.bank,
+                    seeded.raw,
+                )
+                writer_started.set()
+                await release_writer.wait()
+
+    writer_started = asyncio.Event()
+    release_writer = asyncio.Event()
+    with patch.object(memory, "_reembed_memory_text", new=provider):
+        apply_task = asyncio.create_task(apply(memory, seeded, request, "same-bank-apply"))
+        await asyncio.wait_for(provider_started.wait(), timeout=5)
+        writer_task = asyncio.create_task(writer())
+        await asyncio.wait_for(writer_started.wait(), timeout=5)
+        allow_provider.set()
+        try:
+            with pytest.raises(CurationBatchConflict, match="busy"):
+                await apply_task
+        finally:
+            release_writer.set()
+            await writer_task
+
+    async with memory._pool.acquire() as conn:
+        assert await conn.fetchval("SELECT text FROM memory_units WHERE id=$1", seeded.raw) == "ordinary writer"
+        assert await conn.fetchval("SELECT count(*) FROM curation_batches WHERE bank_id=$1", seeded.bank) == 0
+
+
+async def test_same_bank_writer_race_revert_is_rejected_without_overwrite(memory, seeded):
+    receipt = await apply(memory, seeded, manifest(await preview(memory, seeded)), "same-bank-revert")
+    writer_started = asyncio.Event()
+    release_writer = asyncio.Event()
+
+    async def writer():
+        async with memory._pool.acquire() as conn:
+            async with conn.transaction():
+                await conn.execute(
+                    "UPDATE invalidated_memory_units SET text='ordinary archive writer' WHERE bank_id=$1 AND id=$2",
+                    seeded.bank,
+                    seeded.raw,
+                )
+                writer_started.set()
+                await release_writer.wait()
+
+    writer_task = asyncio.create_task(writer())
+    await asyncio.wait_for(writer_started.wait(), timeout=5)
+    try:
+        with pytest.raises(CurationBatchConflict, match="busy"):
+            await revert(memory, seeded, receipt, "same-bank-revert")
+    finally:
+        release_writer.set()
+        await writer_task
+
+    async with memory._pool.acquire() as conn:
+        assert (
+            await conn.fetchval("SELECT text FROM invalidated_memory_units WHERE id=$1", seeded.raw)
+            == "ordinary archive writer"
+        )
+        assert (
+            await conn.fetchval(
+                "SELECT status FROM curation_batches WHERE bank_id=$1 AND batch_id=$2", seeded.bank, "same-bank-revert"
+            )
+            == "applied"
+        )
 
 
 async def test_lost_ack_after_commit_is_reconciled_by_receipt_get(memory, seeded):
