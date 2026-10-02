@@ -8772,6 +8772,18 @@
             "title": "Reflect Mission",
             "description": "Mission/context for Reflect operations"
           },
+          "file_delete_after_retain": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "File Delete After Retain",
+            "description": "Delete original upload bytes after conversion queues retention; null inherits"
+          },
           "retain_mission": {
             "anyOf": [
               {

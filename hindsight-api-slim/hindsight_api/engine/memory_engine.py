@@ -3782,6 +3782,22 @@ class MemoryEngine(MemoryEngineInterface):
         if not bank_id or not storage_key or not document_id:
             raise ValueError("bank_id, storage_key, and document_id are required for file_convert_retain task")
 
+        # Resolve the original-file policy in the worker's tenant context before
+        # queuing downstream work. A resolution failure must leave the original
+        # untouched and must not enqueue a retain that a retry would duplicate.
+        from hindsight_api.models import RequestContext
+
+        convert_context = RequestContext(
+            internal=True,
+            user_initiated=True,
+            tenant_id=task_dict.get("_tenant_id"),
+            api_key_id=task_dict.get("_api_key_id"),
+            retry_count=task_dict.get("_retry_count", 0),
+        )
+        config = await self._config_resolver.resolve_full_config(
+            bank_id, convert_context, cached=False, fail_closed=True
+        )
+
         logger.info(f"[FILE_CONVERT_RETAIN] Starting for bank_id={bank_id}, document_id={document_id}, file={filename}")
 
         try:
@@ -3816,15 +3832,7 @@ class MemoryEngine(MemoryEngineInterface):
         if self._operation_validator:
             try:
                 from hindsight_api.extensions.operation_validator import FileConvertResult
-                from hindsight_api.models import RequestContext
 
-                convert_context = RequestContext(
-                    internal=True,
-                    user_initiated=True,
-                    tenant_id=task_dict.get("_tenant_id"),
-                    api_key_id=task_dict.get("_api_key_id"),
-                    retry_count=task_dict.get("_retry_count", 0),
-                )
                 await self._operation_validator.on_file_convert_complete(
                     FileConvertResult(
                         bank_id=bank_id,
@@ -3932,9 +3940,6 @@ class MemoryEngine(MemoryEngineInterface):
         )
 
         # Delete file bytes from storage if configured (saves storage costs)
-        from ..config import get_config
-
-        config = get_config()
         if config.file_delete_after_retain:
             try:
                 await self._file_storage.delete(storage_key)

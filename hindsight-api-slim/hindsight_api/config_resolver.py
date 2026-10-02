@@ -38,6 +38,17 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+class ConfigUnavailableError(RuntimeError):
+    """A fail-closed caller could not establish the current configuration."""
+
+
+def _validate_file_preservation_policy(overrides: dict[str, Any], scope: str) -> None:
+    """A destructive consumer cannot drop a malformed preservation override."""
+    value = overrides.get("file_delete_after_retain")
+    if value is not None and not isinstance(value, bool):
+        raise ConfigUnavailableError(f"Cannot resolve {scope}: file_delete_after_retain must be a boolean or null")
+
+
 class BankConfigPersistenceConflictError(ValueError):
     """Raised when a validated bank config update can no longer be persisted."""
 
@@ -182,7 +193,9 @@ class ConfigResolver:
         # The API-visible subset, resolved once: every config read filters to it.
         self._public_fields = frozenset(self._configurable_fields - self._credential_fields)
 
-    async def _resolve_tenant_overrides(self, scope: str, context: RequestContext | None = None) -> dict[str, Any]:
+    async def _resolve_tenant_overrides(
+        self, scope: str, context: RequestContext | None = None, *, fail_closed: bool = False
+    ) -> dict[str, Any]:
         """Tenant-level overrides to apply on top of the global config.
 
         Returns only the fields the tenant actually overrides — the global config is
@@ -196,11 +209,15 @@ class ConfigResolver:
             tenant_overrides = await self.tenant_extension.get_tenant_config(context)
         except Exception as e:
             logger.warning(f"Failed to load tenant config for {scope}: {e}")
+            if fail_closed:
+                raise ConfigUnavailableError(f"Cannot load tenant config for {scope}") from e
             return {}
         if not tenant_overrides:
             return {}
         # Normalize keys and filter to configurable fields only
         normalized_tenant = normalize_config_dict(tenant_overrides)
+        if fail_closed:
+            _validate_file_preservation_policy(normalized_tenant, f"tenant config for {scope}")
         configurable_tenant = {k: v for k, v in normalized_tenant.items() if k in self._configurable_fields}
         if "llm_language_integrity" in configurable_tenant:
             mode = configurable_tenant["llm_language_integrity"]
@@ -232,7 +249,12 @@ class ConfigResolver:
         return resolved
 
     async def resolve_full_config(
-        self, bank_id: str, context: RequestContext | None = None, *, cached: bool = True
+        self,
+        bank_id: str,
+        context: RequestContext | None = None,
+        *,
+        cached: bool = True,
+        fail_closed: bool = False,
     ) -> HindsightConfig:
         """
         Resolve full HindsightConfig for a bank with hierarchical overrides applied.
@@ -248,14 +270,17 @@ class ConfigResolver:
         Args:
             bank_id: Bank identifier
             context: Request context for tenant config resolution
+            fail_closed: Require a fresh bank row and successful tenant/bank reads.
+                Destructive consumers must not substitute defaults when policy is unavailable.
+                Existing callers retain best-effort resolution by default.
 
         Returns:
             Complete HindsightConfig with hierarchical overrides applied
         """
-        overrides = await self._resolve_tenant_overrides(f"bank {bank_id}", context)
+        overrides = await self._resolve_tenant_overrides(f"bank {bank_id}", context, fail_closed=fail_closed)
 
         # Load bank config overrides
-        bank_overrides = await self._load_bank_config(bank_id, cached=cached)
+        bank_overrides = await self._load_bank_config(bank_id, cached=cached, fail_closed=fail_closed)
         if bank_overrides:
             overrides.update(bank_overrides)
             logger.debug(f"Applied bank config overrides for bank {bank_id}: {list(bank_overrides.keys())}")
@@ -390,7 +415,9 @@ class ConfigResolver:
         )
         return dict(zip(bank_ids, permission_filtered, strict=True))
 
-    async def _load_bank_config(self, bank_id: str, *, cached: bool = True) -> dict[str, Any]:
+    async def _load_bank_config(
+        self, bank_id: str, *, cached: bool = True, fail_closed: bool = False
+    ) -> dict[str, Any]:
         """
         Load bank config overrides from banks.config JSONB column.
 
@@ -425,27 +452,31 @@ class ConfigResolver:
                         """,
                         bank_id,
                     )
-                # Wrapped in a dict because the cache stores dicts; `{}` means "no row, or no
-                # config", which is also what this function returns for that case anyway.
-                return {"config": row["config"]} if row and row["config"] else {}
             except Exception as e:
                 logger.error(f"Failed to load bank config for {bank_id}: {e}")
+                if fail_closed:
+                    raise ConfigUnavailableError(f"Cannot load bank config for {bank_id}") from e
                 # Re-raise nothing: the original swallowed this and returned {}. Returning the
                 # empty dict keeps that behaviour, but it must NOT be cached as if it were an
                 # answer -- bank_info_cache drops empty values for exactly this reason.
                 return {}
+            if row is None and fail_closed:
+                raise ConfigUnavailableError(f"Cannot load bank config for {bank_id}: bank does not exist")
+            # An existing bank with empty/null config explicitly inherits defaults.
+            # A missing or failed read must never be mistaken for that in strict mode.
+            return {"config": row["config"]} if row and row["config"] else {}
 
         row = (
             await bank_info_cache.get_or_load(bank_id, "config", _read_config_row)
-            if cached
+            if cached and not fail_closed
             else await _read_config_row()
         )
         if row.get("config"):
-            return self._active_bank_overrides(bank_id, row["config"])
+            return self._active_bank_overrides(bank_id, row["config"], fail_closed=fail_closed)
 
         return {}
 
-    def _active_bank_overrides(self, bank_id: str, config_data: Any) -> dict[str, Any]:
+    def _active_bank_overrides(self, bank_id: str, config_data: Any, *, fail_closed: bool = False) -> dict[str, Any]:
         """Parse a stored ``banks.config`` value into active, normalized overrides."""
         if not config_data:
             return {}
@@ -456,6 +487,8 @@ class ConfigResolver:
 
         # Normalize keys (handle both env var format and Python field format)
         normalized = normalize_config_dict(config_data)
+        if fail_closed:
+            _validate_file_preservation_policy(normalized, f"bank config for {bank_id}")
 
         # Only active overrides for configurable fields. JSON null is a tombstone
         # for "Server Default" in the bank-config UI and must not override defaults.

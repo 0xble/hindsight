@@ -3788,6 +3788,8 @@ class HindsightConfig:
         # Per-bank so a data-minimizing bank can keep only derived facts while
         # others retain the raw source for expansion/re-extraction.
         "store_document_text",
+        # Preserve original uploads independently for each bank.
+        "file_delete_after_retain",
         # Retention settings (behavioral)
         "retain_chunk_size",
         "retain_structured_chunk_size",
