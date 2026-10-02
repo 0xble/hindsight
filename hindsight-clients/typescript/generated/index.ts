@@ -229,6 +229,7 @@ export type {
   CreateWebhookRequest,
   CreateWebhookResponse,
   CreateWebhookResponses,
+  CurationGuard,
   DefaultScopesPreview,
   DeleteBankAliasData,
   DeleteBankAliasError,

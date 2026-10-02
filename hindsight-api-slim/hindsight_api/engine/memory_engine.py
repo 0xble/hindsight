@@ -61,6 +61,7 @@ from ..worker.stage import set_stage
 from .audit import AuditLogger, audit_context
 from .bank_stats_cache import BankStatsCache, DistributedBankStatsCache
 from .chunk_ids import build_chunk_id, parse_chunk_id, resolve_chunk_id_in
+from .curation_guard import CurationConflictError, CurationGuard, lock_curation_tables, verify_curation_guard
 from .db import DatabaseBackend, DatabaseConnection, ResultRow, create_database_backend
 from .db.ops_postgresql import pg_search_vector_expr
 from .db.postgresql import PostgreSQLBackend
@@ -12306,6 +12307,7 @@ class MemoryEngine(MemoryEngineInterface):
         resolve_entities: bool = True,
         state: str | None = None,
         reason: str | None = None,
+        curation_guard: CurationGuard | None = None,
         request_context: "RequestContext",
     ) -> dict[str, Any] | None:
         """Curate a single raw memory unit: edit its fields and/or change its state.
@@ -12430,6 +12432,12 @@ class MemoryEngine(MemoryEngineInterface):
         from .memories import get_memories
 
         store = get_memories()
+
+        # v1 intentionally excludes entity edits: their Phase-1 find-or-create
+        # effects can outlive a rejected compare-and-set. A caller needing those
+        # effects uses ordinary curation, without claiming guarded reversibility.
+        if curation_guard is not None and (entities is not None or store.store_owned_for(bank_id)):
+            raise CurationConflictError("Guarded curation does not support entity edits or an external memory store.")
 
         # -- Phase 1: read current state, resolve entities, and compute embeddings with NO write
         # transaction held. A slow embedder must never pin a pooled connection across the decision,
@@ -12626,6 +12634,27 @@ class MemoryEngine(MemoryEngineInterface):
         try:
             async with acquire_with_retry(backend) as conn:
                 async with conn.transaction():
+                    if curation_guard is not None:
+                        try:
+                            await lock_curation_tables(conn, fq_table)
+                        except asyncpg.LockNotAvailableError as exc:
+                            raise CurationConflictError(
+                                "Curation write window is busy, no guarded write applied."
+                            ) from exc
+                        current_snapshot = await store.get_memory_unit(
+                            conn=conn,
+                            ops=self._backend.ops,
+                            fq_table=fq_table,
+                            bank_id=bank_id,
+                            unit_id=str(memory_uuid),
+                        )
+                        await verify_curation_guard(
+                            conn=conn,
+                            fq_table=fq_table,
+                            bank_id=bank_id,
+                            memory=current_snapshot,
+                            guard=curation_guard,
+                        )
                     # Re-read under the write transaction: moving the embed out widened the read→write
                     # window, so re-validate existence and skip cleanly if the row was concurrently
                     # moved or deleted between the phases.
@@ -12687,6 +12716,10 @@ class MemoryEngine(MemoryEngineInterface):
                             )
                             locked_names = [e["canonical_name"] for e in emap2.get(str(memory_uuid), [])]
                             if locked_names != edit_plan.names:
+                                if curation_guard is not None:
+                                    raise CurationConflictError(
+                                        "Entity names changed during embedding, no guarded write applied."
+                                    )
                                 edit_embedding = await self._reembed_memory_text(
                                     text=edit_plan.new_text,
                                     occurred_start=edit_plan.new_occ_start,
@@ -12776,6 +12809,10 @@ class MemoryEngine(MemoryEngineInterface):
                             locked_names = [e["canonical_name"] for e in emap2.get(str(memory_uuid), [])]
                             revert_embedding = revert_plan.embedding
                             if locked_names != revert_plan.names:
+                                if curation_guard is not None:
+                                    raise CurationConflictError(
+                                        "Archived entity names changed, no guarded restore applied."
+                                    )
                                 revert_embedding = await self._reembed_memory_text(
                                     text=restored.text,
                                     occurred_start=restored.occurred_start,

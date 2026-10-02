@@ -10904,6 +10904,49 @@
         "title": "DefaultScopesPreview",
         "description": "The scopes no strategy claims \u2014 they consolidate under the bank-wide settings."
       },
+      "CurationGuard": {
+        "properties": {
+          "protocol": {
+            "type": "string",
+            "const": "raw-curation-v1",
+            "title": "Protocol"
+          },
+          "expected_memory_sha256": {
+            "type": "string",
+            "maxLength": 64,
+            "minLength": 64,
+            "title": "Expected Memory Sha256",
+            "description": "Lowercase SHA-256 hex digest."
+          },
+          "expected_source_sha256": {
+            "type": "string",
+            "maxLength": 64,
+            "minLength": 64,
+            "title": "Expected Source Sha256",
+            "description": "Lowercase SHA-256 hex digest."
+          },
+          "require_no_observations": {
+            "type": "boolean",
+            "const": true,
+            "title": "Require No Observations"
+          },
+          "require_quiescent_consolidation": {
+            "type": "boolean",
+            "const": true,
+            "title": "Require Quiescent Consolidation"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "protocol",
+          "expected_memory_sha256",
+          "expected_source_sha256",
+          "require_no_observations",
+          "require_quiescent_consolidation"
+        ],
+        "title": "CurationGuard"
+      },
       "DeleteDocumentResponse": {
         "properties": {
           "success": {
@@ -19042,6 +19085,17 @@
             ],
             "title": "Reason",
             "description": "Optional free-text reason recorded when invalidating."
+          },
+          "curation_guard": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/CurationGuard"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Optional raw-curation-v1 atomic snapshot/source preconditions. Requires the PostgreSQL memory store, explicitly paused quiescent consolidation and no dependent observations. Rejects entity-changing requests. A conflict is HTTP 409 without the curation write."
           }
         },
         "type": "object",
