@@ -198,6 +198,8 @@ async def test_update_widens_bounds_from_its_source_facts(memory: MemoryEngine, 
         memory, request_context, observations_enabled, bank_id, "Bob plays the cello.", "cello"
     )
     observation_id = await _seed_undated_observation(memory, bank_id, undated_fact, "Bob plays the cello.")
+    async with memory._pool.acquire() as conn:
+        await conn.execute("UPDATE memory_units SET tags = $1 WHERE id = $2", ["status:active"], observation_id)
     stamped = (await _observations(memory, bank_id))[0]
 
     dated_fact = await _retain_fact(
@@ -231,6 +233,9 @@ async def test_update_widens_bounds_from_its_source_facts(memory: MemoryEngine, 
     assert embedding is not None, "the update must have landed"
 
     updated = (await _observations(memory, bank_id))[0]
+    async with memory._pool.acquire() as conn:
+        updated_tags = await conn.fetchval("SELECT tags FROM memory_units WHERE id = $1", observation_id)
+    assert "status:active" in updated_tags
     assert updated["occurred_start"] == EARLY
     assert updated["occurred_end"] == LATE
     assert updated["event_date"] == EARLY, "event_date must follow the sources, not stay at creation time"

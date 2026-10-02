@@ -3616,7 +3616,7 @@ async def _process_memory_batch(
         # their current co-sources before ordered locking, then fence any change
         # to this set before a fold can take additional source locks.
         target_rows = await conn.fetch(
-            f"SELECT id, source_memory_ids FROM {fq_table('memory_units')} WHERE bank_id = $1 AND id = ANY($2::uuid[])",
+            f"SELECT id, source_memory_ids, tags FROM {fq_table('memory_units')} WHERE bank_id = $1 AND id = ANY($2::uuid[])",
             bank_id,
             [uuid.UUID(target_id) for target_id in target_ids],
         )
@@ -3635,7 +3635,7 @@ async def _process_memory_batch(
             lock_ids.update(uuid.UUID(str(source_id)) for source_id in prepared.source_memory_ids)
         lock_ids.update(uuid.UUID(str(source_id)) for source_id in stamp_ids)
         locked_rows = await conn.fetch(
-            f"SELECT id, text, source_memory_ids FROM {fq_table('memory_units')} "
+            f"SELECT id, text, source_memory_ids, tags FROM {fq_table('memory_units')} "
             "WHERE bank_id = $1 AND id = ANY($2::uuid[]) ORDER BY id FOR UPDATE",
             bank_id,
             sorted(lock_ids),
@@ -3664,7 +3664,11 @@ async def _process_memory_batch(
                 )
             current_sources = {str(source_id) for source_id in (row["source_memory_ids"] or [])}
             recalled_sources = {str(source_id) for source_id in (prepared.model.source_fact_ids or [])}
-            if row["text"] != prepared.model.text or current_sources != recalled_sources:
+            if (
+                row["text"] != prepared.model.text
+                or current_sources != recalled_sources
+                or set(row["tags"] or []) != set(prepared.model.tags or [])
+            ):
                 raise _StaleConsolidationReference(
                     f"update target {prepared.update.observation_id} changed before serialized apply"
                 )
@@ -4099,8 +4103,15 @@ async def _apply_update_action(
     merged = dict.fromkeys(str(s) for s in [*(model.source_fact_ids or []), *live_ids])
     source_ids = [uuid.UUID(s) for s in merged]
 
-    # SECURITY: Merge source fact's tags into existing observation tags so all contributors can see it
-    existing_tags = set(model.tags or [])
+    # Read the target's current tags inside the write transaction. The prepared model
+    # came from recall and may be stale while the LLM was running. Updates do not
+    # carry an observation-tag replacement, so preserve tags written meanwhile
+    # instead of overwriting them with the recall snapshot.
+    current_tags = await conn.fetchval(
+        f"SELECT tags FROM {fq_table('memory_units')} WHERE id = $1 FOR UPDATE",
+        uuid.UUID(observation_id),
+    )
+    existing_tags = set(current_tags if current_tags is not None else (model.tags or []))
     source_tags = set(source_fact_tags or [])
     merged_tags = list(existing_tags | source_tags)
 

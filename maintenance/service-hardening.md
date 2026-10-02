@@ -72,11 +72,27 @@ stale-reference recovery, atomic language validation and bounded schema correcti
 remain intentional divergences. Retain their existing regression suites when
 upstream changes consolidation signatures or typed store models.
 
-Append strategy retention is now upstream-owned: the append path carries the
-complete caller item instead of copying individual fields (#4590). Keep only
-the fork's unmatched-rechunk tail handling, exercised by
-`tests/test_append_after_chunking_change.py`, alongside upstream's
-`tests/test_retain_append_mode.py` coverage.
+Append strategy retention is now upstream-owned: the append path carries
+complete caller item instead of copying individual fields (#4590, implemented by
+released PR #4778). Keep only the fork's unmatched-rechunk tail handling,
+exercised by `tests/test_append_after_chunking_change.py`, alongside upstream's
+`tests/test_retain_append_mode.py`. Own PR #4591 is closed and superseded by
+#4778. Do not update the obsolete contribution head.
+
+## Observation Metadata Staleness Fence
+
+Issue [#4831](https://github.com/vectorize-io/hindsight/issues/4831) identified a
+separate target-observation race from the released source-edit fence in #4893.
+A consolidation UPDATE prepared from a stale recall snapshot could overwrite tags
+added to the target observation while the LLM was running, even though source IDs
+and text were unchanged. The lane validation now locks and compares target tags,
+and the UPDATE reads current tags inside its write transaction before merging
+source tags. This preserves concurrent metadata changes without inventing a tag
+replacement operation. The regression is in
+`tests/test_consolidation_temporal_merge.py` and must remain in the patch gate.
+Retire this correction only when a released upstream equivalent fences target
+observation metadata and passes the regression. Rollback is source-only and must
+not rewrite existing observation tags.
 
 
 ## Exact CREATE Fold Fallback And Dialect Boundary
