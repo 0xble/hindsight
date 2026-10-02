@@ -1,36 +1,19 @@
 package hindsight
 
-// setCurationNull preserves explicit null separately from an omitted pointer.
-func (o *CurationFields) setCurationNull(key string) {
-	if o.AdditionalProperties == nil {
-		o.AdditionalProperties = map[string]interface{}{}
-	}
-	o.AdditionalProperties[key] = nil
-}
-
 // SetContextNil explicitly clears the stored context.
-func (o *CurationFields) SetContextNil() { o.Context = nil; o.setCurationNull("context") }
+func (o *CurationFields) SetContextNil() { o.Context.Set(nil) }
 
 // SetOccurredStartNil explicitly clears the stored event start.
-func (o *CurationFields) SetOccurredStartNil() {
-	o.OccurredStart = nil
-	o.setCurationNull("occurred_start")
-}
+func (o *CurationFields) SetOccurredStartNil() { o.OccurredStart.Set(nil) }
 
 // SetOccurredEndNil explicitly clears the stored event end.
-func (o *CurationFields) SetOccurredEndNil() { o.OccurredEnd = nil; o.setCurationNull("occurred_end") }
+func (o *CurationFields) SetOccurredEndNil() { o.OccurredEnd.Set(nil) }
 
-// UnsetContext leaves the stored context unchanged.
-func (o *CurationFields) UnsetContext() { o.Context = nil; delete(o.AdditionalProperties, "context") }
+// UnsetContext leaves the stored context absent.
+func (o *CurationFields) UnsetContext() { o.Context.Unset() }
 
-// UnsetOccurredStart leaves the stored event start unchanged.
-func (o *CurationFields) UnsetOccurredStart() {
-	o.OccurredStart = nil
-	delete(o.AdditionalProperties, "occurred_start")
-}
+// UnsetOccurredStart leaves the stored event start absent.
+func (o *CurationFields) UnsetOccurredStart() { o.OccurredStart.Unset() }
 
-// UnsetOccurredEnd leaves the stored event end unchanged.
-func (o *CurationFields) UnsetOccurredEnd() {
-	o.OccurredEnd = nil
-	delete(o.AdditionalProperties, "occurred_end")
-}
+// UnsetOccurredEnd leaves the stored event end absent.
+func (o *CurationFields) UnsetOccurredEnd() { o.OccurredEnd.Unset() }

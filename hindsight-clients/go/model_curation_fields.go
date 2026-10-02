@@ -23,10 +23,10 @@ type CurationFields struct {
 	// Nonblank replacement text, at most 100000 characters
 	Text *string `json:"text,omitempty"`
 	// Replacement context, at most 100000 characters, or null to clear
-	Context              *string           `json:"context,omitempty"`
+	Context              NullableString    `json:"context,omitempty"`
 	FactType             *CurationFactType `json:"fact_type,omitempty"`
-	OccurredStart        *time.Time        `json:"occurred_start,omitempty"`
-	OccurredEnd          *time.Time        `json:"occurred_end,omitempty"`
+	OccurredStart        NullableTime      `json:"occurred_start,omitempty"`
+	OccurredEnd          NullableTime      `json:"occurred_end,omitempty"`
 	AdditionalProperties map[string]interface{}
 }
 
@@ -81,27 +81,28 @@ func (o *CurationFields) SetText(v string) {
 	o.Text = &v
 }
 
-// GetContext returns the Context field value if set, zero value otherwise.
+// GetContext returns the Context field value if set, zero value otherwise (both if not set or set to explicit null).
 func (o *CurationFields) GetContext() string {
-	if o == nil || IsNil(o.Context) {
+	if o == nil || IsNil(o.Context.Get()) {
 		var ret string
 		return ret
 	}
-	return *o.Context
+	return *o.Context.Get()
 }
 
 // GetContextOk returns a tuple with the Context field value if set, nil otherwise
 // and a boolean to check if the value has been set.
+// NOTE: If the value is an explicit nil, `nil, true` will be returned
 func (o *CurationFields) GetContextOk() (*string, bool) {
-	if o == nil || IsNil(o.Context) {
+	if o == nil {
 		return nil, false
 	}
-	return o.Context, true
+	return o.Context.Get(), o.Context.IsSet()
 }
 
 // HasContext returns a boolean if a field has been set.
 func (o *CurationFields) HasContext() bool {
-	if o != nil && !IsNil(o.Context) {
+	if o != nil && o.Context.IsSet() {
 		return true
 	}
 
@@ -110,8 +111,7 @@ func (o *CurationFields) HasContext() bool {
 
 // SetContext gets a reference to the given string and assigns it to the Context field.
 func (o *CurationFields) SetContext(v string) {
-	o.Context = &v
-	delete(o.AdditionalProperties, "context")
+	o.Context.Set(&v)
 }
 
 // GetFactType returns the FactType field value if set, zero value otherwise.
@@ -146,27 +146,28 @@ func (o *CurationFields) SetFactType(v CurationFactType) {
 	o.FactType = &v
 }
 
-// GetOccurredStart returns the OccurredStart field value if set, zero value otherwise.
+// GetOccurredStart returns the OccurredStart field value if set, zero value otherwise (both if not set or set to explicit null).
 func (o *CurationFields) GetOccurredStart() time.Time {
-	if o == nil || IsNil(o.OccurredStart) {
+	if o == nil || IsNil(o.OccurredStart.Get()) {
 		var ret time.Time
 		return ret
 	}
-	return *o.OccurredStart
+	return *o.OccurredStart.Get()
 }
 
 // GetOccurredStartOk returns a tuple with the OccurredStart field value if set, nil otherwise
 // and a boolean to check if the value has been set.
+// NOTE: If the value is an explicit nil, `nil, true` will be returned
 func (o *CurationFields) GetOccurredStartOk() (*time.Time, bool) {
-	if o == nil || IsNil(o.OccurredStart) {
+	if o == nil {
 		return nil, false
 	}
-	return o.OccurredStart, true
+	return o.OccurredStart.Get(), o.OccurredStart.IsSet()
 }
 
 // HasOccurredStart returns a boolean if a field has been set.
 func (o *CurationFields) HasOccurredStart() bool {
-	if o != nil && !IsNil(o.OccurredStart) {
+	if o != nil && o.OccurredStart.IsSet() {
 		return true
 	}
 
@@ -175,31 +176,31 @@ func (o *CurationFields) HasOccurredStart() bool {
 
 // SetOccurredStart gets a reference to the given time.Time and assigns it to the OccurredStart field.
 func (o *CurationFields) SetOccurredStart(v time.Time) {
-	o.OccurredStart = &v
-	delete(o.AdditionalProperties, "occurred_start")
+	o.OccurredStart.Set(&v)
 }
 
-// GetOccurredEnd returns the OccurredEnd field value if set, zero value otherwise.
+// GetOccurredEnd returns the OccurredEnd field value if set, zero value otherwise (both if not set or set to explicit null).
 func (o *CurationFields) GetOccurredEnd() time.Time {
-	if o == nil || IsNil(o.OccurredEnd) {
+	if o == nil || IsNil(o.OccurredEnd.Get()) {
 		var ret time.Time
 		return ret
 	}
-	return *o.OccurredEnd
+	return *o.OccurredEnd.Get()
 }
 
 // GetOccurredEndOk returns a tuple with the OccurredEnd field value if set, nil otherwise
 // and a boolean to check if the value has been set.
+// NOTE: If the value is an explicit nil, `nil, true` will be returned
 func (o *CurationFields) GetOccurredEndOk() (*time.Time, bool) {
-	if o == nil || IsNil(o.OccurredEnd) {
+	if o == nil {
 		return nil, false
 	}
-	return o.OccurredEnd, true
+	return o.OccurredEnd.Get(), o.OccurredEnd.IsSet()
 }
 
 // HasOccurredEnd returns a boolean if a field has been set.
 func (o *CurationFields) HasOccurredEnd() bool {
-	if o != nil && !IsNil(o.OccurredEnd) {
+	if o != nil && o.OccurredEnd.IsSet() {
 		return true
 	}
 
@@ -208,8 +209,7 @@ func (o *CurationFields) HasOccurredEnd() bool {
 
 // SetOccurredEnd gets a reference to the given time.Time and assigns it to the OccurredEnd field.
 func (o *CurationFields) SetOccurredEnd(v time.Time) {
-	o.OccurredEnd = &v
-	delete(o.AdditionalProperties, "occurred_end")
+	o.OccurredEnd.Set(&v)
 }
 
 func (o CurationFields) MarshalJSON() ([]byte, error) {
@@ -225,17 +225,17 @@ func (o CurationFields) ToMap() (map[string]interface{}, error) {
 	if !IsNil(o.Text) {
 		toSerialize["text"] = o.Text
 	}
-	if !IsNil(o.Context) {
-		toSerialize["context"] = o.Context
+	if o.Context.IsSet() {
+		toSerialize["context"] = o.Context.Get()
 	}
 	if !IsNil(o.FactType) {
 		toSerialize["fact_type"] = o.FactType
 	}
-	if !IsNil(o.OccurredStart) {
-		toSerialize["occurred_start"] = o.OccurredStart
+	if o.OccurredStart.IsSet() {
+		toSerialize["occurred_start"] = o.OccurredStart.Get()
 	}
-	if !IsNil(o.OccurredEnd) {
-		toSerialize["occurred_end"] = o.OccurredEnd
+	if o.OccurredEnd.IsSet() {
+		toSerialize["occurred_end"] = o.OccurredEnd.Get()
 	}
 
 	for key, value := range o.AdditionalProperties {
@@ -260,16 +260,10 @@ func (o *CurationFields) UnmarshalJSON(data []byte) (err error) {
 
 	if err = json.Unmarshal(data, &additionalProperties); err == nil {
 		delete(additionalProperties, "text")
-		if value, present := additionalProperties["context"]; !present || value != nil {
-			delete(additionalProperties, "context")
-		}
+		delete(additionalProperties, "context")
 		delete(additionalProperties, "fact_type")
-		if value, present := additionalProperties["occurred_start"]; !present || value != nil {
-			delete(additionalProperties, "occurred_start")
-		}
-		if value, present := additionalProperties["occurred_end"]; !present || value != nil {
-			delete(additionalProperties, "occurred_end")
-		}
+		delete(additionalProperties, "occurred_start")
+		delete(additionalProperties, "occurred_end")
 		o.AdditionalProperties = additionalProperties
 	}
 
