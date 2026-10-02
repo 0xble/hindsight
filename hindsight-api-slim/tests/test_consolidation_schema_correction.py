@@ -182,12 +182,16 @@ async def test_concurrent_round_budget_caps_extra_completions(provider, config):
         llm = LLMProvider(provider="openai", api_key="synthetic", base_url="https://example.invalid", model="stub")
         await llm._provider_impl._client.close()
         stub = install(llm, [MISSING, VALID])
-        result = await batch(llm, config, schema_correction_budget=budget)
-        return len(stub.requests), result.failed
+        try:
+            result = await batch(llm, config, schema_correction_budget=budget)
+        except c._RoundCorrectionBudgetExhausted:
+            return len(stub.requests), True
+        assert not result.failed
+        return len(stub.requests), False
 
     results = await asyncio.gather(*(one() for _ in range(24)))
     assert sum(count - 1 for count, _ in results) == 10
-    assert sum(failed for _, failed in results) == 14
+    assert sum(deferred for _, deferred in results) == 14
     assert budget.stats.attempts == 10
     assert budget.stats.budget_exhausted == 14
 
@@ -280,17 +284,21 @@ async def test_default_size_requeued_rounds_share_per_1000_fact_bound(provider, 
     monkeypatch.setattr(c, "get_memories", lambda: SimpleNamespace(mark_consolidated=mark_failed))
     monkeypatch.setattr(c, "_trigger_mental_model_refreshes", AsyncMock(return_value=0))
     results = []
-    while queued:
+    # Ten 100-slot rounds, not ten rounds that must finish 100 unique facts.
+    # Exhausted batches now remain pending and can occupy slots in a later round.
+    for _ in range(10):
         results.append(
             await c._run_consolidation_job(memory_engine=engine, config=config, llm_config=provider, **queued.pop(0))
         )
     processed_rounds = [result for result in results if result["memories_processed"]]
     assert len(processed_rounds) == 10
     assert all(result["schema_correction_attempts"] == 1 for result in processed_rounds)
-    assert sum(result["memories_processed"] for result in processed_rounds) == 1000
+    assert sum(result["memories_processed"] for result in processed_rounds) == 100
+    assert all(result["memories_failed"] == 0 for result in processed_rounds)
     assert sum("Return a COMPLETE replacement" in request["messages"][-1]["content"] for request in requests) == 10
     assert engine.submit_async_consolidation.await_count == 10
-    assert not pending
+    assert len(queued) == 1
+    assert len(pending) == 900
 
 
 class AuthError(Exception):
@@ -561,8 +569,8 @@ async def test_job_budget_survives_scopes_lanes_fetches_bisection_and_isolates_b
             observations = await memory.list_memory_units(
                 bank_id, fact_type="observation", limit=100, request_context=request_context
             )
-            assert failed["total"] == result["memories_failed"] > 0
-            assert pending["total"] == 0
+            assert failed["total"] == result["memories_failed"] == 0
+            assert pending["total"] > 0
             assert observations["total"] == result["observations_created"]
     finally:
         memory._consolidation_llm_config = original
