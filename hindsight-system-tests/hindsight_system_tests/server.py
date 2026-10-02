@@ -27,13 +27,13 @@ from .stub_server import create_stub_app
 logger = logging.getLogger(__name__)
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-API_DIR = REPO_ROOT / "hindsight-api-slim"
+API_DIR = REPO_ROOT / "hindsight-api"
 
 # A pg0 instance of its own, on a port nothing else uses. The api-slim suite and
 # the dev server share the default "hindsight" instance, and pointing system
 # tests at that one would both see their leftovers and block on their locks.
-PG0_INSTANCE = "hindsight-systest"
-PG0_PORT = 15499
+PG0_INSTANCE = os.environ.get("HINDSIGHT_SYSTEM_TEST_PG_INSTANCE", "hindsight-systest")
+PG0_PORT = int(os.environ.get("HINDSIGHT_SYSTEM_TEST_PG_PORT", "15499"))
 
 SERVER_STARTUP_TIMEOUT = 180.0
 

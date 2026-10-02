@@ -36,6 +36,15 @@ from hindsight_api.engine.audit import (
     AuditLogListResponse,
     AuditLogStatsResponse,
 )
+from hindsight_api.engine.curation_batch import (
+    BatchId,
+    CurationApplyRequest,
+    CurationBatchConflict,
+    CurationPreview,
+    CurationPreviewRequest,
+    CurationReceipt,
+    CurationRevertRequest,
+)
 from hindsight_api.engine.llm_trace import LLMRequestListResponse, LLMRequestStatsResponse
 from hindsight_api.extensions import AuthenticationError, BankWriteOperation, PrecheckOperation
 
@@ -91,6 +100,12 @@ def _drop_additional_properties(schema: dict[str, Any]) -> None:
     ("Codegen Property not yet supported in getPydanticType"), which every row here has.
     """
     schema.pop("additionalProperties", None)
+
+
+class CurationConflictResponse(BaseModel):
+    """String-detail conflict payload returned by raw-curation-v2 routes."""
+
+    detail: str
 
 
 class OpenRowModel(BaseModel):
@@ -5884,6 +5899,96 @@ def _register_routes(app: FastAPI):
         except Exception as e:
             raise _internal_error(e, f"/v1/default/banks/{bank_id}/prompts/preview")
 
+    @app.post(
+        "/v1/default/banks/{bank_id}/curation-batches/preview",
+        response_model=CurationPreview,
+        responses={409: {"model": CurationConflictResponse, "description": "Curation conflict"}},
+        operation_id="preview_curation_batch",
+        tags=["Memory"],
+        summary="Preview a bounded raw-curation-v2 dependency closure",
+    )
+    async def api_preview_curation_batch(
+        bank_id: str, request: CurationPreviewRequest, request_context: RequestContext = Depends(get_request_context)
+    ):
+        try:
+            return await app.state.memory.preview_curation_batch(bank_id, request, request_context=request_context)
+        except CurationBatchConflict as exc:
+            raise HTTPException(status_code=409, detail=str(exc))
+        except OperationValidationError as exc:
+            raise HTTPException(status_code=exc.status_code, detail=exc.reason)
+
+    @app.post(
+        "/v1/default/banks/{bank_id}/curation-batches/{batch_id}",
+        response_model=CurationReceipt,
+        responses={409: {"model": CurationConflictResponse, "description": "Curation conflict"}},
+        operation_id="apply_curation_batch",
+        tags=["Memory"],
+        summary="Atomically apply a bounded raw-curation-v2 manifest",
+    )
+    @audited("apply_curation_batch")
+    async def api_apply_curation_batch(
+        bank_id: str,
+        batch_id: BatchId,
+        request: CurationApplyRequest,
+        request_context: RequestContext = Depends(get_request_context),
+    ):
+        try:
+            return await app.state.memory.apply_curation_batch(
+                bank_id, batch_id, request, request_context=request_context
+            )
+        except CurationBatchConflict as exc:
+            raise HTTPException(status_code=409, detail=str(exc))
+        except OperationValidationError as exc:
+            raise HTTPException(status_code=exc.status_code, detail=exc.reason)
+
+    @app.get(
+        "/v1/default/banks/{bank_id}/curation-batches/{batch_id}",
+        response_model=CurationReceipt,
+        responses={409: {"model": CurationConflictResponse, "description": "Curation conflict"}},
+        operation_id="get_curation_batch",
+        tags=["Memory"],
+        summary="Read a durable raw-curation-v2 receipt after a lost acknowledgement",
+    )
+    async def api_get_curation_batch(
+        bank_id: str, batch_id: BatchId, request_context: RequestContext = Depends(get_request_context)
+    ):
+        try:
+            receipt = await app.state.memory.get_curation_batch(bank_id, batch_id, request_context=request_context)
+            if receipt is None:
+                raise HTTPException(status_code=404, detail="Curation batch not found")
+            return receipt
+        except CurationBatchConflict as exc:
+            raise HTTPException(status_code=409, detail=str(exc))
+        except OperationValidationError as exc:
+            raise HTTPException(status_code=exc.status_code, detail=exc.reason)
+
+    @app.post(
+        "/v1/default/banks/{bank_id}/curation-batches/{batch_id}/revert",
+        response_model=CurationReceipt,
+        responses={409: {"model": CurationConflictResponse, "description": "Curation conflict"}},
+        operation_id="revert_curation_batch",
+        tags=["Memory"],
+        summary="Conditionally restore a raw-curation-v2 capsule without overwriting later work",
+    )
+    @audited("revert_curation_batch")
+    async def api_revert_curation_batch(
+        bank_id: str,
+        batch_id: BatchId,
+        request: CurationRevertRequest,
+        request_context: RequestContext = Depends(get_request_context),
+    ):
+        try:
+            receipt = await app.state.memory.revert_curation_batch(
+                bank_id, batch_id, request, request_context=request_context
+            )
+            if receipt is None:
+                raise HTTPException(status_code=404, detail="Curation batch not found")
+            return receipt
+        except CurationBatchConflict as exc:
+            raise HTTPException(status_code=409, detail=str(exc))
+        except OperationValidationError as exc:
+            raise HTTPException(status_code=exc.status_code, detail=exc.reason)
+
     @app.get(
         "/v1/default/banks/{bank_id}/memories/{memory_id}",
         summary="Get memory unit",
@@ -8498,6 +8603,8 @@ def _register_routes(app: FastAPI):
                 + result.get("entities_deleted", 0)
                 + result.get("documents_deleted", 0),
             )
+        except CurationBatchConflict as exc:
+            raise HTTPException(status_code=409, detail=str(exc))
         except OperationValidationError as e:
             raise HTTPException(status_code=e.status_code, detail=e.reason)
         except (AuthenticationError, HTTPException):
@@ -10326,6 +10433,8 @@ def _register_routes(app: FastAPI):
                 message=f"Cleared {deleted} memory unit(s){scope} from bank '{bank_id}'",
                 deleted_count=deleted,
             )
+        except CurationBatchConflict as exc:
+            raise HTTPException(status_code=409, detail=str(exc))
         except OperationValidationError as e:
             raise HTTPException(status_code=e.status_code, detail=e.reason)
         except (AuthenticationError, HTTPException):

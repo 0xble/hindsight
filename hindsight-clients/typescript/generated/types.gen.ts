@@ -1826,6 +1826,238 @@ export type CreateWebhookRequest = {
 };
 
 /**
+ * CurationApplyRequest
+ */
+export type CurationApplyRequest = {
+  /**
+   * Protocol
+   */
+  protocol: "raw-curation-v2";
+  /**
+   * Expected Closure Revision
+   */
+  expected_closure_revision: string;
+  /**
+   * Changes
+   */
+  changes: Array<CurationChange>;
+};
+
+/**
+ * CurationChange
+ */
+export type CurationChange = {
+  /**
+   * Memory Id
+   */
+  memory_id: string;
+  /**
+   * Memory Revision
+   */
+  memory_revision: string;
+  /**
+   * Source Revision
+   */
+  source_revision: string;
+  /**
+   * Action
+   */
+  action: "invalidate" | "correct";
+  /**
+   * Reason
+   */
+  reason: string;
+  /**
+   * Fields
+   */
+  fields?: CurationFields;
+};
+
+/**
+ * CurationConflictResponse
+ *
+ * String-detail conflict payload returned by raw-curation-v2 routes.
+ */
+export type CurationConflictResponse = {
+  /**
+   * Detail
+   */
+  detail: string;
+};
+
+/**
+ * CurationFactType
+ */
+export type CurationFactType = "world" | "experience";
+
+/**
+ * CurationFields
+ */
+export type CurationFields = {
+  /**
+   * Text
+   *
+   * Nonblank replacement text, at most 100000 characters
+   */
+  text?: string;
+  /**
+   * Context
+   *
+   * Replacement context, at most 100000 characters, or null to clear
+   */
+  context?: string | null;
+  /**
+   * Fact Type
+   */
+  fact_type?: CurationFactType;
+  /**
+   * Occurred Start
+   */
+  occurred_start?: string | null;
+  /**
+   * Occurred End
+   */
+  occurred_end?: string | null;
+};
+
+/**
+ * CurationInventory
+ */
+export type CurationInventory = {
+  /**
+   * Targets
+   */
+  targets: number;
+  /**
+   * Observations
+   */
+  observations: number;
+  /**
+   * Peers
+   */
+  peers: number;
+  /**
+   * Entities
+   */
+  entities: number;
+  /**
+   * Links
+   */
+  links: number;
+  /**
+   * History Rows
+   */
+  history_rows: number;
+  /**
+   * Snapshot Bytes
+   */
+  snapshot_bytes: number;
+  /**
+   * Source Bytes
+   */
+  source_bytes: number;
+};
+
+/**
+ * CurationPreview
+ */
+export type CurationPreview = {
+  /**
+   * Protocol
+   */
+  protocol?: "raw-curation-v2";
+  /**
+   * Closure Revision
+   */
+  closure_revision: string;
+  /**
+   * Targets
+   */
+  targets: Array<CurationTargetRevision>;
+  inventory: CurationInventory;
+};
+
+/**
+ * CurationPreviewRequest
+ */
+export type CurationPreviewRequest = {
+  /**
+   * Protocol
+   */
+  protocol: "raw-curation-v2";
+  /**
+   * Memory Ids
+   */
+  memory_ids: Array<string>;
+};
+
+/**
+ * CurationReceipt
+ */
+export type CurationReceipt = {
+  /**
+   * Protocol
+   */
+  protocol?: "raw-curation-v2";
+  /**
+   * Bank Id
+   */
+  bank_id: string;
+  /**
+   * Batch Id
+   *
+   * Unique batch ID; the exact case-sensitive value 'preview' is reserved for the preview route
+   */
+  batch_id: string;
+  /**
+   * Manifest Revision
+   */
+  manifest_revision: string;
+  /**
+   * Receipt Revision
+   */
+  receipt_revision: string;
+  /**
+   * Status
+   */
+  status: "applied" | "reverted";
+  inventory: CurationInventory;
+  maintenance_debt: MaintenanceDebt;
+};
+
+/**
+ * CurationRevertRequest
+ */
+export type CurationRevertRequest = {
+  /**
+   * Protocol
+   */
+  protocol: "raw-curation-v2";
+  /**
+   * Expected Receipt Revision
+   */
+  expected_receipt_revision: string;
+};
+
+/**
+ * CurationTargetRevision
+ */
+export type CurationTargetRevision = {
+  /**
+   * Memory Id
+   */
+  memory_id: string;
+  /**
+   * Memory Revision
+   */
+  memory_revision: string;
+  /**
+   * Source Revision
+   */
+  source_revision: string;
+};
+
+/**
  * DefaultScopesPreview
  *
  * The scopes no strategy claims — they consolidate under the bank-wide settings.
@@ -2935,6 +3167,8 @@ export type IncludeOptions = {
   source_facts?: SourceFactsIncludeOptions | null;
 };
 
+export type JsonValue = unknown;
+
 /**
  * KnowledgeNode
  *
@@ -3635,6 +3869,28 @@ export type LlmOperationHealth = {
    * Round-trip latency of the probe call
    */
   latency_ms?: number | null;
+};
+
+/**
+ * MaintenanceDebt
+ */
+export type MaintenanceDebt = {
+  /**
+   * Consolidation
+   */
+  consolidation?: boolean;
+  /**
+   * Graph
+   */
+  graph?: boolean;
+  /**
+   * Model Refresh
+   */
+  model_refresh?: boolean;
+  /**
+   * Memory Ids
+   */
+  memory_ids: Array<string>;
 };
 
 /**
@@ -7513,6 +7769,188 @@ export type PreviewPromptResponses = {
 };
 
 export type PreviewPromptResponse = PreviewPromptResponses[keyof PreviewPromptResponses];
+
+export type PreviewCurationBatchData = {
+  body: CurationPreviewRequest;
+  headers?: {
+    /**
+     * Authorization
+     */
+    authorization?: string | null;
+  };
+  path: {
+    /**
+     * Bank Id
+     */
+    bank_id: string;
+  };
+  query?: never;
+  url: "/v1/default/banks/{bank_id}/curation-batches/preview";
+};
+
+export type PreviewCurationBatchErrors = {
+  /**
+   * Curation conflict
+   */
+  409: CurationConflictResponse;
+  /**
+   * Validation Error
+   */
+  422: HttpValidationError;
+};
+
+export type PreviewCurationBatchError =
+  PreviewCurationBatchErrors[keyof PreviewCurationBatchErrors];
+
+export type PreviewCurationBatchResponses = {
+  /**
+   * Successful Response
+   */
+  200: CurationPreview;
+};
+
+export type PreviewCurationBatchResponse =
+  PreviewCurationBatchResponses[keyof PreviewCurationBatchResponses];
+
+export type GetCurationBatchData = {
+  body?: never;
+  headers?: {
+    /**
+     * Authorization
+     */
+    authorization?: string | null;
+  };
+  path: {
+    /**
+     * Bank Id
+     */
+    bank_id: string;
+    /**
+     * Batch Id
+     *
+     * Unique batch ID; the exact case-sensitive value 'preview' is reserved for the preview route
+     */
+    batch_id: string;
+  };
+  query?: never;
+  url: "/v1/default/banks/{bank_id}/curation-batches/{batch_id}";
+};
+
+export type GetCurationBatchErrors = {
+  /**
+   * Curation conflict
+   */
+  409: CurationConflictResponse;
+  /**
+   * Validation Error
+   */
+  422: HttpValidationError;
+};
+
+export type GetCurationBatchError = GetCurationBatchErrors[keyof GetCurationBatchErrors];
+
+export type GetCurationBatchResponses = {
+  /**
+   * Successful Response
+   */
+  200: CurationReceipt;
+};
+
+export type GetCurationBatchResponse = GetCurationBatchResponses[keyof GetCurationBatchResponses];
+
+export type ApplyCurationBatchData = {
+  body: CurationApplyRequest;
+  headers?: {
+    /**
+     * Authorization
+     */
+    authorization?: string | null;
+  };
+  path: {
+    /**
+     * Bank Id
+     */
+    bank_id: string;
+    /**
+     * Batch Id
+     *
+     * Unique batch ID; the exact case-sensitive value 'preview' is reserved for the preview route
+     */
+    batch_id: string;
+  };
+  query?: never;
+  url: "/v1/default/banks/{bank_id}/curation-batches/{batch_id}";
+};
+
+export type ApplyCurationBatchErrors = {
+  /**
+   * Curation conflict
+   */
+  409: CurationConflictResponse;
+  /**
+   * Validation Error
+   */
+  422: HttpValidationError;
+};
+
+export type ApplyCurationBatchError = ApplyCurationBatchErrors[keyof ApplyCurationBatchErrors];
+
+export type ApplyCurationBatchResponses = {
+  /**
+   * Successful Response
+   */
+  200: CurationReceipt;
+};
+
+export type ApplyCurationBatchResponse =
+  ApplyCurationBatchResponses[keyof ApplyCurationBatchResponses];
+
+export type RevertCurationBatchData = {
+  body: CurationRevertRequest;
+  headers?: {
+    /**
+     * Authorization
+     */
+    authorization?: string | null;
+  };
+  path: {
+    /**
+     * Bank Id
+     */
+    bank_id: string;
+    /**
+     * Batch Id
+     *
+     * Unique batch ID; the exact case-sensitive value 'preview' is reserved for the preview route
+     */
+    batch_id: string;
+  };
+  query?: never;
+  url: "/v1/default/banks/{bank_id}/curation-batches/{batch_id}/revert";
+};
+
+export type RevertCurationBatchErrors = {
+  /**
+   * Curation conflict
+   */
+  409: CurationConflictResponse;
+  /**
+   * Validation Error
+   */
+  422: HttpValidationError;
+};
+
+export type RevertCurationBatchError = RevertCurationBatchErrors[keyof RevertCurationBatchErrors];
+
+export type RevertCurationBatchResponses = {
+  /**
+   * Successful Response
+   */
+  200: CurationReceipt;
+};
+
+export type RevertCurationBatchResponse =
+  RevertCurationBatchResponses[keyof RevertCurationBatchResponses];
 
 export type GetMemoryData = {
   body?: never;

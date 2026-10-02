@@ -29,6 +29,8 @@ chrono = { version = "0.4", features = ["serde"] }
 http = "1.0"
 # URL handling
 url = "2.5"
+regress = "0.10"
+uuid = { version = "1", features = ["serde"] }
 
 [dev-dependencies]
 tokio-test = "0.4"

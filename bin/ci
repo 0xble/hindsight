@@ -133,7 +133,13 @@ PATCH_REGRESSIONS=(
   tests/test_hierarchical_config.py
   tests/test_metrics.py
   tests/test_batch_api.py
+  tests/test_migration_shape.py
+  tests/test_curation_batch_http.py
+  tests/test_delete_missing_bank_store_owned.py
+  tests/test_list_banks_ordered_page.py
+  tests/test_memories_extension.py
 )
+
 OFFLINE_MARKERS="not oracle and not hs_llm_mat and not hs_llm_core and not integration and not slow"
 # These call a real LLM but carry no hs_llm_core marker upstream. Fork CI holds no
 # provider secrets (HINDSIGHT-003), so they run only in manual, credentialed runs.
@@ -149,8 +155,13 @@ build_smoke() {
 }
 
 client_discriminators() {
-  uv run --directory hindsight-clients/python --frozen pytest tests/test_operation_details.py
-  (cd hindsight-clients/go && go test -run '^TestOperationResponseDetails' .)
+  uv run --directory hindsight-clients/python --frozen pytest tests/test_operation_details.py tests/test_curation_fields.py
+  (cd hindsight-clients/go && go test -run '^Test(OperationResponseDetails|Curation)' .)
+  cargo test --manifest-path hindsight-clients/rust/Cargo.toml --test curation_fields
+}
+
+curation_system() {
+  (cd hindsight-system-tests && PYTEST_ADDOPTS= uv run --frozen pytest tests/test_18_raw_curation_batches.py)
 }
 
 assert_candidate
@@ -164,8 +175,10 @@ run types api uv run --frozen ty check hindsight_api
 if [[ "$profile" == gate ]]; then
   run patch-regressions api uv run --frozen --extra all pytest -m "$OFFLINE_MARKERS" "${PATCH_REGRESSIONS[@]}"
 else
-  run offline-suite api uv run --frozen --extra all pytest -m "$OFFLINE_MARKERS" "${LIVE_LLM_TESTS[@]}"
+  run offline-suite api uv run --frozen --extra all pytest -m "$OFFLINE_MARKERS" "${LIVE_LLM_TESTS[@]}" --ignore=tests/test_curation_batch.py
 fi
+run curation-batch-regressions api uv run --frozen --extra all pytest -n0 tests/test_curation_batch.py
+run curation-batch-system curation_system
 run client-discriminators client_discriminators
 run codex-integration uv run --no-project --with pytest --with tiktoken==0.12.0 pytest hindsight-integrations/codex/tests -q
 run build-smoke build_smoke
