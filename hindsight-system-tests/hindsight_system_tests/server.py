@@ -27,7 +27,7 @@ from .stub_server import create_stub_app
 logger = logging.getLogger(__name__)
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-API_DIR = REPO_ROOT / "hindsight-api-slim"
+API_DIR = REPO_ROOT / "hindsight-api"
 
 # A pg0 instance of its own, on a port nothing else uses. The api-slim suite and
 # the dev server share the default "hindsight" instance, and pointing system

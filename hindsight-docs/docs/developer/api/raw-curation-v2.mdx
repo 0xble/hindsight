@@ -65,6 +65,15 @@ PostgreSQL JSONB fractional numbers and large integers retain their exact values
 through capture, hashing, durable capsule storage and recovery. Numeric changes
 beyond binary-float precision still change the server revision.
 
+### Rust Client Conflict Errors
+
+Progenitor can represent only one typed error response per operation. The Rust
+client therefore filters the typed `CurationConflictResponse` 409 from generated
+raw-curation methods; a 409 is returned as `Error::UnexpectedResponse` instead.
+The response still retains its status and body, so callers can read
+`response.status()` and `response.text().await` to inspect the JSON `detail`.
+Other generated clients retain the typed 409 contract.
+
 ## Conditional Recovery
 
 Revert accepts `{"protocol":"raw-curation-v2","expected_receipt_revision":"hash"}`

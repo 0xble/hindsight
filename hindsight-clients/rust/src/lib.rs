@@ -225,4 +225,44 @@ mod tests {
         // Cleanup: delete the test bank's memories
         let _ = client.clear_bank_memories(&bank_id, None, None).await;
     }
+
+    #[tokio::test]
+    async fn test_raw_curation_409_status_and_body_are_readable_from_error() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        use tokio::net::TcpListener;
+
+        let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut request = [0_u8; 4096];
+            let _ = socket.read(&mut request).await.unwrap();
+            socket
+                .write_all(
+                    b"HTTP/1.1 409 Conflict\r\ncontent-type: application/json\r\ncontent-length: 29\r\nconnection: close\r\n\r\n{\"detail\":\"curation is busy\"}",
+                )
+                .await
+                .unwrap();
+        });
+
+        let base_url = format!("http://{address}");
+        let client = Client::new(&base_url);
+        let request = types::CurationPreviewRequest {
+            memory_ids: vec![],
+            protocol: "raw-curation-v2".to_string(),
+        };
+        let error = client
+            .preview_curation_batch("bank", None, &request)
+            .await
+            .expect_err("the fixture must return the curation conflict");
+        match error {
+            Error::UnexpectedResponse(response) => {
+                assert_eq!(response.status(), reqwest::StatusCode::CONFLICT);
+                assert_eq!(response.text().await.unwrap(), "{\"detail\":\"curation is busy\"}");
+            }
+            other => panic!("expected an unexpected-response error; got {other:?}"),
+        }
+        server.await.unwrap();
+    }
 }
+

@@ -32,7 +32,7 @@ exercised for real.
 
 ```bash
 # once: the server needs pg0, and nothing else beyond its base dependencies
-(cd ../hindsight-api-slim && uv sync --frozen --extra embedded-db)
+uv sync --directory ../hindsight-api --frozen
 
 cd hindsight-system-tests
 uv run pytest tests -v
