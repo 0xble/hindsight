@@ -393,7 +393,18 @@ async def test_b3_replacement_label_ignores_article_and_quote_delimiters(provide
 
 @pytest.mark.parametrize(
     "dense",
-    ["(500 USD) ", "key PROD ", "(500) balance; ", "(111111111111111111111111 ", "word ", " ", "111,", "USD111,"],
+    [
+        "(500 USD) ",
+        "key PROD ",
+        "Abcd is the primary API key ",
+        "Abcd, the primary API key, ",
+        "(500) balance; ",
+        "(111111111111111111111111 ",
+        "word ",
+        " ",
+        "111,",
+        "USD111,",
+    ],
 )
 def test_new_regexes_are_cpu_bounded_on_256k_dense_input(dense):
     from time import process_time
@@ -410,6 +421,8 @@ def test_new_regexes_are_cpu_bounded_on_256k_dense_input(dense):
         "_ACCOUNTING_NUMBER",
         "_ACCOUNTING_CONTEXT",
         "_EXPLICIT_IDENTIFIER",
+        "_PREDICATE_FIRST_IDENTIFIER",
+        "_IDENTIFIER_NOUN_PATTERN",
         "_SUBJECT",
         "_HEADER",
         "_OPAQUE",
@@ -463,6 +476,36 @@ def test_accounting_preprocessing_is_cpu_bounded_on_256k_aggregate_input():
             "The API key Abcd is active and the backup key Wxyz is revoked.",
             "The API key Wxyz is active; Abcd was rotated out.",
             id="role-swap",
+        ),
+        pytest.param(
+            "The primary API key is Abcd. The backup API key is Wxyz.",
+            "Wxyz is the primary API key. Abcd is the backup API key.",
+            id="predicate-first-role-swap",
+        ),
+        pytest.param(
+            "The primary API key is Abcd. The backup API key is Abcd.",
+            "Abcd is the primary API key. Abcd is the primary API key.",
+            id="predicate-first-duplicated-slot",
+        ),
+        pytest.param(
+            "The primary API key is Abcd. The backup API key is Wxyz.",
+            "Abcd is the primary API key. Wxyz is the primary API key.",
+            id="predicate-first-distinct-values-one-slot",
+        ),
+        pytest.param(
+            "The primary API key is Abcd. The backup API key is Wxyz.",
+            "The primary API key has value Wxyz. The backup API key has value Abcd.",
+            id="has-value-role-swap",
+        ),
+        pytest.param(
+            "The primary API key is Abcd. The backup API key is Wxyz.",
+            "Wxyz, the primary API key, is used. Abcd, the backup API key, is used.",
+            id="apposition-role-swap",
+        ),
+        pytest.param(
+            "The primary API key is Abcd. The backup API key is Wxyz.",
+            "The backup API key uses Abcd. The primary API key uses Wxyz.",
+            id="unrecognized-noun-binding-no-waiver",
         ),
         *[
             pytest.param(
@@ -518,10 +561,40 @@ async def test_pure_reorder_waiver_preserves_identifier_occurrences_and_boundari
         ("Face", "Face is the active API key."),
         ("Abcd", "The active API key has value Abcd."),
         ("Abcd", "Abcd, the active API key, is used."),
+        ("Abcd", "Abcd remains active."),
     ],
 )
 async def test_pure_reorder_waiver_accepts_exact_standalone_values(provider, config, value, after, cited):
     before = f"The API key {value} is active."
+    await assert_batch_action(
+        provider, config, before, after, "update", before if cited is None else cited, correction=True
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("cited", [None, ADDITIVE], ids=["same-text-evidence", "unrelated-additive-evidence"])
+@pytest.mark.parametrize(
+    "before,after",
+    [
+        (
+            "The primary API key is Abcd. The backup API key is Wxyz.",
+            "Wxyz is the backup API key. Abcd is the primary API key.",
+        ),
+        (
+            "The primary API key is Abcd. The backup API key is Abcd.",
+            "Abcd is the backup API key. Abcd is the primary API key.",
+        ),
+        (
+            "The primary API key is Abcd. The backup API key is Wxyz.",
+            "The backup API key has value Wxyz. The primary API key has value Abcd.",
+        ),
+        (
+            "The primary API key is Abcd. The backup API key is Wxyz.",
+            "Wxyz, the backup API key, is used. Abcd, the primary API key, is used.",
+        ),
+    ],
+)
+async def test_reordered_identifiers_preserve_each_slot(provider, config, before, after, cited):
     await assert_batch_action(
         provider, config, before, after, "update", before if cited is None else cited, correction=True
     )
