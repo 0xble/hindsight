@@ -159,6 +159,50 @@ async def test_real_resolver_existing_empty_policy_still_inherits(config):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("process_policy", [True, False])
+@pytest.mark.parametrize("tenant_key", ["file_delete_after_retain", "HINDSIGHT_API_FILE_DELETE_AFTER_RETAIN"])
+@pytest.mark.parametrize("bank_config", [{}, {"file_delete_after_retain": None}])
+@pytest.mark.parametrize("fail_closed", [True, False])
+async def test_tenant_null_preservation_policy_inherits_process(process_policy, tenant_key, bank_config, fail_closed):
+    from dataclasses import replace
+
+    from hindsight_api.config_resolver import ConfigResolver
+    from hindsight_api.models import RequestContext
+
+    tenant = SimpleNamespace(get_tenant_config=AsyncMock(return_value={tenant_key: None}))
+    resolver = ConfigResolver(backend=_ConfigReadBackend(config=bank_config), tenant_extension=tenant)
+    process_config = resolver._global_config
+    resolver._global_config = replace(process_config, file_delete_after_retain=process_policy)
+    context = RequestContext(internal=True, tenant_id="preservation-tenant")
+
+    resolved = await resolver.resolve_full_config(_task()["bank_id"], context, cached=False, fail_closed=fail_closed)
+
+    assert resolved.file_delete_after_retain is process_policy
+    assert tenant.get_tenant_config.return_value == {tenant_key: None}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("process_policy", [True, False])
+async def test_conversion_tenant_null_uses_inherited_process_policy(conversion_engine, process_policy):
+    from dataclasses import replace
+
+    from hindsight_api.config_resolver import ConfigResolver
+
+    tenant = SimpleNamespace(get_tenant_config=AsyncMock(return_value={"file_delete_after_retain": None}))
+    resolver = ConfigResolver(backend=_ConfigReadBackend(config={}), tenant_extension=tenant)
+    resolver._global_config = replace(resolver._global_config, file_delete_after_retain=process_policy)
+    conversion_engine._config_resolver = resolver
+
+    await conversion_engine._handle_file_convert_retain(_task())
+
+    conversion_engine._task_backend.submit_task.assert_awaited_once()
+    if process_policy:
+        conversion_engine._file_storage.delete.assert_awaited_once_with(_task()["storage_key"])
+    else:
+        conversion_engine._file_storage.delete.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_fail_closed_resolution_bypasses_cached_policy(conversion_engine):
     from hindsight_api.config_resolver import ConfigResolver, ConfigUnavailableError
 

@@ -905,20 +905,24 @@ async def test_config_permissions_system(memory, request_context):
 
 
 @pytest.mark.asyncio
-async def test_original_file_policy_inherits_and_preserves_process_default():
-    """An explicit False is meaningful, while null resumes tenant inheritance."""
+@pytest.mark.parametrize("tenant_policy", [False, True])
+async def test_original_file_policy_inherits_and_preserves_process_default(tenant_policy):
+    """Explicit booleans override, while bank null resumes tenant inheritance."""
+    from dataclasses import replace
+
     from hindsight_api.config import _get_raw_config
 
     original_default = _get_raw_config().file_delete_after_retain
     bank_id = f"original-file-policy-{uuid.uuid4().hex}"
-    tenant = MockTenantExtension({"file_delete_after_retain": False})
+    tenant = MockTenantExtension({"file_delete_after_retain": tenant_policy})
     resolver = ConfigResolver(backend=FakeBankConfigBackend(), tenant_extension=tenant)
+    resolver._global_config = replace(resolver._global_config, file_delete_after_retain=not tenant_policy)
     context = RequestContext(internal=True, tenant_id="preservation-tenant")
-    assert (await resolver.resolve_full_config(bank_id, context)).file_delete_after_retain is False
-    await resolver.update_bank_config(bank_id, {"file_delete_after_retain": True}, context)
-    assert (await resolver.resolve_full_config(bank_id, context)).file_delete_after_retain is True
+    assert (await resolver.resolve_full_config(bank_id, context)).file_delete_after_retain is tenant_policy
+    await resolver.update_bank_config(bank_id, {"file_delete_after_retain": not tenant_policy}, context)
+    assert (await resolver.resolve_full_config(bank_id, context)).file_delete_after_retain is (not tenant_policy)
     await resolver.update_bank_config(bank_id, {"file_delete_after_retain": None}, context)
-    assert (await resolver.resolve_full_config(bank_id, context)).file_delete_after_retain is False
+    assert (await resolver.resolve_full_config(bank_id, context)).file_delete_after_retain is tenant_policy
     assert _get_raw_config().file_delete_after_retain is original_default
 
 

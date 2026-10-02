@@ -4,7 +4,7 @@ Part of the root [maintenance contract](../MAINTENANCE.md).
 
 ## Intentional Divergence
 
-Upstream deletion after file conversion uses the process-level `file_delete_after_retain` policy. This fork permits an individual bank to preserve source evidence through the existing hierarchical configuration resolver. Explicit `false` preserves original uploads, `null` inherits the tenant/process policy, and other banks retain their existing default. The default remains `true` and deletion still occurs after conversion queues retention.
+Upstream deletion after file conversion uses the process-level `file_delete_after_retain` policy. This fork permits an individual bank to preserve source evidence through the existing hierarchical configuration resolver. Explicit `false` preserves original uploads. A bank-level `null` inherits the tenant/process policy; a tenant-level `null` inherits the process policy. Neither null becomes a resolved policy value, and other banks retain their existing default. The default remains `true` and deletion still occurs after conversion queues retention.
 
 Upstream [#4367](https://github.com/vectorize-io/hindsight/pull/4367) preserves the downstream document's original-file association for store-owned banks. It does not provide bank-scoped preservation policy. No equivalent policy override was found in the 2026-10-01 upstream preflight at `ec39e10900c6a971f1a73cd37402228d5cccaa25`.
 

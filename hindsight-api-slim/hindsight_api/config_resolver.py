@@ -218,6 +218,11 @@ class ConfigResolver:
         normalized_tenant = normalize_config_dict(tenant_overrides)
         if fail_closed:
             _validate_file_preservation_policy(normalized_tenant, f"tenant config for {scope}")
+        # Preservation null means inherit, as it does for bank overrides. Applying
+        # it literally would turn a process deletion policy into preservation.
+        # Other tenant fields can use None as a value, so only clear this policy.
+        if normalized_tenant.get("file_delete_after_retain") is None:
+            normalized_tenant.pop("file_delete_after_retain", None)
         configurable_tenant = {k: v for k, v in normalized_tenant.items() if k in self._configurable_fields}
         if configurable_tenant:
             logger.debug(f"Applied tenant config overrides for {scope}: {list(configurable_tenant.keys())}")
