@@ -72,6 +72,7 @@ hindsight_client_api/models/create_page_request.py
 hindsight_client_api/models/create_webhook_request.py
 hindsight_client_api/models/curation_apply_request.py
 hindsight_client_api/models/curation_change.py
+hindsight_client_api/models/curation_conflict_response.py
 hindsight_client_api/models/curation_fact_type.py
 hindsight_client_api/models/curation_fields.py
 hindsight_client_api/models/curation_inventory.py

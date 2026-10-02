@@ -102,6 +102,12 @@ def _drop_additional_properties(schema: dict[str, Any]) -> None:
     schema.pop("additionalProperties", None)
 
 
+class CurationConflictResponse(BaseModel):
+    """String-detail conflict payload returned by raw-curation-v2 routes."""
+
+    detail: str
+
+
 class OpenRowModel(BaseModel):
     """Base for the typed list/graph rows: named fields, but nothing is lost or dropped.
 
@@ -5896,6 +5902,7 @@ def _register_routes(app: FastAPI):
     @app.post(
         "/v1/default/banks/{bank_id}/curation-batches/preview",
         response_model=CurationPreview,
+        responses={409: {"model": CurationConflictResponse, "description": "Curation conflict"}},
         operation_id="preview_curation_batch",
         tags=["Memory"],
         summary="Preview a bounded raw-curation-v2 dependency closure",
@@ -5913,6 +5920,7 @@ def _register_routes(app: FastAPI):
     @app.post(
         "/v1/default/banks/{bank_id}/curation-batches/{batch_id}",
         response_model=CurationReceipt,
+        responses={409: {"model": CurationConflictResponse, "description": "Curation conflict"}},
         operation_id="apply_curation_batch",
         tags=["Memory"],
         summary="Atomically apply a bounded raw-curation-v2 manifest",
@@ -5936,6 +5944,7 @@ def _register_routes(app: FastAPI):
     @app.get(
         "/v1/default/banks/{bank_id}/curation-batches/{batch_id}",
         response_model=CurationReceipt,
+        responses={409: {"model": CurationConflictResponse, "description": "Curation conflict"}},
         operation_id="get_curation_batch",
         tags=["Memory"],
         summary="Read a durable raw-curation-v2 receipt after a lost acknowledgement",
@@ -5956,6 +5965,7 @@ def _register_routes(app: FastAPI):
     @app.post(
         "/v1/default/banks/{bank_id}/curation-batches/{batch_id}/revert",
         response_model=CurationReceipt,
+        responses={409: {"model": CurationConflictResponse, "description": "Curation conflict"}},
         operation_id="revert_curation_batch",
         tags=["Memory"],
         summary="Conditionally restore a raw-curation-v2 capsule without overwriting later work",

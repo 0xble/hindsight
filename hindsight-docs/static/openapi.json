@@ -753,6 +753,16 @@
               }
             }
           },
+          "409": {
+            "description": "Curation conflict",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CurationConflictResponse"
+                }
+              }
+            }
+          },
           "422": {
             "description": "Validation Error",
             "content": {
@@ -837,6 +847,16 @@
               }
             }
           },
+          "409": {
+            "description": "Curation conflict",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CurationConflictResponse"
+                }
+              }
+            }
+          },
           "422": {
             "description": "Validation Error",
             "content": {
@@ -905,6 +925,16 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/CurationReceipt"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Curation conflict",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CurationConflictResponse"
                 }
               }
             }
@@ -989,6 +1019,16 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/CurationReceipt"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Curation conflict",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CurationConflictResponse"
                 }
               }
             }
@@ -11262,6 +11302,20 @@
           "reason"
         ],
         "title": "CurationChange"
+      },
+      "CurationConflictResponse": {
+        "properties": {
+          "detail": {
+            "type": "string",
+            "title": "Detail"
+          }
+        },
+        "type": "object",
+        "required": [
+          "detail"
+        ],
+        "title": "CurationConflictResponse",
+        "description": "String-detail conflict payload returned by raw-curation-v2 routes."
       },
       "CurationFactType": {
         "type": "string",

@@ -240,6 +240,7 @@ export type {
   CreateWebhookResponses,
   CurationApplyRequest,
   CurationChange,
+  CurationConflictResponse,
   CurationFactType,
   CurationFields,
   CurationInventory,

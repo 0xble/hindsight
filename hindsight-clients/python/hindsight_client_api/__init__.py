@@ -96,6 +96,7 @@ from hindsight_client_api.models.create_page_request import CreatePageRequest
 from hindsight_client_api.models.create_webhook_request import CreateWebhookRequest
 from hindsight_client_api.models.curation_apply_request import CurationApplyRequest
 from hindsight_client_api.models.curation_change import CurationChange
+from hindsight_client_api.models.curation_conflict_response import CurationConflictResponse
 from hindsight_client_api.models.curation_fact_type import CurationFactType
 from hindsight_client_api.models.curation_fields import CurationFields
 from hindsight_client_api.models.curation_inventory import CurationInventory

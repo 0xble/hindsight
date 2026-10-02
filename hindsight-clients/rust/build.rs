@@ -76,6 +76,40 @@ fn filter_bodyless_error_responses(spec: &mut serde_json::Value) {
     }
 }
 
+/// Drop typed 409 responses that progenitor cannot represent alongside the
+/// existing typed 422 response. The HTTP/OpenAPI contract remains authoritative
+/// for the other generated clients; Rust's progenitor client still surfaces the
+/// status through `Error::UnexpectedResponse` rather than losing the conflict.
+fn filter_unsupported_typed_error_responses(spec: &mut serde_json::Value) {
+    let Some(paths) = spec.get_mut("paths").and_then(|v| v.as_object_mut()) else {
+        return;
+    };
+    for (_path_name, path_item) in paths.iter_mut() {
+        let Some(operations) = path_item.as_object_mut() else {
+            continue;
+        };
+        for (_method, operation) in operations.iter_mut() {
+            let Some(responses) = operation.get_mut("responses").and_then(|v| v.as_object_mut()) else {
+                continue;
+            };
+            responses.retain(|status, response| {
+                if status != "409" {
+                    return true;
+                }
+                let Some(schema) = response
+                    .get("content")
+                    .and_then(|content| content.get("application/json"))
+                    .and_then(|json| json.get("schema"))
+                else {
+                    return true;
+                };
+                schema.get("$ref").and_then(|value| value.as_str())
+                    != Some("#/components/schemas/CurationConflictResponse")
+            });
+        }
+    }
+}
+
 /// Collapse `anyOf` whose members are all plain string types into a single
 /// `{"type": "string"}`. Without this, progenitor emits a struct like
 /// `MemoryItemTimestamp { #[serde(flatten)] subtype_0: Option<DateTime>, ... }`
@@ -233,6 +267,9 @@ fn main() {
     // Drop schema-less error responses; progenitor allows only one error type
     // per operation and the typed 422 is the one worth keeping.
     filter_bodyless_error_responses(&mut spec_json);
+    // Progenitor likewise cannot model the typed curation 409 beside FastAPI's
+    // typed 422. Keep 409 in the canonical contract and other generated clients.
+    filter_unsupported_typed_error_responses(&mut spec_json);
 
     // Now parse as OpenAPI struct
     let spec: openapiv3::OpenAPI = serde_json::from_value(spec_json)

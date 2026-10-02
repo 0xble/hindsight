@@ -1010,6 +1010,64 @@ async def test_combined_sources_are_bounded_before_snapshot_hashing(memory, seed
         await preview(memory, seeded, ids)
 
 
+async def test_large_snapshot_row_is_rejected_before_row_materialization(memory, seeded, monkeypatch):
+    monkeypatch.setattr(store, "MAX_BYTES", 1000)
+    async with memory._pool.acquire() as conn:
+        await conn.execute(
+            "UPDATE memory_units SET metadata=$2::jsonb WHERE bank_id=$1 AND id=$3",
+            seeded.bank,
+            json.dumps({"large": "x" * 5000}),
+            seeded.raw,
+        )
+    with pytest.raises(CurationBatchConflict, match="Snapshot content"):
+        await preview(memory, seeded)
+
+
+async def test_oversized_source_is_rejected_before_hashing():
+    class SourceConnection:
+        def __init__(self):
+            self.fetchrow_calls = 0
+
+        async def fetchrow(self, query, *args):
+            self.fetchrow_calls += 1
+            if self.fetchrow_calls > 1:
+                raise AssertionError("oversized source must not be hashed")
+            return {
+                "id": "document-id",
+                "content_hash": "fixture",
+                "updated_at": datetime.now(UTC),
+                "chunk_id": "chunk-id",
+                "document_bytes": 1024 * 1024 + 1,
+                "chunk_bytes": 1,
+            }
+
+    conn = SourceConnection()
+    with pytest.raises(CurationBatchConflict, match="1MiB"):
+        await store.source_revision(conn, "bank", {"document_id": "document-id", "chunk_id": "chunk-id"})
+    assert conn.fetchrow_calls == 1
+
+
+async def test_snapshot_byte_bound_is_checked_before_fetching_rows():
+    class SnapshotConnection:
+        def __init__(self):
+            self.data_fetches = 0
+
+        async def fetch(self, query, *args):
+            if "pg_attribute" in query:
+                return []
+            self.data_fetches += 1
+            raise AssertionError("oversized snapshot rows must not be transferred")
+
+        async def fetchrow(self, query, *args):
+            assert "row_count" in query and "octet_length(row)" in query
+            return {"row_count": 1, "row_bytes": store.MAX_BYTES + 1}
+
+    conn = SnapshotConnection()
+    with pytest.raises(CurationBatchConflict, match="Snapshot content"):
+        await store.table_snapshot(conn, "memory_units", "SELECT '{}' AS row", cap=1)
+    assert conn.data_fetches == 0
+
+
 @pytest.mark.parametrize("cap", ["MAX_ENTITIES", "MAX_LINKS", "MAX_HISTORY", "MAX_PEERS"])
 async def test_every_closure_row_family_has_a_cap(memory, seeded, monkeypatch, cap):
     monkeypatch.setattr(store, cap, 1 if cap == "MAX_HISTORY" else 0)

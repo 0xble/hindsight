@@ -90,7 +90,14 @@ async def assert_paused(conn: DatabaseConnection, bank_id: str) -> None:
         raise CurationBatchConflict("Consolidation is not quiescent")
 
 
-async def table_snapshot(conn: DatabaseConnection, table: str, query: str, *args: Any, cap: int) -> TableSnapshot:
+async def table_snapshot(
+    conn: DatabaseConnection,
+    table: str,
+    query: str,
+    *args: Any,
+    cap: int,
+    byte_limit: int | None = None,
+) -> TableSnapshot:
     columns = [
         ColumnSnapshot(name=r["name"], type=r["type"], generated=r["generated"])
         for r in await conn.fetch(
@@ -99,9 +106,23 @@ async def table_snapshot(conn: DatabaseConnection, table: str, query: str, *args
             fq_table(table),
         )
     ]
-    rows = await conn.fetch(query + f" LIMIT {cap + 1}", *args)
-    if len(rows) > cap:
+    bounded_query = query + f" LIMIT {cap + 1}"
+    # Check the row count and serialized payload size in PostgreSQL before
+    # transferring and decoding the complete row set into Python. The count is
+    # checked first so a combined row-cap/byte-cap violation keeps the existing
+    # deterministic row-cap error.
+    bounds = await conn.fetchrow(
+        f"SELECT count(*) AS row_count,COALESCE(sum(octet_length(row)),0) AS row_bytes "
+        f"FROM ({bounded_query}) AS bounded",
+        *args,
+    )
+    if bounds is None:
+        raise CurationBatchConflict("Snapshot bounds unavailable")
+    if bounds["row_count"] > cap:
         raise CurationBatchConflict(f"Closure exceeds {table} row cap")
+    if bounds["row_bytes"] > (MAX_BYTES if byte_limit is None else byte_limit):
+        raise CurationBatchConflict("Snapshot content exceeds 8MiB cap")
+    rows = await conn.fetch(bounded_query, *args)
     # Queries select JSONB as text so even a driver-level JSON codec cannot
     # round numbers before this lossless decoder sees them.
     parsed = [json.loads(r["row"], parse_float=Decimal) for r in rows]
@@ -113,8 +134,6 @@ async def source_revision(conn: DatabaseConnection, bank_id: str, row: dict[str,
         raise CurationBatchConflict("Closure source has no document/chunk provenance")
     src = await conn.fetchrow(
         f"SELECT d.id,d.content_hash,d.updated_at,c.chunk_id,"
-        "encode(sha256(convert_to(d.original_text,'UTF8')),'hex') AS document_hash,"
-        "encode(sha256(convert_to(c.chunk_text,'UTF8')),'hex') AS chunk_hash,"
         "octet_length(d.original_text) AS document_bytes,octet_length(c.chunk_text) AS chunk_bytes "
         f"FROM {fq_table('documents')} d JOIN {fq_table('chunks')} c ON c.document_id=d.id AND c.bank_id=d.bank_id "
         "WHERE d.bank_id=$1 AND d.id=$2 AND c.chunk_id=$3",
@@ -130,8 +149,22 @@ async def source_revision(conn: DatabaseConnection, bank_id: str, row: dict[str,
         or src["chunk_bytes"] > 1024 * 1024
     ):
         raise CurationBatchConflict("Source missing or exceeds 1MiB cap")
+    hashes = await conn.fetchrow(
+        f"SELECT encode(sha256(convert_to(d.original_text,'UTF8')),'hex') AS document_hash,"
+        "encode(sha256(convert_to(c.chunk_text,'UTF8')),'hex') AS chunk_hash "
+        f"FROM {fq_table('documents')} d JOIN {fq_table('chunks')} c ON c.document_id=d.id AND c.bank_id=d.bank_id "
+        "WHERE d.bank_id=$1 AND d.id=$2 AND c.chunk_id=$3",
+        bank_id,
+        row["document_id"],
+        row["chunk_id"],
+    )
+    if hashes is None:
+        raise CurationBatchConflict("Source disappeared during revision check")
+    source_values = {**dict(src), **dict(hashes)}
     return SourceRevision(
-        revision=revision({str(k): (v.isoformat() if hasattr(v, "isoformat") else v) for k, v in dict(src).items()}),
+        revision=revision(
+            {str(k): (v.isoformat() if hasattr(v, "isoformat") else v) for k, v in source_values.items()}
+        ),
         document_id=str(src["id"]),
         chunk_id=str(src["chunk_id"]),
         document_bytes=src["document_bytes"],
@@ -220,39 +253,49 @@ async def capture(conn: DatabaseConnection, bank_id: str, scope: ClosureScope) -
     await assert_same_bank_dependencies(conn, bank_id, affected)
     all_ids = _ids([*scope.affected, *scope.peers])
     ents = _ids(scope.entities)
-    memories = await table_snapshot(
-        conn,
+    snapshot_payload_bytes = 0
+
+    async def bounded_snapshot(table: str, query: str, *args: Any, cap: int) -> TableSnapshot:
+        nonlocal snapshot_payload_bytes
+        snapshot = await table_snapshot(
+            conn,
+            table,
+            query,
+            *args,
+            cap=cap,
+            byte_limit=max(0, MAX_BYTES - snapshot_payload_bytes),
+        )
+        snapshot_payload_bytes += len(canonical_bytes(snapshot))
+        return snapshot
+
+    memories = await bounded_snapshot(
         "memory_units",
         f"SELECT to_jsonb(m)::text AS row FROM {fq_table('memory_units')} m WHERE bank_id=$1 AND id=ANY($2::uuid[]) ORDER BY id",
         bank_id,
         all_ids,
         cap=MAX_PEERS + 250,
     )
-    archives = await table_snapshot(
-        conn,
+    archives = await bounded_snapshot(
         "invalidated_memory_units",
         f"SELECT to_jsonb(m)::text AS row FROM {fq_table('invalidated_memory_units')} m WHERE bank_id=$1 AND id=ANY($2::uuid[]) ORDER BY id",
         bank_id,
         affected,
         cap=250,
     )
-    postings = await table_snapshot(
-        conn,
+    postings = await bounded_snapshot(
         "unit_entities",
         f"SELECT to_jsonb(u)::text AS row FROM {fq_table('unit_entities')} u WHERE unit_id=ANY($1::uuid[]) ORDER BY unit_id,entity_id",
         affected,
         cap=MAX_ENTITIES,
     )
-    links = await table_snapshot(
-        conn,
+    links = await bounded_snapshot(
         "memory_links",
         f"SELECT to_jsonb(l)::text AS row FROM {fq_table('memory_links')} l WHERE bank_id=$1 AND (from_unit_id=ANY($2::uuid[]) OR to_unit_id=ANY($2::uuid[])) ORDER BY from_unit_id,to_unit_id,link_type",
         bank_id,
         affected,
         cap=MAX_LINKS,
     )
-    entities = await table_snapshot(
-        conn,
+    entities = await bounded_snapshot(
         "entities",
         f"SELECT to_jsonb(e)::text AS row FROM {fq_table('entities')} e WHERE bank_id=$1 AND id=ANY($2::uuid[]) ORDER BY id",
         bank_id,
@@ -261,15 +304,13 @@ async def capture(conn: DatabaseConnection, bank_id: str, scope: ClosureScope) -
     )
     if len(entities.rows) != len(ents):
         raise CurationBatchConflict("Entity identity missing or belongs to another bank")
-    cooccurrences = await table_snapshot(
-        conn,
+    cooccurrences = await bounded_snapshot(
         "entity_cooccurrences",
         f"SELECT to_jsonb(c)::text AS row FROM {fq_table('entity_cooccurrences')} c WHERE entity_id_1=ANY($1::uuid[]) OR entity_id_2=ANY($1::uuid[]) ORDER BY entity_id_1,entity_id_2",
         ents,
         cap=MAX_LINKS,
     )
-    history = await table_snapshot(
-        conn,
+    history = await bounded_snapshot(
         "observation_history",
         f"SELECT to_jsonb(h)::text AS row FROM {fq_table('observation_history')} h WHERE bank_id=$1 AND observation_id=ANY($2::uuid[]) ORDER BY id",
         bank_id,
@@ -298,8 +339,7 @@ async def capture(conn: DatabaseConnection, bank_id: str, scope: ClosureScope) -
             source_bytes += source.chunk_bytes
         if source_bytes > MAX_BYTES:
             raise CurationBatchConflict("Source content exceeds 8MiB cap")
-    dependencies = await table_snapshot(
-        conn,
+    dependencies = await bounded_snapshot(
         "memory_units",
         f"SELECT to_jsonb(o)::text AS row FROM {fq_table('memory_units')} o WHERE bank_id=$1 AND fact_type='observation' AND (source_memory_ids && $2::uuid[] OR id=ANY($3::uuid[])) ORDER BY id",
         bank_id,

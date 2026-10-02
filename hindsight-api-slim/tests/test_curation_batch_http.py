@@ -117,9 +117,27 @@ async def test_only_exact_preview_is_reserved_over_http(
 ) -> None:
     response = await batch_client.post(ROOT + "/" + batch_id, json=apply_request().model_dump(mode="json"))
     assert response.status_code == 409, response.text
+    assert response.json() == {"detail": "test manifest conflict"}
     batch_engine.apply_curation_batch.assert_awaited_once()
     assert batch_engine.apply_curation_batch.await_args.args[1] == batch_id
     batch_engine.preview_curation_batch.assert_not_awaited()
+
+
+def test_openapi_declares_curation_conflict_response(batch_engine: MagicMock) -> None:
+    schema = create_app(batch_engine, initialize_memory=False).openapi()
+    routes = [
+        ("/v1/default/banks/{bank_id}/curation-batches/preview", "post"),
+        ("/v1/default/banks/{bank_id}/curation-batches/{batch_id}", "post"),
+        ("/v1/default/banks/{bank_id}/curation-batches/{batch_id}", "get"),
+        ("/v1/default/banks/{bank_id}/curation-batches/{batch_id}/revert", "post"),
+    ]
+    response_schema = schema["components"]["schemas"]["CurationConflictResponse"]
+    assert response_schema["properties"]["detail"] == {"type": "string", "title": "Detail"}
+    for path, method in routes:
+        conflict = schema["paths"][path][method]["responses"]["409"]
+        assert conflict["content"]["application/json"]["schema"] == {
+            "$ref": "#/components/schemas/CurationConflictResponse"
+        }
 
 
 def test_openapi_reserves_preview_in_every_batch_id_schema(batch_engine: MagicMock) -> None:

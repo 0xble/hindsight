@@ -1874,6 +1874,18 @@ export type CurationChange = {
 };
 
 /**
+ * CurationConflictResponse
+ *
+ * String-detail conflict payload returned by raw-curation-v2 routes.
+ */
+export type CurationConflictResponse = {
+  /**
+   * Detail
+   */
+  detail: string;
+};
+
+/**
  * CurationFactType
  */
 export type CurationFactType = "world" | "experience";
@@ -7778,6 +7790,10 @@ export type PreviewCurationBatchData = {
 
 export type PreviewCurationBatchErrors = {
   /**
+   * Curation conflict
+   */
+  409: CurationConflictResponse;
+  /**
    * Validation Error
    */
   422: HttpValidationError;
@@ -7822,6 +7838,10 @@ export type GetCurationBatchData = {
 
 export type GetCurationBatchErrors = {
   /**
+   * Curation conflict
+   */
+  409: CurationConflictResponse;
+  /**
    * Validation Error
    */
   422: HttpValidationError;
@@ -7863,6 +7883,10 @@ export type ApplyCurationBatchData = {
 };
 
 export type ApplyCurationBatchErrors = {
+  /**
+   * Curation conflict
+   */
+  409: CurationConflictResponse;
   /**
    * Validation Error
    */
@@ -7906,6 +7930,10 @@ export type RevertCurationBatchData = {
 };
 
 export type RevertCurationBatchErrors = {
+  /**
+   * Curation conflict
+   */
+  409: CurationConflictResponse;
   /**
    * Validation Error
    */
