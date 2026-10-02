@@ -9,6 +9,7 @@ import json
 import uuid
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from decimal import Decimal, localcontext
 from unittest.mock import AsyncMock, patch
 
 import asyncpg
@@ -26,6 +27,8 @@ from hindsight_api.engine.curation_batch import (
     CurationFields,
     CurationPreviewRequest,
     CurationRevertRequest,
+    TableSnapshot,
+    canonical_bytes,
     revision,
     snapshot_revision,
 )
@@ -638,6 +641,138 @@ async def test_cross_bank_edges_are_rejected_before_any_cascade(memory, seeded):
             assert await conn.fetchval("SELECT 1 FROM memory_units WHERE id=$1", seeded.raw)
     finally:
         await memory.delete_bank(another, request_context=CTX)
+
+
+@pytest.mark.parametrize("dependency", ["link", "observation", "both"])
+@pytest.mark.parametrize("stage", ["preparation", "revert"])
+async def test_cross_bank_dependency_races_conflict_without_mutation(memory, seeded, dependency, stage):
+    another = f"test-curation-v2-{uuid.uuid4().hex}"
+    await memory.ensure_bank_profile(another, request_context=CTX)
+
+    # SQL is necessary to forge forbidden foreign dependencies and to compare
+    # exact rows/capsules/pins; the public graph API deduplicates incident links.
+    async def inject():
+        async with memory._pool.acquire() as conn:
+            foreign = await raw(conn, another, "foreign peer")
+            if dependency in ("link", "both"):
+                await conn.execute(
+                    "INSERT INTO memory_links(bank_id,from_unit_id,to_unit_id,link_type,weight) VALUES($1,$2,$3,'temporal',1)",
+                    another,
+                    seeded.peer if stage == "revert" else seeded.raw,
+                    foreign,
+                )
+            if dependency in ("observation", "both"):
+                await conn.execute(
+                    "INSERT INTO memory_units(bank_id,text,fact_type,source_memory_ids,event_date) VALUES($1,'foreign observation','observation',$2,now())",
+                    another,
+                    [seeded.raw],
+                )
+
+    async def exact_state():
+        async with memory._pool.acquire() as conn:
+            return {
+                table: await conn.fetchval(
+                    f"SELECT COALESCE(jsonb_agg(to_jsonb(r) ORDER BY to_jsonb(r)::text),'[]'::jsonb)::text FROM {table} r"
+                )
+                for table in store._TABLES
+            }
+
+    try:
+        view = await preview(memory, seeded, [seeded.raw, seeded.peer])
+        req = manifest(view)
+        correction = next(change for change in req.changes if change.memory_id == seeded.peer)
+        correction.action = "correct"
+        correction.fields = CurationFields(text="corrected peer")
+        if stage == "preparation":
+            unchanged = None
+
+            async def provider(**kwargs):
+                nonlocal unchanged
+                await inject()
+                unchanged = await exact_state()
+                return str([0.25] * 384)
+
+            with patch.object(memory, "_reembed_memory_text", new=provider):
+                with pytest.raises(CurationBatchConflict, match="Cross-bank"):
+                    await apply(memory, seeded, req)
+        else:
+            receipt = await apply(memory, seeded, req)
+            await inject()
+            unchanged = await exact_state()
+            with pytest.raises(CurationBatchConflict, match="Cross-bank"):
+                await revert(memory, seeded, receipt)
+        assert await exact_state() == unchanged
+    finally:
+        await memory.delete_bank(another, request_context=CTX)
+
+
+async def test_lossless_canonical_numbers_are_deterministic():
+    value = json.loads(
+        '{"nested":[0.12345678901234567890123456789,-1e-30],"large":123456789012345678901234567890}',
+        parse_float=Decimal,
+    )
+    snapshot = TableSnapshot(columns=[], rows=[value])
+    with localcontext() as context:
+        context.prec = 3
+        encoded = canonical_bytes(snapshot)
+    decoded = TableSnapshot.model_validate(json.loads(encoded, parse_float=Decimal))
+    assert decoded.rows == snapshot.rows
+    assert canonical_bytes(decoded) == encoded
+    assert revision(value) == revision(dict(reversed(list(value.items()))))
+    for nonfinite in (Decimal("NaN"), Decimal("Infinity")):
+        with pytest.raises(ValueError, match="Nonfinite"):
+            canonical_bytes(nonfinite)
+
+
+@pytest.mark.parametrize("action", ["invalidate", "correct"])
+async def test_high_precision_jsonb_roundtrip_and_numeric_drift(memory, seeded, action):
+    precise = '{"precise":0.12345678901234567890123456789,"large":123456789012345678901234567890123456789}'
+    drifted = precise.replace("0.12345678901234567890123456789", "0.12345678901234567891123456789")
+    # Exactly the 20th fractional digit changes, below binary-float precision.
+    assert [i for i, (a, b) in enumerate(zip(precise, drifted)) if a != b] == [precise.index("0.") + 21]
+    # Compare PostgreSQL's own JSONB text, never an already-rounded Python
+    # snapshot. History precision and hidden metadata cannot be read via recall.
+    async with memory._pool.acquire() as conn:
+        await conn.execute("UPDATE observation_history SET content=$2::jsonb WHERE id=$1", seeded.history[0], precise)
+        await conn.execute(
+            "UPDATE memory_units SET metadata=$2::jsonb WHERE id=ANY($1::uuid[])", [seeded.raw, seeded.peer], precise
+        )
+        original_history = await conn.fetchval(
+            "SELECT content::text FROM observation_history WHERE id=$1", seeded.history[0]
+        )
+        original_metadata = await conn.fetchval("SELECT metadata::text FROM memory_units WHERE id=$1", seeded.peer)
+    view = await preview(memory, seeded)
+    req = manifest(view, correction=CurationFields(text="corrected raw") if action == "correct" else None)
+    async with memory._pool.acquire() as conn:
+        await conn.execute("UPDATE observation_history SET content=$2::jsonb WHERE id=$1", seeded.history[0], drifted)
+    with pytest.raises(CurationBatchConflict, match="revision"):
+        await apply(memory, seeded, req)
+    async with memory._pool.acquire() as conn:
+        await conn.execute("UPDATE observation_history SET content=$2::jsonb WHERE id=$1", seeded.history[0], precise)
+    receipt = await apply(memory, seeded, req)
+    async with memory._pool.acquire() as conn:
+        await conn.execute("UPDATE memory_units SET metadata=$2::jsonb WHERE id=$1", seeded.peer, drifted)
+        capsule = await conn.fetchval("SELECT capsule::text FROM curation_batches WHERE bank_id=$1", seeded.bank)
+    with pytest.raises(CurationBatchConflict, match="closure changed"):
+        await revert(memory, seeded, receipt)
+    async with memory._pool.acquire() as conn:
+        assert (
+            await conn.fetchval("SELECT capsule::text FROM curation_batches WHERE bank_id=$1", seeded.bank) == capsule
+        )
+        assert await conn.fetchval("SELECT count(*) FROM curation_entity_pins WHERE bank_id=$1", seeded.bank) == 2
+        await conn.execute("UPDATE memory_units SET metadata=$2::jsonb WHERE id=$1", seeded.peer, precise)
+    await revert(memory, seeded, receipt)
+    async with memory._pool.acquire() as conn:
+        assert (
+            await conn.fetchval("SELECT content::text FROM observation_history WHERE id=$1", seeded.history[0])
+            == original_history
+        )
+        assert (
+            await conn.fetchval("SELECT metadata::text FROM memory_units WHERE id=$1", seeded.peer) == original_metadata
+        )
+        assert (
+            await conn.fetchval("SELECT metadata::text FROM memory_units WHERE id=$1", seeded.raw) == original_metadata
+        )
 
 
 async def test_combined_sources_are_bounded_before_snapshot_hashing(memory, seeded):
