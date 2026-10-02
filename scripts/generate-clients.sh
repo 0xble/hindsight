@@ -192,6 +192,7 @@ cp -R "$GEN_TMP_DIR/hindsight_client_api" "$PYTHON_CLIENT_DIR/"
 # OpenAPI Generator's oneOf Pydantic wrapper ignores raw operation detail JSON.
 # Apply the checked-in discriminator patch to the freshly generated output.
 python3 "$PROJECT_ROOT/scripts/patch-operation-details-client.py" --language python
+python3 "$PROJECT_ROOT/scripts/patch-curation-fields-client.py"
 if [ -d "$GEN_TMP_DIR/.openapi-generator" ]; then
     rm -rf "$PYTHON_CLIENT_DIR/.openapi-generator"
     cp -R "$GEN_TMP_DIR/.openapi-generator" "$PYTHON_CLIENT_DIR/"

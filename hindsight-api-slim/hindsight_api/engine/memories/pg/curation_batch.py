@@ -96,6 +96,39 @@ async def lock_closure(conn: DatabaseConnection, bank_id: str, scope: ClosureSco
     memory_ids = _ids([*scope.affected, *scope.peers])
     affected_ids = _ids(scope.affected)
     try:
+        # Source provenance is part of the CAS, so share-lock its document/chunk
+        # rows before reading revisions. FOR SHARE blocks UPDATE/DELETE but stays
+        # compatible with the FOR KEY SHARE that ordinary retains take for FKs. Ordinary document/chunk writers do not take
+        # the curation advisory lock; without these parent locks they could
+        # commit after source_revision() and before phase-2 mutation, leaving an
+        # after-capsule that records newer provenance than the applied CAS.
+        source_rows = await conn.fetch(
+            f"SELECT document_id,chunk_id FROM ("
+            f"SELECT document_id,chunk_id FROM {fq_table('memory_units')} "
+            "WHERE bank_id=$1 AND id=ANY($2::uuid[]) "
+            "UNION "
+            f"SELECT document_id,chunk_id FROM {fq_table('invalidated_memory_units')} "
+            "WHERE bank_id=$1 AND id=ANY($2::uuid[])"
+            ") sources WHERE document_id IS NOT NULL AND chunk_id IS NOT NULL "
+            "ORDER BY document_id,chunk_id",
+            bank_id,
+            memory_ids,
+        )
+        source_documents = _ids(row["document_id"] for row in source_rows)
+        source_chunks = _ids(row["chunk_id"] for row in source_rows)
+        await conn.fetch(
+            f"SELECT id FROM {fq_table('documents')} "
+            "WHERE bank_id=$1 AND id=ANY($2::text[]) ORDER BY id FOR SHARE NOWAIT",
+            bank_id,
+            source_documents,
+        )
+        await conn.fetch(
+            f"SELECT chunk_id FROM {fq_table('chunks')} "
+            "WHERE bank_id=$1 AND chunk_id=ANY($2::text[]) ORDER BY chunk_id FOR SHARE NOWAIT",
+            bank_id,
+            source_chunks,
+        )
+
         # Parent identities are locked before their dependent rows. Keep every
         # SELECT ordered so two curation transactions cannot deadlock while
         # acquiring overlapping closures. The archive is a second parent store
@@ -731,7 +764,21 @@ async def revert(
         batch_id,
         canonical_bytes(capsule).decode(),
     )
+    # While pinned, entity pruning skipped these identities and consumed their
+    # queue entries. Hand exactly the released pins back to the prune queue so
+    # an orphan or stale cooccurrence left behind is reconsidered.
     await conn.execute(
-        f"DELETE FROM {fq_table('curation_entity_pins')} WHERE bank_id=$1 AND batch_id=$2", bank_id, batch_id
+        f"""
+        WITH released AS (
+            DELETE FROM {fq_table("curation_entity_pins")}
+            WHERE bank_id=$1 AND batch_id=$2
+            RETURNING entity_id
+        )
+        INSERT INTO {fq_table("entity_maintenance_queue")}(bank_id,entity_id)
+        SELECT DISTINCT $1, entity_id FROM released
+        ON CONFLICT (bank_id,entity_id) DO NOTHING
+        """,
+        bank_id,
+        batch_id,
     )
     return receipt

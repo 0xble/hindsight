@@ -13,3 +13,17 @@ fn correction_body_distinguishes_missing_clear_and_value() {
     assert_eq!(decoded.context, NullablePatch::Clear);
     assert_eq!(decoded.occurred_start, NullablePatch::Unset);
 }
+
+#[test]
+fn correction_body_serializes_both_dates() {
+    use chrono::TimeZone;
+    let fields = CurationFields {
+        occurred_start: NullablePatch::Value(chrono::Utc.with_ymd_and_hms(2024, 1, 1, 0, 0, 0).unwrap()),
+        occurred_end: NullablePatch::Value(chrono::Utc.with_ymd_and_hms(2024, 1, 2, 0, 0, 0).unwrap()),
+        ..Default::default()
+    };
+    assert_eq!(
+        serde_json::to_value(&fields).unwrap(),
+        json!({"occurred_start":"2024-01-01T00:00:00Z","occurred_end":"2024-01-02T00:00:00Z"})
+    );
+}

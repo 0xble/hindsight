@@ -207,6 +207,51 @@ async def snapshot(memory, seed, scope=None):
             return await store.capture(conn, seed.bank, scope)
 
 
+@pytest.mark.parametrize("table", ["documents", "chunks"])
+async def test_source_writer_race_apply_is_rejected_without_mutation(memory, seeded, table):
+    """A source change between phase-1 capture and phase-2 mutation must 409."""
+    view = await preview(memory, seeded)
+    request = manifest(view, correction=CurationFields(text="curation correction"))
+    provider_started = asyncio.Event()
+    allow_provider = asyncio.Event()
+    writer_started = asyncio.Event()
+    release_writer = asyncio.Event()
+
+    async def provider(**kwargs):
+        provider_started.set()
+        await allow_provider.wait()
+        return str([0.25] * 384)
+
+    async def writer():
+        column = "original_text" if table == "documents" else "chunk_text"
+        async with memory._pool.acquire() as conn:
+            async with conn.transaction():
+                await conn.execute(
+                    f"UPDATE {table} SET {column}='ordinary writer changed provenance' WHERE bank_id=$1",
+                    seeded.bank,
+                )
+                writer_started.set()
+                await release_writer.wait()
+
+    with patch.object(memory, "_reembed_memory_text", new=provider):
+        apply_task = asyncio.create_task(apply(memory, seeded, request, f"source-race-{table}"))
+        await asyncio.wait_for(provider_started.wait(), timeout=5)
+        writer_task = asyncio.create_task(writer())
+        await asyncio.wait_for(writer_started.wait(), timeout=5)
+        allow_provider.set()
+        try:
+            with pytest.raises(CurationBatchConflict, match="busy"):
+                await apply_task
+        finally:
+            release_writer.set()
+            await writer_task
+
+    async with memory._pool.acquire() as conn:
+        assert await conn.fetchval("SELECT text FROM memory_units WHERE id=$1", seeded.raw) != "curation correction"
+        assert await conn.fetchval("SELECT count(*) FROM curation_batches WHERE bank_id=$1", seeded.bank) == 0
+        assert await conn.fetchval("SELECT count(*) FROM curation_entity_pins WHERE bank_id=$1", seeded.bank) == 0
+
+
 async def test_exact_entity_observation_history_roundtrip(memory, seeded):
     before = await snapshot(memory, seeded)
     view = await preview(memory, seeded)
@@ -331,6 +376,13 @@ async def test_asymmetric_captured_cooccurrence_pin_protects_orphan_partner(memo
             orphan,
         )
     assert (await revert(memory, seeded, receipt, "asymmetric-pin")).status == "reverted"
+    result = await graph.entity_prune_pass(backend=memory._backend, fq_table=fq_table, bank_id=seeded.bank)
+    assert result.orphan_entities_pruned == 1
+    async with memory._pool.acquire() as conn:
+        assert not await conn.fetchval("SELECT 1 FROM entities WHERE id=$1", orphan)
+        assert not await conn.fetchval(
+            "SELECT 1 FROM entity_cooccurrences WHERE entity_id_1=$1 AND entity_id_2=$2", left, right
+        )
 
 
 async def test_shared_entity_two_capsules_and_unrelated_posting_counter(memory, seeded):

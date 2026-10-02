@@ -3,6 +3,7 @@ package hindsight
 import (
 	"encoding/json"
 	"testing"
+	"time"
 )
 
 func TestCurationFieldsPreservesExplicitNull(t *testing.T) {
@@ -70,5 +71,22 @@ func TestCurationFieldsPreservesExplicitNull(t *testing.T) {
 	}
 	if _, present := values["occurred_start"]; present {
 		t.Fatal("unset date was serialized")
+	}
+}
+
+func TestCurationFieldsSerializesBothDates(t *testing.T) {
+	body := NewCurationFields()
+	body.SetOccurredStart(time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC))
+	body.SetOccurredEnd(time.Date(2024, 1, 2, 0, 0, 0, 0, time.UTC))
+	encoded, err := json.Marshal(body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var values map[string]interface{}
+	if err := json.Unmarshal(encoded, &values); err != nil {
+		t.Fatal(err)
+	}
+	if values["occurred_start"] != "2024-01-01T00:00:00Z" || values["occurred_end"] != "2024-01-02T00:00:00Z" {
+		t.Fatalf("dates did not serialize as RFC 3339: %s", encoded)
 	}
 }
