@@ -25,7 +25,7 @@ signing, release, or publishing. Source inclusion never implies runtime adoption
 Evaluate these support units every maintenance run, including no-change
 runs; these extend this sole enrollment and scheduling unit:
 
-- [OCR admission and typed failures](maintenance/ocr.md): HINDSIGHT-001, HINDSIGHT-004 and HINDSIGHT-006.
+- [OCR admission and typed failures](maintenance/ocr.md): HINDSIGHT-001, HINDSIGHT-004, HINDSIGHT-006 and HINDSIGHT-009.
 - [Service hardening](maintenance/service-hardening.md): HINDSIGHT-002 and HINDSIGHT-007.
 - [Fork CI governance](maintenance/ci.md): HINDSIGHT-003.
 - [Generated-language integrity](maintenance/language-integrity.md): HINDSIGHT-005 and HINDSIGHT-008.

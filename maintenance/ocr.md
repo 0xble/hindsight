@@ -154,5 +154,97 @@ strings. The generated operation-detail regression checks raw dictionary/JSON
 validation and preserves the reason value through serialization.
 
 
+## HINDSIGHT-009: Bounded Scanned PDF OCR
+
+- **Status:** Maintained fork divergence, 2026-10-01.
+- **Surfaces:** `engine/parsers/{markitdown,pdf_ocr}.py`,
+  `tests/{test_pdf_ocr,pdf_ocr_fixtures}.py`,
+  `hindsight-system-tests/tests/test_91_pdf_ocr.py`, and explicit package pins for
+  the existing `pypdfium2==5.4.0` and added `psutil==7.2.2`.
+- **Behavior:** With existing MarkItDown OCR enabled, PDF pages lacking extracted
+  text render sequentially and use the same configured image OCR endpoint,
+  model, headers and prompt. Text-only conversion preserves the existing
+  whole-document converter. Mixed documents preserve text and scanned-page order.
+  Every OCR page passes existing evidence admission before any result returns.
+  A failed, refused or unusable page rejects the whole conversion. Invalid or
+  encrypted PDFs do not become scans. Disabled OCR invokes no provider.
+- **Bounds:** Scanned and mixed PDFs have a 32 MiB input, 20-page, 10-million-pixel page,
+  50-million-pixel rendered total, 16 MiB rendered page, 64 MiB rendered total,
+  and 1 MiB extracted-output ceiling, applied after native text-layer
+  classification and before OCR. Text-only PDFs use the original whole-document
+  converter without these input, page or output caps. Rendering uses scale 2. All
+  OCR-enabled PDF conversions, including text-only classification/extraction,
+  remain process-isolated with CPU, scratch-write and sampled RSS protection. The document
+  deadline is 120 seconds, individual requests at most 30 seconds with SDK retries
+  disabled. Parent polling every 50 ms samples a 1 GiB RSS ceiling. This is sampled
+  protection, with possible between-sample overshoot, not an OS hard memory cap.
+  Unavailable RSS measurement fails closed. Both Linux and Darwin use the sampled
+  RSS watchdog, with no virtual-address-space limit. POSIX CPU (60 seconds) and
+  scratch-write (64 MiB per file, including the result transport) limits apply
+  where available. Darwin is the exercised platform, Linux is not validated here.
+- **Isolation:** A disposable spawned process owns PDFium, whose documented
+  thread-safety contract forbids concurrent PDFium calls across threads. Parent
+  termination, kill and join on timeout, cancellation or RSS rejection precede
+  cleanup of protected scratch. No live client object is pickled. Already
+  configured OCR settings travel only through multiprocessing's in-memory
+  bootstrap pipe, never argv or scratch files. Child error transport includes
+  type names or non-content admission measurements, not provider error text.
+- **Preservation:** No upload, task payload, storage key or original bytes are
+  replaced. Existing file-conversion handling forwards source metadata and date
+  to a separate retain operation. The system story explicitly uses
+  `HINDSIGHT_API_FILE_DELETE_AFTER_RETAIN=false`. The shipped default remains true
+  and still deletes storage after queuing downstream retain, before its success
+  is proven. Source preservation is a separate runtime-owner prerequisite before
+  any recovery retry. Protected backup copies alone do not prove the original
+  database file association survives. This patch adds no per-file preservation
+  override and changes no live profile, worker, provider, model or routing.
+- **Upstream:** Preflight pinned `ec39e10900c6a971f1a73cd37402228d5cccaa25`.
+  [Issue #3255](https://github.com/vectorize-io/hindsight/issues/3255) is open.
+  [PR #3442](https://github.com/vectorize-io/hindsight/pull/3442) is closed,
+  unmerged, with dissent preferring a more complete separate provider. This fork
+  intentionally keeps the existing provider route and rejects partial-page
+  success. It does not claim upstream acceptance. MarkItDown OCR plugin changes
+  are not part of this patch.
+- **Regression:** `uv run --frozen pytest -n 0 tests/test_pdf_ocr.py
+  tests/test_markitdown_parser.py tests/test_ocr_quality.py
+  tests/test_no_extractable_text.py`. Run the blackbox story from
+  `hindsight-system-tests` with its isolated pg0 database. Tests use real PDF,
+  HTTP and process mechanics with synthetic provider output. They do not prove
+  real-model OCR fidelity. Both scan and valid encrypted fixtures are generated
+  transparently at runtime, with no added binary files or generator dependency.
+  Text compatibility regressions use actual 21-page and greater-than-32-MiB PDFs,
+  and a transparent Unicode font mapping producing greater-than-1-MiB extracted
+  text. Their full outputs must match the OCR-disabled original converter with
+  zero provider calls. Mixed-PDF input/page/output rejection remains covered.
+  The successful public-API story lets ordinary background consolidation run,
+  verifies its completed operation and observation evidence link, and preserves
+  the original uploaded bytes. No observation/consolidation enablement is disabled
+  to make the story deterministic.
+- **Rollback:** Revert this extension and its dependency pins. Existing raster
+  OCR, parser fallback and no-extractable-text behavior remain available.
+- **Retire when:** A released upstream parser provides equivalent bounded,
+  cancellation-safe scanned-page extraction, per-page admission, atomic failure
+  and original-file provenance through the same configured route.
+
 Run API-local pytest commands from `hindsight-api-slim`; run generation from
 the repository root.
+## Linux Worker Import Boundary
+
+The PDF fallback's first hosted qualification failed before provider readiness in
+two timing cases and at its sampled RSS limit in a conversion story. A spawned
+parser import eagerly loaded engine exports, default configuration and the local
+machine-learning stack. Engine exports now resolve on access with their original
+identities, keeping a parser-only subprocess independent of application startup.
+The document deadline, RSS, CPU, cancellation and scratch limits are unchanged.
+
+Fresh-process import measurements on Linux ARM64 fell from 14.6 seconds and
+555 MiB to 0.295 seconds and 57.1 MiB. An emulated AMD64 baseline reproduced
+four provider-readiness/deadline failures and imported in 64.7 seconds with
+745 MiB, while the repaired import took 2.70 seconds and 98 MiB. These are
+isolated measurements, not native hosted or private-original fidelity proof.
+
+Regressions verify parser-only subprocess imports and all 24 public engine
+exports, their identity, cache, directory listing and missing-attribute behavior.
+The original OCR implementation rebased cleanly onto the qualified upstream sync.
+Keep prior compatibility review separate from the targeted import/base-interaction
+review and require a new exact gate before publication of the repaired head.
