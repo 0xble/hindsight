@@ -10433,6 +10433,8 @@ def _register_routes(app: FastAPI):
                 message=f"Cleared {deleted} memory unit(s){scope} from bank '{bank_id}'",
                 deleted_count=deleted,
             )
+        except CurationBatchConflict as exc:
+            raise HTTPException(status_code=409, detail=str(exc))
         except OperationValidationError as e:
             raise HTTPException(status_code=e.status_code, detail=e.reason)
         except (AuthenticationError, HTTPException):

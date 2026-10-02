@@ -66,6 +66,16 @@ def apply_request() -> CurationApplyRequest:
     )
 
 
+@pytest.mark.asyncio
+async def test_clear_memories_maps_active_capsule_conflict_to_409(
+    batch_client: httpx.AsyncClient, batch_engine: MagicMock
+) -> None:
+    batch_engine.delete_bank.side_effect = CurationBatchConflict("Active curation capsules prevent bank deletion")
+    response = await batch_client.delete("/v1/default/banks/test-curation-http/memories")
+    assert response.status_code == 409, response.text
+    assert response.json() == {"detail": "Active curation capsules prevent bank deletion"}
+
+
 def test_preview_is_not_a_batch_id() -> None:
     with pytest.raises(ValidationError, match="reserved"):
         TypeAdapter(BatchId).validate_python("preview")

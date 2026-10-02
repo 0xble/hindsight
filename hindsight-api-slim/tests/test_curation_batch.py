@@ -201,7 +201,7 @@ async def revert(memory, seed, receipt, batch="fixture"):
 async def snapshot(memory, seed, scope=None):
     async with memory._pool.acquire() as conn:
         async with conn.transaction():
-            await store.lock(conn)
+            await store.lock(conn, seed.bank)
             scope = scope or await store.discover(conn, seed.bank, [seed.raw])
             return await store.capture(conn, seed.bank, scope)
 
@@ -597,7 +597,7 @@ async def test_backup_restores_capsule_and_pins_with_conditional_revert(memory, 
         try:
             async with memory._pool.acquire() as conn:
                 async with conn.transaction():
-                    await store.lock(conn)
+                    await store.lock(conn, seeded.bank)
                     capsule = await store.get_capsule(conn, seeded.bank, "fixture")
                     assert capsule.receipt == receipt
                     assert (
@@ -919,6 +919,40 @@ async def test_cross_bank_dependency_races_conflict_without_mutation(memory, see
         await memory.delete_bank(another, request_context=CTX)
 
 
+async def test_cross_bank_cooccurrence_is_rejected_before_direct_or_http_apply(memory, seeded):
+    another = f"test-curation-v2-{uuid.uuid4().hex}"
+    await memory.ensure_bank_profile(another, request_context=CTX)
+    await memory.update_bank_config(another, {"enable_auto_consolidation": False}, request_context=CTX)
+    try:
+        view = await preview(memory, seeded)
+        request = manifest(view)
+        foreign = uuid.uuid4()
+        async with memory._pool.acquire() as conn:
+            await conn.execute(
+                "INSERT INTO entities(id,bank_id,canonical_name,mention_count) VALUES($1,$2,'foreign entity',0)",
+                foreign,
+                another,
+            )
+            left, right = sorted((seeded.entities[0], foreign))
+            await conn.execute(
+                "INSERT INTO entity_cooccurrences(entity_id_1,entity_id_2,cooccurrence_count) VALUES($1,$2,1)",
+                left,
+                right,
+            )
+        with pytest.raises(CurationBatchConflict, match="Cooccurrence endpoint"):
+            await apply(memory, seeded, request, "cross-bank-cooccurrence")
+        app = create_app(memory, initialize_memory=False)
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
+            response = await client.post(
+                f"/v1/default/banks/{seeded.bank}/curation-batches/cross-bank-http",
+                json=request.model_dump(mode="json"),
+            )
+        assert response.status_code == 409, response.text
+        assert "Cooccurrence endpoint" in response.json()["detail"]
+    finally:
+        await memory.delete_bank(another, request_context=CTX)
+
+
 async def test_lossless_canonical_numbers_are_deterministic():
     value = json.loads(
         '{"nested":[0.12345678901234567890123456789,-1e-30],"large":123456789012345678901234567890}',
@@ -1078,11 +1112,33 @@ async def test_every_closure_row_family_has_a_cap(memory, seeded, monkeypatch, c
 async def test_busy_curation_window_fails_without_waiting_or_mutation(memory, seeded):
     async with memory._pool.acquire() as blocker:
         async with blocker.transaction():
-            await blocker.execute("LOCK TABLE memory_units IN ROW EXCLUSIVE MODE")
+            await store.lock(blocker, seeded.bank)
             with pytest.raises(CurationBatchConflict, match="busy"):
                 await preview(memory, seeded)
     async with memory._pool.acquire() as conn:
         assert await conn.fetchval("SELECT count(*) FROM curation_batches WHERE bank_id=$1", seeded.bank) == 0
+
+
+async def test_curation_lock_does_not_block_unrelated_bank_writes(memory, seeded):
+    another = f"test-curation-v2-{uuid.uuid4().hex}"
+    await memory.ensure_bank_profile(another, request_context=CTX)
+    await memory.update_bank_config(another, {"enable_auto_consolidation": False}, request_context=CTX)
+    try:
+        async with memory._pool.acquire() as blocker:
+            async with blocker.transaction():
+                await store.lock(blocker, seeded.bank)
+                async with memory._pool.acquire() as writer:
+                    async with writer.transaction():
+                        await raw(writer, another, "unrelated bank write")
+        async with memory._pool.acquire() as conn:
+            assert (
+                await conn.fetchval(
+                    "SELECT count(*) FROM memory_units WHERE bank_id=$1 AND text='unrelated bank write'", another
+                )
+                == 1
+            )
+    finally:
+        await memory.delete_bank(another, request_context=CTX)
 
 
 async def test_lost_ack_after_commit_is_reconciled_by_receipt_get(memory, seeded):

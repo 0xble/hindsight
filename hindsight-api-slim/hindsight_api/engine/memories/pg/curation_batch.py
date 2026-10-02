@@ -9,7 +9,6 @@ from decimal import Decimal
 from typing import Any
 from uuid import UUID
 
-import asyncpg
 from pydantic import TypeAdapter
 
 from ...curation_batch import (
@@ -66,14 +65,19 @@ def _ids(values: Iterable[str | UUID]) -> list[str]:
     return sorted({str(v) for v in values})
 
 
-async def lock(conn: DatabaseConnection) -> None:
-    # NOWAIT prevents a fixed-order bulk lock request from deadlocking against
-    # ordinary curation's row/table order. No work happens before all locks land.
-    try:
-        for table in _TABLES:
-            await conn.execute(f"LOCK TABLE {fq_table(table)} IN SHARE ROW EXCLUSIVE MODE NOWAIT")
-    except asyncpg.LockNotAvailableError as exc:
-        raise CurationBatchConflict("Curation window is busy") from exc
+async def lock(conn: DatabaseConnection, bank_id: str) -> None:
+    """Serialize curation operations for one bank without locking shared tables.
+
+    PostgreSQL advisory transaction locks are intentionally keyed by bank. Unlike
+    a table lock, this does not block ordinary DML for unrelated banks while a
+    preview, apply, or revert is capturing or mutating its closure.
+    """
+    acquired = await conn.fetchval(
+        "SELECT pg_try_advisory_xact_lock(hashtextextended('hindsight:curation:' || $1, 0))",
+        bank_id,
+    )
+    if not acquired:
+        raise CurationBatchConflict("Curation window is busy")
 
 
 async def assert_paused(conn: DatabaseConnection, bank_id: str) -> None:
@@ -310,6 +314,15 @@ async def capture(conn: DatabaseConnection, bank_id: str, scope: ClosureScope) -
         ents,
         cap=MAX_LINKS,
     )
+    cooccurrence_entities = _ids(
+        str(entity_id) for row in cooccurrences.rows for entity_id in (row["entity_id_1"], row["entity_id_2"])
+    )
+    if await conn.fetchval(
+        f"SELECT count(*) FROM {fq_table('entities')} WHERE bank_id=$1 AND id=ANY($2::uuid[])",
+        bank_id,
+        cooccurrence_entities,
+    ) != len(cooccurrence_entities):
+        raise CurationBatchConflict("Cooccurrence endpoint is missing or belongs to another bank")
     history = await bounded_snapshot(
         "observation_history",
         f"SELECT to_jsonb(h)::text AS row FROM {fq_table('observation_history')} h WHERE bank_id=$1 AND observation_id=ANY($2::uuid[]) ORDER BY id",

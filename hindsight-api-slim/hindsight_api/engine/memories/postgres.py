@@ -604,7 +604,7 @@ class PostgresMemories(MemoriesExtension):
     ) -> CurationSnapshot:
         from .pg import curation_batch
 
-        await curation_batch.lock(conn)
+        await curation_batch.lock(conn, bank_id)
         await curation_batch.assert_paused(conn, bank_id)
         scope = await curation_batch.discover(conn, bank_id, target_ids)
         return await curation_batch.capture(conn, bank_id, scope)
@@ -624,7 +624,7 @@ class PostgresMemories(MemoriesExtension):
     async def curation_v2_lock(self, *, conn: DatabaseConnection, bank_id: str) -> None:
         from .pg import curation_batch
 
-        await curation_batch.lock(conn)
+        await curation_batch.lock(conn, bank_id)
         await curation_batch.assert_paused(conn, bank_id)
 
     async def curation_v2_apply(
