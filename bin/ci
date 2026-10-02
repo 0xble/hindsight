@@ -127,6 +127,7 @@ PATCH_REGRESSIONS=(
   tests/test_llama_parse_parser.py
   tests/test_operation_metadata_sql.py
   tests/test_consolidation_fold_fallback.py
+  tests/test_consolidation_temporal_merge.py
   tests/test_openrouter_null_content.py
   tests/test_llm_trace.py
   tests/test_hierarchical_config.py
