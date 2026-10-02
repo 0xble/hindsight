@@ -2286,15 +2286,18 @@ async def _run_consolidation_job(
                             sub_batch, mark_ids=sub_ids
                         )
 
-                except _StaleConsolidationReference:
+                except (_StaleConsolidationReference, _RoundCorrectionBudgetExhausted) as exc:
                     # No stamp or failure marker: leave these facts for a later job.
                     # This batch's ordered apply turn still advances in the dispatch
                     # finally block, allowing the remaining batches to drain.
                     pending_conflicts.update(str(mem_id) for mem_id in sub_ids)
                     logger.warning(
-                        "[CONSOLIDATION] bank=%s batch=%s stale conflict retries exhausted; leaving %s facts pending",
+                        "[CONSOLIDATION] bank=%s batch=%s %s exhausted; leaving %s facts pending",
                         bank_id,
                         batch_num_local,
+                        "round correction budget"
+                        if isinstance(exc, _RoundCorrectionBudgetExhausted)
+                        else "stale conflict retries",
                         len(sub_ids),
                     )
                     continue
@@ -4055,6 +4058,9 @@ class _BatchFailureClass(StrEnum):
     RETRY = "retry"
     """Transport-shaped; an unchanged re-send may well succeed."""
 
+    DEFER = "defer"
+    """Round-scoped limit; leave the facts pending without retry or bisection."""
+
 
 def _classify_batch_failure(exc: Exception) -> _BatchFailureClass:
     """Decide how ``_consolidate_batch_with_llm`` should react to ``exc``.
@@ -4085,6 +4091,8 @@ def _classify_batch_failure(exc: Exception) -> _BatchFailureClass:
     the input, which is what an input-shaped failure needs. It is the identical
     re-send at the same batch size that has nothing to offer.
     """
+    if isinstance(exc, _RoundCorrectionBudgetExhausted):
+        return _BatchFailureClass.DEFER
     if isinstance(exc, ProviderRateLimitResetError | LanguageIntegrityError):
         # Quota failures must preserve their retry timestamp. Strict language
         # failures fail the operation without bisection, leaving source facts
@@ -4126,6 +4134,10 @@ class _DetailLossStats:
     dedup_blocked: int = 0
 
 
+class _RoundCorrectionBudgetExhausted(CompletionAttemptLimitError):
+    """Round-scoped resource limit, not a failure of the source facts."""
+
+
 class _SchemaCorrectionBudget:
     """Round-size-scaled budget, shared by scopes, lanes and adaptive bisection.
 
@@ -4153,7 +4165,7 @@ class _SchemaCorrectionBudget:
         with self._lock:
             if self._spent >= self._limit:
                 self.stats.budget_exhausted += 1
-                raise CompletionAttemptLimitError("round schema correction budget exhausted")
+                raise _RoundCorrectionBudgetExhausted("round schema correction budget exhausted")
             self.stats.attempts += 1
             self._spent += 1
 
@@ -4161,7 +4173,7 @@ class _SchemaCorrectionBudget:
         with self._lock:
             if self._spent >= self._limit:
                 self.detail_stats.budget_exhausted += 1
-                raise CompletionAttemptLimitError("round correction budget exhausted")
+                raise _RoundCorrectionBudgetExhausted("round correction budget exhausted")
             self._spent += 1
             self.detail_stats.attempts += 1
 
@@ -4864,7 +4876,7 @@ async def _consolidate_batch_with_llm(
                 failure_class=str(failure_class), error_type=type(exc).__name__
             )
             failed_attempts += 1
-            if failure_class is _BatchFailureClass.PROPAGATE:
+            if failure_class in (_BatchFailureClass.PROPAGATE, _BatchFailureClass.DEFER):
                 logger.warning(
                     f"[CONSOLIDATION] LLM batch call for {batch_label} raised a non-retried failure "
                     f"({type(exc).__name__}); propagating to the caller for classification: {exc}"
