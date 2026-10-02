@@ -9,8 +9,9 @@ from __future__ import annotations
 import hashlib
 import json
 from datetime import datetime
+from decimal import Decimal
 from enum import Enum
-from typing import Annotated, Literal
+from typing import Annotated, Any, Literal
 from uuid import UUID
 
 from pydantic import (
@@ -24,6 +25,15 @@ from pydantic import (
     model_validator,
 )
 from pydantic.json_schema import JsonSchemaValue, SkipJsonSchema
+from pydantic_core import to_jsonable_python
+from typing_extensions import TypeAliasType
+
+# Internal PostgreSQL snapshots must not route numeric JSONB through binary
+# floats (or Pydantic's JSON mode, which turns Decimal into quoted strings).
+LosslessJsonValue = TypeAliasType(
+    "LosslessJsonValue",
+    "dict[str, LosslessJsonValue] | list[LosslessJsonValue] | str | int | float | Decimal | bool | None",
+)
 
 Hash = Annotated[str, Field(pattern=r"^[0-9a-f]{64}$")]
 BatchId = Annotated[str, Field(pattern=r"^[a-zA-Z0-9][a-zA-Z0-9_-]{0,79}$")]
@@ -77,7 +87,7 @@ class CurationFields(StrictModel):
     occurred_end: datetime | None = None
 
     @model_serializer(mode="wrap")
-    def preserve_patch_presence(self, handler: SerializerFunctionWrapHandler) -> dict[str, JsonValue]:
+    def preserve_patch_presence(self, handler: SerializerFunctionWrapHandler) -> dict[str, JsonValue | datetime]:
         # Presence is correction intent: omission leaves a field unchanged,
         # while explicit null clears it. Preserve that distinction in nested
         # manifest hashes and durable capsules, not only the HTTP request.
@@ -208,7 +218,7 @@ class TableSnapshot(StrictModel):
     # Keys come from the live catalog, not a hand-maintained schema. The schema
     # fingerprint gates reconstruction, including new columns and vector dims.
     columns: list[ColumnSnapshot]
-    rows: list[dict[str, JsonValue]]
+    rows: list[dict[str, LosslessJsonValue]]
 
 
 class ClosureScope(StrictModel):
@@ -230,7 +240,7 @@ class CurationSnapshot(StrictModel):
     history: TableSnapshot
     source_revisions: dict[str, str]
     source_bytes: int
-    dependencies: list[dict[str, JsonValue]]
+    dependencies: list[dict[str, LosslessJsonValue]]
 
 
 class PreparedCorrection(StrictModel):
@@ -260,18 +270,31 @@ class BatchCapsule(StrictModel):
     applied_receipt_revision: Hash
 
 
-def canonical_bytes(value: BaseModel | JsonValue) -> bytes:
-    if isinstance(value, BaseModel):
-        value = value.model_dump(mode="json")
-    return json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False, allow_nan=False).encode()
+def canonical_bytes(value: BaseModel | LosslessJsonValue | list[dict[str, LosslessJsonValue]]) -> bytes:
+    def encode(item: Any) -> str:
+        if isinstance(item, BaseModel):
+            return encode(item.model_dump(mode="python"))
+        if isinstance(item, Decimal):
+            if not item.is_finite():
+                raise ValueError("Nonfinite JSON number")
+            # Decimal.__str__ is exact and independent of the decimal context.
+            # Emit a JSON number, not a string, without a float conversion.
+            return str(item)
+        if isinstance(item, dict):
+            return "{" + ",".join(encode(key) + ":" + encode(item[key]) for key in sorted(item)) + "}"
+        if isinstance(item, list):
+            return "[" + ",".join(encode(element) for element in item) + "]"
+        return json.dumps(to_jsonable_python(item), ensure_ascii=False, allow_nan=False)
+
+    return encode(value).encode()
 
 
-def revision(value: BaseModel | JsonValue) -> str:
+def revision(value: BaseModel | LosslessJsonValue) -> str:
     return hashlib.sha256(canonical_bytes(value)).hexdigest()
 
 
 def snapshot_revision(snapshot: CurationSnapshot) -> str:
-    value = snapshot.model_dump(mode="json")
+    value = snapshot.model_dump(mode="python")
     # Shared identities may gain unrelated references while a batch is applied.
     # Undo owns only its posting delta, never these other writers' counters.
     for entity in value["entities"]["rows"]:

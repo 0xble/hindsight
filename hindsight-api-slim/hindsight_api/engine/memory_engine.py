@@ -12384,11 +12384,12 @@ class MemoryEngine(MemoryEngineInterface):
     async def apply_curation_batch(
         self, bank_id: str, batch_id: str, request: CurationApplyRequest, *, request_context: "RequestContext"
     ) -> CurationReceipt:
-        from pydantic import JsonValue, TypeAdapter
+        from pydantic import TypeAdapter
 
         from .curation_batch import (
             CurationBatchConflict,
             CurationFactType,
+            LosslessJsonValue,
             PreparedCorrection,
             revision,
             snapshot_revision,
@@ -12434,7 +12435,7 @@ class MemoryEngine(MemoryEngineInterface):
             row = rows[str(change.memory_id)]
             present = fields.model_fields_set
 
-            def snapshot_date(value: JsonValue) -> datetime | None:
+            def snapshot_date(value: LosslessJsonValue) -> datetime | None:
                 if value is None:
                     return None
                 if not isinstance(value, str):
