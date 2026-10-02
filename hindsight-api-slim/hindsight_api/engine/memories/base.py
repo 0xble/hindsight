@@ -2068,7 +2068,7 @@ class MemoriesExtension(Extension, ABC):
 
         raise CurationBatchConflict("raw-curation-v2 requires the PostgreSQL memories store")
 
-    async def curation_v2_lock(self, *, conn: DatabaseConnection, bank_id: str) -> None:
+    async def curation_v2_lock(self, *, conn: DatabaseConnection, bank_id: str, check_pause: bool = True) -> None:
         from ..curation_batch import CurationBatchConflict
 
         raise CurationBatchConflict("raw-curation-v2 requires the PostgreSQL memories store")

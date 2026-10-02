@@ -147,6 +147,14 @@ async def seeded(memory):
             peer,
             entities[0],
         )
+        # Ordinary graph links do not belong to an entity; curation closure lock
+        # discovery must not turn this nullable endpoint into the string "None".
+        await conn.execute(
+            "INSERT INTO memory_links(bank_id,from_unit_id,to_unit_id,entity_id,link_type,weight) VALUES($1,$2,$3,NULL,'semantic',0.8)",
+            bank,
+            raw_id,
+            peer,
+        )
         history = []
         for index in range(2):
             history.append(
@@ -514,6 +522,34 @@ async def test_active_capsule_blocks_bank_delete_and_identity_delete(memory, see
         with pytest.raises(asyncpg.RestrictViolationError):
             await conn.execute("DELETE FROM entities WHERE id=$1", seeded.entities[0])
     await revert(memory, seeded, receipt)
+
+
+async def test_curation_bank_lock_serializes_delete_without_blocking_profile_updates(memory, seeded):
+    """The bank advisory lock blocks delete but not ordinary bank updates."""
+    async with memory._pool.acquire() as conn:
+        async with conn.transaction():
+            await store.lock(conn, seeded.bank)
+            await conn.execute("UPDATE banks SET updated_at=updated_at WHERE bank_id=$1", seeded.bank)
+            with pytest.raises(CurationBatchConflict, match="busy"):
+                await memory.delete_bank(seeded.bank, request_context=CTX)
+
+
+async def test_apply_replay_is_idempotent_after_consolidation_resumes(memory, seeded):
+    request = manifest(await preview(memory, seeded))
+    receipt = await apply(memory, seeded, request)
+    await memory.update_bank_config(seeded.bank, {"enable_auto_consolidation": True}, request_context=CTX)
+    replay = await apply(memory, seeded, request, batch="fixture")
+    assert replay == receipt
+
+
+async def test_revert_replay_is_idempotent_after_consolidation_resumes(memory, seeded):
+    receipt = await apply(memory, seeded, manifest(await preview(memory, seeded)))
+    request = CurationRevertRequest(protocol="raw-curation-v2", expected_receipt_revision=receipt.receipt_revision)
+    reverted = await memory.revert_curation_batch(seeded.bank, "fixture", request, request_context=CTX)
+    assert reverted is not None and reverted.status == "reverted"
+    await memory.update_bank_config(seeded.bank, {"enable_auto_consolidation": True}, request_context=CTX)
+    replay = await memory.revert_curation_batch(seeded.bank, "fixture", request, request_context=CTX)
+    assert replay == reverted
 
 
 @pytest.mark.parametrize(

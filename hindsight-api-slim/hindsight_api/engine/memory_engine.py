@@ -11650,6 +11650,15 @@ class MemoryEngine(MemoryEngineInterface):
             await conn.execute("SET SESSION CHARACTERISTICS AS TRANSACTION READ WRITE")
             async with conn.transaction():
                 try:
+                    # Serialize bank deletion with curation before checking capsules.
+                    # The advisory lock is bank-scoped and fail-fast, so ordinary
+                    # bank profile/config updates are not blocked by curation while
+                    # delete cannot race a capsule insert between its check and
+                    # cascade.
+                    if self._database_backend_type == "postgresql":
+                        from .memories import get_memories as _curation_store
+
+                        await _curation_store().curation_v2_lock(conn=conn, bank_id=bank_id, check_pause=False)
                     # Match delete_document's bank-before-data order. Otherwise a
                     # bank delete could hold its documents while waiting for the
                     # bank row held by a concurrent document delete.
@@ -12487,12 +12496,13 @@ class MemoryEngine(MemoryEngineInterface):
         backend = await self._get_backend()
         async with acquire_with_retry(backend) as conn:
             async with conn.transaction():
-                await store.curation_v2_lock(conn=conn, bank_id=bank_id)
+                await store.curation_v2_lock(conn=conn, bank_id=bank_id, check_pause=False)
                 existing = await store.curation_v2_get(conn=conn, bank_id=bank_id, batch_id=batch_id)
                 if existing:
                     if existing.receipt.manifest_revision != revision(request):
                         raise CurationBatchConflict("Batch ID already belongs to a different manifest")
                     return existing.receipt
+                await store.curation_v2_lock(conn=conn, bank_id=bank_id)
                 before = await store.curation_v2_preview(
                     conn=conn, bank_id=bank_id, target_ids=[c.memory_id for c in request.changes]
                 )
@@ -12561,12 +12571,13 @@ class MemoryEngine(MemoryEngineInterface):
             )
         async with acquire_with_retry(backend) as conn:
             async with conn.transaction():
-                await store.curation_v2_lock(conn=conn, bank_id=bank_id)
+                await store.curation_v2_lock(conn=conn, bank_id=bank_id, check_pause=False)
                 existing = await store.curation_v2_get(conn=conn, bank_id=bank_id, batch_id=batch_id)
                 if existing:
                     if existing.receipt.manifest_revision != revision(request):
                         raise CurationBatchConflict("Batch ID already belongs to a different manifest")
                     return existing.receipt
+                await store.curation_v2_lock(conn=conn, bank_id=bank_id)
                 current = await store.curation_v2_capture(conn=conn, bank_id=bank_id, scope=before.scope)
                 if snapshot_revision(current) != snapshot_revision(before):
                     raise CurationBatchConflict("Closure changed during preparation")
@@ -12606,10 +12617,12 @@ class MemoryEngine(MemoryEngineInterface):
         try:
             async with acquire_with_retry(backend) as conn:
                 async with conn.transaction():
-                    await store.curation_v2_lock(conn=conn, bank_id=bank_id)
+                    await store.curation_v2_lock(conn=conn, bank_id=bank_id, check_pause=False)
                     capsule = await store.curation_v2_get(conn=conn, bank_id=bank_id, batch_id=batch_id)
                     if capsule is None:
                         return None
+                    if capsule.receipt.status != "reverted":
+                        await store.curation_v2_lock(conn=conn, bank_id=bank_id)
                     await self._validate_curation_batch_revert(bank_id, capsule, request_context)
                     result = await store.curation_v2_revert(
                         conn=conn,

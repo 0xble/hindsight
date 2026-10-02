@@ -62,8 +62,8 @@ _TABLES = (
 )
 
 
-def _ids(values: Iterable[str | UUID]) -> list[str]:
-    return sorted({str(v) for v in values})
+def _ids(values: Iterable[str | UUID | None]) -> list[str]:
+    return sorted({str(v) for v in values if v is not None})
 
 
 async def lock(conn: DatabaseConnection, bank_id: str) -> None:
@@ -154,6 +154,7 @@ async def lock_closure(conn: DatabaseConnection, bank_id: str, scope: ClosureSco
             f"SELECT entity_id FROM {fq_table('unit_entities')} WHERE unit_id=ANY($1::uuid[]) "
             "UNION "
             f"SELECT entity_id FROM {fq_table('memory_links')} WHERE bank_id=$2 "
+            "AND entity_id IS NOT NULL "
             "AND (from_unit_id=ANY($1::uuid[]) OR to_unit_id=ANY($1::uuid[])) "
             "UNION "
             f"SELECT entity_id_1 FROM {fq_table('entity_cooccurrences')} "

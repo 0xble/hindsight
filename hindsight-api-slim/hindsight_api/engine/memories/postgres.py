@@ -621,11 +621,12 @@ class PostgresMemories(MemoriesExtension):
 
         return await curation_batch.get_capsule(conn, bank_id, batch_id)
 
-    async def curation_v2_lock(self, *, conn: DatabaseConnection, bank_id: str) -> None:
+    async def curation_v2_lock(self, *, conn: DatabaseConnection, bank_id: str, check_pause: bool = True) -> None:
         from .pg import curation_batch
 
         await curation_batch.lock(conn, bank_id)
-        await curation_batch.assert_paused(conn, bank_id)
+        if check_pause:
+            await curation_batch.assert_paused(conn, bank_id)
 
     async def curation_v2_apply(
         self,
