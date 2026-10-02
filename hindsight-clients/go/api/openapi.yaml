@@ -490,6 +490,8 @@ paths:
               schema:
                 $ref: '#/components/schemas/CurationPreview'
           description: Successful Response
+        "409":
+          description: The curation batch conflicts with the current bank state.
         "422":
           content:
             application/json:
@@ -535,6 +537,10 @@ paths:
               schema:
                 $ref: '#/components/schemas/CurationReceipt'
           description: Successful Response
+        "404":
+          description: The curation batch does not exist.
+        "409":
+          description: The curation batch conflicts with the current bank state.
         "422":
           content:
             application/json:
@@ -585,6 +591,8 @@ paths:
               schema:
                 $ref: '#/components/schemas/CurationReceipt'
           description: Successful Response
+        "409":
+          description: The curation batch conflicts with the current bank state.
         "422":
           content:
             application/json:
@@ -636,6 +644,10 @@ paths:
               schema:
                 $ref: '#/components/schemas/CurationReceipt'
           description: Successful Response
+        "404":
+          description: The curation batch does not exist.
+        "409":
+          description: The curation batch conflicts with the current bank state.
         "422":
           content:
             application/json:

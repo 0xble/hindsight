@@ -126,6 +126,7 @@ class MemoryApi:
 
         _response_types_map: Dict[str, Optional[str]] = {
             '200': "CurationReceipt",
+            '409': None,
             '422': "HTTPValidationError",
         }
         response_data = await self.api_client.call_api(
@@ -205,6 +206,7 @@ class MemoryApi:
 
         _response_types_map: Dict[str, Optional[str]] = {
             '200': "CurationReceipt",
+            '409': None,
             '422': "HTTPValidationError",
         }
         response_data = await self.api_client.call_api(
@@ -284,6 +286,7 @@ class MemoryApi:
 
         _response_types_map: Dict[str, Optional[str]] = {
             '200': "CurationReceipt",
+            '409': None,
             '422': "HTTPValidationError",
         }
         response_data = await self.api_client.call_api(
@@ -1628,6 +1631,8 @@ class MemoryApi:
 
         _response_types_map: Dict[str, Optional[str]] = {
             '200': "CurationReceipt",
+            '404': None,
+            '409': None,
             '422': "HTTPValidationError",
         }
         response_data = await self.api_client.call_api(
@@ -1703,6 +1708,8 @@ class MemoryApi:
 
         _response_types_map: Dict[str, Optional[str]] = {
             '200': "CurationReceipt",
+            '404': None,
+            '409': None,
             '422': "HTTPValidationError",
         }
         response_data = await self.api_client.call_api(
@@ -1778,6 +1785,8 @@ class MemoryApi:
 
         _response_types_map: Dict[str, Optional[str]] = {
             '200': "CurationReceipt",
+            '404': None,
+            '409': None,
             '422': "HTTPValidationError",
         }
         response_data = await self.api_client.call_api(
@@ -4381,6 +4390,7 @@ class MemoryApi:
 
         _response_types_map: Dict[str, Optional[str]] = {
             '200': "CurationPreview",
+            '409': None,
             '422': "HTTPValidationError",
         }
         response_data = await self.api_client.call_api(
@@ -4456,6 +4466,7 @@ class MemoryApi:
 
         _response_types_map: Dict[str, Optional[str]] = {
             '200': "CurationPreview",
+            '409': None,
             '422': "HTTPValidationError",
         }
         response_data = await self.api_client.call_api(
@@ -4531,6 +4542,7 @@ class MemoryApi:
 
         _response_types_map: Dict[str, Optional[str]] = {
             '200': "CurationPreview",
+            '409': None,
             '422': "HTTPValidationError",
         }
         response_data = await self.api_client.call_api(
@@ -5606,6 +5618,8 @@ class MemoryApi:
 
         _response_types_map: Dict[str, Optional[str]] = {
             '200': "CurationReceipt",
+            '404': None,
+            '409': None,
             '422': "HTTPValidationError",
         }
         response_data = await self.api_client.call_api(
@@ -5685,6 +5699,8 @@ class MemoryApi:
 
         _response_types_map: Dict[str, Optional[str]] = {
             '200': "CurationReceipt",
+            '404': None,
+            '409': None,
             '422': "HTTPValidationError",
         }
         response_data = await self.api_client.call_api(
@@ -5764,6 +5780,8 @@ class MemoryApi:
 
         _response_types_map: Dict[str, Optional[str]] = {
             '200': "CurationReceipt",
+            '404': None,
+            '409': None,
             '422': "HTTPValidationError",
         }
         response_data = await self.api_client.call_api(

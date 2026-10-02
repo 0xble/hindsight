@@ -753,6 +753,9 @@
               }
             }
           },
+          "409": {
+            "description": "The curation batch conflicts with the current bank state."
+          },
           "422": {
             "description": "Validation Error",
             "content": {
@@ -831,6 +834,9 @@
               }
             }
           },
+          "409": {
+            "description": "The curation batch conflicts with the current bank state."
+          },
           "422": {
             "description": "Validation Error",
             "content": {
@@ -896,6 +902,12 @@
                 }
               }
             }
+          },
+          "404": {
+            "description": "The curation batch does not exist."
+          },
+          "409": {
+            "description": "The curation batch conflicts with the current bank state."
           },
           "422": {
             "description": "Validation Error",
@@ -974,6 +986,12 @@
                 }
               }
             }
+          },
+          "404": {
+            "description": "The curation batch does not exist."
+          },
+          "409": {
+            "description": "The curation batch conflicts with the current bank state."
           },
           "422": {
             "description": "Validation Error",

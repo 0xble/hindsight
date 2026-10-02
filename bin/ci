@@ -133,7 +133,6 @@ PATCH_REGRESSIONS=(
   tests/test_consolidation_fold_fallback.py
   tests/test_openrouter_null_content.py
   tests/test_llm_trace.py
-  tests/test_hierarchical_config.py
   tests/test_metrics.py
   tests/test_batch_api.py
   tests/test_migration_shape.py

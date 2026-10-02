@@ -7822,6 +7822,10 @@ export type PreviewCurationBatchData = {
 
 export type PreviewCurationBatchErrors = {
   /**
+   * The curation batch conflicts with the current bank state.
+   */
+  409: unknown;
+  /**
    * Validation Error
    */
   422: HttpValidationError;
@@ -7864,6 +7868,14 @@ export type GetCurationBatchData = {
 
 export type GetCurationBatchErrors = {
   /**
+   * The curation batch does not exist.
+   */
+  404: unknown;
+  /**
+   * The curation batch conflicts with the current bank state.
+   */
+  409: unknown;
+  /**
    * Validation Error
    */
   422: HttpValidationError;
@@ -7903,6 +7915,10 @@ export type ApplyCurationBatchData = {
 };
 
 export type ApplyCurationBatchErrors = {
+  /**
+   * The curation batch conflicts with the current bank state.
+   */
+  409: unknown;
   /**
    * Validation Error
    */
@@ -7944,6 +7960,14 @@ export type RevertCurationBatchData = {
 };
 
 export type RevertCurationBatchErrors = {
+  /**
+   * The curation batch does not exist.
+   */
+  404: unknown;
+  /**
+   * The curation batch conflicts with the current bank state.
+   */
+  409: unknown;
   /**
    * Validation Error
    */

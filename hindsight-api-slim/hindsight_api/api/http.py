@@ -344,6 +344,13 @@ _CLIENT_CLOSED_REQUEST_STATUS_CODE = 499
 # does not exist" apart from "this bank is empty" (#4175). Without it the spec
 # advertises only 200/422 and a consumer has no documented missing-bank case.
 _BANK_NOT_FOUND_RESPONSES: dict[int | str, dict[str, Any]] = {404: {"description": "The bank does not exist."}}
+_CURATION_CONFLICT_RESPONSES: dict[int | str, dict[str, Any]] = {
+    409: {"description": "The curation batch conflicts with the current bank state."}
+}
+_CURATION_NOT_FOUND_RESPONSES: dict[int | str, dict[str, Any]] = {
+    404: {"description": "The curation batch does not exist."},
+    409: {"description": "The curation batch conflicts with the current bank state."},
+}
 
 
 _T = TypeVar("_T")
@@ -5912,6 +5919,7 @@ def _register_routes(app: FastAPI):
         operation_id="preview_curation_batch",
         tags=["Memory"],
         summary="Preview a bounded raw-curation-v2 dependency closure",
+        responses=_CURATION_CONFLICT_RESPONSES,
     )
     async def api_preview_curation_batch(
         bank_id: str, request: CurationPreviewRequest, request_context: RequestContext = Depends(get_request_context)
@@ -5929,6 +5937,7 @@ def _register_routes(app: FastAPI):
         operation_id="apply_curation_batch",
         tags=["Memory"],
         summary="Atomically apply a bounded raw-curation-v2 manifest",
+        responses=_CURATION_CONFLICT_RESPONSES,
     )
     @audited("apply_curation_batch")
     async def api_apply_curation_batch(
@@ -5952,6 +5961,7 @@ def _register_routes(app: FastAPI):
         operation_id="get_curation_batch",
         tags=["Memory"],
         summary="Read a durable raw-curation-v2 receipt after a lost acknowledgement",
+        responses=_CURATION_NOT_FOUND_RESPONSES,
     )
     async def api_get_curation_batch(
         bank_id: str, batch_id: BatchId, request_context: RequestContext = Depends(get_request_context)
@@ -5972,6 +5982,7 @@ def _register_routes(app: FastAPI):
         operation_id="revert_curation_batch",
         tags=["Memory"],
         summary="Conditionally restore a raw-curation-v2 capsule without overwriting later work",
+        responses=_CURATION_NOT_FOUND_RESPONSES,
     )
     @audited("revert_curation_batch")
     async def api_revert_curation_batch(

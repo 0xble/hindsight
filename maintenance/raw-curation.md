@@ -2,7 +2,7 @@
 
 Part of the root [maintenance contract](../MAINTENANCE.md).
 
-## HINDSIGHT-008: Source-Bound Curation Preconditions
+## HINDSIGHT-010: Source-Bound Curation Preconditions
 
 - **Status:** Active in this source candidate, runtime adoption is separate.
 - **Surfaces:** optional `curation_guard` on the existing memory PATCH, the
