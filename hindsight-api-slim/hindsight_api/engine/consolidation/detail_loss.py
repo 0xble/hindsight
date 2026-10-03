@@ -14,6 +14,7 @@ from collections import Counter
 from collections.abc import Iterator
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+from itertools import chain
 
 _MONTHS: list[str] = "january february march april may june july august september october november december".split()
 _MONTH_DATE = re.compile(r"\b(" + "|".join(_MONTHS) + r")\s+(\d{1,2}),?\s+(\d{4})\b", re.I)
@@ -122,23 +123,36 @@ _OPAQUE = re.compile(
 # Explicit case-sensitive contexts and literals do not need that shape signal.
 # Known limits: lowercase "key is prod" can change case unnoticed, and an
 # ordinary capitalized apposition ("API key Rotation policy") can falsely veto.
-# Generic UUID extraction can split a retained value when its key noun disappears,
-# so a full UUID captured by apposition may also falsely veto that restatement.
+# Predicate-first values and noun appositions keep the noun's slot identity, not
+# the value as subject. UPDATE's raw-token waiver requires the key noun to be
+# absent; unfamiliar noun-bearing bindings fail closed. Recognized inverse slots
+# allow at most eight qualifiers of forty characters each, not arbitrary prose.
 _IDENTIFIER_SHAPE = re.compile(r"[A-Z0-9_]|[A-Za-z0-9][.-][A-Za-z0-9]")
+_IDENTIFIER_NOUN = r"(?:key|token|identifier|id|secret name|env var|flag)"
+_IDENTIFIER_NOUN_PATTERN = re.compile(r"\b" + _IDENTIFIER_NOUN + r"\b", re.I)
 _IDENTIFIER_CONTEXT = (
-    r"(?:\bcase-sensitive(?:\s+(?:API\s+)?(?:key|token|identifier|id|secret name|env var|flag))?"
+    r"(?:\bcase-sensitive(?:\s+(?:API\s+)?" + _IDENTIFIER_NOUN + r")?"
     r"(?:\s*[:=]\s*|\s+(?:is|are|was|were|equals|set to)\s+|\s+)"
-    r"|(?P<shape>\b(?:key|token|identifier|id|secret name|env var|flag)"
-    r"(?:\s*[:=]\s*|\s+(?:is|are|was|were|equals|set to)\s+|\s+)))"
+    r"|(?P<shape>\b"
+    + _IDENTIFIER_NOUN
+    + r"(?:\s*[:=]\s*|\s+(?:is|are|was|were|equals|set to|has value|have value)\s+|\s+)))"
 )
 # Lookahead keeps a descriptive context from consuming the next explicit key:
 # "case-sensitive identifier is PROD" still discovers "identifier is PROD".
 _EXPLICIT_IDENTIFIER = re.compile(r"(?=" + _IDENTIFIER_CONTEXT + r"(?P<value>[A-Za-z0-9_][\w.-]{0,159})\b)", re.I)
+# Whitespace boundaries exclude URL/path/email/call components. Bound both the
+# token and qualifier grammar: an unbounded suffix would retry on dense input.
+_PREDICATE_FIRST_IDENTIFIER = re.compile(
+    r"(?<!\S)(?P<shape>(?P<value>[A-Za-z0-9_][\w.-]{0,159}))"
+    r"(?:\s+(?:is|are|was|were|equals)\s+|,\s+)(?:the|a|an)\s+"
+    r"(?P<slot>(?:[a-z][\w-]{0,39}\s+){0,8}?" + _IDENTIFIER_NOUN + r")\b",
+    re.I,
+)
 
 
 def _explicit_identifiers(text: str) -> Iterator[re.Match[str]]:
     seen: set[tuple[int, int]] = set()
-    for match in _EXPLICIT_IDENTIFIER.finditer(text):
+    for match in chain(_EXPLICIT_IDENTIFIER.finditer(text), _PREDICATE_FIRST_IDENTIFIER.finditer(text)):
         if match["shape"] and not _IDENTIFIER_SHAPE.search(match["value"]):
             continue
         tail = text[match.end("value") : match.end("value") + 20]
@@ -504,10 +518,19 @@ def _clause_boundaries(text: str) -> list[int]:
     ordinary coordinated-slot separation and numeric 'between X and Y' ranges.
     """
     boundaries: list[int] = []
+    # The comma in "Abcd, the primary API key" joins value and slot. Splitting
+    # there would erase its context and falsely veto a lossless apposition.
+    apposition_commas = {
+        match.end("value")
+        for match in _PREDICATE_FIRST_IDENTIFIER.finditer(text)
+        if text[match.end("value")] == "," and _IDENTIFIER_SHAPE.search(match["value"])
+    }
     start = 0
     between = False
     header_end = -1
     for match in re.finditer(r"\n|[.;!?](?=\s|$)|(?<!\d),|,(?!\d{3}(?!\d))|\b(?:between|and)\b", text):
+        if match.start() in apposition_commas:
+            continue
         if match[0] in {"between", "and"}:
             if header_end < start:
                 prefix = _LIST_PREFIX.sub("", text[start : start + 120].lstrip(), count=1)
@@ -681,6 +704,13 @@ def _prepare(texts: list[str], budget: _Budget) -> dict[str, _TextIndex]:
                 if subject and subject[1].casefold() not in _STOP | {"there"}:
                     clause.label = _canonical_label(subject[1])
                     clause.label_end = main.find(clause_text, start, end) + subject.end(1)
+                predicate_first = _PREDICATE_FIRST_IDENTIFIER.match(clause_text)
+                if predicate_first and _IDENTIFIER_SHAPE.search(predicate_first["value"]):
+                    # "Abcd is the primary API key" binds Abcd to primary, not
+                    # to a subject named Abcd. The value precedes the slot label,
+                    # so it must not be marked as an occurrence inside that label.
+                    clause.label = _canonical_label(predicate_first["slot"])
+                    clause.label_end = 0
             clause.credit_identity = _credit_identity(clause_text, consumed=False)
             clause.available = bool(clause.credit_identity)
             if not clause.available:
@@ -938,6 +968,23 @@ def _superseded(
     return 0
 
 
+def _standalone_tokens(text: str, budget: _Budget) -> Counter[str]:
+    """Count exact whitespace-delimited tokens, not components of opaque values."""
+    budget.spend(len(text))
+    counts: Counter[str] = Counter()
+    for token in text.split():
+        # Strip only one sentence punctuation mark at a whitespace/end boundary.
+        # Internal punctuation, parentheses, suffixes and combining marks remain
+        # part of the token, so no substring can masquerade as a retained value.
+        if token[-1] in ".,;:!?":
+            token = token[:-1]
+        if token and token[0] in "\"'`“‘":
+            token = token[1:]
+        if token:
+            counts[token] += 1
+    return counts
+
+
 def dropped_supported_anchors(before: str, after: str, existing: list[Evidence], cited: list[Evidence]) -> list[Anchor]:
     """Return missing supported anchors; an exhausted work budget also vetoes an UPDATE.
 
@@ -1000,7 +1047,27 @@ def dropped_supported_anchors(before: str, after: str, existing: list[Evidence],
                 and _superseded(anchor, missing, old, new, unmatched, supporters, cited_indexes, budget) < missing
             ):
                 dropped.append(anchor)
-        return dropped
+        # Raw retention is a waiver only when the key noun genuinely disappears.
+        # Recognized predicate-first/apposition bindings use occurrence-level slot
+        # matching above; unfamiliar noun-bearing output fails closed instead of
+        # erasing a role swap on global token counts. Charge two shared token
+        # passes, never a separate output scan per identifier.
+        if not any(anchor.kind == "identifier" for anchor in dropped):
+            return dropped
+        budget.spend(len(before) + len(after))
+        if _IDENTIFIER_NOUN_PATTERN.search(after) or next(_explicit_identifiers(after), None) is not None:
+            return dropped
+        explicit_values = {match["value"] for match in _explicit_identifiers(before)}
+        before_tokens = _standalone_tokens(before, budget)
+        after_tokens = _standalone_tokens(after, budget)
+        return [
+            anchor
+            for anchor in dropped
+            if anchor.kind != "identifier"
+            or anchor.value not in explicit_values
+            or not before_tokens[anchor.value]
+            or after_tokens[anchor.value] < before_tokens[anchor.value]
+        ]
     except _WorkLimit:
         return [_LIMIT_ANCHOR]
 

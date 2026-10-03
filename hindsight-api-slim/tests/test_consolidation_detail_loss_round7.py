@@ -125,6 +125,62 @@ async def test_a2_identifier_apposition_and_predicate_restatements(provider, con
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("cited", [None, ADDITIVE], ids=["same-text-evidence", "unrelated-additive-evidence"])
+@pytest.mark.parametrize(
+    "before,after",
+    [
+        ("The API key Abcd is active.", "Abcd is the active API key."),
+        ("The API key PROD is active.", "PROD is the active API key."),
+        ("The key Face is active.", "Face is the active key."),
+        ("The API key Abcd is active.", "The active API key has value Abcd."),
+    ],
+)
+async def test_explicit_identifier_retained_whole_token_anywhere(provider, config, before, after, cited):
+    await assert_batch_action(
+        provider, config, before, after, "update", before if cited is None else cited, correction=True
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("cited", [None, ADDITIVE], ids=["same-text-evidence", "unrelated-additive-evidence"])
+@pytest.mark.parametrize(
+    "value,output",
+    [
+        ("Abcd", "abcd"),
+        ("PROD", "prod"),
+        ("Abcd", "Abcde"),
+        ("Abcd", "xAbcd"),
+        ("Abcd", "Abcd_x"),
+        ("Abcd", "x_Abcd"),
+        ("Abcd", "Abcd.x"),
+        ("Abcd", "x.Abcd"),
+        ("Abcd", "Abcd-x"),
+        ("Abcd", "x-Abcd"),
+    ],
+)
+async def test_explicit_identifier_case_and_longer_tokens_still_veto(provider, config, value, output, cited):
+    before = f"The API key {value} is active."
+    await assert_batch_action(
+        provider,
+        config,
+        before,
+        f"{output} is the active API key.",
+        "fallback",
+        before if cited is None else cited,
+        correction=True,
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("cited", [None, ADDITIVE], ids=["same-text-evidence", "unrelated-additive-evidence"])
+async def test_generic_identifier_repeated_occurrence_still_veto(provider, config, cited):
+    before = "Alpha uses abc1234 and beta uses abc1234."
+    await assert_batch_action(
+        provider, config, before, "Alpha uses abc1234.", "fallback", before if cited is None else cited, correction=True
+    )
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("predicate", ["is", "are", "was", "were", "equals", "set to", ":", "="])
 @pytest.mark.parametrize("state", ["revoked", "active", "expired", "valid", "rotated"])
 async def test_a2_lowercase_binding_complement_is_not_an_identifier(provider, config, predicate, state):
@@ -337,7 +393,18 @@ async def test_b3_replacement_label_ignores_article_and_quote_delimiters(provide
 
 @pytest.mark.parametrize(
     "dense",
-    ["(500 USD) ", "key PROD ", "(500) balance; ", "(111111111111111111111111 ", "word ", " ", "111,", "USD111,"],
+    [
+        "(500 USD) ",
+        "key PROD ",
+        "Abcd is the primary API key ",
+        "Abcd, the primary API key, ",
+        "(500) balance; ",
+        "(111111111111111111111111 ",
+        "word ",
+        " ",
+        "111,",
+        "USD111,",
+    ],
 )
 def test_new_regexes_are_cpu_bounded_on_256k_dense_input(dense):
     from time import process_time
@@ -354,6 +421,8 @@ def test_new_regexes_are_cpu_bounded_on_256k_dense_input(dense):
         "_ACCOUNTING_NUMBER",
         "_ACCOUNTING_CONTEXT",
         "_EXPLICIT_IDENTIFIER",
+        "_PREDICATE_FIRST_IDENTIFIER",
+        "_IDENTIFIER_NOUN_PATTERN",
         "_SUBJECT",
         "_HEADER",
         "_OPAQUE",
@@ -391,6 +460,167 @@ def test_accounting_preprocessing_is_cpu_bounded_on_256k_aggregate_input():
         times.append(process_time() - start)
     print(f"ACCOUNTING_256K_AGGREGATE_CPU_SECONDS={times}")
     assert max(times) < 1.0
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("cited", [None, ADDITIVE], ids=["same-text-evidence", "unrelated-additive-evidence"])
+@pytest.mark.parametrize(
+    "before,after",
+    [
+        pytest.param(
+            "The primary API key is Abcd. The backup API key is Abcd.",
+            "The primary API key is Abcd.",
+            id="multiplicity-drop",
+        ),
+        pytest.param(
+            "The API key Abcd is active and the backup key Wxyz is revoked.",
+            "The API key Wxyz is active; Abcd was rotated out.",
+            id="role-swap",
+        ),
+        pytest.param(
+            "The primary API key is Abcd. The backup API key is Wxyz.",
+            "Wxyz is the primary API key. Abcd is the backup API key.",
+            id="predicate-first-role-swap",
+        ),
+        pytest.param(
+            "The primary API key is Abcd. The backup API key is Abcd.",
+            "Abcd is the primary API key. Abcd is the primary API key.",
+            id="predicate-first-duplicated-slot",
+        ),
+        pytest.param(
+            "The primary API key is Abcd. The backup API key is Wxyz.",
+            "Abcd is the primary API key. Wxyz is the primary API key.",
+            id="predicate-first-distinct-values-one-slot",
+        ),
+        pytest.param(
+            "The primary API key is Abcd. The backup API key is Wxyz.",
+            "The primary API key has value Wxyz. The backup API key has value Abcd.",
+            id="has-value-role-swap",
+        ),
+        pytest.param(
+            "The primary API key is Abcd. The backup API key is Wxyz.",
+            "Wxyz, the primary API key, is used. Abcd, the backup API key, is used.",
+            id="apposition-role-swap",
+        ),
+        pytest.param(
+            "The primary API key is Abcd. The backup API key is Wxyz.",
+            "The backup API key uses Abcd. The primary API key uses Wxyz.",
+            id="unrecognized-noun-binding-no-waiver",
+        ),
+        *[
+            pytest.param(
+                "The API key Abcd is active.",
+                f"The API key Wxyz is active; {tail}",
+                id=name,
+            )
+            for name, tail in [
+                ("url-only", "the archive URL is https://example.invalid/Abcd."),
+                ("path-only", "the archive path is /srv/Abcd/config."),
+                ("email-only", "contact Abcd@example.invalid."),
+                ("call-only", "`cache(Abcd)` returns true."),
+            ]
+        ],
+        *[
+            pytest.param("The API key Abcd is active.", f"{value} is the active API key.", id=name)
+            for name, value in [
+                ("combining-mark", "Abcd\u0301"),
+                ("substring", "Abcde"),
+                ("prefix", "xAbcd"),
+                ("underscore", "Abcd_2"),
+                ("hyphen", "Abcd-v2"),
+                ("dot", "Abcd.v2"),
+                ("case-change", "abcd"),
+                ("reorder-url-only", "https://example.invalid/Abcd"),
+                ("reorder-path-only", "/srv/Abcd/config"),
+                ("reorder-email-only", "Abcd@example.invalid"),
+                ("reorder-call-only", "cache(Abcd)"),
+            ]
+        ],
+        pytest.param(
+            "The primary API key is Abcd. The backup API key is Abcd.",
+            "Abcd is the active API key.",
+            id="reorder-multiplicity-drop",
+        ),
+    ],
+)
+async def test_pure_reorder_waiver_preserves_identifier_occurrences_and_boundaries(
+    provider, config, before, after, cited
+):
+    await assert_batch_action(
+        provider, config, before, after, "fallback", before if cited is None else cited, correction=True
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("cited", [None, ADDITIVE], ids=["same-text-evidence", "unrelated-additive-evidence"])
+@pytest.mark.parametrize(
+    "value,after",
+    [
+        ("Abcd", "Abcd is the active API key."),
+        ("PROD", "PROD is the active API key."),
+        ("Face", "Face is the active API key."),
+        ("Abcd", "The active API key has value Abcd."),
+        ("Abcd", "Abcd, the active API key, is used."),
+        ("Abcd", "Abcd remains active."),
+    ],
+)
+async def test_pure_reorder_waiver_accepts_exact_standalone_values(provider, config, value, after, cited):
+    before = f"The API key {value} is active."
+    await assert_batch_action(
+        provider, config, before, after, "update", before if cited is None else cited, correction=True
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("cited", [None, ADDITIVE], ids=["same-text-evidence", "unrelated-additive-evidence"])
+@pytest.mark.parametrize(
+    "before,after",
+    [
+        (
+            "The primary API key is Abcd. The backup API key is Wxyz.",
+            "Wxyz is the backup API key. Abcd is the primary API key.",
+        ),
+        (
+            "The primary API key is Abcd. The backup API key is Abcd.",
+            "Abcd is the backup API key. Abcd is the primary API key.",
+        ),
+        (
+            "The primary API key is Abcd. The backup API key is Wxyz.",
+            "The backup API key has value Wxyz. The primary API key has value Abcd.",
+        ),
+        (
+            "The primary API key is Abcd. The backup API key is Wxyz.",
+            "Wxyz, the backup API key, is used. Abcd, the primary API key, is used.",
+        ),
+    ],
+)
+async def test_reordered_identifiers_preserve_each_slot(provider, config, before, after, cited):
+    await assert_batch_action(
+        provider, config, before, after, "update", before if cited is None else cited, correction=True
+    )
+
+
+def test_identifier_retention_filter_is_cpu_bounded_on_256k_aggregate_input():
+    from time import process_time
+
+    from hindsight_api.engine.consolidation import detail_loss as d
+
+    before = " ".join(f"The API key is Abcd{i:04d}." for i in range(1000))
+    n = 262144 - 2 * len(before) - len(ADDITIVE)
+    after = ("plain " * (n // 6 + 1))[: n - 1] + "."
+    assert 2 * len(before) + len(after) + len(ADDITIVE) == 262144
+    start = process_time()
+    drops = d.dropped_supported_anchors(
+        before,
+        after,
+        [d.Evidence(before, "2026-09-29T10:00:00Z")],
+        [d.Evidence(ADDITIVE, "2026-09-30T10:00:00Z")],
+    )
+    cpu = process_time() - start
+    print(f"IDENTIFIER_RETENTION_FILTER_256K_CPU_SECONDS={cpu:.6f}")
+    assert len(drops) == 1000
+    assert all(anchor.kind == "identifier" for anchor in drops)
+    assert cpu < 1.0
 
 
 @pytest.mark.asyncio
