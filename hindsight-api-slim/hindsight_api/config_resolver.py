@@ -224,12 +224,7 @@ class ConfigResolver:
         if normalized_tenant.get("file_delete_after_retain") is None:
             normalized_tenant.pop("file_delete_after_retain", None)
         configurable_tenant = {k: v for k, v in normalized_tenant.items() if k in self._configurable_fields}
-        if "llm_language_integrity" in configurable_tenant:
-            mode = configurable_tenant["llm_language_integrity"]
-            if mode is None or not _valid_language_integrity_override(mode):
-                del configurable_tenant["llm_language_integrity"]
-                if mode is not None:
-                    logger.warning("Ignoring invalid tenant llm_language_integrity override for %s", scope)
+        configurable_tenant = _sanitize_language_integrity_overrides(configurable_tenant, scope)
         if configurable_tenant:
             logger.debug(f"Applied tenant config overrides for {scope}: {list(configurable_tenant.keys())}")
         return configurable_tenant
@@ -915,6 +910,27 @@ def _language_integrity_modes() -> tuple[str, ...]:
 
 def _valid_language_integrity_override(value: Any) -> bool:
     return isinstance(value, str) and value in _language_integrity_modes()
+
+
+def _sanitize_language_integrity_overrides(overrides: dict[str, Any], scope: str) -> dict[str, Any]:
+    """Drop invalid language-integrity modes from tenant overrides at every depth."""
+    sanitized = copy.deepcopy(overrides)
+
+    def sanitize(mapping: dict[str, Any], location: str) -> None:
+        if "llm_language_integrity" in mapping:
+            mode = mapping["llm_language_integrity"]
+            if mode is None or not _valid_language_integrity_override(mode):
+                del mapping["llm_language_integrity"]
+                if mode is not None:
+                    logger.warning("Ignoring invalid tenant llm_language_integrity override for %s", location)
+        strategies = mapping.get("retain_strategies")
+        if isinstance(strategies, dict):
+            for strategy_name, strategy in strategies.items():
+                if isinstance(strategy, dict):
+                    sanitize(strategy, f"{location} retain strategy {strategy_name!r}")
+
+    sanitize(sanitized, scope)
+    return sanitized
 
 
 def _validate_config_value_types(updates: dict[str, Any]) -> None:
