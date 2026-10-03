@@ -160,6 +160,8 @@ async def test_memory_engine_forwards_pg0_url_fields(db_url: str, expected_extra
         with pytest.raises(_StopInitialization):
             await engine.initialize()
 
+    embedded_postgres.assert_called_once_with(name="mydb", port=5544, **expected_extra)
+
 
 @pytest.mark.asyncio
 async def test_embedded_postgres_drop_forces_instance_removal() -> None:
