@@ -1987,6 +1987,90 @@ class TestTaskReleaseOnStop:
         assert row["claimed_at"] is None
         assert row["retry_count"] == 1
 
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("kind", ["retry", "defer"])
+    async def test_failed_retry_or_defer_write_releases_operation(self, pool, backend, clean_operations, kind):
+        """If the RetryTaskAt/DeferOperation status write raises, the row is reconciled, not stranded.
+
+        Reproduces a database crash-recovery window: the executor fails because the
+        database is not accepting connections, asks for a retry, and the retry write
+        fails for the same reason. Before the fix the row stayed 'processing' under a
+        live worker that had already forgotten it.
+        """
+        from hindsight_api.worker import WorkerPoller
+        from hindsight_api.worker.exceptions import DeferOperation, RetryTaskAt
+
+        bank_id = f"test-worker-{uuid.uuid4().hex[:8]}"
+        await _ensure_bank(pool, bank_id)
+        op_id = await self._insert_pending(pool, bank_id)
+
+        later = datetime.now(UTC) + timedelta(minutes=5)
+
+        async def asking_executor(task_dict):
+            if kind == "retry":
+                raise RetryTaskAt(later, "database is starting up")
+            raise DeferOperation(later, "database is starting up")
+
+        poller = WorkerPoller(backend=backend, worker_id="release-worker", executor=asking_executor)
+
+        async def broken_write(*args, **kwargs):
+            raise RuntimeError("the database system is not yet accepting connections")
+
+        if kind == "retry":
+            poller._schedule_retry = broken_write
+        else:
+            poller._defer_operation = broken_write
+
+        task = await self._claim_ours(poller, op_id)
+        await poller.execute_task(task)
+
+        row = await self._wait_for_status(pool, op_id, "pending")
+        assert row["status"] == "pending", f"a failed {kind} write must not strand the row"
+        assert row["worker_id"] is None
+        assert row["claimed_at"] is None
+        assert row["retry_count"] == 1
+
+    @pytest.mark.asyncio
+    async def test_reconcile_retries_while_database_is_recovering(self, pool, backend, clean_operations, monkeypatch):
+        """The reconcile itself survives a few failed attempts before the database is back."""
+        from hindsight_api.worker import WorkerPoller
+        from hindsight_api.worker import poller as poller_module
+        from hindsight_api.worker.exceptions import RetryTaskAt
+
+        monkeypatch.setattr(poller_module, "_RELEASE_RECONCILE_BACKOFF_S", 0.01)
+
+        bank_id = f"test-worker-{uuid.uuid4().hex[:8]}"
+        await _ensure_bank(pool, bank_id)
+        op_id = await self._insert_pending(pool, bank_id)
+
+        async def asking_executor(task_dict):
+            raise RetryTaskAt(datetime.now(UTC) + timedelta(minutes=5), "database is starting up")
+
+        poller = WorkerPoller(backend=backend, worker_id="release-worker", executor=asking_executor)
+
+        async def broken_write(*args, **kwargs):
+            raise RuntimeError("the database system is in recovery mode")
+
+        poller._schedule_retry = broken_write
+        real_reclaim = poller._reclaim_own_processing_tasks
+        calls = {"n": 0}
+
+        async def flaky_reclaim(schema, *, operation_id=None):
+            calls["n"] += 1
+            if calls["n"] < 3:
+                raise RuntimeError("the database system is not yet accepting connections")
+            return await real_reclaim(schema, operation_id=operation_id)
+
+        poller._reclaim_own_processing_tasks = flaky_reclaim
+
+        task = await self._claim_ours(poller, op_id)
+        await poller.execute_task(task)
+
+        row = await self._wait_for_status(pool, op_id, "pending")
+        assert row["status"] == "pending", "reconcile must retry until the database accepts connections"
+        assert row["worker_id"] is None
+        assert calls["n"] == 3
+
 
 class TestConcurrentWorkers:
     """Tests for concurrent worker task claiming (FOR UPDATE SKIP LOCKED)."""
