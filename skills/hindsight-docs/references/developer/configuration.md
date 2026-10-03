@@ -2044,7 +2044,7 @@ Configuration for the file upload and conversion pipeline (used by `POST /v1/def
 | `HINDSIGHT_API_FILE_PARSER_ALLOWLIST` | Comma-separated list of parsers clients are allowed to request. If not set, all registered parsers are allowed. | — |
 | `HINDSIGHT_API_FILE_CONVERSION_MAX_BATCH_SIZE` | Max files per upload request | `10` |
 | `HINDSIGHT_API_FILE_CONVERSION_MAX_BATCH_SIZE_MB` | Max total upload size per request (MB) | `100` |
-| `HINDSIGHT_API_FILE_DELETE_AFTER_RETAIN` | Delete stored files after memory extraction completes | `true` |
+| `HINDSIGHT_API_FILE_DELETE_AFTER_RETAIN` | Delete original upload bytes after conversion queues retention. Hierarchical: set `file_delete_after_retain=false` to preserve originals. Bank `null` inherits the tenant/process policy; tenant `null` inherits the process policy | `true` |
 
 #### Parser selection
 
@@ -2249,7 +2249,7 @@ export HINDSIGHT_API_FILE_STORAGE_AZURE_ACCOUNT_KEY=base64encodedkey==
 
 > **💡 Production Recommendation**
 >
-For production deployments, use `s3`, `gcs`, or `azure` to avoid storing large binary files in your PostgreSQL database. Set `HINDSIGHT_API_FILE_DELETE_AFTER_RETAIN=true` (the default) to delete files after memory extraction, which minimizes storage costs.
+For production deployments, use `s3`, `gcs`, or `azure` to avoid storing large binary files in your PostgreSQL database. Set `HINDSIGHT_API_FILE_DELETE_AFTER_RETAIN=true` (the default) to delete original upload bytes after conversion queues retention, which minimizes storage costs. A bank can override `file_delete_after_retain` to `false` to preserve its originals without changing other banks.
 ### Observations (Experimental) {#observations}
 
 Observations are deduplicated, evidence-grounded knowledge consolidated from multiple facts. Each observation tracks its supporting memories and a proof count, and is refined — not overwritten — when new evidence arrives.

@@ -89,6 +89,8 @@ PATCH_REGRESSIONS=(
   tests/test_consolidation_prompt_budget.py
   tests/test_refresh_outcome_metadata.py
   tests/test_bank_template_full_roundtrip.py
+  tests/test_hierarchical_config.py
+  tests/test_file_preservation_policy.py
   tests/test_db_abstraction.py
   tests/test_language_integrity.py
   tests/test_language_integrity_retain.py

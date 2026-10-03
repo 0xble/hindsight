@@ -6326,6 +6326,9 @@ components:
         reflect_mission:
           nullable: true
           type: string
+        file_delete_after_retain:
+          nullable: true
+          type: boolean
         retain_mission:
           nullable: true
           type: string

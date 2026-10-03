@@ -3714,6 +3714,9 @@ class BankTemplateConfig(BaseModel):
     """
 
     reflect_mission: str | None = Field(default=None, description="Mission/context for Reflect operations")
+    file_delete_after_retain: bool | None = Field(
+        default=None, description="Delete original upload bytes after conversion queues retention; null inherits"
+    )
     retain_mission: str | None = Field(default=None, description="Steers what gets extracted during retain")
     retain_extraction_mode: str | None = Field(
         default=None,
