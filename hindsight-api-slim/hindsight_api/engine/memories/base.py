@@ -219,6 +219,7 @@ def source_key(unit_id: str) -> str:
     return f"{META_SOURCE_KEY_PREFIX}{unit_id}"
 
 
+@dataclass(frozen=True)
 class AttachmentRef:
     """Attachment short ids named by one document: the filename lives on the document edge."""
 
@@ -226,6 +227,7 @@ class AttachmentRef:
     attachment_ids: list[str]
 
 
+@dataclass
 class ObservationChunkIds:
     """The chunk ids of each observation's sources, for recall ``include_chunks``.
 
@@ -239,6 +241,7 @@ class ObservationChunkIds:
     sources_by_observation: dict[str, list[str]] | None = None
 
 
+@dataclass
 class DocumentSourceUnits:
     """A document's experience/world memory ids and its total memory count, read before a delete."""
 
@@ -246,6 +249,7 @@ class DocumentSourceUnits:
     units_count: int
 
 
+@dataclass
 class DeletedDocument:
     """What deleting a document found: whether it existed, and its uploaded file's storage key."""
 
@@ -253,6 +257,7 @@ class DeletedDocument:
     file_storage_key: str | None
 
 
+@dataclass
 class DocumentTags:
     """A document's current tags. ``tags`` is ``None`` when they could not be read — the
     document is absent, or its record does not carry them — which is never "no tags"."""
@@ -278,6 +283,7 @@ def _epoch_ms_to_datetime(value: Any) -> datetime | None:
         return None
 
 
+@dataclass
 class SemanticBm25Result:
     """One fact_type's dense + keyword candidates, plus the graph arm's seeds.
 
@@ -291,6 +297,7 @@ class SemanticBm25Result:
     graph_seeds: list[RetrievalResult] | None
 
 
+@dataclass
 class MemoryLocation:
     """Where one memory lives and what it is: the answer to the lookups that precede a delete
     or a history read. ``source_memory_ids`` is filled only by :meth:`MemoriesExtension.observation_head`."""
@@ -301,6 +308,7 @@ class MemoryLocation:
     source_memory_ids: list[str] = field(default_factory=list)
 
 
+@dataclass
 class TypedMemoryScope:
     """A bank's memories of one fact_type, as a typed bank clear needs them: the ids (source
     types only, for the stale-observation sweep) and the count it reports."""
@@ -309,6 +317,7 @@ class TypedMemoryScope:
     count: int = 0
 
 
+@dataclass
 class BankContentCounts:
     """What a whole-bank delete reports having removed."""
 
@@ -317,6 +326,7 @@ class BankContentCounts:
     documents: int = 0
 
 
+@dataclass
 class DocumentBase:
     """The stored document an append builds on: its body and the version it was read at.
 
@@ -331,6 +341,7 @@ class DocumentBase:
     watermark: int | None = None
 
 
+@dataclass
 class ExistingChunk:
     """A chunk already stored for a document: its id, position and content hash."""
 
@@ -339,6 +350,7 @@ class ExistingChunk:
     content_hash: str | None
 
 
+@dataclass
 class DocumentChunkState:
     """A stored document's version, body (when asked for) and chunks, as a delta retain diffs them.
 
@@ -380,6 +392,7 @@ def document_chunk_state(
     )
 
 
+@dataclass
 class RelabelResult:
     """What relabelling a document's memories did: how many it updated, and which of them
     (``experience``/``world`` only) changed tags or observation scoping — the ones whose

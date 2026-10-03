@@ -20,7 +20,6 @@ from functools import lru_cache
 from typing import Any, Final, cast
 
 from .db_utils import acquire_with_retry
-from .memory_engine import fq_table
 from .retain.entity_labels import (
     build_labels_lookup as _build_labels_lookup_from_config,
 )
@@ -31,6 +30,11 @@ from .retain.entity_labels import (
     parse_entity_labels as _parse_entity_labels,
 )
 from .retain.types import ResolvedEntity
+
+# This resolver owns the PostgreSQL entity registry. It therefore needs the
+# store-qualified helper, whose guard-free alias is the contract used by the
+# upstream PostgreSQL store resolver.
+from .schema import fq_store_table as fq_table
 
 logger = logging.getLogger(__name__)
 
