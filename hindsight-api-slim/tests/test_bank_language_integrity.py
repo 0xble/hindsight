@@ -2,6 +2,7 @@
 
 import dataclasses
 import json
+import time
 from datetime import datetime, timezone
 from types import MethodType, SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -14,7 +15,7 @@ from hindsight_api.engine import bank_info_cache
 from hindsight_api.engine.bank_stats_cache import BankStatsCache
 from hindsight_api.engine.language_integrity import GeneratedLanguageMismatch
 from hindsight_api.engine.llm_wrapper import LLMProvider
-from hindsight_api.engine.memory_engine import MemoryEngine
+from hindsight_api.engine.memory_engine import MemoryEngine, _SubBatch
 from hindsight_api.engine.response_models import LLMCallResult, TokenUsage
 from hindsight_api.engine.retain.fact_extraction import ExtractionPrompt, _extract_facts_from_chunk
 from hindsight_api.models import RequestContext
@@ -125,6 +126,79 @@ async def test_invalid_tenant_mode_inherits_global():
     config = resolver(tenant=Tenant("invalid"))
     context = RequestContext(api_key=None, api_key_id=None, tenant_id=None, internal=False)
     assert (await config.resolve_full_config("synthetic", context, cached=False)).llm_language_integrity == "retry"
+
+
+@pytest.mark.asyncio
+async def test_invalid_nested_tenant_strategy_mode_inherits_parent_policy():
+    class NestedTenant:
+        async def get_tenant_config(self, context):
+            return {
+                "llm_language_integrity": "retry",
+                "retain_strategies": {"session": {"llm_language_integrity": "invalid"}},
+            }
+
+    config = resolver(tenant=NestedTenant())
+    context = RequestContext(api_key=None, api_key_id=None, tenant_id=None, internal=False)
+    resolved = await config.resolve_full_config("synthetic", context, cached=False)
+
+    assert apply_strategy(resolved, "session").llm_language_integrity == "retry"
+
+
+@pytest.mark.asyncio
+async def test_large_retain_subbatches_use_one_language_policy_snapshot(monkeypatch):
+    from hindsight_api.engine import memories as memories_module
+    from hindsight_api.engine import memory_engine as engine_module
+
+    engine = MemoryEngine.__new__(MemoryEngine)
+    policy = {"mode": "retry"}
+    seen_modes: list[str | None] = []
+
+    async def resolve_retain_config(bank_id, request_context, strategy, **kwargs):
+        return dataclasses.replace(_get_raw_config(), llm_language_integrity=policy["mode"])
+
+    async def retain_sub_batch(**kwargs):
+        mode = kwargs.get("language_integrity_mode")
+        if mode is None:
+            mode = (await engine._resolve_retain_config("synthetic", None, None)).llm_language_integrity
+        seen_modes.append(mode)
+        if len(seen_modes) == 1:
+            policy["mode"] = "reject"
+        return SimpleNamespace(
+            memory_ids=[[] for _ in kwargs["contents"]],
+            usage=TokenUsage(),
+            processed_content_tokens=0,
+        )
+
+    engine._resolve_retain_config = resolve_retain_config
+    engine._get_backend = AsyncMock()
+    engine._retain_batch_async_internal = retain_sub_batch
+
+    sub_batches = [
+        _SubBatch([{"content": "first"}], [0], None, 1, 1, False),
+        _SubBatch([{"content": "second"}], [1], None, 1, 2, True),
+    ]
+    monkeypatch.setattr(
+        engine_module, "get_config", lambda: dataclasses.replace(_get_raw_config(), retain_batch_tokens=1)
+    )
+    monkeypatch.setattr(memories_module, "get_memories", lambda: SimpleNamespace(store_owned_for=lambda bank_id: False))
+    monkeypatch.setattr(engine_module, "iter_sub_batches", lambda *args, **kwargs: iter(sub_batches))
+
+    await engine._run_retain_execution(
+        bank_id="synthetic",
+        contents=[{"content": "first"}, {"content": "second"}],
+        request_context=RequestContext(api_key=None, api_key_id=None, tenant_id=None, internal=False),
+        document_id=None,
+        fact_type_override=None,
+        document_tags=None,
+        operation_id=None,
+        strategy=None,
+        outbox_callback=None,
+        outbox_callback_factory=None,
+        start_time=time.time(),
+        language_integrity_mode="retry",
+    )
+
+    assert seen_modes == ["retry", "retry"]
 
 
 def test_strategy_null_inherits_enforcement_without_changing_other_nulls():
