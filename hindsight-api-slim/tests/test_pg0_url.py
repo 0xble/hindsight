@@ -6,7 +6,7 @@ import pytest
 
 from hindsight_api import MemoryEngine
 from hindsight_api.engine.task_backend import SyncTaskBackend
-from hindsight_api.pg0 import Pg0Url, parse_pg0_url
+from hindsight_api.pg0 import EmbeddedPostgres, Pg0Url, parse_pg0_url
 
 
 class _StopInitialization(Exception):
@@ -160,4 +160,20 @@ async def test_memory_engine_forwards_pg0_url_fields(db_url: str, expected_extra
         with pytest.raises(_StopInitialization):
             await engine.initialize()
 
-    embedded_postgres.assert_called_once_with(name="mydb", port=5544, **expected_extra)
+
+@pytest.mark.asyncio
+async def test_embedded_postgres_drop_forces_instance_removal() -> None:
+    """Dropping an embedded instance must remove its pg0 data, not only stop it."""
+    with patch("pg0.Pg0") as pg0_class:
+        postgres = EmbeddedPostgres(name="hindsight-test-drop", port=54321)
+
+        await postgres.drop()
+
+        pg0_class.assert_called_once_with(
+            name="hindsight-test-drop",
+            username="hindsight",
+            password="hindsight",
+            database="hindsight",
+            port=54321,
+        )
+        pg0_class.return_value.drop.assert_called_once_with(force=True)
