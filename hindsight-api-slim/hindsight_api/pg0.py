@@ -111,6 +111,18 @@ class EmbeddedPostgres:
                 return
             raise RuntimeError(f"Failed to stop PostgreSQL: {e}")
 
+    async def drop(self) -> None:
+        """Stop and permanently remove the PostgreSQL server instance."""
+        pg0 = self._get_pg0()
+        logger.info(f"Dropping embedded PostgreSQL (name: {self.name})...")
+
+        try:
+            loop = asyncio.get_event_loop()
+            await loop.run_in_executor(None, lambda: pg0.drop(force=True))
+            logger.info("Embedded PostgreSQL dropped")
+        except Exception as e:
+            raise RuntimeError(f"Failed to drop PostgreSQL: {e}") from e
+
     async def get_uri(self) -> str:
         """Get the connection URI for the PostgreSQL server."""
         pg0 = self._get_pg0()

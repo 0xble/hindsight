@@ -316,7 +316,7 @@ def pg0_db_url(db_url, tmp_path_factory, worker_id) -> Iterator[str]:
     If HINDSIGHT_API_DATABASE_URL is a plain postgresql:// URL, uses it directly.
     If HINDSIGHT_API_DATABASE_URL is a pg0:// URL, resolves it to a real URL first.
     Serial runs retain the requested instance and port. Each xdist worker instead
-    owns a uniquely named pg0 instance on an available port, stopped at teardown.
+    owns a uniquely named pg0 instance on an available port, dropped at teardown.
     Sharing memory_units across the whole offline suite accumulates per-bank HNSW
     indexes and lets one worker's index DDL block every other's retain/recall. That
     made otherwise short append regressions exceed the 300-second test timeout.
@@ -411,7 +411,7 @@ def pg0_db_url(db_url, tmp_path_factory, worker_id) -> Iterator[str]:
         if owns_instance and pg0 is not None:
             loop = asyncio.new_event_loop()
             try:
-                loop.run_until_complete(pg0.stop())
+                loop.run_until_complete(pg0.drop())
             finally:
                 loop.close()
 
