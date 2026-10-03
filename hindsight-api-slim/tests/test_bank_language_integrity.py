@@ -347,6 +347,57 @@ async def test_operation_policy_bypasses_another_workers_warm_cache(warm_mode, b
 
 
 @pytest.mark.asyncio
+async def test_retain_fails_closed_when_fresh_reject_policy_read_errors():
+    bank = "synthetic-fresh-policy-failure-retain"
+    backend = BankBackend()
+    config = resolver(mode="observe")
+    config._backend = backend
+    backend.configs[bank] = {"llm_language_integrity": "reject"}
+    context = RequestContext(api_key=None, api_key_id=None, tenant_id=None, internal=False)
+    cache = BankStatsCache(ttl_seconds=3600, max_entries=16)
+    engine = SimpleNamespace(_config_resolver=config)
+    engine._resolve_retain_config = MethodType(MemoryEngine._resolve_retain_config, engine)
+
+    with patch.object(bank_info_cache, "_cache", cache):
+        assert (await config.resolve_full_config(bank, context)).llm_language_integrity == "reject"
+        backend.fetchrow = AsyncMock(side_effect=RuntimeError("config unavailable"))
+
+        with pytest.raises(RuntimeError, match="config unavailable"):
+            await engine._resolve_retain_config(bank, context, None)
+
+
+@pytest.mark.asyncio
+async def test_consolidation_fails_closed_when_fresh_reject_policy_read_errors():
+    from hindsight_api.engine.consolidation import consolidator
+
+    bank = "synthetic-fresh-policy-failure-consolidation"
+    backend = BankBackend()
+    config = resolver(mode="observe")
+    config._backend = backend
+    backend.configs[bank] = {"llm_language_integrity": "reject"}
+    context = RequestContext(api_key=None, api_key_id=None, tenant_id=None, internal=False)
+    cache = BankStatsCache(ttl_seconds=3600, max_entries=16)
+    engine = SimpleNamespace(
+        _config_resolver=config,
+        _consolidation_llm_config=MagicMock(),
+    )
+
+    with patch.object(bank_info_cache, "_cache", cache):
+        assert (await config.resolve_full_config(bank, context)).llm_language_integrity == "reject"
+        backend.fetchrow = AsyncMock(side_effect=RuntimeError("config unavailable"))
+
+        with (
+            patch.object(consolidator, "trace_context_of", return_value=None),
+            patch.object(consolidator, "_run_consolidation_job", new_callable=AsyncMock) as run,
+            pytest.raises(RuntimeError, match="config unavailable"),
+        ):
+            await consolidator.run_consolidation_job(engine, bank, context)
+
+    engine._consolidation_llm_config.with_config.assert_not_called()
+    run.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_consolidation_boundary_passes_each_banks_resolved_mode():
     from hindsight_api.engine.consolidation import consolidator
 
