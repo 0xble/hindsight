@@ -1255,7 +1255,7 @@ class WorkerPoller:
             stage = holder.stage if holder is not None else "unknown"
             message = e.describe(task_type, stage)
             logger.error(f"Task {task.operation_id} timed out: {message}")
-            await self._mark_all_failed(task, message)
+            await self._release_on_write_failure(task, "timeout failure", self._mark_all_failed(task, message))
             await self._notify_wall_timeout(task, message)
             terminal_success = False
         except DeferOperation as e:
@@ -1279,7 +1279,9 @@ class WorkerPoller:
                     retry_at,
                     str(e)[:200],
                 )
-                await self._defer_all(task, retry_at, f"store backpressure: {str(e)[:400]}")
+                await self._release_on_write_failure(
+                    task, "backpressure defer", self._defer_all(task, retry_at, f"store backpressure: {str(e)[:400]}")
+                )
                 return
             # exc_info rather than print_exc(): the stderr copy carries no task id
             # and is the first thing lost to log rotation (issue #3218).

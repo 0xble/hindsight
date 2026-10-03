@@ -2031,6 +2031,64 @@ class TestTaskReleaseOnStop:
         assert row["retry_count"] == 1
 
     @pytest.mark.asyncio
+    async def test_failed_backpressure_defer_write_releases_operation(self, pool, backend, clean_operations):
+        """The store-backpressure branch defers too; a failed defer write there must not strand the row."""
+        from hindsight_api.worker import WorkerPoller
+
+        bank_id = f"test-worker-{uuid.uuid4().hex[:8]}"
+        await _ensure_bank(pool, bank_id)
+        op_id = await self._insert_pending(pool, bank_id)
+
+        async def backpressured_executor(task_dict):
+            raise RuntimeError("store write bound reached: writes are shed")
+
+        poller = WorkerPoller(backend=backend, worker_id="release-worker", executor=backpressured_executor)
+
+        async def broken_defer(*args, **kwargs):
+            raise RuntimeError("the database system is not yet accepting connections")
+
+        poller._defer_operation = broken_defer
+
+        task = await self._claim_ours(poller, op_id)
+        await poller.execute_task(task)
+
+        row = await self._wait_for_status(pool, op_id, "pending")
+        assert row["status"] == "pending", "a failed backpressure defer write must not strand the row"
+        assert row["worker_id"] is None
+        assert row["claimed_at"] is None
+        assert row["retry_count"] == 1
+
+    @pytest.mark.asyncio
+    async def test_failed_wall_timeout_write_releases_operation(self, pool, backend, clean_operations):
+        """A wall-clock timeout marks the task failed; if that write raises, the row is reconciled."""
+        from hindsight_api.worker import WorkerPoller
+        from hindsight_api.worker import poller as poller_module
+
+        bank_id = f"test-worker-{uuid.uuid4().hex[:8]}"
+        await _ensure_bank(pool, bank_id)
+        op_id = await self._insert_pending(pool, bank_id)
+
+        async def timed_out_executor(task_dict):
+            raise poller_module._WallTimeoutExceeded(1.0, next(iter(poller_module._WALL_CEILINGS.values())))
+
+        poller = WorkerPoller(backend=backend, worker_id="release-worker", executor=timed_out_executor)
+
+        async def broken_mark_failed(operation_id, error_message, schema):
+            raise RuntimeError("the database system is in recovery mode")
+
+        poller._mark_failed = broken_mark_failed
+        poller._notify_wall_timeout = AsyncMock()
+
+        task = await self._claim_ours(poller, op_id)
+        await poller.execute_task(task)
+
+        row = await self._wait_for_status(pool, op_id, "pending")
+        assert row["status"] == "pending", "a failed timeout write must not strand the row"
+        assert row["worker_id"] is None
+        assert row["claimed_at"] is None
+        assert row["retry_count"] == 1
+
+    @pytest.mark.asyncio
     async def test_reconcile_retries_while_database_is_recovering(self, pool, backend, clean_operations, monkeypatch):
         """The reconcile itself survives a few failed attempts before the database is back."""
         from hindsight_api.worker import WorkerPoller
