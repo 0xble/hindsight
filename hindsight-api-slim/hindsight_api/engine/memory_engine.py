@@ -62,11 +62,22 @@ from ..worker.stage import set_stage
 from .audit import AuditLogger, audit_context
 from .bank_stats_cache import BankStatsCache, DistributedBankStatsCache
 from .chunk_ids import parse_chunk_id
+from .chunk_ids import build_chunk_id, parse_chunk_id, resolve_chunk_id_in
+from .curation_batch import (
+    BatchCapsule,
+    CurationApplyRequest,
+    CurationChange,
+    CurationPreview,
+    CurationPreviewRequest,
+    CurationReceipt,
+    CurationRevertRequest,
+)
 from .db import DatabaseBackend, DatabaseConnection, ResultRow, create_database_backend
 from .db.ops_postgresql import pg_search_vector_expr
 from .db.postgresql import PostgreSQLBackend
 from .db.postgresql import apply_session_settings as _apply_session_settings
 from .db_budget import budgeted_operation
+from .language_integrity import LanguageIntegrityError
 from .llm_interface import ProviderContentPolicyError, ProviderRateLimitResetError
 from .llm_trace import (
     LLMRequestEntry,
@@ -77,6 +88,7 @@ from .llm_trace import (
     LLMTraceRecorder,
     trace_context_of,
 )
+from .operation_details import FileConvertRetainOperationDetails
 from .operation_metadata import (
     BatchRetainChildMetadata,
     BatchRetainParentMetadata,
@@ -86,6 +98,8 @@ from .operation_metadata import (
     RetainOutcomeAggregate,
     RetainOutcomeMetadata,
 )
+from .parsers.base import NoExtractableContentError
+from .parsers.ocr_quality import LowQualityOcrError
 from .sql import SQLDialect, create_sql_dialect
 from .sql.postgresql import knowledge_bm25_arm
 
@@ -524,7 +538,8 @@ class MentalModelRefreshError(Exception):
     The previous content (if any) is preserved in the DB and the reflect_response
     audit trail is persisted before this is raised, so the failure is recoverable
     and auditable. Callers (worker queue, integration tests) should treat this
-    as a retryable condition.
+    as a deterministic task failure: repeating the same guarded refresh consumes
+    a retry slot without changing the protected input or preserved document.
 
     Carries the outcome and reason as typed values, not only inside the message:
     the worker records them on the operation so a failed refresh says why it
@@ -1572,9 +1587,11 @@ def _is_non_retryable_task_error(e: Exception) -> bool:
     if _is_foreign_key_violation(e):
         return False
     return (
-        isinstance(e, asyncpg.exceptions.IntegrityConstraintViolationError)
+        isinstance(e, MentalModelRefreshError)
+        or isinstance(e, asyncpg.exceptions.IntegrityConstraintViolationError)
         or _is_oracledb_integrity_error(e)
         or _is_invalid_embedding_dimension_error(e)
+        or isinstance(e, LanguageIntegrityError)
         # A provider content-policy refusal is a function of the content, not of
         # the moment: re-running the task feeds the same chunk to the same model
         # and earns the same refusal (issue #3690).
@@ -2141,6 +2158,38 @@ def _summarize_refresh_tool_calls(
     return summaries
 
 
+def _file_convert_failure_metadata(error: BaseException) -> dict[str, Any]:
+    """Return stable metadata for a deterministic file-conversion failure.
+
+    File parsing adds filename context by wrapping the parser exception, so walk
+    the explicit exception chain instead of relying on the human-facing message.
+    """
+    seen: set[int] = set()
+    current: BaseException | None = error
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        if isinstance(current, NoExtractableContentError) and current.parsers:
+            return {
+                "failure_class": "no_extractable_text",
+                "failure_reason": "empty_content",
+                "parsers": current.parsers,
+            }
+        if isinstance(current, LowQualityOcrError):
+            return {
+                "failure_class": "low_quality_ocr",
+                "failure_reason": current.reason.value,
+            }
+        current = current.__cause__ or current.__context__
+    return {}
+
+
+_CLEARED_FILE_CONVERT_FAILURE_METADATA: dict[str, None] = {
+    "failure_class": None,
+    "failure_reason": None,
+    "parsers": None,
+}
+
+
 def _renamed_scopes(scopes: Any, old_tags: list[str] | None, new_tags: list[str]) -> Any:
     """Move a single-tag rename into an explicit ``observation_scopes`` spec (#4609).
 
@@ -2175,6 +2224,20 @@ def _operation_details(operation_type: str, result_metadata: dict[str, Any]) -> 
     MCP tool, which ``json.dumps`` the whole result, so everything in it has to be
     JSON-able primitives.
     """
+    if operation_type == "file_convert_retain":
+        failure_class = result_metadata.get("failure_class")
+        failure_reason = result_metadata.get("failure_reason")
+        if failure_class is None or failure_reason is None:
+            return None
+        try:
+            return FileConvertRetainOperationDetails(
+                failure_class=failure_class,
+                failure_reason=failure_reason,
+                parsers=result_metadata.get("parsers"),
+            ).model_dump(mode="json", exclude_none=True)
+        except ValidationError:
+            logger.warning("Unrecognized file conversion failure details on an operation; reporting no details")
+            return None
     if operation_type != "refresh_mental_model":
         return None
     outcome = result_metadata.get("outcome")
@@ -4730,11 +4793,17 @@ class MemoryEngine(MemoryEngineInterface):
                 error_traceback = traceback.format_exc()
 
                 if task_type == "file_convert_retain":
-                    # Non-retryable: mark as failed immediately.
-                    # Conversion failures won't improve on retry (missing OCR, corrupted file, etc.)
+                    # Non-retryable: mark as failed immediately. Stable metadata
+                    # lets callers distinguish deterministic evidence exclusions
+                    # from parser or infrastructure failures without parsing prose.
                     logger.error(f"Not retrying task {task_type} (non-retryable), marking as failed")
                     if operation_id:
-                        await self._mark_operation_failed(operation_id, error_message, error_traceback)
+                        await self._mark_operation_failed(
+                            operation_id,
+                            error_message,
+                            error_traceback,
+                            result_metadata=_file_convert_failure_metadata(e),
+                        )
                 elif _is_non_retryable_task_error(e):
                     # Non-retryable: deterministic task failures (integrity violations,
                     # invalid embedding dimensions, etc.) will not succeed by rerunning
@@ -5163,8 +5232,15 @@ class MemoryEngine(MemoryEngineInterface):
         except Exception as e:
             logger.debug(f"Failed to write operation progress for {operation_id}: {e}")
 
-    async def _mark_operation_failed(self, operation_id: str, error_message: str, error_traceback: str):
-        """Helper to mark an operation as failed in the database.
+    async def _mark_operation_failed(
+        self,
+        operation_id: str,
+        error_message: str,
+        error_traceback: str,
+        *,
+        result_metadata: dict[str, Any] | None = None,
+    ):
+        """Mark a live operation failed and merge any stable terminal metadata.
 
         Also checks if this is a child operation and updates the parent if all siblings are done.
         Uses a single transaction to avoid race conditions when multiple children fail simultaneously.
@@ -5179,24 +5255,42 @@ class MemoryEngine(MemoryEngineInterface):
             full_error = f"{error_message}\n\nTraceback:\n{error_traceback}"
             truncated_error = full_error[:5000] if len(full_error) > 5000 else full_error
 
+            from .schema import _is_oracle  # noqa: PLC0415
+
+            metadata_merge = (
+                "COALESCE(result_metadata, '{}'::jsonb) "
+                "|| CASE WHEN operation_type = 'file_convert_retain' THEN $3::jsonb ELSE '{}'::jsonb END "
+                "|| $4::jsonb"
+            )
+            if _is_oracle():
+                # The adapter cannot rewrite CASE/chained JSONB merges. Keep the
+                # conditional clear and new metadata in the same guarded UPDATE.
+                metadata_merge = (
+                    "JSON_MERGEPATCH(CASE WHEN operation_type = 'file_convert_retain' "
+                    "THEN JSON_MERGEPATCH(COALESCE(result_metadata, TO_CLOB('{}')), $3 RETURNING CLOB) "
+                    "ELSE COALESCE(result_metadata, TO_CLOB('{}')) END, $4 RETURNING CLOB)"
+                )
+
             async with acquire_with_retry(backend) as conn:
                 async with conn.transaction():
-                    # Mark this operation as failed
+                    # Mark this operation as failed. Terminal rows are immutable,
+                    # matching the completion path and preventing cancellation loss.
                     row = await conn.fetchrow(
                         f"""
                         UPDATE {fq_table("async_operations")}
-                        SET status = 'failed', error_message = $2, updated_at = NOW()
-                        WHERE operation_id = $1 AND status <> 'cancelled'
+                        SET status = 'failed', error_message = $2,
+                            result_metadata = {metadata_merge},
+                            updated_at = NOW(), completed_at = NOW()
+                        WHERE operation_id = $1 AND status NOT IN ('completed', 'failed', 'cancelled')
                         RETURNING operation_id
                         """,
                         uuid.UUID(operation_id),
                         truncated_error,
+                        json.dumps(_CLEARED_FILE_CONVERT_FAILURE_METADATA),
+                        json.dumps(result_metadata or {}),
                     )
                     if row is None:
-                        logger.info(
-                            f"Operation {operation_id} was cancelled or no longer exists "
-                            "(bank deleted), skipping mark-failed"
-                        )
+                        logger.info(f"Operation {operation_id} already terminal or deleted, skipping mark-failed")
                         return
                     logger.info(f"Marked async operation as failed: {operation_id}")
 
@@ -11301,6 +11395,19 @@ class MemoryEngine(MemoryEngineInterface):
             await conn.execute("SET SESSION CHARACTERISTICS AS TRANSACTION READ WRITE")
             async with conn.transaction():
                 try:
+                    # Serialize bank deletion with raw curation before checking
+                    # capsules, so a curation cannot insert a capsule between the
+                    # check below and the cascade. This is a bank-keyed PostgreSQL
+                    # advisory try-lock: it never waits and does not block ordinary
+                    # bank updates. Capsules live in SQL whichever memories store owns
+                    # the bank, so call the PostgreSQL helpers directly instead of the
+                    # store interface, which store-owned and duck-typed stores do not
+                    # implement.
+                    from .memories.pg import curation_batch as _curation_sql
+
+                    if self._database_backend_type == "postgresql":
+                        await _curation_sql.lock(conn, bank_id)
+                        await _curation_sql.assert_deletable(conn, bank_id)
                     # Match delete_document's bank-before-data order. Otherwise a
                     # bank delete could hold its documents while waiting for the
                     # bank row held by a concurrent document delete.
@@ -11420,6 +11527,10 @@ class MemoryEngine(MemoryEngineInterface):
                             result["bank_deleted"] = True
 
                 except Exception as e:
+                    from .curation_batch import CurationBatchConflict
+
+                    if isinstance(e, CurationBatchConflict):
+                        raise
                     raise Exception(f"Failed to delete agent data: {str(e)}")
 
             # Drop per-bank vector indexes AFTER the transaction commits: the
@@ -11786,6 +11897,325 @@ class MemoryEngine(MemoryEngineInterface):
         augmented = embedding_processing.augment_texts_with_dates([shim], self._format_readable_date)
         embeddings = await embedding_processing.generate_embeddings_batch(self.embeddings, augmented)
         return str(embeddings[0]) if embeddings else None
+
+    @_bind_bank_id()
+    async def _curation_v2_store(
+        self, bank_id: str, request_context: "RequestContext", *, read: bool = False
+    ) -> "MemoriesExtension":
+        from .curation_batch import CurationBatchConflict
+        from .memories import get_memories
+
+        await self._authenticate_tenant(request_context)
+        if read and self._operation_validator:
+            from hindsight_api.extensions import BankReadContext, BankReadOperation
+
+            await self._validate_operation(
+                self._operation_validator.validate_bank_read(
+                    BankReadContext(
+                        bank_id=bank_id, operation=BankReadOperation.GET_MEMORY_UNIT, request_context=request_context
+                    )
+                )
+            )
+        store = get_memories()
+        if self._database_backend_type != "postgresql" or store.store_owned_for(bank_id):
+            raise CurationBatchConflict("raw-curation-v2 supports SQL-owned PostgreSQL banks only")
+        return store
+
+    async def _validate_curation_batch_changes(
+        self,
+        bank_id: str,
+        changes: list[CurationChange],
+        request_context: "RequestContext",
+    ) -> None:
+        """Apply the ordinary per-memory curation guard to every batch target.
+
+        ``validate_bank_write`` is the bank-wide access check; it does not replace
+        ``validate_memory_update``, which may enforce per-memory permissions or
+        quotas. Keep the existing validator wiring for internal/system contexts:
+        ``internal`` skips tenant re-authentication, but it does not skip operation
+        validation, just as ordinary ``update_memory_unit`` does not.
+        """
+        if self._operation_validator is None:
+            return
+
+        from hindsight_api.extensions import MemoryUpdateContext
+
+        for change in changes:
+            fields = change.fields
+            await self._validate_operation(
+                self._operation_validator.validate_memory_update(
+                    MemoryUpdateContext(
+                        bank_id=bank_id,
+                        memory_id=str(change.memory_id),
+                        request_context=request_context,
+                        text=(fields.text if fields is not None and "text" in fields.model_fields_set else None),
+                        state="invalidated" if change.action == "invalidate" else None,
+                        edits_fields=change.action == "correct",
+                    )
+                )
+            )
+
+    async def _validate_curation_batch_revert(
+        self,
+        bank_id: str,
+        capsule: BatchCapsule,
+        request_context: "RequestContext",
+    ) -> None:
+        """Restoring a corrected live row needs edit permission, not just restore permission."""
+        if self._operation_validator is None:
+            return
+
+        from pydantic import TypeAdapter
+
+        from hindsight_api.extensions import MemoryUpdateContext
+
+        rows = {str(row["id"]): row for row in capsule.before.memories.rows}
+        for change in capsule.manifest.changes:
+            # Corrections overwrite fields on a live row. Supply the original
+            # text even for context/date-only corrections; archive restoration
+            # retains the ordinary non-edit guard.
+            correcting = change.action == "correct"
+            restored_text = (
+                TypeAdapter(str).validate_python(rows[str(change.memory_id)]["text"], strict=True)
+                if correcting
+                else None
+            )
+            await self._validate_operation(
+                self._operation_validator.validate_memory_update(
+                    MemoryUpdateContext(
+                        bank_id=bank_id,
+                        memory_id=str(change.memory_id),
+                        request_context=request_context,
+                        text=restored_text,
+                        state="valid",
+                        edits_fields=correcting,
+                    )
+                )
+            )
+
+    @_bind_bank_id()
+    async def preview_curation_batch(
+        self, bank_id: str, request: CurationPreviewRequest, *, request_context: "RequestContext"
+    ) -> CurationPreview:
+        from .curation_batch import (
+            CurationInventory,
+            CurationPreview,
+            CurationTargetRevision,
+            canonical_bytes,
+            curation_pin_ids,
+            revision,
+            snapshot_revision,
+        )
+
+        store = await self._curation_v2_store(bank_id, request_context, read=True)
+        backend = await self._get_backend()
+        async with acquire_with_retry(backend) as conn:
+            async with conn.transaction():
+                snapshot = await store.curation_v2_preview(conn=conn, bank_id=bank_id, target_ids=request.memory_ids)
+        rows = {r["id"]: r for r in snapshot.memories.rows}
+        return CurationPreview(
+            closure_revision=snapshot_revision(snapshot),
+            targets=[
+                CurationTargetRevision(
+                    memory_id=i,
+                    memory_revision=revision(rows[str(i)]),
+                    source_revision=snapshot.source_revisions[str(i)],
+                )
+                for i in snapshot.scope.targets
+            ],
+            inventory=CurationInventory(
+                targets=len(snapshot.scope.targets),
+                observations=len(snapshot.scope.affected) - len(snapshot.scope.targets),
+                peers=len(snapshot.scope.peers),
+                entities=len(curation_pin_ids(snapshot)),
+                links=len(snapshot.links.rows),
+                history_rows=len(snapshot.history.rows),
+                snapshot_bytes=len(canonical_bytes(snapshot)),
+                source_bytes=snapshot.source_bytes,
+            ),
+        )
+
+    @_bind_bank_id()
+    async def get_curation_batch(
+        self, bank_id: str, batch_id: str, *, request_context: "RequestContext"
+    ) -> CurationReceipt | None:
+        store = await self._curation_v2_store(bank_id, request_context, read=True)
+        backend = await self._get_backend()
+        async with acquire_with_retry(backend) as conn:
+            capsule = await store.curation_v2_get(conn=conn, bank_id=bank_id, batch_id=batch_id)
+        return capsule.receipt if capsule else None
+
+    @_bind_bank_id()
+    async def apply_curation_batch(
+        self, bank_id: str, batch_id: str, request: CurationApplyRequest, *, request_context: "RequestContext"
+    ) -> CurationReceipt:
+        from pydantic import TypeAdapter
+
+        from .curation_batch import (
+            CurationBatchConflict,
+            CurationFactType,
+            LosslessJsonValue,
+            PreparedCorrection,
+            revision,
+            snapshot_revision,
+        )
+
+        store = await self._curation_v2_store(bank_id, request_context)
+        if self._operation_validator:
+            from hindsight_api.extensions import BankWriteContext, BankWriteOperation
+
+            await self._validate_operation(
+                self._operation_validator.validate_bank_write(
+                    BankWriteContext(
+                        bank_id=bank_id,
+                        operation=BankWriteOperation.UPDATE_MEMORY_UNIT,
+                        request_context=request_context,
+                    )
+                )
+            )
+        await self._validate_curation_batch_changes(bank_id, request.changes, request_context)
+        backend = await self._get_backend()
+        async with acquire_with_retry(backend) as conn:
+            async with conn.transaction():
+                await store.curation_v2_lock(conn=conn, bank_id=bank_id, check_pause=False)
+                existing = await store.curation_v2_get(conn=conn, bank_id=bank_id, batch_id=batch_id)
+                if existing:
+                    if existing.receipt.manifest_revision != revision(request):
+                        raise CurationBatchConflict("Batch ID already belongs to a different manifest")
+                    return existing.receipt
+                await store.curation_v2_lock(conn=conn, bank_id=bank_id)
+                before = await store.curation_v2_preview(
+                    conn=conn, bank_id=bank_id, target_ids=[c.memory_id for c in request.changes]
+                )
+                if snapshot_revision(before) != request.expected_closure_revision:
+                    raise CurationBatchConflict("Closure revision changed")
+        # Provider work owns no pooled connection or database lock. Phase 2
+        # recaptures the exact closure before admitting any write.
+        corrections: list[PreparedCorrection] = []
+        rows = {r["id"]: r for r in before.memories.rows}
+        entities = {r["id"]: r["canonical_name"] for r in before.entities.rows}
+        for change in request.changes:
+            if change.action != "correct":
+                continue
+            fields = change.fields
+            assert fields is not None  # validated by CurationChange
+            row = rows[str(change.memory_id)]
+            present = fields.model_fields_set
+
+            def snapshot_date(value: LosslessJsonValue) -> datetime | None:
+                if value is None:
+                    return None
+                if not isinstance(value, str):
+                    raise CurationBatchConflict("Snapshot date must be an ISO string or null")
+                return datetime.fromisoformat(value)
+
+            start = fields.occurred_start if "occurred_start" in present else snapshot_date(row["occurred_start"])
+            end = fields.occurred_end if "occurred_end" in present else snapshot_date(row["occurred_end"])
+            if start is not None and end is not None and start > end:
+                raise CurationBatchConflict("Correction occurrence start follows end")
+            mentioned = snapshot_date(row["mentioned_at"])
+            text = (
+                fields.text if fields.text is not None else TypeAdapter(str).validate_python(row["text"], strict=True)
+            )
+            context = (
+                fields.context
+                if "context" in present
+                else TypeAdapter(str | None).validate_python(row["context"], strict=True)
+            )
+            fact_type = (
+                fields.fact_type
+                if fields.fact_type is not None
+                else TypeAdapter(CurationFactType).validate_python(row["fact_type"])
+            )
+            names = [
+                TypeAdapter(str).validate_python(entities[p["entity_id"]], strict=True)
+                for p in before.postings.rows
+                if p["unit_id"] == str(change.memory_id)
+            ]
+            embedding = await self._reembed_memory_text(
+                text=text, occurred_start=start, occurred_end=end, mentioned_at=mentioned, entities=names
+            )
+            event_date = start or mentioned if "occurred_start" in present else snapshot_date(row["event_date"])
+            if embedding is None:
+                raise CurationBatchConflict("Correction embedding preparation returned no vector")
+            corrections.append(
+                PreparedCorrection(
+                    memory_id=change.memory_id,
+                    text=text,
+                    context=context,
+                    fact_type=fact_type,
+                    occurred_start=start,
+                    occurred_end=end,
+                    event_date=event_date,
+                    embedding=embedding,
+                )
+            )
+        async with acquire_with_retry(backend) as conn:
+            async with conn.transaction():
+                await store.curation_v2_lock(conn=conn, bank_id=bank_id, check_pause=False)
+                existing = await store.curation_v2_get(conn=conn, bank_id=bank_id, batch_id=batch_id)
+                if existing:
+                    if existing.receipt.manifest_revision != revision(request):
+                        raise CurationBatchConflict("Batch ID already belongs to a different manifest")
+                    return existing.receipt
+                await store.curation_v2_lock(conn=conn, bank_id=bank_id)
+                current = await store.curation_v2_capture(conn=conn, bank_id=bank_id, scope=before.scope)
+                if snapshot_revision(current) != snapshot_revision(before):
+                    raise CurationBatchConflict("Closure changed during preparation")
+                result = await store.curation_v2_apply(
+                    conn=conn,
+                    bank_id=bank_id,
+                    batch_id=batch_id,
+                    request=request,
+                    before=current,
+                    corrections=corrections,
+                )
+        # Deferred maintenance is in the receipt. Ordinary curation's graph,
+        # consolidation and model-refresh hooks are intentionally not called.
+        await self._bank_stats_cache.invalidate(get_current_schema(), bank_id)
+        return result
+
+    @_bind_bank_id()
+    async def revert_curation_batch(
+        self, bank_id: str, batch_id: str, request: CurationRevertRequest, *, request_context: "RequestContext"
+    ) -> CurationReceipt | None:
+        from .curation_batch import CurationBatchConflict
+
+        store = await self._curation_v2_store(bank_id, request_context)
+        if self._operation_validator:
+            from hindsight_api.extensions import BankWriteContext, BankWriteOperation
+
+            await self._validate_operation(
+                self._operation_validator.validate_bank_write(
+                    BankWriteContext(
+                        bank_id=bank_id,
+                        operation=BankWriteOperation.UPDATE_MEMORY_UNIT,
+                        request_context=request_context,
+                    )
+                )
+            )
+        backend = await self._get_backend()
+        try:
+            async with acquire_with_retry(backend) as conn:
+                async with conn.transaction():
+                    await store.curation_v2_lock(conn=conn, bank_id=bank_id, check_pause=False)
+                    capsule = await store.curation_v2_get(conn=conn, bank_id=bank_id, batch_id=batch_id)
+                    if capsule is None:
+                        return None
+                    if capsule.receipt.status != "reverted":
+                        await store.curation_v2_lock(conn=conn, bank_id=bank_id)
+                    await self._validate_curation_batch_revert(bank_id, capsule, request_context)
+                    result = await store.curation_v2_revert(
+                        conn=conn,
+                        bank_id=bank_id,
+                        batch_id=batch_id,
+                        capsule=capsule,
+                        expected_receipt=request.expected_receipt_revision,
+                    )
+        except (asyncpg.UniqueViolationError, asyncpg.ForeignKeyViolationError) as exc:
+            raise CurationBatchConflict("Reconstruction conflicts with later data; capsule preserved") from exc
+        await self._bank_stats_cache.invalidate(get_current_schema(), bank_id)
+        return result
 
     @_bind_bank_id()
     async def update_memory_unit(
@@ -21270,6 +21700,21 @@ class MemoryEngine(MemoryEngineInterface):
 
         op_uuid = uuid.UUID(operation_id)
 
+        from .schema import _is_oracle  # noqa: PLC0415
+
+        metadata_merge = (
+            "COALESCE(result_metadata, '{}'::jsonb) "
+            "|| CASE WHEN operation_type = 'file_convert_retain' THEN $3::jsonb ELSE '{}'::jsonb END"
+        )
+        if _is_oracle():
+            # Use native CLOB JSON merging rather than the adapter's unsupported
+            # CASE operand; retry remains one atomic, status-conditional write.
+            metadata_merge = (
+                "CASE WHEN operation_type = 'file_convert_retain' "
+                "THEN JSON_MERGEPATCH(COALESCE(result_metadata, TO_CLOB('{}')), $3 RETURNING CLOB) "
+                "ELSE COALESCE(result_metadata, TO_CLOB('{}')) END"
+            )
+
         async with acquire_with_retry(backend) as conn:
             # Make the retry transition a single conditional write. This
             # coordinates with retention cleanup's row locks: either retry wins
@@ -21285,6 +21730,7 @@ class MemoryEngine(MemoryEngineInterface):
                     worker_id = NULL,
                     claimed_at = NULL,
                     retry_count = 0,
+                    result_metadata = {metadata_merge},
                     updated_at = NOW()
                 WHERE operation_id = $1
                   AND bank_id = $2
@@ -21294,6 +21740,7 @@ class MemoryEngine(MemoryEngineInterface):
                 """,
                 op_uuid,
                 bank_id,
+                json.dumps(_CLEARED_FILE_CONVERT_FAILURE_METADATA),
             )
 
             if updated is None:

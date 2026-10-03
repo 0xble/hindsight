@@ -725,6 +725,8 @@ class PostgreSQLOps(DataAccessOps):
         ue_table: str,
         bank_id: str,
         entity_ids: list,
+        *,
+        pins_table: str | None = None,
     ) -> int:
         # Scoped to the claimed candidates: primary-key lookups, with the
         # NOT EXISTS backed by idx_unit_entities_entity_unit. Cost tracks the
@@ -735,6 +737,7 @@ class PostgreSQLOps(DataAccessOps):
         # acquired the same way retain's entity upsert takes them
         # (bulk_upsert_entities locks `ORDER BY id FOR KEY SHARE`), which is what
         # keeps a prune and a concurrent re-assert from cycling.
+        pin_filter = f"AND NOT EXISTS (SELECT 1 FROM {pins_table} p WHERE p.entity_id=e.id)" if pins_table else ""
         result = await conn.execute(
             f"""
             WITH victims AS (
@@ -745,6 +748,7 @@ class PostgreSQLOps(DataAccessOps):
                   AND NOT EXISTS (
                       SELECT 1 FROM {ue_table} ue WHERE ue.entity_id = e.id
                   )
+                  {pin_filter}
                 ORDER BY e.id
                 FOR UPDATE
             )
@@ -764,6 +768,8 @@ class PostgreSQLOps(DataAccessOps):
         ec_table: str,
         ue_table: str,
         entity_ids: list,
+        *,
+        pins_table: str | None = None,
     ) -> int:
         # Scoped to cooccurrence rows incident to the claimed candidates. The
         # two arms are a UNION rather than
@@ -814,6 +820,11 @@ class PostgreSQLOps(DataAccessOps):
         # the seeded set — the scoped build cannot miss a live pair. That keeps
         # the whole statement proportional to the batch instead of re-deriving
         # every pair in the bank on every run.
+        pin_filter = (
+            f"AND NOT EXISTS (SELECT 1 FROM {pins_table} p WHERE p.entity_id IN (c.entity_id_1,c.entity_id_2))"
+            if pins_table
+            else ""
+        )
         result = await conn.execute(
             f"""
             WITH incident AS MATERIALIZED (
@@ -842,6 +853,7 @@ class PostgreSQLOps(DataAccessOps):
                     SELECT 1 FROM live l
                     WHERE l.e1 = c.entity_id_1 AND l.e2 = c.entity_id_2
                 )
+                  {pin_filter}
                 ORDER BY c.entity_id_1, c.entity_id_2
                 FOR UPDATE OF c
             )
@@ -1157,12 +1169,16 @@ class PostgreSQLOps(DataAccessOps):
                   AND mu.id != ALL($1::uuid[])
                   {window.clause("mu")}
             ),
-            scored AS (
-                SELECT c.id, COUNT(DISTINCT cs.source_id)::float AS score
+            candidate_sources AS MATERIALIZED (
+                SELECT c.id, s.source_id
                 FROM candidates c
                 CROSS JOIN LATERAL unnest(c.source_memory_ids) AS s(source_id)
-                JOIN connected_sources cs ON cs.source_id = s.source_id
-                GROUP BY c.id
+            ),
+            scored AS (
+                SELECT candidate_source.id, COUNT(DISTINCT candidate_source.source_id)::float AS score
+                FROM candidate_sources candidate_source
+                JOIN connected_sources cs ON cs.source_id = candidate_source.source_id
+                GROUP BY candidate_source.id
             ),
             observation_entity_expanded AS (
                 SELECT

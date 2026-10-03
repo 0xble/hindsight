@@ -3,17 +3,20 @@
 import logging
 from dataclasses import dataclass
 
-from .base import FileParser, UnsupportedFileTypeError
+from .base import FileParser, NoExtractableContentError, UnsupportedFileTypeError
 from .iris import IrisParser
 from .llama_parse import LlamaParseParser
 from .markitdown import MarkitdownParser
+from .ocr_quality import LowQualityOcrError, evaluate_ocr_quality, is_image_input
 
 __all__ = [
     "FileParser",
     "UnsupportedFileTypeError",
+    "NoExtractableContentError",
     "IrisParser",
     "LlamaParseParser",
     "MarkitdownParser",
+    "LowQualityOcrError",
     "FileParserRegistry",
     "ConvertResult",
 ]
@@ -88,11 +91,12 @@ class FileParserRegistry:
         content_type: str | None = None,
     ) -> ConvertResult:
         """
-        Try each parser in order, falling back on failure or empty content.
+        Try each parser in order, falling back on failure, empty content, or rejected OCR.
 
-        Moves to the next parser if the current one raises UnsupportedFileTypeError
-        or returns empty content. Any other exception (RuntimeError, network error,
-        etc.) also triggers a fallback so the chain is exhausted before failing.
+        Moves to the next parser if the current one raises UnsupportedFileTypeError,
+        returns empty content, or returns image OCR that fails deterministic quality checks.
+        Any other exception (RuntimeError, network error, etc.) also triggers a fallback
+        so the chain is exhausted before failing.
 
         Args:
             parsers: Ordered list of parser names to try
@@ -108,22 +112,74 @@ class FileParserRegistry:
             RuntimeError: If all parsers fail or return empty content
         """
         last_error: Exception | None = None
+        nonempty_error: Exception | None = None
+        nonterminal_error: Exception | None = None
+        ocr_error: LowQualityOcrError | None = None
+        empty_parsers: list[str] = []
+        all_empty = bool(parsers)
         for name in parsers:
             parser = self.get_parser(name, filename, content_type)
             try:
                 content = await parser.convert(file_data, filename)
                 if content and content.strip():
+                    if is_image_input(filename, content_type):
+                        quality = evaluate_ocr_quality(content)
+                        if not quality.accepted:
+                            raise LowQualityOcrError(name, filename, quality)
                     return ConvertResult(content=content, parser_name=name)
                 logger.warning(f"Parser '{name}' returned empty content for '{filename}', trying next")
-                last_error = RuntimeError(f"Parser '{name}' returned no content for '{filename}'")
+                empty_parsers.append(name)
+                last_error = NoExtractableContentError(f"Parser '{name}' returned no content for '{filename}'")
+            except NoExtractableContentError as e:
+                logger.warning("Parser '%s' extracted no text from '%s', trying next", name, filename)
+                empty_parsers.append(name)
+                last_error = e
+            except LowQualityOcrError as e:
+                all_empty = False
+                features = e.features
+                logger.warning(
+                    "Parser '%s' rejected low-quality OCR for '%s', trying next: "
+                    "reason=%s chars=%d words=%d unique_words=%d alphabetic_ratio=%.3f "
+                    "uncertainty_ratio=%.3f repetition_ratio=%.3f ui_chrome_ratio=%.3f",
+                    name,
+                    filename,
+                    e.reason.value,
+                    features.normalized_character_count,
+                    features.word_count,
+                    features.unique_word_count,
+                    features.alphabetic_ratio,
+                    features.uncertainty_ratio,
+                    features.repetition_ratio,
+                    features.ui_chrome_ratio,
+                )
+                last_error = e
+                ocr_error = e
             except UnsupportedFileTypeError as e:
+                all_empty = False
                 logger.warning(f"Parser '{name}' does not support '{filename}', trying next: {e}")
                 last_error = e
+                nonempty_error = e
+                # Unsupported type is deterministic, not evidence of a transient
+                # failure. A capable parser's OCR rejection takes precedence.
             except Exception as e:
+                all_empty = False
                 logger.warning(f"Parser '{name}' failed for '{filename}', trying next: {e}")
                 last_error = e
+                nonempty_error = e
+                nonterminal_error = e
 
-        raise last_error or RuntimeError(f"No parsers available for '{filename}'")
+        # Only a chain whose every outcome is empty can be a terminal no-text result.
+        # Preserve unclassified errors separately: a later empty result OR OCR
+        # rejection cannot prove the artifact is terminally unusable after a timeout.
+        if all_empty:
+            raise NoExtractableContentError(f"No content extracted from '{filename}'", parsers=empty_parsers)
+        raise (
+            nonterminal_error
+            or ocr_error
+            or nonempty_error
+            or last_error
+            or RuntimeError(f"No parsers available for '{filename}'")
+        )
 
     def list_parsers(self) -> list[str]:
         """Get list of registered parser names."""

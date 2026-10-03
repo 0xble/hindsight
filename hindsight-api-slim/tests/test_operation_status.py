@@ -9,14 +9,50 @@ Regression tests:
 """
 
 import asyncio
+import json
 import uuid
 from datetime import datetime
 
 import httpx
 import pytest
 import pytest_asyncio
+from pydantic import ValidationError
 
 from hindsight_api.api import create_app
+from hindsight_api.api.http import OperationResponse, OperationStatusResponse
+from hindsight_api.engine.memory_engine import _file_convert_failure_metadata, _operation_details
+from hindsight_api.engine.parsers.ocr_quality import LowQualityOcrError, evaluate_ocr_quality
+
+
+@pytest.mark.parametrize("operation_type", ["retain", "consolidation", "file_convert_retain", "refresh_mental_model"])
+@pytest.mark.parametrize(
+    "metadata",
+    [{}, {"details": {}}, {"details": ""}, {"outcome": ""}, {"failure_class": "", "failure_reason": ""}],
+)
+def test_unreported_or_malformed_operation_details_are_null(operation_type: str, metadata: dict[str, object]) -> None:
+    # Both list/get project typed details here rather than echoing raw metadata.
+    assert _operation_details(operation_type, metadata) is None
+
+
+@pytest.mark.parametrize("model", [OperationResponse, OperationStatusResponse])
+@pytest.mark.parametrize("details", [{}, ""])
+def test_server_operation_models_reject_empty_nontyped_details(
+    model: type[OperationResponse] | type[OperationStatusResponse], details: dict[str, object] | str
+) -> None:
+    payload = {
+        "id": "op",
+        "operation_id": "op",
+        "task_type": "retain",
+        "items_count": 1,
+        "created_at": "2026-10-01T00:00:00Z",
+        "status": "completed",
+        "error_message": None,
+        "details": details,
+    }
+    assert model.model_validate({**payload, "details": None}).details is None
+    with pytest.raises(ValidationError) as caught:
+        model.model_validate(payload)
+    assert all(error["loc"][0] == "details" for error in caught.value.errors())
 
 
 @pytest_asyncio.fixture
@@ -56,6 +92,94 @@ async def _insert_operation(pool, bank_id: str, status: str) -> str:
         status,
     )
     return str(op_id)
+
+
+@pytest.mark.asyncio
+async def test_low_quality_ocr_failure_exposes_stable_terminal_details(api_client, memory, test_bank_id):
+    """Callers can settle deterministic OCR rejection without parsing error prose."""
+    pool = memory._pool
+    await _ensure_bank(pool, test_bank_id)
+    op_id = uuid.uuid4()
+    await pool.execute(
+        """
+        INSERT INTO async_operations (operation_id, bank_id, operation_type, status, task_payload)
+        VALUES ($1, $2, 'file_convert_retain', 'processing', '{"test": true}'::jsonb)
+        """,
+        op_id,
+        test_bank_id,
+    )
+
+    rejection = evaluate_ocr_quality("No visible text")
+    low_quality = LowQualityOcrError("iris", "photo.heic", rejection)
+    wrapped = RuntimeError("Failed to parse file")
+    wrapped.__cause__ = low_quality
+
+    await memory._mark_operation_failed(
+        str(op_id),
+        "Failed to parse file",
+        "traceback",
+        result_metadata=_file_convert_failure_metadata(wrapped),
+    )
+
+    response = await api_client.get(f"/v1/default/banks/{test_bank_id}/operations/{op_id}")
+    assert response.status_code == 200
+    operation = response.json()
+    assert operation["status"] == "failed"
+    assert operation["completed_at"] is not None
+    assert operation["details"] == {
+        "operation_type": "file_convert_retain",
+        "failure_class": "low_quality_ocr",
+        "failure_reason": "refusal_or_no_text_response",
+        "parsers": None,
+    }
+
+
+@pytest.mark.asyncio
+async def test_retry_clears_stale_file_conversion_failure_details(api_client, memory, test_bank_id):
+    """A retry must not keep reporting the deterministic failure from its previous attempt."""
+    pool = memory._pool
+    await _ensure_bank(pool, test_bank_id)
+
+    op_id = uuid.uuid4()
+    await pool.execute(
+        """
+        INSERT INTO async_operations (
+            operation_id, bank_id, operation_type, status, task_payload, result_metadata
+        )
+        VALUES (
+            $1, $2, 'file_convert_retain', 'failed', '{"test": true}'::jsonb,
+            '{"source":"fixture","failure_class":"low_quality_ocr",'
+            '"failure_reason":"refusal_or_no_text_response"}'::jsonb
+        )
+        """,
+        op_id,
+        test_bank_id,
+    )
+
+    response = await api_client.post(f"/v1/default/banks/{test_bank_id}/operations/{op_id}/retry")
+    assert response.status_code == 200
+
+    response = await api_client.get(f"/v1/default/banks/{test_bank_id}/operations/{op_id}")
+    operation = response.json()
+    assert operation["status"] == "pending"
+    assert operation.get("details") is None
+
+    raw = await pool.fetchrow(
+        "SELECT result_metadata FROM async_operations WHERE operation_id = $1",
+        op_id,
+    )
+    assert json.loads(raw["result_metadata"])["source"] == "fixture"
+
+    await memory._mark_operation_failed(str(op_id), "parser crashed", "traceback")
+
+    response = await api_client.get(f"/v1/default/banks/{test_bank_id}/operations/{op_id}")
+    operation = response.json()
+    assert operation["status"] == "failed"
+    assert operation.get("details") is None
+
+
+def test_unclassified_file_failure_has_no_structured_metadata():
+    assert _file_convert_failure_metadata(RuntimeError("parser crashed")) == {}
 
 
 @pytest.mark.asyncio

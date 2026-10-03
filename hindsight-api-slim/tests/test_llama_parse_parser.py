@@ -15,7 +15,7 @@ from aiohttp import web
 
 from hindsight_api.config import ENV_FILE_PARSER_LLAMA_PARSE_API_KEY
 from hindsight_api.engine.parsers import llama_parse
-from hindsight_api.engine.parsers.base import UnsupportedFileTypeError
+from hindsight_api.engine.parsers.base import NoExtractableContentError, UnsupportedFileTypeError
 from hindsight_api.engine.parsers.llama_parse import LlamaParseParser
 from tests.aiohttp_stub import stub_server
 
@@ -141,6 +141,20 @@ async def test_convert_job_error(monkeypatch):
     async with _serve(monkeypatch, upstream):
         with pytest.raises(RuntimeError, match="PARSE_FAILED"):
             await parser.convert(b"bad", "bad.pdf")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("markdown", [None, "", " \n"])
+async def test_successful_empty_extraction_is_typed(monkeypatch, markdown):
+    parser = LlamaParseParser(api_key="llx-test", poll_interval=0.0, timeout=10.0)
+    upstream = _Upstream(
+        upload=_Reply(json={"id": "empty-job"}),
+        gets=[_Reply(json={"status": "SUCCESS"}), _Reply(json={"markdown": markdown})],
+    )
+
+    async with _serve(monkeypatch, upstream):
+        with pytest.raises(NoExtractableContentError):
+            await parser.convert(b"pdf", "doc.pdf")
 
 
 @pytest.mark.asyncio

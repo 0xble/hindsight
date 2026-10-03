@@ -45,6 +45,15 @@ from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any, Protocol, cast
 
 from ...extensions.base import Extension
+from ..curation_batch import (
+    BatchCapsule,
+    ClosureScope,
+    CurationApplyRequest,
+    CurationReceipt,
+    CurationSnapshot,
+    PreparedCorrection,
+)
+from ..db.base import DatabaseConnection
 
 # The five tag-matching modes, as the HTTP layer already validates them. Declared here
 # rather than `str` so a store implementing this seam is checked against the modes that
@@ -1007,6 +1016,22 @@ class EntityResolverHandle(Protocol):
         conn=None,
         bank_id: str | None = None,
     ) -> None: ...
+@dataclass(frozen=True)
+class MemoryTextSize:
+    """Body-free size metadata for a bank-scoped source read."""
+
+    unit_id: str
+    text_chars: int
+    text_bytes: int
+
+
+@dataclass(frozen=True)
+class MemoryEvidence:
+    """Only the fields the consolidation detail guard needs."""
+
+    unit_id: str
+    text: str
+    mentioned_at: datetime | None = None
 
 
 class MemoriesExtension(Extension, ABC):
@@ -1793,6 +1818,24 @@ class MemoriesExtension(Extension, ABC):
     async def get_memories(self, *, conn, fq_table, bank_id: str, unit_ids: list[str]) -> list[StoredMemory]:
         """Fetch memories by id. Missing or deleted ids are simply absent."""
 
+    async def get_memory_text_sizes(self, *, conn, fq_table, bank_id: str, unit_ids: list[str]) -> list[MemoryTextSize]:
+        """Read sizes without bodies. Unsupported stores fail lineage closed.
+
+        Byte sizes must be exact UTF-8 bytes or a conservative upper bound.
+        Do not implement this by calling the unrestricted ``get_memories``.
+        """
+        return []
+
+    async def get_memory_evidence(
+        self, *, conn, fq_table, bank_id: str, sizes: list[MemoryTextSize]
+    ) -> list[MemoryEvidence]:
+        """Fetch only admitted bodies whose sizes still match the size read.
+
+        Enforce supplied size bounds in the store, before returning any text.
+        Missing or changed rows are absent, never truncated complete evidence.
+        """
+        return []
+
     @abstractmethod
     async def scan_memories(
         self,
@@ -2305,6 +2348,51 @@ class MemoriesExtension(Extension, ABC):
         A no-op for a store that keeps entity ids on the memory itself — the edit's
         rewrite replaces the whole set, so there is nothing to clear first.
         """
+
+    async def curation_v2_preview(
+        self, *, conn: DatabaseConnection, bank_id: str, target_ids: list[UUID]
+    ) -> CurationSnapshot:
+        from ..curation_batch import CurationBatchConflict
+
+        raise CurationBatchConflict("raw-curation-v2 requires the PostgreSQL memories store")
+
+    async def curation_v2_capture(
+        self, *, conn: DatabaseConnection, bank_id: str, scope: ClosureScope
+    ) -> CurationSnapshot:
+        from ..curation_batch import CurationBatchConflict
+
+        raise CurationBatchConflict("raw-curation-v2 requires the PostgreSQL memories store")
+
+    async def curation_v2_get(self, *, conn: DatabaseConnection, bank_id: str, batch_id: str) -> BatchCapsule | None:
+        from ..curation_batch import CurationBatchConflict
+
+        raise CurationBatchConflict("raw-curation-v2 requires the PostgreSQL memories store")
+
+    async def curation_v2_lock(self, *, conn: DatabaseConnection, bank_id: str, check_pause: bool = True) -> None:
+        from ..curation_batch import CurationBatchConflict
+
+        raise CurationBatchConflict("raw-curation-v2 requires the PostgreSQL memories store")
+
+    async def curation_v2_apply(
+        self,
+        *,
+        conn: DatabaseConnection,
+        bank_id: str,
+        batch_id: str,
+        request: CurationApplyRequest,
+        before: CurationSnapshot,
+        corrections: list[PreparedCorrection],
+    ) -> CurationReceipt:
+        from ..curation_batch import CurationBatchConflict
+
+        raise CurationBatchConflict("raw-curation-v2 requires the PostgreSQL memories store")
+
+    async def curation_v2_revert(
+        self, *, conn: DatabaseConnection, bank_id: str, batch_id: str, capsule: BatchCapsule, expected_receipt: str
+    ) -> CurationReceipt:
+        from ..curation_batch import CurationBatchConflict
+
+        raise CurationBatchConflict("raw-curation-v2 requires the PostgreSQL memories store")
 
     async def apply_edit(
         self,

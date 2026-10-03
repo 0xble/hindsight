@@ -120,6 +120,10 @@ _SKIP_TABLES = frozenset(
         # instance, and failing the alias-vs-bank check on another. Add them to the
         # target deliberately, once it is the bank you mean to route to.
         "bank_aliases",
+        # Capsules preserve exact local row/vector identities. Logical replay
+        # cannot retain their conditional undo contract. Use database backup.
+        "curation_batches",
+        "curation_entity_pins",
     }
 )
 # Derived columns dropped from carried rows so the target regenerates them with

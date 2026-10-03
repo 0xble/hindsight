@@ -661,6 +661,7 @@ ENV_TEXT_SEARCH_EXTENSION_NATIVE_LANGUAGE = "HINDSIGHT_API_TEXT_SEARCH_EXTENSION
 ENV_TEXT_SEARCH_EXTENSION_PG_SEARCH_TOKENIZER = "HINDSIGHT_API_TEXT_SEARCH_EXTENSION_PG_SEARCH_TOKENIZER"
 ENV_TEXT_SEARCH_EXTENSION_PG_SEARCH_FUNCTION_SCHEMA = "HINDSIGHT_API_TEXT_SEARCH_EXTENSION_PG_SEARCH_FUNCTION_SCHEMA"
 ENV_LLM_OUTPUT_LANGUAGE = "HINDSIGHT_API_LLM_OUTPUT_LANGUAGE"
+ENV_LLM_LANGUAGE_INTEGRITY = "HINDSIGHT_API_LLM_LANGUAGE_INTEGRITY"
 ENV_QUERY_ANALYZER_LANGUAGES = "HINDSIGHT_API_QUERY_ANALYZER_LANGUAGES"
 
 ENV_HOST = "HINDSIGHT_API_HOST"
@@ -849,7 +850,10 @@ ENV_CONSOLIDATION_MAX_MEMORIES_PER_ROUND = "HINDSIGHT_API_CONSOLIDATION_MAX_MEMO
 ENV_CONSOLIDATION_LLM_BATCH_SIZE = "HINDSIGHT_API_CONSOLIDATION_LLM_BATCH_SIZE"
 ENV_CONSOLIDATION_DEDUP_THRESHOLD = "HINDSIGHT_API_CONSOLIDATION_DEDUP_THRESHOLD"
 ENV_CONSOLIDATION_LLM_PARALLELISM = "HINDSIGHT_API_CONSOLIDATION_LLM_PARALLELISM"
+ENV_CONSOLIDATION_LANE_LLM_PARALLELISM = "HINDSIGHT_API_CONSOLIDATION_LANE_LLM_PARALLELISM"
+ENV_CONSOLIDATION_FAIR_GROUP_SELECTION = "HINDSIGHT_API_CONSOLIDATION_FAIR_GROUP_SELECTION"
 ENV_CONSOLIDATION_MAX_TOKENS = "HINDSIGHT_API_CONSOLIDATION_MAX_TOKENS"
+ENV_CONSOLIDATION_MAX_CONTEXT_TOKENS = "HINDSIGHT_API_CONSOLIDATION_MAX_CONTEXT_TOKENS"
 ENV_CONSOLIDATION_MAX_COMPLETION_TOKENS = "HINDSIGHT_API_CONSOLIDATION_MAX_COMPLETION_TOKENS"
 ENV_CONSOLIDATION_SOURCE_FACTS_MAX_TOKENS = "HINDSIGHT_API_CONSOLIDATION_SOURCE_FACTS_MAX_TOKENS"
 ENV_CONSOLIDATION_SOURCE_FACTS_MAX_TOKENS_PER_OBSERVATION = (
@@ -1752,7 +1756,20 @@ DEFAULT_CONSOLIDATION_LLM_PARALLELISM = (
     4  # Max tag groups consolidated concurrently per op. Locks on overlapping write
     # scopes degrade to sequential automatically; matches retain_max_concurrent.
 )
+# Number of LLM batches that may be prepared concurrently within one observation-scope lane.
+# The default preserves the historical serial behavior; DB apply remains serialized per lane.
+DEFAULT_CONSOLIDATION_LANE_LLM_PARALLELISM = 1
+# Fetch the oldest facts of many observation-scope groups per consolidation round instead of
+# the oldest facts overall. Off by default (strict global oldest-first). When on, each group
+# contributes at most ceil(fetch size / consolidation_llm_parallelism) facts to a fetch, so one
+# large group (typically the shared scope) cannot fill every fetch and leave the parallel lanes
+# idle. Order within a group stays oldest-first and same-scope work stays serial. Postgres only.
+DEFAULT_CONSOLIDATION_FAIR_GROUP_SELECTION = False
 DEFAULT_CONSOLIDATION_MAX_TOKENS = 512  # Max tokens for recall when finding related observations
+# Hard input budget for one consolidation LLM call. Keep this below common provider
+# context limits so a provider rejection becomes local adaptive splitting, not a
+# non-progressing retry loop. tiktoken is an approximation, so leave headroom.
+DEFAULT_CONSOLIDATION_MAX_CONTEXT_TOKENS = 100_000
 # Unset by default: the key is omitted from the LLM call so every provider keeps its current implicit output
 # budget — 100% backwards compatible. Operators on providers with a low hidden default (notably Bedrock imported
 # models, which cap at 4096 and truncate structured consolidation JSON) set this explicitly to fix #1939.
@@ -2998,6 +3015,10 @@ class HindsightConfig:
     # observations, reflect responses) is forced into this language regardless
     # of the source content. Unset preserves source language.
     llm_output_language: str | None
+    # Post-generation source-language guard: off, observe, retry, or reject.
+    # Observe-only by default. Operators can enable corrective retries after
+    # validating detector behavior against their own workload.
+    llm_language_integrity: Literal["off", "observe", "retry", "reject"] = field(default="observe", kw_only=True)
 
     # LLM (default, used as fallback for per-operation config)
     llm_provider: str
@@ -3433,7 +3454,10 @@ class HindsightConfig:
     consolidation_max_memories_per_round: int
     consolidation_llm_batch_size: int
     consolidation_llm_parallelism: int
+    consolidation_lane_llm_parallelism: int
+    consolidation_fair_group_selection: bool
     consolidation_max_tokens: int
+    consolidation_max_context_tokens: int
     consolidation_max_completion_tokens: int | None
     consolidation_recall_budget: str
     consolidation_source_facts_max_tokens: int
@@ -3788,7 +3812,10 @@ class HindsightConfig:
         "enable_auto_consolidation",
         "consolidation_llm_batch_size",
         "consolidation_llm_parallelism",
+        "consolidation_lane_llm_parallelism",
+        "consolidation_fair_group_selection",
         "consolidation_max_memories_per_round",
+        "consolidation_max_context_tokens",
         "consolidation_source_facts_max_tokens",
         "consolidation_source_facts_max_tokens_per_observation",
         "observations_mission",
@@ -4205,6 +4232,15 @@ class HindsightConfig:
                 else None
             ),
             llm_output_language=(os.getenv(ENV_LLM_OUTPUT_LANGUAGE) or None),
+            llm_language_integrity=cast(
+                Literal["off", "observe", "retry", "reject"],
+                _parse_optional_choice(
+                    ENV_LLM_LANGUAGE_INTEGRITY,
+                    os.getenv(ENV_LLM_LANGUAGE_INTEGRITY, "observe"),
+                    frozenset({"off", "observe", "retry", "reject"}),
+                )
+                or "observe",
+            ),
             # LLM
             llm_provider=llm_provider,
             llm_api_key=os.getenv(ENV_LLM_API_KEY),
@@ -5038,8 +5074,26 @@ class HindsightConfig:
                     )
                 ),
             ),
+            consolidation_lane_llm_parallelism=max(
+                1,
+                int(
+                    os.getenv(
+                        ENV_CONSOLIDATION_LANE_LLM_PARALLELISM,
+                        str(DEFAULT_CONSOLIDATION_LANE_LLM_PARALLELISM),
+                    )
+                ),
+            ),
+            consolidation_fair_group_selection=_parse_boolean_env(
+                ENV_CONSOLIDATION_FAIR_GROUP_SELECTION, DEFAULT_CONSOLIDATION_FAIR_GROUP_SELECTION
+            ),
             consolidation_max_tokens=int(
                 os.getenv(ENV_CONSOLIDATION_MAX_TOKENS, str(DEFAULT_CONSOLIDATION_MAX_TOKENS))
+            ),
+            consolidation_max_context_tokens=int(
+                os.getenv(
+                    ENV_CONSOLIDATION_MAX_CONTEXT_TOKENS,
+                    str(DEFAULT_CONSOLIDATION_MAX_CONTEXT_TOKENS),
+                )
             ),
             consolidation_max_completion_tokens=(
                 _env_int_or(ENV_CONSOLIDATION_MAX_COMPLETION_TOKENS, DEFAULT_CONSOLIDATION_MAX_COMPLETION_TOKENS)

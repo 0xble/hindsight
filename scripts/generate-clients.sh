@@ -75,7 +75,7 @@ PYTHON_CLIENT_DIR="$CLIENTS_DIR/python"
 
 # Backup the maintained wrapper file
 WRAPPER_FILE="$PYTHON_CLIENT_DIR/hindsight_client/hindsight_client.py"
-WRAPPER_BACKUP="/tmp/hindsight_client_backup.py"
+WRAPPER_BACKUP="${TMPDIR:-/tmp}/hindsight_client_backup_$$.py"
 if [ -f "$WRAPPER_FILE" ]; then
     echo "📦 Backing up maintained wrapper: hindsight_client.py"
     cp "$WRAPPER_FILE" "$WRAPPER_BACKUP"
@@ -83,7 +83,7 @@ fi
 
 # Backup the README.md
 README_FILE="$PYTHON_CLIENT_DIR/README.md"
-README_BACKUP="/tmp/hindsight_python_readme_backup.md"
+README_BACKUP="${TMPDIR:-/tmp}/hindsight_python_readme_backup_$$.md"
 if [ -f "$README_FILE" ]; then
     echo "📦 Backing up README.md"
     cp "$README_FILE" "$README_BACKUP"
@@ -105,33 +105,77 @@ done
 echo "Generating new client with openapi-generator..."
 cd "$PYTHON_CLIENT_DIR"
 
-# Generate into a fresh tmp dir, then sync the result into place. Mounting
-# $PYTHON_CLIENT_DIR directly worked on Linux CI but failed on macOS Docker
-# Desktop with NoSuchFileException when openapi-generator wrote supporting
-# files (api_client.py, configuration.py, README) — the writes to the bind
-# mount silently dropped under that filesystem driver. Generating into /tmp
-# (which Docker Desktop handles via a separate driver) and rsync'ing avoids
-# the issue without changing what we ship.
+# Generate into a fresh tmp dir, then sync the result into place. Keeping the
+# generator output staged protects maintained client files if generation fails.
 GEN_TMP_DIR="$(mktemp -d -t hindsight-py-gen.XXXXXX)"
-trap 'rm -rf "$GEN_TMP_DIR"' EXIT
+GEN_CONTAINER="hindsight-py-gen-$$"
+GO_GEN_DIR=""
+cleanup_generator() {
+    # A failed staged generation must not remove maintained package inputs.
+    if [ -f "$README_BACKUP" ] && [ ! -f "$README_FILE" ]; then
+        cp "$README_BACKUP" "$README_FILE"
+    fi
+    if [ -f "$WRAPPER_BACKUP" ] && [ ! -f "$WRAPPER_FILE" ]; then
+        cp "$WRAPPER_BACKUP" "$WRAPPER_FILE"
+    fi
+    docker rm -f "$GEN_CONTAINER" >/dev/null 2>&1 || true
+    rm -rf "$GEN_TMP_DIR"
+    if [ -n "$GO_GEN_DIR" ]; then
+        rm -rf "$GO_GEN_DIR"
+    fi
+}
+trap cleanup_generator EXIT
 
-# Run openapi-generator via Docker (pinned version for reproducibility)
-# Use --platform linux/amd64 to ensure identical output on both macOS (arm64) and Linux CI (amd64)
-# Use --user to match current user's UID/GID so generated files are writable
-# Note: the generator may exit non-zero due to a known bug writing
-# README_onlypackage.mustache, but all API/model files are generated
-# before that step, so we allow the failure and verify files below.
-docker run --rm \
+# Run openapi-generator via Docker (pinned version for reproducibility).
+# `docker cp` rather than bind mounts keeps generation working with remote Docker
+# contexts, whose daemon cannot see paths on the client machine.
+docker create \
+    --name "$GEN_CONTAINER" \
     --platform linux/amd64 \
-    --user "$(id -u):$(id -g)" \
-    -v "$OPENAPI_SPEC:/local/openapi.json" \
-    -v "$GEN_TMP_DIR:/local/out" \
-    -v "$PYTHON_CLIENT_DIR/openapi-generator-config.yaml:/local/config.yaml" \
-    "openapitools/openapi-generator-cli:${OPENAPI_GENERATOR_VERSION}" generate \
+    --entrypoint /bin/sh \
+    "openapitools/openapi-generator-cli:${OPENAPI_GENERATOR_VERSION}" \
+    -c 'sleep infinity' >/dev/null
+docker start "$GEN_CONTAINER" >/dev/null
+docker exec "$GEN_CONTAINER" mkdir -p /local/out
+# Canonical 3.1 primitive type arrays express nullability correctly, but the
+# pinned Python/Go generator collapses their missing/null distinction. Normalize
+# only the equivalent single primitive + null form in this staged input.
+GEN_SPEC_FILE="$GEN_TMP_DIR/client-openapi.json"
+python3 - "$OPENAPI_SPEC" "$GEN_SPEC_FILE" <<'PY'
+import json
+import sys
+
+def normalize(value):
+    if isinstance(value, dict):
+        types = value.get("type")
+        if isinstance(types, list) and len(types) == 2 and "null" in types:
+            other = next(kind for kind in types if kind != "null")
+            value["type"] = other
+            value["nullable"] = True
+        for child in value.values():
+            normalize(child)
+    elif isinstance(value, list):
+        for child in value:
+            normalize(child)
+
+with open(sys.argv[1]) as source:
+    schema = json.load(source)
+normalize(schema)
+with open(sys.argv[2], "w") as output:
+    json.dump(schema, output)
+PY
+docker cp "$GEN_SPEC_FILE" "$GEN_CONTAINER:/local/openapi.json"
+docker cp "$PYTHON_CLIENT_DIR/openapi-generator-config.yaml" "$GEN_CONTAINER:/local/config.yaml"
+
+# The generator may exit non-zero due to a known bug writing
+# README_onlypackage.mustache, but all API/model files are generated before that
+# step, so allow the failure and verify files below.
+docker exec "$GEN_CONTAINER" docker-entrypoint.sh generate \
     -i /local/openapi.json \
     -g python \
     -o /local/out \
     -c /local/config.yaml || true
+docker cp "$GEN_CONTAINER:/local/out/." "$GEN_TMP_DIR/"
 
 # Verify critical generated files exist in the tmp dir
 if [ ! -f "$GEN_TMP_DIR/hindsight_client_api/api_client.py" ]; then
@@ -145,6 +189,10 @@ fi
 # preserved.
 echo "Syncing generated tree into $PYTHON_CLIENT_DIR..."
 cp -R "$GEN_TMP_DIR/hindsight_client_api" "$PYTHON_CLIENT_DIR/"
+# OpenAPI Generator's oneOf Pydantic wrapper ignores raw operation detail JSON.
+# Apply the checked-in discriminator patch to the freshly generated output.
+python3 "$PROJECT_ROOT/scripts/patch-operation-details-client.py" --language python
+python3 "$PROJECT_ROOT/scripts/patch-curation-fields-client.py"
 if [ -d "$GEN_TMP_DIR/.openapi-generator" ]; then
     rm -rf "$PYTHON_CLIENT_DIR/.openapi-generator"
     cp -R "$GEN_TMP_DIR/.openapi-generator" "$PYTHON_CLIENT_DIR/"
@@ -434,6 +482,41 @@ if os.path.exists(content_file):
     else:
         raise SystemExit("Could not find expected to_dict in content.py")
 PATCH_CONTENT_SCRIPT
+# A patch's omitted nullable fields must remain omitted after loading JSON.
+# The pinned generator calls obj.get for every field, falsely marking missing
+# fields explicitly null. Keep presence for this new patch contract.
+python3 - "$PYTHON_CLIENT_DIR/hindsight_client_api/models/curation_fields.py" <<'PY'
+import re
+import sys
+from pathlib import Path
+
+path = Path(sys.argv[1])
+source = path.read_text()
+marker = "        return _dict\n"
+if source.count(marker) != 1:
+    raise RuntimeError("CurationFields serializer shape changed")
+source = source.replace(marker, """        for key in ("context", "occurred_start", "occurred_end"):
+            if key in self.model_fields_set and getattr(self, key) is None:
+                _dict[key] = None
+        return _dict
+""")
+source, count = re.subn(
+    r"        _obj = cls\.model_validate\(\{.*?\n        \}\)",
+    "        _obj = cls.model_validate({key: obj[key] for key in cls.__properties if key in obj})",
+    source,
+    count=1,
+    flags=re.DOTALL,
+)
+if count != 1:
+    raise RuntimeError("CurationFields presence patch no longer matches generator output")
+path.write_text(source)
+
+# The generator emits whitespace-only blank lines in the touched Memory API.
+# Normalize that file deterministically so regenerated additions pass preflight.
+api_path = path.parent.parent / "api" / "memory_api.py"
+api_path.write_text("\n".join(line.rstrip() for line in api_path.read_text().splitlines()) + "\n")
+
+PY
 
 echo "✓ Python client generated at $PYTHON_CLIENT_DIR"
 echo ""
@@ -537,21 +620,46 @@ else
     rm -f api_*.go model_*.go client.go configuration.go response.go utils.go
     rm -rf docs/ .openapi-generator/
 
-    # Generate new client via Docker (--platform linux/amd64 ensures identical output on macOS and Linux CI)
+    # Generate via the same staged container used for the Python client. `docker cp`
+    # supports both local and remote Docker contexts; bind mounts do not.
     echo "Generating client from OpenAPI spec..."
-    docker run --rm \
-        --platform linux/amd64 \
-        --user "$(id -u):$(id -g)" \
-        -v "$OPENAPI_SPEC:/local/openapi.json" \
-        -v "$GO_CLIENT_DIR:/local/out" \
-        "openapitools/openapi-generator-cli:${OPENAPI_GENERATOR_VERSION}" generate \
+    GO_GEN_DIR=$(mktemp -d -t hindsight-go-gen.XXXXXX)
+    docker exec "$GEN_CONTAINER" mkdir -p /local/go-out
+    docker exec "$GEN_CONTAINER" docker-entrypoint.sh generate \
         -i /local/openapi.json \
         -g go \
-        -o /local/out \
+        -o /local/go-out \
         --package-name hindsight \
         --git-user-id vectorize-io \
         --git-repo-id hindsight/hindsight-clients/go \
         --global-property apiDocs=false,apiTests=false,modelDocs=false,modelTests=false
+    docker cp "$GEN_CONTAINER:/local/go-out/." "$GO_GEN_DIR/"
+    rsync -a "$GO_GEN_DIR/" "$GO_CLIENT_DIR/"
+    rm -rf "$GO_GEN_DIR"
+    GO_GEN_DIR=""
+
+    # The maintained nullable-patch helpers use AdditionalProperties to carry
+    # explicit nulls. Replacing a value must clear that marker, and decoding a
+    # known null must preserve it rather than discard presence information.
+    python3 - "$GO_CLIENT_DIR/model_curation_fields.go" <<'PY'
+import sys
+from pathlib import Path
+
+path = Path(sys.argv[1])
+source = path.read_text()
+for field, key in (("Context", "context"), ("OccurredStart", "occurred_start"), ("OccurredEnd", "occurred_end")):
+    setter = f"\to.{field} = &v\n"
+    if source.count(setter) != 1:
+        raise RuntimeError(f"CurationFields {field} setter shape changed")
+    source = source.replace(setter, setter + f'\tdelete(o.AdditionalProperties, "{key}")\n')
+    drop = f'\t\tdelete(additionalProperties, "{key}")\n'
+    if source.count(drop) != 1:
+        raise RuntimeError(f"CurationFields {field} decoder shape changed")
+    source = source.replace(drop, f'\t\tif value, present := additionalProperties["{key}"]; !present || value != nil {{\n' + drop + '\t\t}\n')
+path.write_text(source)
+PY
+
+    gofmt -w "$GO_CLIENT_DIR/model_curation_fields.go"
 
     # Remove OpenAPI Generator boilerplate files
     echo "Removing boilerplate files..."
@@ -596,6 +704,11 @@ else
         sed -i.bak 's|"net/url"|"net/url"\n\t"os"|' api_files.go
         rm -f api_files.go.bak
     fi
+
+    # Nullable operation-detail unions must decode by operation_type, not shape.
+    # Apply after copying fresh Go output (the earlier Python patch cannot own it).
+    python3 "$PROJECT_ROOT/scripts/patch-operation-details-client.py" --language go
+    gofmt -w model_operation_response_details.go
 
     # Initialize module and build
     echo "Building Go client..."

@@ -457,6 +457,234 @@ paths:
       summary: Preview an operation's prompts (no LLM call)
       tags:
       - Banks
+  /v1/default/banks/{bank_id}/curation-batches/preview:
+    post:
+      operationId: preview_curation_batch
+      parameters:
+      - explode: false
+        in: path
+        name: bank_id
+        required: true
+        schema:
+          title: Bank Id
+          type: string
+        style: simple
+      - explode: false
+        in: header
+        name: authorization
+        required: false
+        schema:
+          nullable: true
+          type: string
+        style: simple
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CurationPreviewRequest'
+        required: true
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CurationPreview'
+          description: Successful Response
+        "409":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CurationConflictResponse'
+          description: Curation conflict
+        "422":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Preview a bounded raw-curation-v2 dependency closure
+      tags:
+      - Memory
+  /v1/default/banks/{bank_id}/curation-batches/{batch_id}:
+    get:
+      operationId: get_curation_batch
+      parameters:
+      - explode: false
+        in: path
+        name: bank_id
+        required: true
+        schema:
+          title: Bank Id
+          type: string
+        style: simple
+      - explode: false
+        in: path
+        name: batch_id
+        required: true
+        schema:
+          description: Unique batch ID; the exact case-sensitive value 'preview' is
+            reserved for the preview route
+          not:
+            enum:
+            - preview
+          pattern: "^[a-zA-Z0-9][a-zA-Z0-9_-]{0,79}$"
+          title: Batch Id
+          type: string
+        style: simple
+      - explode: false
+        in: header
+        name: authorization
+        required: false
+        schema:
+          nullable: true
+          type: string
+        style: simple
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CurationReceipt'
+          description: Successful Response
+        "409":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CurationConflictResponse'
+          description: Curation conflict
+        "422":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Read a durable raw-curation-v2 receipt after a lost acknowledgement
+      tags:
+      - Memory
+    post:
+      operationId: apply_curation_batch
+      parameters:
+      - explode: false
+        in: path
+        name: bank_id
+        required: true
+        schema:
+          title: Bank Id
+          type: string
+        style: simple
+      - explode: false
+        in: path
+        name: batch_id
+        required: true
+        schema:
+          description: Unique batch ID; the exact case-sensitive value 'preview' is
+            reserved for the preview route
+          not:
+            enum:
+            - preview
+          pattern: "^[a-zA-Z0-9][a-zA-Z0-9_-]{0,79}$"
+          title: Batch Id
+          type: string
+        style: simple
+      - explode: false
+        in: header
+        name: authorization
+        required: false
+        schema:
+          nullable: true
+          type: string
+        style: simple
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CurationApplyRequest'
+        required: true
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CurationReceipt'
+          description: Successful Response
+        "409":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CurationConflictResponse'
+          description: Curation conflict
+        "422":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Atomically apply a bounded raw-curation-v2 manifest
+      tags:
+      - Memory
+  /v1/default/banks/{bank_id}/curation-batches/{batch_id}/revert:
+    post:
+      operationId: revert_curation_batch
+      parameters:
+      - explode: false
+        in: path
+        name: bank_id
+        required: true
+        schema:
+          title: Bank Id
+          type: string
+        style: simple
+      - explode: false
+        in: path
+        name: batch_id
+        required: true
+        schema:
+          description: Unique batch ID; the exact case-sensitive value 'preview' is
+            reserved for the preview route
+          not:
+            enum:
+            - preview
+          pattern: "^[a-zA-Z0-9][a-zA-Z0-9_-]{0,79}$"
+          title: Batch Id
+          type: string
+        style: simple
+      - explode: false
+        in: header
+        name: authorization
+        required: false
+        schema:
+          nullable: true
+          type: string
+        style: simple
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CurationRevertRequest'
+        required: true
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CurationReceipt'
+          description: Successful Response
+        "409":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CurationConflictResponse'
+          description: Curation conflict
+        "422":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Conditionally restore a raw-curation-v2 capsule without overwriting
+        later work
+      tags:
+      - Memory
   /v1/default/banks/{bank_id}/memories/{memory_id}:
     get:
       description: "Get a single memory unit by ID with all its metadata including\
@@ -6465,6 +6693,15 @@ components:
         consolidation_llm_parallelism:
           nullable: true
           type: integer
+        consolidation_lane_llm_parallelism:
+          nullable: true
+          type: integer
+        consolidation_fair_group_selection:
+          nullable: true
+          type: boolean
+        consolidation_max_context_tokens:
+          nullable: true
+          type: integer
         recall_include_chunks:
           nullable: true
           type: boolean
@@ -7532,6 +7769,370 @@ components:
       required:
       - url
       title: CreateWebhookRequest
+    CurationApplyRequest:
+      additionalProperties: {}
+      example:
+        protocol: protocol
+        expected_closure_revision: expected_closure_revision
+        changes:
+        - reason: reason
+          source_revision: source_revision
+          memory_id: 046b6c7f-0b8a-43b9-b35d-6489e6daee91
+          action: invalidate
+          memory_revision: memory_revision
+          fields:
+            occurred_start: 2000-01-23T04:56:07.000+00:00
+            context: context
+            occurred_end: 2000-01-23T04:56:07.000+00:00
+            text: text
+            fact_type: world
+        - reason: reason
+          source_revision: source_revision
+          memory_id: 046b6c7f-0b8a-43b9-b35d-6489e6daee91
+          action: invalidate
+          memory_revision: memory_revision
+          fields:
+            occurred_start: 2000-01-23T04:56:07.000+00:00
+            context: context
+            occurred_end: 2000-01-23T04:56:07.000+00:00
+            text: text
+            fact_type: world
+        - reason: reason
+          source_revision: source_revision
+          memory_id: 046b6c7f-0b8a-43b9-b35d-6489e6daee91
+          action: invalidate
+          memory_revision: memory_revision
+          fields:
+            occurred_start: 2000-01-23T04:56:07.000+00:00
+            context: context
+            occurred_end: 2000-01-23T04:56:07.000+00:00
+            text: text
+            fact_type: world
+        - reason: reason
+          source_revision: source_revision
+          memory_id: 046b6c7f-0b8a-43b9-b35d-6489e6daee91
+          action: invalidate
+          memory_revision: memory_revision
+          fields:
+            occurred_start: 2000-01-23T04:56:07.000+00:00
+            context: context
+            occurred_end: 2000-01-23T04:56:07.000+00:00
+            text: text
+            fact_type: world
+        - reason: reason
+          source_revision: source_revision
+          memory_id: 046b6c7f-0b8a-43b9-b35d-6489e6daee91
+          action: invalidate
+          memory_revision: memory_revision
+          fields:
+            occurred_start: 2000-01-23T04:56:07.000+00:00
+            context: context
+            occurred_end: 2000-01-23T04:56:07.000+00:00
+            text: text
+            fact_type: world
+      properties:
+        protocol:
+          title: Protocol
+        expected_closure_revision:
+          pattern: "^[0-9a-f]{64}$"
+          title: Expected Closure Revision
+        changes:
+          items:
+            $ref: '#/components/schemas/CurationChange'
+          maxItems: 50
+          minItems: 1
+          title: Changes
+      required:
+      - changes
+      - expected_closure_revision
+      - protocol
+      title: CurationApplyRequest
+    CurationChange:
+      additionalProperties: {}
+      example:
+        reason: reason
+        source_revision: source_revision
+        memory_id: 046b6c7f-0b8a-43b9-b35d-6489e6daee91
+        action: invalidate
+        memory_revision: memory_revision
+        fields:
+          occurred_start: 2000-01-23T04:56:07.000+00:00
+          context: context
+          occurred_end: 2000-01-23T04:56:07.000+00:00
+          text: text
+          fact_type: world
+      properties:
+        memory_id:
+          format: uuid
+          title: Memory Id
+        memory_revision:
+          pattern: "^[0-9a-f]{64}$"
+          title: Memory Revision
+        source_revision:
+          pattern: "^[0-9a-f]{64}$"
+          title: Source Revision
+        action:
+          enum:
+          - invalidate
+          - correct
+          title: Action
+        reason:
+          maxLength: 2048
+          minLength: 1
+          title: Reason
+        fields:
+          $ref: '#/components/schemas/CurationFields'
+      required:
+      - action
+      - memory_id
+      - memory_revision
+      - reason
+      - source_revision
+      title: CurationChange
+    CurationConflictResponse:
+      description: String-detail conflict payload returned by raw-curation-v2 routes.
+      example:
+        detail: detail
+      properties:
+        detail:
+          title: Detail
+          type: string
+      required:
+      - detail
+      title: CurationConflictResponse
+    CurationFactType:
+      enum:
+      - world
+      - experience
+      title: CurationFactType
+      type: string
+    CurationFields:
+      additionalProperties: {}
+      example:
+        occurred_start: 2000-01-23T04:56:07.000+00:00
+        context: context
+        occurred_end: 2000-01-23T04:56:07.000+00:00
+        text: text
+        fact_type: world
+      properties:
+        text:
+          description: "Nonblank replacement text, at most 100000 characters"
+          title: Text
+        context:
+          description: "Replacement context, at most 100000 characters, or null to\
+            \ clear"
+          title: Context
+          nullable: true
+        fact_type:
+          $ref: '#/components/schemas/CurationFactType'
+        occurred_start:
+          format: date-time
+          title: Occurred Start
+          nullable: true
+        occurred_end:
+          format: date-time
+          title: Occurred End
+          nullable: true
+      title: CurationFields
+    CurationInventory:
+      additionalProperties: {}
+      example:
+        source_bytes: 9
+        entities: 5
+        snapshot_bytes: 7
+        observations: 6
+        peers: 1
+        history_rows: 2
+        links: 5
+        targets: 0
+      properties:
+        targets:
+          title: Targets
+        observations:
+          title: Observations
+        peers:
+          title: Peers
+        entities:
+          title: Entities
+        links:
+          title: Links
+        history_rows:
+          title: History Rows
+        snapshot_bytes:
+          title: Snapshot Bytes
+        source_bytes:
+          title: Source Bytes
+      required:
+      - entities
+      - history_rows
+      - links
+      - observations
+      - peers
+      - snapshot_bytes
+      - source_bytes
+      - targets
+      title: CurationInventory
+    CurationPreview:
+      additionalProperties: {}
+      example:
+        protocol: raw-curation-v2
+        closure_revision: closure_revision
+        inventory:
+          source_bytes: 9
+          entities: 5
+          snapshot_bytes: 7
+          observations: 6
+          peers: 1
+          history_rows: 2
+          links: 5
+          targets: 0
+        targets:
+        - source_revision: source_revision
+          memory_id: 046b6c7f-0b8a-43b9-b35d-6489e6daee91
+          memory_revision: memory_revision
+        - source_revision: source_revision
+          memory_id: 046b6c7f-0b8a-43b9-b35d-6489e6daee91
+          memory_revision: memory_revision
+      properties:
+        protocol:
+          default: raw-curation-v2
+          title: Protocol
+        closure_revision:
+          pattern: "^[0-9a-f]{64}$"
+          title: Closure Revision
+        targets:
+          items:
+            $ref: '#/components/schemas/CurationTargetRevision'
+          title: Targets
+        inventory:
+          $ref: '#/components/schemas/CurationInventory'
+      required:
+      - closure_revision
+      - inventory
+      - targets
+      title: CurationPreview
+    CurationPreviewRequest:
+      additionalProperties: {}
+      example:
+        protocol: protocol
+        memory_ids:
+        - 046b6c7f-0b8a-43b9-b35d-6489e6daee91
+        - 046b6c7f-0b8a-43b9-b35d-6489e6daee91
+        - 046b6c7f-0b8a-43b9-b35d-6489e6daee91
+        - 046b6c7f-0b8a-43b9-b35d-6489e6daee91
+        - 046b6c7f-0b8a-43b9-b35d-6489e6daee91
+      properties:
+        protocol:
+          title: Protocol
+        memory_ids:
+          items:
+            format: uuid
+          maxItems: 50
+          minItems: 1
+          title: Memory Ids
+      required:
+      - memory_ids
+      - protocol
+      title: CurationPreviewRequest
+    CurationReceipt:
+      additionalProperties: {}
+      example:
+        protocol: raw-curation-v2
+        batch_id: batch_id
+        bank_id: bank_id
+        maintenance_debt:
+          model_refresh: true
+          consolidation: true
+          memory_ids:
+          - 046b6c7f-0b8a-43b9-b35d-6489e6daee91
+          - 046b6c7f-0b8a-43b9-b35d-6489e6daee91
+          graph: true
+        receipt_revision: receipt_revision
+        manifest_revision: manifest_revision
+        inventory:
+          source_bytes: 9
+          entities: 5
+          snapshot_bytes: 7
+          observations: 6
+          peers: 1
+          history_rows: 2
+          links: 5
+          targets: 0
+        status: applied
+      properties:
+        protocol:
+          default: raw-curation-v2
+          title: Protocol
+        bank_id:
+          title: Bank Id
+        batch_id:
+          description: Unique batch ID; the exact case-sensitive value 'preview' is
+            reserved for the preview route
+          not:
+            enum:
+            - preview
+          pattern: "^[a-zA-Z0-9][a-zA-Z0-9_-]{0,79}$"
+          title: Batch Id
+        manifest_revision:
+          pattern: "^[0-9a-f]{64}$"
+          title: Manifest Revision
+        receipt_revision:
+          pattern: "^[0-9a-f]{64}$"
+          title: Receipt Revision
+        status:
+          enum:
+          - applied
+          - reverted
+          title: Status
+        inventory:
+          $ref: '#/components/schemas/CurationInventory'
+        maintenance_debt:
+          $ref: '#/components/schemas/MaintenanceDebt'
+      required:
+      - bank_id
+      - batch_id
+      - inventory
+      - maintenance_debt
+      - manifest_revision
+      - receipt_revision
+      - status
+      title: CurationReceipt
+    CurationRevertRequest:
+      additionalProperties: {}
+      example:
+        protocol: protocol
+        expected_receipt_revision: expected_receipt_revision
+      properties:
+        protocol:
+          title: Protocol
+        expected_receipt_revision:
+          pattern: "^[0-9a-f]{64}$"
+          title: Expected Receipt Revision
+      required:
+      - expected_receipt_revision
+      - protocol
+      title: CurationRevertRequest
+    CurationTargetRevision:
+      additionalProperties: {}
+      example:
+        source_revision: source_revision
+        memory_id: 046b6c7f-0b8a-43b9-b35d-6489e6daee91
+        memory_revision: memory_revision
+      properties:
+        memory_id:
+          format: uuid
+          title: Memory Id
+        memory_revision:
+          pattern: "^[0-9a-f]{64}$"
+          title: Memory Revision
+        source_revision:
+          pattern: "^[0-9a-f]{64}$"
+          title: Source Revision
+      required:
+      - memory_id
+      - memory_revision
+      - source_revision
+      title: CurationTargetRevision
     DefaultScopesPreview:
       description: The scopes no strategy claims — they consolidate under the bank-wide
         settings.
@@ -8589,6 +9190,45 @@ components:
       - source
       - type
       title: FileContentBlock
+    FileConvertRetainOperationDetails:
+      description: A deterministic terminal outcome from a file conversion operation.
+      properties:
+        operation_type:
+          default: file_convert_retain
+          description: "Discriminator: which operation type this detail describes."
+          enum:
+          - file_convert_retain
+          title: Operation Type
+          type: string
+        failure_class:
+          description: Stable failure class callers may use to decide whether the
+            source artifact is retryable.
+          enum:
+          - low_quality_ocr
+          - no_extractable_text
+          title: Failure Class
+          type: string
+        failure_reason:
+          description: "The OCR rejection reason, or empty_content when every parser\
+            \ extracted no text."
+          enum:
+          - refusal_or_no_text_response
+          - no_meaningful_text
+          - excessive_uncertainty
+          - excessive_repetition
+          - ui_chrome_only
+          - empty_content
+          title: Failure Reason
+          type: string
+        parsers:
+          items:
+            type: string
+          nullable: true
+          type: array
+      required:
+      - failure_class
+      - failure_reason
+      title: FileConvertRetainOperationDetails
     FileRetainResponse:
       description: Response model for file upload endpoint.
       example:
@@ -8707,6 +9347,7 @@ components:
         source_facts:
           $ref: '#/components/schemas/SourceFactsIncludeOptions'
       title: IncludeOptions
+    JsonValue: {}
     KnowledgeNode:
       description: |-
         A node in the knowledge-base tree — a folder or a page.
@@ -9750,6 +10391,32 @@ components:
       - operation
       - status
       title: LlmOperationHealth
+    MaintenanceDebt:
+      additionalProperties: {}
+      example:
+        model_refresh: true
+        consolidation: true
+        memory_ids:
+        - 046b6c7f-0b8a-43b9-b35d-6489e6daee91
+        - 046b6c7f-0b8a-43b9-b35d-6489e6daee91
+        graph: true
+      properties:
+        consolidation:
+          default: true
+          title: Consolidation
+        graph:
+          default: true
+          title: Graph
+        model_refresh:
+          default: true
+          title: Model Refresh
+        memory_ids:
+          items:
+            format: uuid
+          title: Memory Ids
+      required:
+      - memory_ids
+      title: MaintenanceDebt
     MapField-Input:
       description: A field within a map-type entity label group. Supports recursion
         via type='map'.
@@ -11216,6 +11883,16 @@ components:
       - scopes
       - total
       title: ObservationScopesResponse
+    OcrQualityReason:
+      description: Stable reason codes for rejected OCR.
+      enum:
+      - refusal_or_no_text_response
+      - no_meaningful_text
+      - excessive_uncertainty
+      - excessive_repetition
+      - ui_chrome_only
+      title: OcrQualityReason
+      type: string
     OperationProgress:
       description: |-
         Last-known progress snapshot for a long-running async operation.
@@ -11283,7 +11960,7 @@ components:
           nullable: true
           type: string
         details:
-          $ref: '#/components/schemas/RefreshMentalModelOperationDetails'
+          $ref: '#/components/schemas/OperationResponse_details'
         created_at:
           title: Created At
           type: string
@@ -11371,7 +12048,7 @@ components:
           additionalProperties: {}
           nullable: true
         details:
-          $ref: '#/components/schemas/RefreshMentalModelOperationDetails'
+          $ref: '#/components/schemas/OperationResponse_details'
         child_operations:
           items:
             $ref: '#/components/schemas/ChildOperationStatus'
@@ -13497,6 +14174,16 @@ components:
       - $ref: '#/components/schemas/TagGroupAnd-Input'
       - $ref: '#/components/schemas/TagGroupOr-Input'
       - $ref: '#/components/schemas/TagGroupNot-Input'
+    OperationResponse_details:
+      discriminator:
+        mapping:
+          file_convert_retain: '#/components/schemas/FileConvertRetainOperationDetails'
+          refresh_mental_model: '#/components/schemas/RefreshMentalModelOperationDetails'
+        propertyName: operation_type
+      nullable: true
+      oneOf:
+      - $ref: '#/components/schemas/RefreshMentalModelOperationDetails'
+      - $ref: '#/components/schemas/FileConvertRetainOperationDetails'
     Not:
       anyOf:
       - $ref: '#/components/schemas/TagGroupLeaf'

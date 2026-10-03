@@ -119,7 +119,18 @@ def fact_ids_in(prompt: str) -> list[str]:
     down in advance. They arrive in the prompt as ``[uuid] fact text``, so a rule
     reads them back out of the request it is answering.
     """
-    return FACT_ID_IN_PROMPT.findall(prompt)
+    # Instructions also contain worked examples with bracketed UUIDs. Only the
+    # request's data section names source facts, not those examples or recalled
+    # observations. Citing the whole prompt makes an otherwise valid stub reply
+    # fail the server's source-reference validation.
+    _, has_input, input_text = prompt.rpartition("## INPUT\n")
+    if not has_input:
+        raise ValueError("consolidation request has no INPUT data section")
+    _, has_facts, facts_and_observations = input_text.partition("### New facts\n")
+    facts_text, has_observations, _ = facts_and_observations.partition("### Existing observations\n")
+    if not has_facts or not has_observations:
+        raise ValueError("consolidation request has no bounded New facts section")
+    return FACT_ID_IN_PROMPT.findall(facts_text)
 
 
 def observes(text: str) -> Callable[["ChatRequest"], Consolidation]:

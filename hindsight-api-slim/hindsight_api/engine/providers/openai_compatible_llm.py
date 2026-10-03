@@ -387,20 +387,46 @@ def _content_or_error(response: Any, *, provider: str, model: str, scope: str) -
         raise ProviderResponseError(
             f"Provider returned empty message content ({provider}/{model}, scope={scope}, "
             f"finish_reason={finish_reason}, has_tool_calls={bool(tool_calls)}, "
-            f"refusal={bool(refusal)})",
+            f"refusal={bool(refusal)}{_empty_content_attribution(response, message)})",
             retryable=retryable,
         )
     return content, choice
 
 
+def _empty_content_attribution(response: Any, message: Any) -> str:
+    """Name who produced an empty answer, so intermittent empties can be traced to a route.
+
+    Gateways such as OpenRouter fan one model out to several upstreams and report the one
+    that served the call only in a top-level ``provider`` field, and a reasoning model can
+    spend its whole turn in ``reasoning`` and close with no answer. The error text is what
+    reaches the log and the persisted trace, so it carries the upstream, the generation id
+    for the gateway's own lookup, and how much reasoning came back. Only the reasoning's
+    length is included: its text is unfinished deliberation, not an answer, and can quote
+    the prompt.
+    """
+    parts = []
+    upstream = _response_get(response, "provider")
+    if isinstance(upstream, str) and upstream:
+        parts.append(f"upstream={upstream}")
+    generation_id = _response_get(response, "id")
+    if isinstance(generation_id, str) and generation_id:
+        parts.append(f"generation_id={generation_id}")
+    reasoning = _response_get(message, "reasoning") or _response_get(message, "reasoning_content")
+    if isinstance(reasoning, str):
+        parts.append(f"reasoning_chars={len(reasoning)}")
+    return "".join(f", {part}" for part in parts)
+
+
 def _usage_from_openai_response(response: Any) -> LLMResponseUsage:
     """Extract input / visible-output / cached / reasoning counts from an OpenAI-shaped usage block."""
     usage = visible_token_usage(response)
+    upstream = _response_get(response, "provider")
     return LLMResponseUsage(
         input_tokens=usage.input_tokens,
         output_tokens=usage.output_tokens,
         cached_tokens=usage.cached_tokens,
         thoughts_tokens=usage.thoughts_tokens,
+        upstream=upstream if isinstance(upstream, str) and upstream else None,
     )
 
 

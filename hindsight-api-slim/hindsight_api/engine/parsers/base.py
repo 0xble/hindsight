@@ -3,6 +3,14 @@
 from abc import ABC, abstractmethod
 
 
+class NoExtractableContentError(RuntimeError):
+    """A parser completed conversion but found no extractable text."""
+
+    def __init__(self, message: str, parsers: list[str] | None = None):
+        super().__init__(message)
+        self.parsers = parsers or []
+
+
 class UnsupportedFileTypeError(Exception):
     """Raised by a parser when it does not support the given file type."""
 

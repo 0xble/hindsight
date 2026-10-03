@@ -965,22 +965,43 @@ async def entity_prune_pass(
                     if not entity_ids:
                         return _PruneBatch(claimed=0, orphan_entities_pruned=0, stale_cooccurrences_pruned=0)
 
-                    orphaned = await ops.prune_orphan_entities(
-                        conn,
-                        fq_table("entities"),
-                        fq_table("unit_entities"),
-                        bank_id,
-                        entity_ids,
-                    )
+                    from ...db.ops_postgresql import PostgreSQLOps
+
+                    if isinstance(ops, PostgreSQLOps):
+                        orphaned = await ops.prune_orphan_entities(
+                            conn,
+                            fq_table("entities"),
+                            fq_table("unit_entities"),
+                            bank_id,
+                            entity_ids,
+                            pins_table=fq_table("curation_entity_pins"),
+                        )
+                    else:
+                        orphaned = await ops.prune_orphan_entities(
+                            conn,
+                            fq_table("entities"),
+                            fq_table("unit_entities"),
+                            bank_id,
+                            entity_ids,
+                        )
                     # The orphan prune above cascades cooccurrences via FK. This
                     # second delete catches the *stale-count* case: both entities
                     # still exist but no current unit witnesses them together.
-                    stale = await ops.prune_stale_cooccurrences(
-                        conn,
-                        fq_table("entity_cooccurrences"),
-                        fq_table("unit_entities"),
-                        entity_ids,
-                    )
+                    if isinstance(ops, PostgreSQLOps):
+                        stale = await ops.prune_stale_cooccurrences(
+                            conn,
+                            fq_table("entity_cooccurrences"),
+                            fq_table("unit_entities"),
+                            entity_ids,
+                            pins_table=fq_table("curation_entity_pins"),
+                        )
+                    else:
+                        stale = await ops.prune_stale_cooccurrences(
+                            conn,
+                            fq_table("entity_cooccurrences"),
+                            fq_table("unit_entities"),
+                            entity_ids,
+                        )
                     return _PruneBatch(
                         claimed=len(entity_ids),
                         orphan_entities_pruned=orphaned,

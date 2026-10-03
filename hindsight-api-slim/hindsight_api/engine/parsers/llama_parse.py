@@ -10,7 +10,7 @@ from typing import Any
 import aiohttp
 
 from ..aiohttp_session import per_phase_timeout, proxy_env_is_set
-from .base import FileParser, UnsupportedFileTypeError
+from .base import FileParser, NoExtractableContentError, UnsupportedFileTypeError
 
 logger = logging.getLogger(__name__)
 
@@ -57,6 +57,7 @@ class LlamaParseParser(FileParser):
 
         Raises:
             UnsupportedFileTypeError: If the LlamaParse API rejects the file type
+            NoExtractableContentError: If successful parsing returns no usable text
             RuntimeError: If parsing fails for another reason
         """
         content_type = mimetypes.guess_type(filename)[0] or "application/octet-stream"
@@ -101,8 +102,8 @@ class LlamaParseParser(FileParser):
         ) as resp:
             result_data = await _json_or_raise(resp, filename, "fetch markdown result")
         markdown = result_data.get("markdown")
-        if not markdown:
-            raise RuntimeError(f"No content extracted from '{filename}'")
+        if not markdown or not markdown.strip():
+            raise NoExtractableContentError(f"No content extracted from '{filename}'")
         return markdown
 
     def name(self) -> str:

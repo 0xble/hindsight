@@ -5,7 +5,7 @@ guard the fix in CI — unlike the real-LLM integration test, which only trigger
 the path stochastically.
 """
 
-from hindsight_api.engine.response_models import LLMCallResult, TokenUsage
+import hashlib
 import logging
 import types
 import uuid
@@ -26,11 +26,13 @@ from hindsight_api.engine.consolidation.consolidator import (
     _DedupDecision,
     _DedupOutcome,
     _duplicate_create_target,
+    _fetch_exact_observation_candidates,
     _norm_obs_text,
     _TemporalBounds,
 )
 from hindsight_api.engine.db_utils import acquire_with_retry
 from hindsight_api.engine.memories import RecallArms
+from hindsight_api.engine.response_models import LLMCallResult, TokenUsage
 from hindsight_api.engine.search.types import RetrievalResult
 
 #: Dates the skipped CREATE would have been stamped with; the fold must carry them onto the twin.
@@ -96,6 +98,22 @@ def test_norm_obs_text_collapses_whitespace_preserves_case() -> None:
     # Whitespace (incl. newlines) collapses; case is preserved.
     assert _norm_obs_text("  The  User  likes BASIL.\n") == "The User likes BASIL."
     assert _norm_obs_text(None) == ""
+
+
+@pytest.mark.asyncio
+async def test_exact_probe_confirms_text_after_hash_candidate() -> None:
+    """Even a hash-collision candidate cannot silently fold different text."""
+    conn = AsyncMock()
+    conn.fetch.return_value = [
+        {"id": "collision", "text": "Different case"},
+        {"id": "exact", "text": "Same   text"},
+    ]
+    rows = await _fetch_exact_observation_candidates(conn, "bank", ("scope",), ["Same text"])
+    assert rows == [{"id": "exact", "text": "Same   text"}]
+    args = conn.fetch.await_args.args
+    assert "md5(" in args[0] and "tags @>" in args[0]
+    assert args[1:3] == ("bank", ["scope"])
+    assert args[3] == [hashlib.md5(b"Same text", usedforsecurity=False).hexdigest()]
 
 
 def test_create_matching_shown_observation_is_duplicate() -> None:
@@ -241,6 +259,9 @@ def _ctx(threshold: float = 0.97):
         # The merge path builds a search_vector UPDATE clause from the text-search
         # config, so these must be present (production defaults: native/english).
         config=types.SimpleNamespace(
+            # Pure fold tests have no source store; guard-on PG coverage lives
+            # in test_language_prevention_dedup.
+            llm_language_integrity="off",
             consolidation_dedup_threshold=threshold,
             llm_temperature_consolidation=0.0,
             text_search_extension="native",
@@ -303,6 +324,68 @@ async def test_dedup_llm_missing_action_defaults_to_keep() -> None:
     assert result is None
     llm.call.assert_awaited_once()
     conn.fetchval.assert_not_called()  # missing action is a conservative no-merge
+
+
+@pytest.mark.parametrize("shape", ["US$500", "C$500", "$500USD", "$500K+", "$3k/week", "$11.2k–$11.6k"])
+async def test_process_batch_unchanged_currency_merge_has_one_request(shape: str) -> None:
+    from hindsight_api.engine.consolidation import consolidator as C
+
+    text = "The purchase price is " + shape + "."
+    kwargs, conn, llm = _ctx()
+    source_id = str(kwargs["create_source_ids"][0])
+    llm.call.return_value = LLMCallResult(content=_DedupDecision(action="merge", text=text), usage=TokenUsage())
+    engine = types.SimpleNamespace(
+        embeddings=object(),
+        _consolidation_llm_config=types.SimpleNamespace(with_config=lambda *a, **k: llm),
+    )
+    # Drive the real prepare/adjudicate/apply batch path from one parsed CREATE.
+    # Only the unrelated initial consolidation response is supplied, not dedup.
+    with (
+        patch.object(
+            C,
+            "_find_related_observations",
+            new=AsyncMock(return_value=types.SimpleNamespace(results=[], source_facts={})),
+        ),
+        patch.object(
+            C,
+            "_consolidate_batch_with_llm",
+            new=AsyncMock(
+                return_value=C._BatchLLMResult(creates=[C._CreateAction(text=text, source_fact_ids=[source_id])])
+            ),
+        ),
+        patch.object(C, "_effective_scope_limit", return_value=-1),
+        patch.object(C, "_dedup_active", return_value=True),
+        patch.object(C, "_any_live_source_memory", new=AsyncMock(return_value=True)),
+        patch.object(C, "_embed_observation_text", new=AsyncMock(return_value="[0.1, 0.2, 0.3]")),
+        patch.object(C, "_apply_create_action", new=AsyncMock(side_effect=AssertionError("valid merge must fold"))),
+        _patch_probe([_obs(text, 0.99)]),
+    ):
+        result = await C._process_memory_batch(
+            pool=kwargs["pool"],
+            memory_engine=engine,
+            llm_config=object(),
+            bank_id="bank1",
+            memories=[{"id": source_id, "text": text, "tags": []}],
+            request_context=object(),
+            config=kwargs["config"],
+        )
+    assert result == ([{"action": "created"}], 0, False)
+    llm.call.assert_awaited_once()
+    conn.fetchval.assert_awaited_once()
+    assert conn.fetchval.await_args.args[4] == text
+
+
+async def test_dedup_merge_that_drops_detail_is_kept_separate() -> None:
+    kwargs, conn, llm = _ctx()
+    kwargs["create_text"] = "Due 2026-10-02, the assistant must call update_goal."
+    llm.call.return_value = LLMCallResult(
+        content=_DedupDecision(action="merge", text="The task remains open."),
+        usage=TokenUsage(),
+    )
+    with _patch_embed(), _patch_probe([_obs("Due 2026-10-02, the assistant must call update_goal.", 0.98)]):
+        result = await _dedup_reconcile_create(**kwargs)
+    assert result is None
+    conn.fetchval.assert_not_called()
 
 
 def test_dedup_decision_accepts_exact_valid_actions() -> None:
@@ -471,6 +554,9 @@ def _update_ctx(threshold: float = 0.97):
         # The merge path builds a search_vector UPDATE clause from the text-search
         # config, so these must be present (production defaults: native/english).
         config=types.SimpleNamespace(
+            # Pure fold tests have no source store; guard-on PG coverage lives
+            # in test_language_prevention_dedup.
+            llm_language_integrity="off",
             consolidation_dedup_threshold=threshold,
             llm_temperature_consolidation=0.0,
             text_search_extension="native",
@@ -708,13 +794,14 @@ def _batch_engine():
     return types.SimpleNamespace(_consolidation_llm_config=types.SimpleNamespace(with_config=lambda *a, **k: object()))
 
 
-async def _run_create_batch(create_action_result: str):
+async def _run_create_batch(create_action_result: str, deadlock_first: bool = False):
     from hindsight_api.engine.consolidation import consolidator as C
 
     mem_id = str(uuid.uuid4())
     memories = [{"id": mem_id, "text": "Uzbek YouTube content is very rich.", "tags": []}]
     create = C._CreateAction(text="Uzbek YouTube content is very rich.", source_fact_ids=[mem_id])
     llm_result = C._BatchLLMResult(creates=[create])
+    create_outcome = [C.asyncpg.DeadlockDetectedError("deadlock"), create_action_result] if deadlock_first else None
     with (
         patch.object(
             C,
@@ -734,7 +821,10 @@ async def _run_create_batch(create_action_result: str):
             "_dedup_adjudicate",
             new=AsyncMock(return_value=_DedupOutcome(best_id=None, merged_text="", should_merge=False)),
         ),
-        patch.object(C, "_apply_create_action", new=AsyncMock(return_value=create_action_result)) as create_action,
+        patch.object(
+            C, "_apply_create_action", new=AsyncMock(side_effect=create_outcome, return_value=create_action_result)
+        ) as create_action,
+        patch.object(C.asyncio, "sleep", new=AsyncMock()),
     ):
         result = await C._process_memory_batch(
             pool=_DedupBackend(_DedupConn()),
@@ -743,7 +833,7 @@ async def _run_create_batch(create_action_result: str):
             bank_id="bank1",
             memories=memories,
             request_context=object(),
-            config=object(),
+            config=types.SimpleNamespace(llm_language_integrity="off"),
         )
     return result, create_action, mem_id
 
@@ -757,6 +847,14 @@ async def test_process_batch_creates_when_dedup_target_vanished() -> None:
     assert prepared.text == "Uzbek YouTube content is very rich."
     assert prepared.source_memory_ids == [mem_id]
     assert result == ([{"action": "created"}], 0, False)
+
+
+async def test_process_batch_retries_entire_apply_after_deadlock() -> None:
+    result, create_action, mem_id = await _run_create_batch("created", deadlock_first=True)
+    assert create_action.await_count == 2
+    assert result == ([{"action": "created"}], 0, False)
+    assert create_action.await_args is not None
+    assert create_action.await_args.kwargs["prepared"].source_memory_ids == [mem_id]
 
 
 async def test_process_batch_reports_skipped_when_create_skipped() -> None:

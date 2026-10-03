@@ -570,4 +570,4 @@ async def update_memory_units_metadata_and_tags(
         # UPDATE, the same call `update_document` makes.
         await store.mark_consolidated(conn=conn, fq_table=fq_table, bank_id=bank_id, unit_ids=rescoped_ids, when=None)
 
-    return relabelled.updated
+    return updated_count

@@ -1,0 +1,897 @@
+[
+  {
+    "sample_index": 14,
+    "before": "The assistant must not mark a goal complete unless all requirements are fully satisfied and no work remains; otherwise it must keep working.",
+    "after": "The assistant must not mark a goal complete unless all requirements are fully satisfied and no required work remains.",
+    "prior_source_facts": [
+      {
+        "id": "0eecb375-9328-4a15-afa8-de1fead7d1c6",
+        "text": "The assistant must not mark a goal complete unless all requirements are fully satisfied and no required work remains | Involving: Codex CLI (assistant) | To ensure accurate completion status",
+        "mentioned_at": "2026-09-28T15:08:57.632805+00:00"
+      },
+      {
+        "id": "100a5274-6f20-4267-aafb-0eb1ce92bce0",
+        "text": "The assistant should call update_goal only after the completion or blocked audit passes, or when the user explicitly requests pausing the goal; for a requested pause, it should use status \"paused\", report the returned status, and stop goal work. | Involving: assistant | To respect user control over goal pausing.",
+        "mentioned_at": "2026-09-28T15:08:57.922805+00:00"
+      },
+      {
+        "id": "1d685708-3d5c-4dd3-a2ae-5a1ddf7bc316",
+        "text": "The assistant must not mark a goal complete unless current evidence proves every requirement has been satisfied and no required work remains | When: 2026-09-28 | Involving: assistant",
+        "mentioned_at": "2026-09-28T06:41:40.280081+00:00"
+      },
+      {
+        "id": "1defa2cf-2276-4f01-8121-b4891fcd29a2",
+        "text": "The assistant must not mark the goal complete unless current evidence proves every requirement has been satisfied and no required work remains | Involving: assistant",
+        "mentioned_at": "2026-09-28T06:41:38.820081+00:00"
+      },
+      {
+        "id": "260aba33-5894-49d7-b2d4-b8b1502c1c0e",
+        "text": "Brian Le must not mark a goal complete unless all requirements are fully satisfied and no work remains | When: 2026-09-28 | Involving: Brian Le",
+        "mentioned_at": "2026-09-28T10:44:42.527847+00:00"
+      },
+      {
+        "id": "26e8e3cf-dd47-4721-aa33-6d3db6738015",
+        "text": "The assistant must not mark a goal complete unless all requirements are fully satisfied and no required work remains | When: 2026-09-28 | Involving: Codex CLI (assistant) | To ensure rigorous completion verification",
+        "mentioned_at": "2026-09-28T06:41:40.790081+00:00"
+      },
+      {
+        "id": "27e0123a-5874-463b-b88f-0d9da71e21c0",
+        "text": "The assistant must not mark a goal complete unless all requirements are fully satisfied and no required work remains, and must call update_goal with status \"complete\" only when evidence proves every requirement has been met | Involving: Codex CLI",
+        "mentioned_at": "2026-09-28T06:41:40.180081+00:00"
+      },
+      {
+        "id": "2a9d69f4-e59b-465b-9232-372e33e37271",
+        "text": "The assistant must only mark a goal complete when all requirements are fully satisfied and no work remains; otherwise it must keep working | Involving: assistant",
+        "mentioned_at": "2026-09-28T15:08:56.142805+00:00"
+      },
+      {
+        "id": "4a295fa8-3e5b-4418-9101-8106f7fb9e86",
+        "text": "The assistant must only call update_goal with status \"complete\" when all requirements are satisfied and evidence proves every requirement has been met; otherwise it must keep working | Involving: assistant",
+        "mentioned_at": "2026-09-28T10:44:43.717847+00:00"
+      },
+      {
+        "id": "71b71df9-1c13-49a6-a44c-863e4bd5a972",
+        "text": "Finish with a candid verified account of delivered, retired and unresolved scope; do not claim full E2E completion while material required outcomes remain unproven | Involving: Brian Le",
+        "mentioned_at": "2026-09-27T19:22:43.295441+00:00"
+      },
+      {
+        "id": "7602618d-6d01-4c85-a9b2-fbb04cb27850",
+        "text": "The assistant must not mark a goal complete unless all requirements are fully satisfied and no required work remains | Involving: assistant",
+        "mentioned_at": "2026-09-28T18:27:06.445991+00:00"
+      },
+      {
+        "id": "91a41e39-125e-4c8c-a16c-c3b35feaaa95",
+        "text": "The assistant must not mark a goal complete unless all requirements are fully satisfied and no required work remains | Involving: assistant | Ensures rigorous completion criteria",
+        "mentioned_at": "2026-09-28T10:44:41.917847+00:00"
+      },
+      {
+        "id": "9765e0be-c128-4a71-8411-c1a22e95eeb7",
+        "text": "The assistant must call update_goal only after the completion or blocked audit passes, or when the user explicitly requests pausing the goal; for a requested pause, it should use status \"paused\", report the returned status, and stop goal work. | Involving: assistant",
+        "mentioned_at": "2026-09-28T10:44:43.447847+00:00"
+      },
+      {
+        "id": "a6d02da2-5a7c-4bf9-8277-833fdf215d3a",
+        "text": "The assistant must not mark a goal complete unless all requirements are fully satisfied and no required work remains | Involving: assistant",
+        "mentioned_at": "2026-09-27T21:31:18.957989+00:00"
+      },
+      {
+        "id": "b9a32766-e03c-4692-b02d-dfff49662f79",
+        "text": "The assistant must not mark a goal complete unless all requirements are fully satisfied and no required work remains | Involving: assistant",
+        "mentioned_at": "2026-09-27T21:31:17.827989+00:00"
+      },
+      {
+        "id": "c0a7a9d5-e3a6-4990-8084-d0fa200395e5",
+        "text": "The assistant must not mark a goal complete unless current evidence proves every requirement has been satisfied and no required work remains | Involving: assistant",
+        "mentioned_at": "2026-09-28T02:43:30.141074+00:00"
+      },
+      {
+        "id": "c86d15c3-f758-4afe-a89c-d038c8a5872d",
+        "text": "The assistant must not mark the goal complete unless all requirements are fully satisfied and no work remains | Involving: assistant | to ensure thorough completion",
+        "mentioned_at": "2026-09-27T19:22:43.435441+00:00"
+      }
+    ],
+    "new_source_facts": [
+      {
+        "id": "78150171-4bf1-4ac6-b38f-b5b98ae1a743",
+        "text": "The agent must not mark a goal complete unless all requirements are fully satisfied and no required work remains | Involving: Codex CLI (assistant) | To ensure objective completion is verified",
+        "mentioned_at": "2026-09-28T18:27:03.515991+00:00"
+      }
+    ],
+    "classification": "REGRESSION"
+  },
+  {
+    "sample_index": 20,
+    "before": "HERMES-105 had not been filed upstream and had no upstream pull request; Hermes's native -w, /worktree new, and Kanban worktree paths already used repository‑local .worktrees/; the patch adds advisory coverage for manual terminal commands.",
+    "after": "The active Hermes maintenance worktree contained substantial unpublished work from another session; as of September 1, 2026, HERMES-105 had not been filed upstream and had no upstream pull request; Hermes's native `-w`, `/worktree new`, and Kanban worktree paths already used repository‑local `.worktrees/`; the patch adds advisory coverage for manual terminal commands.",
+    "prior_source_facts": [
+      {
+        "id": "48aea0de-9ba5-4283-9e9e-948b237fb97e",
+        "text": "HERMES-105 has not been filed upstream and has no upstream pull request as of September 1, 2026. Hermes’s native `-w`, `/worktree new`, and Kanban worktree paths already use repository-local `.worktrees/`; the patch adds advisory coverage for manual terminal commands. | When: As of September 1, 2026 | Involving: Hermes Agent project maintainers | The change supplements existing repository-local worktree workflows rather than replacing them.",
+        "mentioned_at": "2026-09-15T03:43:40.62+00:00"
+      },
+      {
+        "id": "4ebd8646-2d37-4b22-9a52-ffd21c14264e",
+        "text": "As of September 1, 2026, HERMES-105 had not been filed upstream and had no upstream pull request. Hermes's native `-w`, `/worktree new`, and Kanban worktree paths already used repository-local `.worktrees/`; the patch adds advisory coverage for manual terminal commands. | When: September 1, 2026 | Involving: Hermes Agent maintainers | The change supplements existing repository-local worktree flows with warnings for manual terminal usage.",
+        "mentioned_at": "2026-09-15T03:32:30.04+00:00"
+      },
+      {
+        "id": "937dfacd-2b46-4619-af85-99f3533d21a7",
+        "text": "As of September 1, 2026, HERMES-105 had not been filed upstream; Hermes's native `-w`, `/worktree new`, and Kanban worktree paths already used repository-local `.worktrees/`, while the patch added advisory coverage for manual terminal commands. | When: As of September 1, 2026 | Involving: Hermes project | The patch supplements existing native worktree handling rather than replacing it.",
+        "mentioned_at": "2026-09-15T03:43:37.03+00:00"
+      },
+      {
+        "id": "ee1bd818-9326-428d-bfe6-a34f540aa58d",
+        "text": "HERMES-105 proposes a non-blocking warning for manual Git worktree destinations outside repository-local `.worktrees/` paths. The warning should inspect direct terminal commands across separators, `git -C`, wrappers, options, and traversal, while preserving legitimate external worktrees and applying to foreground and background tool results. | When: September 1, 2026 | Involving: Hermes project | A live inventory found worktrees outside the repository-owned lifecycle, obscuring ownership and allowing redundant or abandoned trees.",
+        "mentioned_at": "2026-09-15T03:43:37.02+00:00"
+      }
+    ],
+    "new_source_facts": [
+      {
+        "id": "86d83b00-d810-40d3-ba2f-2d3965ddfd04",
+        "text": "As of September 1, 2026, no upstream implementation had been filed. Hermes’s native `-w` and `/worktree new` commands, plus Kanban worktree paths, already use repository-local `.worktrees/`; the patch adds advisory coverage for manual terminal commands. | When: September 1, 2026 | Involving: Hermes Agent | Records the upstream tracking status and the scope of the local patch.",
+        "mentioned_at": "2026-09-15T03:43:50.77+00:00"
+      }
+    ],
+    "classification": "UNSUPPORTED_ADDITION"
+  },
+  {
+    "sample_index": 27,
+    "before": "If the audit confirms all requirements are satisfied, the assistant must call update_goal with status \"complete\" and report the final consumed token budget to the user after the call succeeds.",
+    "after": "If the achieved goal has a token budget, the assistant must report the final consumed token budget to the user after update_goal succeeds.",
+    "prior_source_facts": [
+      {
+        "id": "1c59a023-64ec-4aa0-a808-18ce2f18a2fc",
+        "text": "If the objective is achieved, the assistant must call update_goal with status \"complete\" to preserve usage accounting. | Involving: assistant | To record completion for billing or tracking.",
+        "mentioned_at": "2026-09-23T14:38:28.791836+00:00"
+      },
+      {
+        "id": "2193dbf1-db0f-483b-adb9-5fbf32bdf498",
+        "text": "If evidence proves all requirements are satisfied, the assistant should call update_goal with status \"complete\" and report the final consumed token budget to the user after update_goal succeeds | Involving: Codex CLI (assistant) | To preserve usage accounting and inform the user of token consumption",
+        "mentioned_at": "2026-09-23T14:41:06.44165+00:00"
+      },
+      {
+        "id": "239a3a3c-4d84-4d79-a8e1-430ff7e45087",
+        "text": "If the audit confirms all requirements are satisfied, the assistant must call update_goal with status \"complete\" and report the final consumed token budget to the user after the call succeeds. | When: 2026-09-23 | Involving: Codex CLI (assistant) | To preserve usage accounting and provide the user with accurate token consumption information.",
+        "mentioned_at": "2026-09-23T14:41:08.07165+00:00"
+      },
+      {
+        "id": "2fa3a3bc-d68b-4f6c-bd88-946e21c906ad",
+        "text": "If objective achieved, call update_goal with status \"complete\" and report final token budget after success | When: 2026-09-23 | Involving: Brian Le (user) and Codex CLI (assistant) | To preserve usage accounting",
+        "mentioned_at": "2026-09-23T14:32:41.074965+00:00"
+      },
+      {
+        "id": "525b7b75-3639-4ef8-bb36-3c525945211b",
+        "text": "If the audit proves all requirements are satisfied and no work remains, the goal should be marked complete by calling update_goal with status \"complete\" and reporting the final token budget to the user | When: 2026-09-23 | To maintain usage accounting and provide accurate user information",
+        "mentioned_at": "2026-09-23T14:32:42.004965+00:00"
+      },
+      {
+        "id": "5a1e785d-fd92-431b-865d-038bd57d09d6",
+        "text": "If objective achieved, call update_goal with status \"complete\" and report final token budget after success | When: 2026-09-23 | Involving: Brian Le (user) and Codex CLI (assistant) | Maintain usage accounting",
+        "mentioned_at": "2026-09-23T14:32:43.254965+00:00"
+      },
+      {
+        "id": "603f4a6b-356d-42c6-a1d7-1bb5f2a55c14",
+        "text": "If objective achieved, Codex CLI should call update_goal with status \"complete\" and report final token budget after success | When: 2026-09-23 | Involving: Codex CLI (assistant) | Maintain usage accounting",
+        "mentioned_at": "2026-09-23T14:32:40.544965+00:00"
+      },
+      {
+        "id": "68366210-6b4a-4228-b5f9-14cf74acc3c2",
+        "text": "If objective achieved, Codex CLI should call update_goal with status \"complete\" and report final token budget after success | When: 2026-09-23 | Involving: Codex CLI (assistant) | Maintain usage accounting",
+        "mentioned_at": "2026-09-23T14:32:41.654965+00:00"
+      },
+      {
+        "id": "718c9c3d-47be-4eb7-9a52-650ea77d5a75",
+        "text": "If objective achieved, call update_goal with status \"complete\" and report final token budget after success | When: 2026-09-23 | Involving: Brian Le (user) and Codex CLI (assistant) | Preserve usage accounting",
+        "mentioned_at": "2026-09-23T14:32:41.404965+00:00"
+      },
+      {
+        "id": "74fda263-3a1f-4fb4-805d-a9535b64c90a",
+        "text": "If objective achieved, call update_goal with status \"complete\" to preserve usage accounting | When: 2026-09-23 | Involving: Brian Le (user) and Codex CLI (assistant) | Maintain system accounting",
+        "mentioned_at": "2026-09-23T14:32:42.784965+00:00"
+      },
+      {
+        "id": "7ad30933-3e37-4baa-840c-c6ecfe39be62",
+        "text": "If objective achieved, call update_goal with status \"complete\" and report final token budget after success | When: 2026-09-23 | Involving: Brian Le (user) and Codex CLI (assistant) | Maintain usage accounting and inform user of token consumption",
+        "mentioned_at": "2026-09-23T14:38:29.371836+00:00"
+      },
+      {
+        "id": "7bb9e14f-9380-4a20-be63-3f1fbf01947d",
+        "text": "When the objective is achieved, the assistant should call update_goal with status \"complete\" and report the final consumed token budget if applicable | Involving: Brian Le (user) and Codex CLI (assistant) | To preserve usage accounting and inform the user",
+        "mentioned_at": "2026-09-23T14:41:07.08165+00:00"
+      },
+      {
+        "id": "8263c562-b3c4-46ea-a381-1e3fab3cc0ef",
+        "text": "Only mark goal complete when every requirement is satisfied and no required work remains; otherwise continue working | When: 2026-09-23 | Involving: Brian Le (user) and Codex CLI (assistant) | Maintain accurate usage accounting",
+        "mentioned_at": "2026-09-23T14:32:40.844965+00:00"
+      },
+      {
+        "id": "8703bdc0-b7c3-4845-b8aa-33de1969d492",
+        "text": "When the objective is achieved, the assistant should call update_goal with status \"complete\" and report the final consumed token budget if the goal has a token budget | Involving: Codex CLI (assistant) | To preserve usage accounting and inform the user of token consumption",
+        "mentioned_at": "2026-09-23T14:32:40.424965+00:00"
+      },
+      {
+        "id": "a53074d8-6776-4f9f-a4a5-e2effdab644e",
+        "text": "If the objective is achieved, the assistant must call update_goal with status \"complete\" and report the final consumed token budget to the user after update_goal succeeds; otherwise, it must keep working | Involving: Codex CLI (assistant)",
+        "mentioned_at": "2026-09-23T14:38:29.621836+00:00"
+      },
+      {
+        "id": "acfacd23-65e2-49b6-b0f7-72adc01ef5ec",
+        "text": "If objective achieved, call update_goal with status \"complete\" and report final token budget after success | When: 2026-09-23 | Involving: Brian Le (user) and Codex CLI (assistant) | Maintain usage accounting",
+        "mentioned_at": "2026-09-23T14:32:41.734965+00:00"
+      },
+      {
+        "id": "b04dd865-e34e-41d1-8210-19bb06239cf6",
+        "text": "Goal should only be marked complete when evidence proves every requirement satisfied and no required work remains; otherwise continue working | When: 2026-09-23 | Involving: Brian Le (user) and Codex CLI (assistant) | Prevent premature completion claims",
+        "mentioned_at": "2026-09-23T14:32:39.924965+00:00"
+      },
+      {
+        "id": "b09588c9-5f1c-43df-a95a-ae33ef04bb5c",
+        "text": "Evidence must be direct and authoritative: files, command output, test results, PR state, rendered artifacts, runtime behavior | When: 2026-09-23 | Involving: Brian Le (user) and Codex CLI (assistant) | To avoid false positives in completion",
+        "mentioned_at": "2026-09-23T14:32:44.594965+00:00"
+      },
+      {
+        "id": "b0fa9e20-8009-4f32-90af-635d43a53394",
+        "text": "Codex CLI is the terminal coding agent assisting Brian Le | When: 2026-09-23 | Involving: Codex CLI",
+        "mentioned_at": "2026-09-23T14:32:42.064965+00:00"
+      },
+      {
+        "id": "b11ea87d-7480-436b-bc5f-9ba714cfea19",
+        "text": "The assistant must not mark a goal complete merely because the budget is nearly exhausted or because it is stopping work | Involving: assistant | To avoid premature goal completion",
+        "mentioned_at": "2026-09-23T14:32:42.564965+00:00"
+      },
+      {
+        "id": "b6349c8f-4941-444e-83d7-e906996ddeb9",
+        "text": "The audit must prove completion, not merely fail to find obvious remaining work",
+        "mentioned_at": "2026-09-23T14:32:40.124965+00:00"
+      },
+      {
+        "id": "b65c9ead-903f-4e4f-b7f9-45265ab1737d",
+        "text": "If the objective is achieved, the assistant should call update_goal with status \"complete\" and report the final consumed token budget to the user after update_goal succeeds | When: 2026-09-23 | Involving: assistant | To preserve usage accounting",
+        "mentioned_at": "2026-09-23T14:32:40.994965+00:00"
+      },
+      {
+        "id": "b694c837-5430-477b-8144-cbbe76a6f3bb",
+        "text": "If evidence is incomplete, weak, indirect, or missing, the goal must remain incomplete and work should continue | When: 2026-09-23 | Involving: Brian Le (user) and Codex CLI (assistant) | Prevent premature completion claims",
+        "mentioned_at": "2026-09-23T14:32:41.314965+00:00"
+      },
+      {
+        "id": "b69f97e3-4a46-409e-a783-9b2686ad9f5f",
+        "text": "The review process will not commit or push until the review and full UI pass, after which the candidate will be preserved, PR65 updated, and the remote head/body verified awaiting full gate and auto-merge | When: 2026-09-23 | To ensure code quality before promotion",
+        "mentioned_at": "2026-09-23T14:32:43.424965+00:00"
+      },
+      {
+        "id": "c2c02994-c7d9-482b-93f7-dc38fddf7334",
+        "text": "If objective achieved, call update_goal with status \"complete\" and report final token budget after success | When: 2026-09-23 | Involving: Brian Le (user) and Codex CLI (assistant) | Preserve usage accounting and inform user",
+        "mentioned_at": "2026-09-23T14:32:40.854965+00:00"
+      },
+      {
+        "id": "c37d6438-353d-4653-8dd2-f4135c8001cb",
+        "text": "Upon achieving the objective, the assistant should call update_goal with status \"complete\" and report final token budget if applicable | When: 2026-09-23 | Involving: Codex CLI (assistant) | Maintain usage accounting and inform user",
+        "mentioned_at": "2026-09-23T14:32:41.324965+00:00"
+      },
+      {
+        "id": "d3cc1deb-dd68-4f3f-b3f6-d31317e72452",
+        "text": "If the objective is achieved, the assistant should call update_goal with status \"complete\" and report the final consumed token budget to the user after update_goal succeeds | When: 2026-09-23 | Involving: Codex CLI (assistant) | To preserve usage accounting and inform the user of token consumption",
+        "mentioned_at": "2026-09-23T14:32:44.214965+00:00"
+      },
+      {
+        "id": "df483bf6-2411-4f9f-bf36-7ae4cf631bb9",
+        "text": "If the objective is achieved, the assistant should call update_goal with status \"complete\" and report the final consumed token budget to the user after update_goal succeeds. | When: 2026-09-23 | Involving: assistant | To preserve usage accounting",
+        "mentioned_at": "2026-09-23T14:32:41.154965+00:00"
+      },
+      {
+        "id": "e9965dc9-c770-41ef-8e92-2b75e15676ba",
+        "text": "If the objective is achieved, the assistant should call update_goal with status \"complete\" and report the final consumed token budget to the user after update_goal succeeds | When: 2026-09-23 | Involving: Codex CLI (assistant)",
+        "mentioned_at": "2026-09-23T14:32:40.324965+00:00"
+      },
+      {
+        "id": "f1143403-0d37-465a-94c4-e11fbbfc6b61",
+        "text": "If the objective is achieved, the assistant should call update_goal with status \"complete\" and report the final consumed token budget to the user after update_goal succeeds | When: 2026-09-23 | Involving: assistant | Ensures usage accounting is preserved",
+        "mentioned_at": "2026-09-23T14:32:41.614965+00:00"
+      },
+      {
+        "id": "f589a9e1-0ee6-41e0-b6a0-37dd1059f064",
+        "text": "Upon achieving objective, the assistant must call update_goal with status \"complete\" and report final token budget if applicable | When: 2026-09-23 | Involving: Codex CLI (assistant) | Maintain usage accounting and inform user of token consumption",
+        "mentioned_at": "2026-09-23T14:38:30.491836+00:00"
+      },
+      {
+        "id": "fcd36e4c-4cc3-4bbd-9d6d-2ab4565bbc5e",
+        "text": "The assistant should not rely on intent, partial progress, memory of earlier work, or a plausible final answer as proof of completion. | Involving: assistant | To ensure objective fulfillment is fully verified.",
+        "mentioned_at": "2026-09-23T14:38:30.161836+00:00"
+      }
+    ],
+    "new_source_facts": [
+      {
+        "id": "a2ea8242-66c3-4333-9253-7dae4c673bd7",
+        "text": "The assistant must report the final consumed token budget to the user after update_goal succeeds when the achieved goal has a token budget | Involving: assistant",
+        "mentioned_at": "2026-09-28T18:27:06.465991+00:00"
+      }
+    ],
+    "classification": "REGRESSION"
+  },
+  {
+    "sample_index": 31,
+    "before": "Brian Le authorized a newest‑five root‑group display cap for the Hermes delegation UI, superseding the earlier no‑row‑truncation behavior. The cap governs delegation root‑window presentation and preserves persisted admission ordering across consolidated execution records, with admission using chronology rather than activity chronology, invalid non‑null limits falling back to five, and invalid batches rejected wholly before side effects. The delegation card root‑window configuration `display.delegation_max_visible_roots` uses the existing profile/platform resolver, with invalid non‑null values defaulting to 5; this setting is neither result retirement nor flood control. The maximum visible delegation roots must use the existing profile/platform resolver; invalid non‑null values default to five. The hardcoded label policy derives admission limits from runtime parent depth as 24, 20, 16, or 12 Unicode code points, with a minimum of 12.",
+    "after": "The proposed display.delegation_max_visible_roots setting uses the existing profile/platform resolver; invalid non‑null values default to five. A hardcoded label policy derives admission limits from runtime parent depth as 24, 20, 16, or 12 Unicode code points, with a floor of 12, while preserving existing same‑row resume labels and canonical profile‑role names. The proposal explicitly avoids introducing a label‑configuration framework or additional display switches.",
+    "prior_source_facts": [
+      {
+        "id": "308e5f2c-0a5a-4d8d-ab86-a1f880b858ea",
+        "text": "The September 13, 2026 delegation scope supersedes the earlier no-row-truncation comment: it preserves the full lifecycle ledger and whole descendant groups, ordered by admission chronology rather than activity chronology. `display.delegation_max_visible_roots` uses the existing profile/platform resolver, with invalid non-null values defaulting to 5; this setting is neither result retirement nor flood control. | When: September 13, 2026 | Defines the required whole-root delegation semantics.",
+        "mentioned_at": "2026-09-15T03:32:30+00:00"
+      },
+      {
+        "id": "3de223a1-5406-4d56-a42a-e1272f3651a6",
+        "text": "The delegation root-window policy caps the display at the newest five root groups, preserves complete lifecycle ledgers and whole descendant groups, uses admission chronology rather than activity chronology, and treats invalid non-null display.delegation_max_visible_roots values as five. The coupled label-length policy derives limits of 24, 20, 16, or 12 Unicode code points from runtime parent depth, floors at 12, and rejects an entire invalid batch before side effects. | When: The authorization was recorded on September 13, 2026. | The five-root cap superseded an earlier no-row-truncation comment and is explicitly distinguished from result retirement or flood control.",
+        "mentioned_at": "2026-09-15T03:43:37.03+00:00"
+      },
+      {
+        "id": "5060632b-7d9e-462d-94ea-1ed296babd8f",
+        "text": "Brian Le explicitly authorized a newest-five root-group display cap for the Hermes delegation UI. | When: September 13, 2026 | Involving: Brian Le (user) | The cap governs delegation root-window presentation and preserves persisted admission ordering across consolidated execution records.",
+        "mentioned_at": "2026-09-14T02:03:51.03+00:00"
+      },
+      {
+        "id": "70037011-f8c9-4758-af63-bac190ef98f1",
+        "text": "Brian Le explicitly authorized limiting the delegation root-group display to the newest five root groups, superseding the earlier no-row-truncation decision. The full lifecycle ledger and whole descendant groups remain preserved, ordered by admission chronology rather than activity. | When: September 13, 2026 | Involving: Brian Le (user) | This establishes the current delegation root-window display policy without retiring results or acting as flood control.",
+        "mentioned_at": "2026-09-14T14:31:21.08+00:00"
+      },
+      {
+        "id": "77264a96-646a-4d06-93c1-ebe2b0377a18",
+        "text": "Brian Le explicitly authorized the newest-five root-group display cap on September 13, 2026, superseding the earlier no-row-truncation comment. The full lifecycle ledger and whole descendant groups must be preserved in admission chronology; this is not result retirement or flood control, and activation remains parent-owned. | When: September 13, 2026 | Involving: Brian Le (user) | The authorization establishes the governing root-display semantics and supersedes an earlier instruction.",
+        "mentioned_at": "2026-09-14T05:32:47.09+00:00"
+      },
+      {
+        "id": "95f36542-3ac9-4162-a64c-d8b22b84af63",
+        "text": "Brian Le explicitly authorized limiting the delegation root-group display to the newest five root groups on September 13, 2026, superseding the earlier no-row-truncation instruction. Full lifecycle records and complete descendant groups must remain preserved, ordered by admission chronology rather than activity. | When: September 13, 2026 | Involving: Brian Le (user) | Defines the authorized root-group display behavior while preserving lifecycle and descendant data.",
+        "mentioned_at": "2026-09-14T05:19:02.07+00:00"
+      },
+      {
+        "id": "a69150a3-5fea-45e8-b37e-048881a36224",
+        "text": "The newest-five delegation root-group display cap was explicitly authorized on September 13, 2026, with persisted admission ordering across consolidated execution records. Activation remains separate and parent-owned. | When: September 13, 2026 | The cap and ordering behavior are intended to be preserved as separate runtime capabilities.",
+        "mentioned_at": "2026-09-14T02:03:51.02+00:00"
+      },
+      {
+        "id": "c0c83a68-9037-465e-a31e-ec77b77e87e2",
+        "text": "Brian Le authorized a newest-five root-group display cap for the Hermes delegation UI, superseding the earlier no-row-truncation behavior. | When: September 13, 2026 | Involving: Brian Le (user) | This is a user-approved change to delegation-card presentation behavior.",
+        "mentioned_at": "2026-09-14T03:40:40.02+00:00"
+      },
+      {
+        "id": "c64d2e89-c22f-41e2-af37-399394d7ed16",
+        "text": "The maintenance fork specifies a newest-five display cap for delegation root groups, while preserving the full lifecycle ledger and whole descendant groups; admission uses chronology rather than activity chronology, invalid non-null limits fall back to five, and invalid batches are rejected wholly before side effects instead of being truncated. | When: September 13, 2026 | Involving: Brian Le (user), Hermes Agent | The candidate records this as the intended delegation-root display and admission contract.",
+        "mentioned_at": "2026-09-15T03:32:31.16+00:00"
+      },
+      {
+        "id": "cd1a0267-ce7d-4080-b049-6b1011dec244",
+        "text": "Brian Le explicitly authorized a newest-five root-group display cap on September 13, 2026, with admission ordering persisted across consolidated execution records. | When: September 13, 2026 | Involving: Brian Le (user) | The authorization is intended to govern delegation root-window display behavior and requires verification with root-cap and retention suites.",
+        "mentioned_at": "2026-09-14T03:39:21+00:00"
+      },
+      {
+        "id": "e85fcf2e-b7df-454e-9822-86c66e2bba0c",
+        "text": "The maximum visible delegation roots must use the existing profile/platform resolver; invalid non-null values default to five. The hardcoded label policy derives admission limits from runtime parent depth as 24, 20, 16, or 12 Unicode code points, with a minimum of 12. | Defines the required delegation root-cap and label-length behavior without introducing a new label-configuration framework.",
+        "mentioned_at": "2026-09-15T03:43:37.01+00:00"
+      },
+      {
+        "id": "ec2cabd0-4b44-4002-bb2c-0f172e481bab",
+        "text": "The source states that the newest-five root-group display cap was explicitly authorized on September 13, 2026, superseding an earlier no-row-truncation rule. The full lifecycle ledger and whole descendant groups must remain preserved, with groups admitted in admission chronology rather than activity chronology; invalid non-null values for display.delegation_max_visible_roots default to five. | When: September 13, 2026 | This defines the required root-group display and retention behavior.",
+        "mentioned_at": "2026-09-14T05:19:02.03+00:00"
+      },
+      {
+        "id": "f662aa6e-1a8c-462d-85ac-6043f6e25acc",
+        "text": "The source states that the user explicitly authorized a newest-five root-group display cap, superseding an earlier no-row-truncation comment; the full lifecycle ledger and whole descendant groups should be preserved, with admission chronology rather than activity chronology. | When: September 13, 2026 | Involving: user | The display.delegation_max_visible_roots setting uses the existing profile/platform resolver, and invalid non-null values fall back to five.",
+        "mentioned_at": "2026-09-14T03:40:39.02+00:00"
+      }
+    ],
+    "new_source_facts": [
+      {
+        "id": "8de84fc8-1fd3-4ebe-8ab7-d8ba0732ec84",
+        "text": "The proposed display.delegation_max_visible_roots setting uses the existing profile/platform resolver; invalid non-null values default to five. A hardcoded label policy derives admission limits from runtime parent depth as 24, 20, 16, or 12 Unicode code points, with a floor of 12, while preserving existing same-row resume labels and canonical profile-role names. | Involving: Hermes Agent | The proposal explicitly avoids introducing a label-configuration framework or additional display switches.",
+        "mentioned_at": "2026-09-15T03:43:46.77+00:00"
+      }
+    ],
+    "classification": "REGRESSION"
+  },
+  {
+    "sample_index": 32,
+    "before": "Pinned GitHub Actions dependencies were refreshed: astral‑sh/setup‑uv from 8.2.0 to 10.0.1, actions/checkout from 6.0.2 to 7.0.1 with the documented v7 fork‑data opt‑in on the trusted policy workflow, plus reviewed Hadolint, Cachix, and OSV action SHAs, with automated dependency maintenance performed without changing shipped Hermes behavior. The merge wrappers incorporated already‑registered dependency refreshes for setup‑uv 9.0.0, checkout 7.0.1, and grouped GitHub Actions updates without adding behavior.",
+    "after": "Pinned GitHub Actions dependencies were refreshed: astral‑sh/setup‑uv from 8.2.0 to 10.0.1, actions/checkout from 6.0.2 to 7.0.1 with the documented v7 fork‑data opt‑in on the trusted policy workflow, plus reviewed Hadolint, Cachix, and OSV action SHAs, with automated dependency maintenance performed without changing shipped Hermes behavior.",
+    "prior_source_facts": [
+      {
+        "id": "1e8ee85c-1098-49c5-bb2b-024a6b93e816",
+        "text": "Pinned GitHub Actions dependencies were refreshed: astral-sh/setup-uv from 8.2.0 to 10.0.1, actions/checkout from 6.0.2 to 7.0.1 with the documented v7 fork-data opt-in on the trusted policy workflow, and the reviewed Hadolint, Cachix, and OSV action SHAs. | Automated dependency maintenance with no shipped Hermes behavior.",
+        "mentioned_at": "2026-09-15T03:43:37.04+00:00"
+      },
+      {
+        "id": "3f3471b7-8acd-4e78-be9a-ca85c190538a",
+        "text": "Several GitHub-authored merge wrappers incorporated already-registered dependency refreshes for setup-uv 9.0.0, checkout 7.0.1, and grouped GitHub Actions updates without adding behavior. | These merges were administrative dependency updates only.",
+        "mentioned_at": "2026-09-15T03:43:37.03+00:00"
+      },
+      {
+        "id": "9d261b0b-c945-4c7e-8c5a-12e58d124dd8",
+        "text": "Pinned GitHub Actions dependencies were refreshed: astral-sh/setup-uv from 8.2.0 to 10.0.1, actions/checkout from 6.0.2 to 7.0.1 with the documented v7 fork-data opt-in on the trusted policy workflow, plus reviewed Hadolint, Cachix, and OSV action SHAs. | Automated maintenance of pinned CI dependencies without changing shipped Hermes behavior.",
+        "mentioned_at": "2026-09-15T03:32:30.03+00:00"
+      }
+    ],
+    "new_source_facts": [
+      {
+        "id": "8f9e1b88-1002-4661-a663-36695d535bcc",
+        "text": "The fork updated CI policy and pinned GitHub Actions dependencies, including setup-uv 10.0.1, checkout 7.0.1, and reviewed Hadolint, Cachix, and OSV action SHAs. | The updates are administrative dependency and workflow-policy maintenance with no shipped Hermes behavior.",
+        "mentioned_at": "2026-09-15T03:43:39.37+00:00"
+      }
+    ],
+    "classification": "REGRESSION"
+  },
+  {
+    "sample_index": 34,
+    "before": "The active goal remains to complete the Meridian platform migration end to end, centralize data in Brian’s Supabase project, replace Convex, Notion and Zapier dependencies, and prove production continuity with zero active Zaps. The current goal is to finish the migration with zero operational reliance on Notion, Convex, and Zapier, and to ensure staff can browse and edit through replacement screens. The chosen first step is an admin‑only, read‑only Supabase RPC boundary for all four operator cohorts and their relationships, with no Notion writer switch.",
+    "after": "The active goal remains to complete the Meridian platform migration end to end, centralize data in Brian’s Supabase project, replace Convex, Notion and Zapier dependencies, prove production continuity with zero active Zaps, and ensure complete independence from Notion, Convex, and Zapier.",
+    "prior_source_facts": [
+      {
+        "id": "3f858bf6-99a4-4004-b137-bb71e65d4bf3",
+        "text": "Meridian migration goal is active and requires no remaining operational reliance on Notion, including a usable replacement for staff workflows, alongside Supabase, Trigger.dev, Zapier, Convex, and repository cutovers | When: 2026-09-28 | Involving: Brian Le (user)",
+        "mentioned_at": "2026-09-28T18:27:03.945991+00:00"
+      },
+      {
+        "id": "7f3f72b6-3c3c-42df-9bcb-2597d79dedf6",
+        "text": "The assistant’s current goal is to complete the Meridian migration with zero operational reliance on Notion, Convex, and Zapier, and to ensure staff can browse and edit through replacement screens | When: 2026-09-28 | Involving: assistant | This is the active thread goal",
+        "mentioned_at": "2026-09-28T15:08:56.062805+00:00"
+      },
+      {
+        "id": "7fa1526e-4dd3-4e08-8150-b33dc398ac52",
+        "text": "The chosen first step is an admin-only, read-only Supabase RPC boundary for all four operator cohorts and their relationships, with no Notion writer switch | When: 2026-09-28 | Involving: Brian Le",
+        "mentioned_at": "2026-09-28T15:08:56.492805+00:00"
+      },
+      {
+        "id": "f2d0bd50-ab39-40bf-8105-805ae5d0530a",
+        "text": "Centralize retained operational and historical data in Brian’s personal Supabase meridian project (aoshjgooobooonzcyklq, Oregon/us-west-2), replacing all retained Convex, Notion and other overlapping data‑store dependencies | Involving: Brian Le (user)",
+        "mentioned_at": "2026-09-28T15:08:58.032805+00:00"
+      },
+      {
+        "id": "f31c0ccf-1225-45c1-8ddb-13fe43e4845d",
+        "text": "The active goal remains to complete the Meridian platform migration end to end, centralize data in Brian's Supabase project, replace Convex, Notion and Zapier dependencies, and prove production continuity with zero active Zaps | Involving: Brian Le (user)",
+        "mentioned_at": "2026-09-28T02:43:32.461074+00:00"
+      }
+    ],
+    "new_source_facts": [
+      {
+        "id": "b62d8915-0b17-4c76-9422-06e78ad89ab8",
+        "text": "The active goal is to complete the Meridian migration off Convex, Notion, and Zapier, with Supabase as the retained data store, Trigger.dev for useful automations, zero active Zaps, verified production continuity, and the planned repository renames and archives | Involving: Brian Le (user)",
+        "mentioned_at": "2026-09-28T18:27:05.815991+00:00"
+      },
+      {
+        "id": "b6406b3c-085b-4f84-b730-00ee8e5f4f0d",
+        "text": "The migration goal remains active and requires complete independence from Notion | When: 2026-09-28 | Involving: Brian Le",
+        "mentioned_at": "2026-09-28T18:27:07.185991+00:00"
+      }
+    ],
+    "classification": "REGRESSION"
+  },
+  {
+    "sample_index": 35,
+    "before": "As of August 15, 2026, upstream main at commit `30c469b15313711d47c45e7175d6ef5c8437f1ed` retained the Gemini translation, title-budget, and title-response validation failure conditions, with no equivalent open upstream PR or issue.",
+    "after": "Upstream main at commit 30c469b15313711d47c45e7175d6ef5c8437f1ed retains the Gemini translation, title-budget, and title-response validation failure conditions, with no equivalent open upstream PR or issue.",
+    "prior_source_facts": [
+      {
+        "id": "53687e2e-c21f-4f4f-9139-ab8cfdb16eda",
+        "text": "Upstream tracking on 2026-08-15 identified that permissive prose fallback accepted a bare Markdown fence and promoted it over the derived title, and that Google fallback discarded OpenAI response_format, spent 64-token output ceiling on Gemini hidden thinking, and returned finish_reason=length with only a fence fragment; corrections belong at Gemini translation, title-budget, and title-response validation boundaries; current upstream main at commit 30c469b15313711d47c45e7175d6ef5c8437f1ed retains all three failure conditions with no equivalent open PR or issue. | When: 2026-08-15 | Involving: Brian Le",
+        "mentioned_at": "2026-08-15T11:44:29.042705+00:00"
+      }
+    ],
+    "new_source_facts": [
+      {
+        "id": "921d2add-54be-486e-b88c-5e982916631f",
+        "text": "The investigation identified two upstream title-generation failures: a permissive prose fallback promoted a bare Markdown fence over the derived title, and the Google fallback discarded OpenAI response_format, exhausted its 64-token budget on Gemini hidden thinking, and returned a truncated fence fragment with finish_reason=length. The required fixes are at the Gemini translation, title-budget, and title-response validation boundaries. | When: 2026-08-15 | Involving: Hermes Agent | These failures explain malformed or incomplete generated titles.",
+        "mentioned_at": "2026-09-15T03:43:43.72+00:00"
+      }
+    ],
+    "classification": "REGRESSION"
+  },
+  {
+    "sample_index": 37,
+    "before": "Task d8f0edcb created to track NCW vs custodial decision and its impact on PKE, due October 2, 2026.",
+    "after": "Task d8f0edcb created to track NCW vs custodial decision and its impact on PKE; the US NCW risk depends on top‑up caps plus IDV, and the decision remains open regarding whether IDV applies to every export or only flagged accounts, and IDV must occur at initiation before cards are cancelled.",
+    "prior_source_facts": [
+      {
+        "id": "c7f4701a-a5a5-4210-a798-47c08d2d99f7",
+        "text": "Task d8f0edcb created to track NCW vs custodial decision and its impact on PKE, due October 2, 2026 | When: 2026-10-02 | Involving: user",
+        "mentioned_at": "2026-09-28T16:55:34.05+00:00"
+      }
+    ],
+    "new_source_facts": [
+      {
+        "id": "783cb824-5986-4a74-8f07-cbcbcf570871",
+        "text": "Task `d8f0edcb` (NCW decision) now states that US NCW risk depends on top‑up caps plus IDV; the decision remains open regarding whether IDV applies to every export or only flagged accounts, and IDV must occur at initiation before cards are cancelled. | When: 2026-09-30 | Involving: assistant | To capture the updated risk assessment and pending decisions",
+        "mentioned_at": "2026-09-30T21:09:35.02+00:00"
+      }
+    ],
+    "classification": "REGRESSION"
+  },
+  {
+    "sample_index": 38,
+    "before": "Current Hindsight backlog at 2026-09-23 20:28 UTC: 84,114 eligible facts (65,490 world, 18,624 experience), 685 failed unconsolidated facts, 371,825 total nodes, 15,013 documents, processing ID 3fd0433e-5ec6-44f4-81ea-aad65bf8c5fb with 673/84,124 progress, 2,234 failed operations, no upgrade or automatic-consolidation change. Backlog decreased by 9,682 facts (10.32%) between September 20 and September 23, averaging 3,357 fewer facts per day.",
+    "after": "Current Hindsight backlog at 2026-09-30: 63,150 facts waiting to be consolidated, 115 failed, with ledger covering every failed fact.",
+    "prior_source_facts": [
+      {
+        "id": "44984b88-188b-4e9b-9c2c-b097ce14ee0e",
+        "text": "Current Hindsight backlog at 2026-09-23 20:28 UTC: 84,114 eligible facts (65,490 world, 18,624 experience), 685 failed unconsolidated facts, 371,825 total nodes, 15,013 documents, processing ID 3fd0433e-5ec6-44f4-81ea-aad65bf8c5fb with 673/84,124 progress, 2,234 failed operations, no upgrade or automatic-consolidation change. | When: 2026-09-23 | Involving: user, Hermes Agent | To assess drain progress",
+        "mentioned_at": "2026-09-23T21:31:31.02+00:00"
+      },
+      {
+        "id": "abc52bb6-435e-4256-9918-7529f6b7b147",
+        "text": "Backlog decreased by 9,682 facts (10.32%) between September 20 and September 23, averaging 3,357 fewer facts per day. | When: 2026-09-23 | Involving: user, Hermes Agent | Historical trend evidence",
+        "mentioned_at": "2026-09-23T21:31:31.04+00:00"
+      }
+    ],
+    "new_source_facts": [
+      {
+        "id": "9e51157b-8f32-489c-a6dd-addde67978d7",
+        "text": "Current backlog: about 63,150 facts waiting to be consolidated and 115 have failed, with ledger covering every failed fact | When: 2026-09-30 | Involving: assistant",
+        "mentioned_at": "2026-09-30T21:10:15.06+00:00"
+      }
+    ],
+    "classification": "OK"
+  },
+  {
+    "sample_index": 42,
+    "before": "Brian Le has one available free full reset expiring 2026-10-22 for his Claude account, with zero 5‑hour resets as of 2026-09-30.",
+    "after": "Brian Le used the last remaining one‑time reset on his Claude account, reducing the reset count to zero.",
+    "prior_source_facts": [
+      {
+        "id": "8c833cfe-3a2f-4165-95cf-a02620223eb0",
+        "text": "Record one available free full reset expiring 2026-10-22 for Brian Le's Claude account, with zero 5‑hour resets as of the screenshot; the reset credit is stored in /Users/brianle/.config/coding-agent-capacity/claude-reset-credits.json and the evidence image is preserved at /Users/brianle/.config/coding-agent-capacity/evidence/claude/2026-09-30/img_3b7fae8abb05.jpg | When: 2026-09-30 | Involving: Brian Le",
+        "mentioned_at": "2026-09-30T00:00:00+00:00"
+      }
+    ],
+    "new_source_facts": [
+      {
+        "id": "78c3d029-6ab3-4619-a914-7846c931eaa4",
+        "text": "Brian Le used the last remaining one‑time reset on his Claude account (hatunsuma282@gmail.com), reducing the reset count to zero and confirming the account identity; the canonical record was updated at /Users/brianle/.config/coding-agent-capacity/claude-reset-credits.json and the evidence image img_2c672e7591ba.jpg was preserved and hash‑verified at /Users/brianle/.config/coding-agent-capacity/evidence/claude/2026-09-30/img_2c672e7591ba.jpg | When: 2026-09-30 | Involving: Brian Le",
+        "mentioned_at": "2026-09-30T00:00:00+00:00"
+      }
+    ],
+    "classification": "OK"
+  },
+  {
+    "sample_index": 44,
+    "before": "The version‑split pull request #505 remains unmerged; the review identified gaps that have been fixed in commit a107309 and a new review is currently running.",
+    "after": "The version‑split pull request #505 remains unmerged; the review identified gaps that have been fixed in commit 38f3c8e, and a new review is currently running.",
+    "prior_source_facts": [
+      {
+        "id": "105140e6-d647-4be9-aa58-f1824dfd2415",
+        "text": "The expected finish date for the version-split PR is December 10, 2026, and the Workspace check passes. | When: 2026-12-10 | Involving: Assistant",
+        "mentioned_at": "2026-09-30T19:55:25.08+00:00"
+      },
+      {
+        "id": "1cb3e5a3-5216-42ca-898a-0e8c78bc69ff",
+        "text": "Pull request #505 has not yet been merged; a new review is running after a boundary violation was fixed in commit a107309. | Involving: Hermes Agent, User | To track code review status.",
+        "mentioned_at": "2026-09-30T20:41:10.07+00:00"
+      },
+      {
+        "id": "48525507-8138-4286-94c1-b4f1ccb912b0",
+        "text": "The version‑split pull request #505 has not been merged; the issues were fixed in commit 5f09fccf8675e41ced3256590d42dc53320c027b and a new review is currently running | When: 2026-09-30 | Involving: Hermes Agent",
+        "mentioned_at": "2026-09-30T20:20:58+00:00"
+      },
+      {
+        "id": "4a7c98fc-4d4f-45e3-8252-5cdf65f5858a",
+        "text": "The project finish date is still estimated for December 10, 2026, and both plan checks and the Workspace check have passed. | When: 2026-09-30 | Involving: assistant",
+        "mentioned_at": "2026-09-30T19:55:25.04+00:00"
+      },
+      {
+        "id": "52558f20-c832-407d-8d3c-489ce275e8bf",
+        "text": "The version‑split pull request #505 has not yet been merged; the latest review identified three additional gaps that have been fixed in commit 95707dd9eebb61f7b329cb6f941308841c1957ea. | When: 2026-09-30 | Involving: assistant",
+        "mentioned_at": "2026-09-30T19:55:25+00:00"
+      },
+      {
+        "id": "65eecd38-afdf-430f-921b-2ebe1c303b15",
+        "text": "The version-split pull request #505 has not yet been merged; the last review identified four gaps that have been fixed in commit 6181e94, and a new review is currently running. | When: 2026-09-30 | Involving: Hermes Agent",
+        "mentioned_at": "2026-09-30T19:24:49+00:00"
+      },
+      {
+        "id": "6e8e2bb8-7a1e-4d4f-8b12-d7fe0f681087",
+        "text": "The Workspace check has passed, and the assistant will merge the pull request once the review approves. | Involving: Hermes Agent",
+        "mentioned_at": "2026-09-30T19:24:49.04+00:00"
+      },
+      {
+        "id": "87e5b8c2-7744-491e-ab71-cb9272adf103",
+        "text": "The version-split PR (#505) is not yet merged; the review identified three gaps that have been fixed in commit 90d146d, and a new review is currently running. | When: 2026-09-30 | Involving: Hermes Agent",
+        "mentioned_at": "2026-09-30T19:05:04+00:00"
+      },
+      {
+        "id": "962997ef-1c15-4060-a21c-cc45b9b0338d",
+        "text": "The version‑split pull request #505 remains unmerged; the latest review identified three additional gaps, all in V3’s plan, which have been fixed in commit 886c284, and a new review is now in progress. | When: 2026-09-30 | Involving: assistant",
+        "mentioned_at": "2026-09-30T19:11:29+00:00"
+      },
+      {
+        "id": "964e4739-2239-45f1-a29a-fb2121c7ecbf",
+        "text": "All 16 done‑list items are now labeled in the plan's steps; items 8, 11, 15, and 16 previously lacked labels. | When: 2026-09-30 | Involving: assistant",
+        "mentioned_at": "2026-09-30T19:55:25.03+00:00"
+      },
+      {
+        "id": "d0d89131-3333-453b-bbe5-8d1dd680d2bb",
+        "text": "The pull request will be merged once the new review approves. | Involving: assistant",
+        "mentioned_at": "2026-09-30T19:11:29.06+00:00"
+      },
+      {
+        "id": "f7ed9152-430f-4d73-9189-3af8ffbf80d8",
+        "text": "The Workspace check has passed. | Involving: assistant",
+        "mentioned_at": "2026-09-30T19:11:29.05+00:00"
+      }
+    ],
+    "new_source_facts": [
+      {
+        "id": "7b23fd2b-8711-431b-910e-150fc63fa62d",
+        "text": "The version-split PR (#505) has not yet been merged; the latest review identified two proof inconsistencies that were fixed in commit 38f3c8e, and a new review is currently running. | When: 2026-09-30 | Involving: Hermes Agent",
+        "mentioned_at": "2026-09-30T21:15:46+00:00"
+      }
+    ],
+    "classification": "OK"
+  },
+  {
+    "sample_index": 49,
+    "before": "HERMES-097 is active; restart recovery is run‑correlated and durable, preventing control‑message redelivery from cancelling interrupted‑turn recovery and durably replaying drain‑time inbound messages acknowledged as queued. The proposed HERMES-097 remedy is run‑correlated durable recovery using typed delivery obligations, a SQLite restart inbox for drain‑time inbound messages, matching persisted turn tokens, startup‑gate restoration, ordered replay, and suppression of agent replay after a terminal assistant stop. The remedy also requires persisting normalized drain‑time inbound messages in a SQLite restart inbox before acknowledgment, releasing failed replay claims while continuing later rows, restoring startup‑gate state when replay raises, preserving startup‑resume ordering, and recording handoff only after active‑turn recovery durably owns continuation with the exact persisted turn token.",
+    "after": "HERMES-097 is active; restart recovery runs are correlated and durable, preventing control‑message redelivery from cancelling interrupted‑turn recovery and durably replaying drain‑time inbound messages acknowledged as queued.",
+    "prior_source_facts": [
+      {
+        "id": "0241d445-9eea-4f2f-9937-a3552c34bc51",
+        "text": "HERMES-097 requires restart recovery to be run-correlated and durable, with schema migration, source changes, regression tests, and the record shipped together under the stable commit subject `fix(gateway): make restart recovery run-correlated and durable`; no upstream PR covered the complete contract before publication. | Involving: Hermes Agent | The contract requires live QA for control-obligation persistence, queued drain-message survival across process replacement, and exactly-once dispatch; rollback must preserve additive schema elements until older gateways no longer read state.db.",
+        "mentioned_at": "2026-09-15T03:43:40.89+00:00"
+      },
+      {
+        "id": "06cfd1cc-b6d9-4f03-b4cc-e45d5e7974ee",
+        "text": "Hermes Agent documented HERMES-097, requiring restart recovery to be run-correlated and durable: delivery obligations must be typed, final answers matched to the persisted interrupted-turn token, historical restart notices treated as control rows, and recovery cleared only for the matching final answer. | Involving: Hermes Agent | This defines the core contract for reliable restart recovery.",
+        "mentioned_at": "2026-09-15T03:43:50.63+00:00"
+      },
+      {
+        "id": "12795e0b-bb99-4038-b7cf-1227a0aeb93e",
+        "text": "On September 1, 2026, Hermes Agent hypothesized that delivery-ledger startup recovery cleared `resume_pending` for every claimed row, including restart or busy control notices; seven of seven redelivered restart-control obligations correlated with missing five-minute auto-resumes, while eleven of eleven non-redelivered notices correlated with successful resumes. The proposed HERMES-097 remedy is run-correlated durable recovery using typed delivery obligations, a SQLite restart inbox for drain-time inbound messages, matching persisted turn tokens, startup-gate restoration, ordered replay, and suppression of agent replay after a terminal assistant stop. | When: September 1, 2026 | Involving: Hermes Agent | To make restart recovery durable and correlated with the interrupted run, including inbound messages received during draining.",
+        "mentioned_at": "2026-09-15T03:43:40.88+00:00"
+      },
+      {
+        "id": "27ec66b5-3fb7-413a-b368-fa5b3b2e8d3a",
+        "text": "HERMES-097 is active: restart recovery is run-correlated and durable, preventing control-message redelivery from cancelling interrupted-turn recovery and durably replaying drain-time inbound messages acknowledged as queued. | When: As of September 14, 2026",
+        "mentioned_at": "2026-09-15T03:32:30.08+00:00"
+      },
+      {
+        "id": "95f61d4a-b1a5-4903-8f89-be0d4da3edcc",
+        "text": "HERMES-097 requires normalized inbound drain-time messages to be persisted in a SQLite restart inbox before acknowledgment, failed replay claims to be released while later rows continue, startup-gate state to be restored if replay raises, and handoff recorded only after active-turn recovery durably owns continuation with the exact persisted turn token. | Involving: Hermes Agent | These requirements are intended to prevent lost messages, duplicate replay, and incorrect continuation ownership.",
+        "mentioned_at": "2026-09-15T03:43:50.64+00:00"
+      },
+      {
+        "id": "b1ed78e8-b3f0-4c3b-bb0b-fe701dde09f7",
+        "text": "HERMES-097 aims to make restart recovery run-correlated and durable, including typed delivery obligations, correlation of final answers with a durable interrupted-turn token, control-row classification for historical restart notices, and recovery clearing only on the matching final answer. | To prevent incorrect replay, recovery loss, and misclassification of restart-related messages.",
+        "mentioned_at": "2026-09-15T03:32:30+00:00"
+      },
+      {
+        "id": "dc68c7dc-ec65-44ec-a51e-184ca5eb85be",
+        "text": "HERMES-097 is active: restart recovery is run-correlated and durable, preventing control-message redelivery from cancelling interrupted-turn recovery and durably replaying drain-time inbound messages acknowledged as queued. | Improves reliable recovery and queued-message replay after interruption or restart.",
+        "mentioned_at": "2026-09-15T03:43:37.08+00:00"
+      },
+      {
+        "id": "fa6df71d-a347-4cfa-9cb2-950bdfe61973",
+        "text": "HERMES-097 is active; restart recovery runs are correlated and durable, and control-message redelivery does not cancel interrupted-turn recovery, with durable replay of drain-time inbound acknowledged as queued | When: 2026-09-23",
+        "mentioned_at": "2026-09-23T17:42:37.06+00:00"
+      }
+    ],
+    "new_source_facts": [
+      {
+        "id": "9a149028-6f6a-4c6c-aea3-1a5c7c9fd7fb",
+        "text": "HERMES-097 is active: restart recovery is run-correlated and durable, preventing control-message redelivery from cancelling interrupted-turn recovery and durably replaying drain-time inbound messages acknowledged as queued.",
+        "mentioned_at": "2026-09-15T03:43:38.99+00:00"
+      }
+    ],
+    "classification": "REGRESSION"
+  },
+  {
+    "sample_index": 53,
+    "before": "Oura history import finished, 16 Oura scheduled runs succeeded, 17 Withings scheduled runs succeeded, both provider health checks report success with no pending or failed webhooks, Withings processed 37 webhook events, Oura has no live webhook events, Apple Health is not retired yet, retirement migration not applied, and the retirement job is scheduled for 2026-10-01 at 09:45 PT.",
+    "after": "Oura history import finished, 17 Oura scheduled runs succeeded, 17 Withings scheduled runs succeeded, both provider health checks report success with no pending or failed webhooks, Withings processed 37 webhook events, Oura has no live webhook events, Apple Health is not retired yet, retirement migration not applied, and the retirement job is scheduled for 2026‑10‑01 at 09:45 PT.",
+    "prior_source_facts": [
+      {
+        "id": "04f136f4-fc8c-47e9-8542-c2a5eeaae3a8",
+        "text": "Oura history import finished but 14 days of daily activity and 17 sleep records were missing due to a sync bug where each 30‑day chunk skipped the last day | When: 2026-09-28 | Involving: assistant",
+        "mentioned_at": "2026-09-28T19:12:00.01+00:00"
+      },
+      {
+        "id": "08cd85d4-2944-4cf5-9169-22e287360438",
+        "text": "Oura and Withings data remain stale, with Oura stopped around Sep 11–13 and Withings stopped in July, and this issue has not yet been addressed | When: 2026-09-27 | Involving: Hermes Agent",
+        "mentioned_at": "2026-09-28T06:42:59.08+00:00"
+      },
+      {
+        "id": "10ac3b82-880a-4507-80bf-b5fc930a57bc",
+        "text": "Oura history import is ongoing from 2023-07-04 to 2023-12-31 in 30‑day chunks, with about 40 chunks processed so far and all succeeding. | When: 2026-09-28 | Involving: Hermes Agent",
+        "mentioned_at": "2026-09-28T18:59:48.07+00:00"
+      },
+      {
+        "id": "1a7af871-fa47-4fb0-9272-b3d224aea224",
+        "text": "PR #161 (commit a5d16b9) fixed the sync bug by correcting the boundary logic; all 82 unit tests, type check, and preflight now pass | When: 2026-09-28 | Involving: assistant",
+        "mentioned_at": "2026-09-28T19:12:00.02+00:00"
+      },
+      {
+        "id": "2420b467-a76a-42f4-9b5d-a8d7842ea530",
+        "text": "Withings history reload is in progress. | When: 2026-09-28 | Involving: Hermes Agent",
+        "mentioned_at": "2026-09-28T18:59:48.08+00:00"
+      },
+      {
+        "id": "25d75fc3-ce80-4ed4-82c3-bbdfff468121",
+        "text": "The first Withings test login produced 218 weigh‑ins through September 15, 2026, with no sleep summaries recorded | When: 2026-09-15 | Involving: Withings (test data)",
+        "mentioned_at": "2026-09-28T16:14:58+00:00"
+      },
+      {
+        "id": "33dde444-d5b5-482d-994e-43c98cb08bee",
+        "text": "The sync runs every three hours at minute 17 and has a new Healthchecks check, which has not yet received its first scheduled ping. | When: 2026-09-28 | Involving: Hermes Agent",
+        "mentioned_at": "2026-09-28T18:59:48.06+00:00"
+      },
+      {
+        "id": "47135ee9-ef73-4f20-bf9e-bc4ca1066990",
+        "text": "Oura data stopped arriving around 2026-09-11 to 2026-09-13, and Withings data stopped in July 2026. | When: 2026-09-11 to 2026-09-13 | Involving: Assistant",
+        "mentioned_at": "2026-09-28T03:20:57.03+00:00"
+      },
+      {
+        "id": "5fe22133-7d4e-4b96-848e-977e6f57c647",
+        "text": "Oura CLI permission change merged as commit db8e104 and the CLI is reinstalled at that version with no known vulnerabilities; a live check and a real read both work | When: 2026-09-28 | Involving: assistant",
+        "mentioned_at": "2026-09-28T19:12:00+00:00"
+      },
+      {
+        "id": "74a7bdd8-0023-4bae-bcb5-d3cdafe86439",
+        "text": "Oura is linked to the user’s account with seven read permissions, excluding the personal scope; the initial connection attempt was cancelled and the second attempt succeeded. | When: 2026-09-28 | Involving: Hermes Agent",
+        "mentioned_at": "2026-09-28T18:59:48.02+00:00"
+      },
+      {
+        "id": "87c40c8d-8e4e-4a70-bd52-2c7dbd4a64f8",
+        "text": "Security checks return 401 for webhook requests without a valid signature and for sync requests without a valid token; the public API has no route to the Oura tables. | When: 2026-09-28 | Involving: Hermes Agent",
+        "mentioned_at": "2026-09-28T18:59:48.05+00:00"
+      },
+      {
+        "id": "9a8ff44f-20c6-49f9-b12b-e6afa2e736de",
+        "text": "Retiring Apple Health is pending after the Withings run completes | Involving: assistant",
+        "mentioned_at": "2026-09-28T19:12:00.05+00:00"
+      },
+      {
+        "id": "a1c323ea-44ad-4948-908c-851188f4a0dd",
+        "text": "Activity data stopping on May 26, 2026 reflects only the point where the test stopped reading; a full backfill will retrieve all remaining data | When: 2026-05-26 | Involving: Withings (activity data)",
+        "mentioned_at": "2026-09-28T16:14:58.02+00:00"
+      },
+      {
+        "id": "b1067934-d379-42bc-be0e-29bf2ef80ff9",
+        "text": "Assistant split the test into two steps—one that starts the catch‑up run and one that checks how it was logged—and is running database checks again with the fix. | When: 2026-09-28 | Involving: assistant",
+        "mentioned_at": "2026-09-28T17:40:55+00:00"
+      },
+      {
+        "id": "b80150d9-5a22-4cf7-b2a8-082596e92c99",
+        "text": "Pull request #157 was merged into the main branch as commit 712ab2e after passing review with no issues and a clean rebase. | When: 2026-09-28 | Involving: Hermes Agent",
+        "mentioned_at": "2026-09-28T18:59:48.01+00:00"
+      },
+      {
+        "id": "b9a9cf20-fa4d-410f-8ef5-d0be5a194a3f",
+        "text": "Current progress: Oura restore test passed (deleted 2026‑09‑11 readiness record restored after 30‑day sync), Oura sync health check shows down/up within 10 seconds, Oura CLI permission change PR #2 approved with minor doc fixes (commit 424e50d) and awaiting final review, Oura history import up to 2026‑02 with all 30‑day chunks succeeding, 72‑hour unattended Withings run scheduled until 2026‑10‑01 09:40 PT, Apple Health retirement pending, and scale setup in Oregon pending. | When: 2026-09-28 | Involving: assistant",
+        "mentioned_at": "2026-09-28T19:05:33.02+00:00"
+      },
+      {
+        "id": "c2be37e6-4627-4ad3-aab2-866156a54dd4",
+        "text": "A real weigh‑in will occur once the scale is set up in Oregon | Involving: assistant",
+        "mentioned_at": "2026-09-28T19:12:00.06+00:00"
+      },
+      {
+        "id": "c6ab1f16-54c9-42b8-a3ac-3f76393a48fe",
+        "text": "The second Withings test login was cancelled and the leftover file was deleted, leaving no further action required | When: 2026-09-28 | Involving: Withings (test data)",
+        "mentioned_at": "2026-09-28T16:14:58.01+00:00"
+      },
+      {
+        "id": "ce2f58b6-72c0-4c80-8e36-9278be548fae",
+        "text": "Three finished worktrees and their local and GitHub branches (the Oura sync one and the original Oura and Withings CLI ones) were removed | When: 2026-09-28 | Involving: assistant",
+        "mentioned_at": "2026-09-28T19:12:00.03+00:00"
+      },
+      {
+        "id": "e386dd43-e989-4bb0-83ae-a5457a98eab6",
+        "text": "The first sync imported the last 30 days of data, yielding 1,237 heart‑rate readings and 8–9 days each of sleep, readiness, and SpO₂. | When: 2026-09-28 | Involving: Hermes Agent",
+        "mentioned_at": "2026-09-28T18:59:48.04+00:00"
+      },
+      {
+        "id": "e50ce1e3-3241-468c-97e5-50b676944e48",
+        "text": "Assistant performed a catch‑up test for Withings, deleted the latest weigh‑in from the database (removing two readings from 2026-09-15 with grpid 8441536540 and 8441536513), and a 30‑day catch‑up run restored both readings. | When: 2026-09-28 | Involving: assistant",
+        "mentioned_at": "2026-09-28T17:40:27.04+00:00"
+      },
+      {
+        "id": "e512d1f9-7208-4dbd-9efe-246cdbc523a7",
+        "text": "The 72‑hour unattended Withings run is still pending, expected to complete around 2026-10-01 09:40 PT | When: 2026-10-01 | Involving: assistant",
+        "mentioned_at": "2026-09-28T19:12:00.04+00:00"
+      },
+      {
+        "id": "eccd1d4c-b12d-42c6-8374-99d80357e707",
+        "text": "Oura history import up to 2024-04 succeeded, with every chunk succeeding so far; one chunk ran out of time partway through heart rate data and picked up again on its own | When: 2026-09-28 | Involving: assistant",
+        "mentioned_at": "2026-09-28T19:01:15.02+00:00"
+      },
+      {
+        "id": "ece31dbc-e0ae-471b-a9b2-b301def9ec1f",
+        "text": "The Oura sync feature is live and fully deployed, including both Oura functions, their secrets, and the database changes. | When: 2026-09-28 | Involving: Hermes Agent",
+        "mentioned_at": "2026-09-28T18:59:48+00:00"
+      },
+      {
+        "id": "f6338b75-20a2-48bc-91fd-9926eb2830b1",
+        "text": "The simulated weigh‑in test passed; the assistant deleted two readings from the 2026‑09‑15 weigh‑in, sent a webhook notification for that time window, fetched and stored the data in about 4 seconds, and three readings (the two deleted plus one old type filter) are now back in the system | When: 2026-09-28 | Involving: assistant",
+        "mentioned_at": "2026-09-28T18:32:31+00:00"
+      },
+      {
+        "id": "fae7837c-8cb2-43f1-b634-8f630f09cbae",
+        "text": "Current state: Oura scheduled runs succeeded 16 times, Withings scheduled runs succeeded 17 times, both provider health checks report success with no pending or failed webhooks, Withings processed 37 webhook events, Oura has no live webhook events, Apple Health is not retired yet, retirement migration not applied, and the retirement job is scheduled for 2026-10-01 at 09:45 PT. | When: 2026-09-30 | Involving: Hermes Agent (assistant) | To inform the user of progress and remaining gates.",
+        "mentioned_at": "2026-09-30T21:19:44.04+00:00"
+      }
+    ],
+    "new_source_facts": [
+      {
+        "id": "10703baf-f088-4681-a10e-82d9046af77e",
+        "text": "Oura has 17 successful scheduled runs, all with status \"succeeded\" | Involving: Hermes Agent | Indicates scheduled syncs are functioning",
+        "mentioned_at": "2026-09-30T21:29:55.04+00:00"
+      }
+    ],
+    "classification": "OK"
+  },
+  {
+    "sample_index": 55,
+    "before": "Upstream issue #53828 remains open as the direct tracking issue for this verification‑continuation contract; merged PR #52412, issue #62142, and closed PR #53553; no upstream PR identified as of August 16, 2026.",
+    "after": "Upstream issue #53828 remains open as the direct tracking issue for this verification‑continuation contract; merged PR #52412, issue #62142, and closed PR #53553; no upstream PR identified as of August 16, 2026; the referenced upstream work does not implement the registry, subscription-route lock, or shared read-only knowledge contract.",
+    "prior_source_facts": [
+      {
+        "id": "2e8104aa-aa23-4c56-9856-e28578ddcb8f",
+        "text": "The HERMES-031 behavior remains associated with open upstream issue #53828; related work includes merged PR #52412, issue #62142, and closed PR #53553. No upstream PR was identified as of August 16, 2026. | When: August 16, 2026 | Documents upstream provenance and remaining tracking for the verification-continuation contract.",
+        "mentioned_at": "2026-09-15T03:43:48.58+00:00"
+      },
+      {
+        "id": "45b8718a-b3ec-4fac-9121-94051fc76629",
+        "text": "Upstream issue #53828 remains open as the direct tracking issue for this verification-continuation contract. Related work includes merged PR #52412, issue #62142, and closed PR #53553; no upstream PR was identified as of August 16, 2026. | When: August 16, 2026 | Involving: Hermes Agent | The explicit agent.verify_on_stop: true override is not covered by the related merged messaging mitigation.",
+        "mentioned_at": "2026-09-15T03:32:30.01+00:00"
+      },
+      {
+        "id": "8e1e60b0-4ab1-4fe0-815c-958c69b9f66e",
+        "text": "Issue #53828 remains open and directly describes the verification-continuation contract. Related work includes merged PR #52412, issue #62142, and closed PR #53553; no upstream PR had been identified after checking August 16, 2026. | When: As of August 16, 2026 | Involving: Hermes Agent | These items track the verification-continuation and response-loss behavior.",
+        "mentioned_at": "2026-09-15T03:43:43.01+00:00"
+      }
+    ],
+    "new_source_facts": [
+      {
+        "id": "9c4fc4ed-5114-4070-9e59-b4e28fa197ca",
+        "text": "Related upstream tracking includes open issue #80222 and open PR #83343 at commit `bf48118f5259e08d8e58ed26e91be7179597233b`, both checked on September 4, 2026; the referenced upstream work does not implement the registry, subscription-route lock, or shared read-only knowledge contract. | When: September 4, 2026 | The upstream work is being monitored but does not yet provide the required implementation.",
+        "mentioned_at": "2026-09-15T03:43:40.48+00:00"
+      }
+    ],
+    "classification": "UNSUPPORTED_ADDITION"
+  },
+  {
+    "sample_index": 56,
+    "before": "Topic renamed to \"Stripe Priorities\" and icon set to 💻.",
+    "after": "Topic renamed to \"Stripe Priorities\" and icon set to ⭐.",
+    "prior_source_facts": [
+      {
+        "id": "796634ad-a28c-46aa-a1b0-6f9539a61424",
+        "text": "Topic renamed to \"Stripe Priorities\" and icon set to 💻 | When: 2026-08-19 | Involving: user",
+        "mentioned_at": "2026-09-21T16:08:29+00:00"
+      }
+    ],
+    "new_source_facts": [
+      {
+        "id": "698c8543-4f81-4b0c-aa25-3eef4b9fe0b5",
+        "text": "The Stripe Priorities topic icon is now ⭐, as chosen by the user. | When: 2026-09-30 | Involving: User (Brian Le) | User preferred the star icon over other options for better fit with Stripe priorities.",
+        "mentioned_at": "2026-09-30T21:43:35.04+00:00"
+      }
+    ],
+    "classification": "OK"
+  },
+  {
+    "sample_index": 57,
+    "before": "There have been thirteen review rounds; recent findings are small but real risks, so Hermes Agent is still fixing them and will merge the PR when the review approves.",
+    "after": "There have been sixteen review rounds; recent findings are small but real risks, so Hermes Agent is still fixing them and will merge the PR when the review approves.",
+    "prior_source_facts": [
+      {
+        "id": "2e920efb-bed2-4110-b218-6509dc2fde78",
+        "text": "There have been thirteen review rounds; recent findings are small but real risks, so Hermes Agent is still fixing them and will merge the PR when the review approves. | When: 2026-09-30 | Involving: Hermes Agent",
+        "mentioned_at": "2026-09-30T21:20:51.07+00:00"
+      }
+    ],
+    "new_source_facts": [
+      {
+        "id": "e8501a22-8aa6-46ec-b4be-23986f1f0ded",
+        "text": "This is the 16th review round, and each of the last several has found one small, real gap in V3's plan; the agent will merge the PR once a review approves. | Involving: Hermes Agent",
+        "mentioned_at": "2026-09-30T21:41:23.04+00:00"
+      }
+    ],
+    "classification": "OK"
+  }
+]

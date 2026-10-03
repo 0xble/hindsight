@@ -10,12 +10,26 @@ import json
 import logging
 import re
 from collections.abc import Iterator
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timedelta
 from typing import TYPE_CHECKING, Any, Literal, cast
 
 from pydantic import BaseModel, ConfigDict, Field, create_model, field_validator
 
+from ..language_integrity import (
+    GeneratedLanguageMismatch,
+    GeneratedText,
+    LanguageIntegrityError,
+    LanguageIntegrityMode,
+    build_retry_instruction,
+    build_source_instruction,
+    configured_mode,
+    enforcement_failures,
+    evaluate_language_integrity_safely,
+    prepare_context_safely,
+    record_outcome,
+    should_check,
+)
 from ..llm_interface import ProviderContentPolicyError, ProviderRateLimitResetError
 from ..llm_wrapper import (
     AnyLLMProvider,
@@ -2066,10 +2080,37 @@ async def _extract_facts_from_chunk(
     # it (``HINDSIGHT_API_LLM_<n>_MAX_RETRIES``). A per-call value would win over the
     # member's own and hand every member the same budget.
     outer_attempts = llm_max_retries + 1
+    language_mode = configured_mode(config)
+    has_unprofiled_attachments = isinstance(user_content, list) and any(
+        isinstance(part, dict) and part.get("type") != "text" for part in user_content
+    )
+    language_check_enabled = should_check(config) and extraction_mode != "verbatim"
+    if should_check(config) and extraction_mode == "verbatim":
+        record_outcome(stage="retain", mode=language_mode, outcome="output_verbatim")
+    language_retry_available = language_check_enabled and language_mode in {
+        LanguageIntegrityMode.RETRY,
+        LanguageIntegrityMode.REJECT,
+    }
+    max_requests = outer_attempts + int(language_retry_available)
+    language_retry_used = False
+    language_retry_instruction = ""
+    language_context = (
+        await prepare_context_safely(
+            {} if has_unprofiled_attachments else {"chunk": chunk}, stage="retain", mode=language_mode
+        )
+        if language_check_enabled
+        else None
+    )
+    language_source_instruction = (
+        build_source_instruction(language_context, ("chunk",))
+        if language_context is not None and language_mode in {LanguageIntegrityMode.RETRY, LanguageIntegrityMode.REJECT}
+        else ""
+    )
+    content_failures = 0
     last_error: Exception | None = None
 
     usage = TokenUsage()  # Track cumulative usage across retries
-    for attempt in range(outer_attempts):
+    for _request_attempt in range(max_requests):
         try:
             initial_backoff = (
                 config.retain_llm_initial_backoff
@@ -2080,8 +2121,18 @@ async def _extract_facts_from_chunk(
                 config.retain_llm_max_backoff if config.retain_llm_max_backoff is not None else config.llm_max_backoff
             )
 
+            language_instruction = language_source_instruction + language_retry_instruction
+            if language_instruction:
+                call_user_content = (
+                    user_content + language_instruction
+                    if isinstance(user_content, str)
+                    else [*user_content, {"type": "text", "text": language_instruction}]
+                )
+            else:
+                call_user_content = user_content
+
             call_kwargs: dict[str, Any] = dict(
-                messages=[{"role": "system", "content": prompt}, {"role": "user", "content": user_content}],
+                messages=[{"role": "system", "content": prompt}, {"role": "user", "content": call_user_content}],
                 response_format=response_schema,
                 scope="retain_extract_facts",
                 temperature=config.llm_temperature_retain,
@@ -2101,14 +2152,17 @@ async def _extract_facts_from_chunk(
 
             # Lenient parsing of facts from raw JSON
             chunk_facts = []
+            language_fields: list[GeneratedText] = []
             has_malformed_facts = False
 
             # Handle malformed LLM responses
             coerced_response_json = _coerce_fact_response(extraction_response_json)
             if coerced_response_json is None:
-                if attempt < outer_attempts - 1:
+                if content_failures < llm_max_retries:
+                    content_failures += 1
                     logger.warning(
-                        f"LLM returned non-dict JSON on attempt {attempt + 1}/{outer_attempts}: {type(extraction_response_json).__name__}. Retrying..."
+                        f"LLM returned non-dict JSON on content attempt {content_failures}/{outer_attempts}: "
+                        f"{type(extraction_response_json).__name__}. Retrying..."
                     )
                     continue
                 else:
@@ -2153,6 +2207,15 @@ async def _extract_facts_from_chunk(
                 when = get_value("when")
                 who = get_value("who")
                 why = get_value("why")
+
+                # ``when`` and ``who`` are interpolated into the text that is
+                # persisted and then checked for language drift.  Do not stringify
+                # structured model output and accidentally omit it from that check.
+                # Marking it malformed uses the normal corrective extraction retry.
+                if any(value is not None and not isinstance(value, str) for value in (when, who)):
+                    logger.warning("Skipping fact %s: non-string when/who dimension", i)
+                    has_malformed_facts = True
+                    continue
 
                 # Fallback to old format if new fields not present
                 if not what:
@@ -2337,15 +2400,26 @@ async def _extract_facts_from_chunk(
                 try:
                     fact = Fact(fact=combined_text, fact_type=fact_type, **fact_data)
                     chunk_facts.append(fact)
+                    # Validate the model's prose, not deterministic When:/Involving:
+                    # labels. Keep each dimension separate so short copied names and
+                    # numeric dates cannot hide (or create) language drift.
+                    if language_context is not None:
+                        language_fields.extend(
+                            GeneratedText(f"fact:{i}:{name}", sanitize_llm_output(str(value)) or "", ("chunk",))
+                            for name, value in (("what", what), ("when", when), ("who", who), ("why", why))
+                            if isinstance(value, str) and value and value.lower() != "not specified"
+                        )
                 except Exception as e:
                     logger.error(f"Failed to create Fact model for fact {i}: {e}")
                     has_malformed_facts = True
                     continue
 
             # If we got malformed facts and haven't exhausted retries, try again
-            if has_malformed_facts and len(chunk_facts) < len(raw_facts) * 0.8 and attempt < outer_attempts - 1:
+            if has_malformed_facts and len(chunk_facts) < len(raw_facts) * 0.8 and content_failures < llm_max_retries:
+                content_failures += 1
                 logger.warning(
-                    f"Got {len(raw_facts) - len(chunk_facts)} malformed facts out of {len(raw_facts)} on attempt {attempt + 1}/{outer_attempts}. Retrying..."
+                    f"Got {len(raw_facts) - len(chunk_facts)} malformed facts out of {len(raw_facts)} "
+                    f"on content attempt {content_failures}/{outer_attempts}. Retrying..."
                 )
                 continue
 
@@ -2364,6 +2438,39 @@ async def _extract_facts_from_chunk(
                     f"Model '{llm_config.model}' may not honour the extraction schema — consider enabling "
                     f"HINDSIGHT_API_LLM_STRICT_SCHEMA_RETAIN or using a model with strict schema support."
                 )
+
+            if language_context is not None and chunk_facts:
+                evaluation = await evaluate_language_integrity_safely(
+                    language_context,
+                    language_fields,
+                    stage="retain",
+                    mode=language_mode,
+                )
+                mismatches = enforcement_failures(evaluation, language_mode) if evaluation is not None else ()
+                if mismatches:
+                    if language_mode is LanguageIntegrityMode.OBSERVE:
+                        record_outcome(stage="retain", mode=language_mode, outcome="mismatch_observed")
+                    elif not language_retry_used:
+                        language_retry_used = True
+                        language_retry_instruction = build_retry_instruction(mismatches)
+                        record_outcome(stage="retain", mode=language_mode, outcome="mismatch_retry")
+                        logger.warning(
+                            "generated_language_mismatch stage=retain mode=%s retry=1 count=%s",
+                            language_mode.value,
+                            len(mismatches),
+                        )
+                        continue
+                    elif language_mode is LanguageIntegrityMode.REJECT:
+                        record_outcome(stage="retain", mode=language_mode, outcome="mismatch_rejected")
+                        raise GeneratedLanguageMismatch(mismatches)
+                    else:
+                        record_outcome(stage="retain", mode=language_mode, outcome="mismatch_accepted")
+                elif evaluation is not None:
+                    if evaluation.checked and not evaluation.abstained:
+                        outcome = "retry_passed" if language_retry_used else "passed"
+                    else:
+                        outcome = "abstained"
+                    record_outcome(stage="retain", mode=language_mode, outcome=outcome)
 
             return chunk_facts, usage
 
@@ -2400,7 +2507,7 @@ async def _extract_facts_from_chunk(
     # If we exhausted all retries, raise the last error or a descriptive fallback
     if last_error is not None:
         raise last_error
-    raise RuntimeError(f"Fact extraction failed after {outer_attempts} attempts: LLM did not return valid JSON")
+    raise RuntimeError(f"Fact extraction failed after {max_requests} requests: LLM did not return valid JSON")
 
 
 async def _extract_facts_with_auto_split(
@@ -2668,6 +2775,10 @@ async def extract_facts_from_text(
                 ),
             ) from quota_errors[0]
 
+        language_errors = [err for _, err in failed_chunks if isinstance(err, LanguageIntegrityError)]
+        if language_errors:
+            raise language_errors[0]
+
         # A content-policy refusal is deterministic: the offending chunk earns
         # the same refusal on every replay, so no amount of task-level retrying
         # can complete this retain. Re-raise the permanent type (rather than a
@@ -2705,6 +2816,17 @@ from .types import ChunkMetadata, ExtractionResult, RetainContent
 from .types import ExtractedFact as ExtractedFactType
 
 logger = logging.getLogger(__name__)
+
+
+def _batch_language_sources(chunks_metadata: list[ChunkMetadata]) -> dict[str, str]:
+    """Build unique source keys while excluding chunks with unresolved attachments."""
+
+    return {
+        f"{meta.content_index}:{meta.chunk_index}": meta.chunk_text
+        for meta in chunks_metadata
+        if not any(attachment_content.iter_placeholder_ids(meta.chunk_text))
+    }
+
 
 # Each fact gets 10ms offset to preserve ordering within a document
 SECONDS_PER_FACT = 0.01
@@ -2770,6 +2892,22 @@ async def extract_facts_from_contents_batch_api(
     """
     if not contents:
         return ExtractionResult([], [], TokenUsage())
+
+    language_mode = configured_mode(config)
+    if should_check(config) and language_mode in {LanguageIntegrityMode.RETRY, LanguageIntegrityMode.REJECT}:
+        logger.info(
+            "Language-integrity mode %s routes retain extraction through the live provider path so corrective "
+            "regeneration and strict rejection cannot be bypassed by Batch API results",
+            language_mode.value,
+        )
+        return await extract_facts_from_contents(
+            contents=contents,
+            llm_config=llm_config,
+            config=replace(config, retain_batch_enabled=False),
+            pool=pool,
+            operation_id=operation_id,
+            schema=schema,
+        )
 
     logger.info(f"Using Batch API for fact extraction ({len(contents)} contents)")
 
@@ -3299,6 +3437,42 @@ async def extract_facts_from_contents_batch_api(
 
     # Step 8: Auto-tag facts from label groups with tag=True
     _inject_label_tags(extracted_facts, config)
+
+    if should_check(config) and extracted_facts:
+        try:
+            source_text_by_chunk = _batch_language_sources(chunks_metadata)
+            language_context = await prepare_context_safely(
+                source_text_by_chunk,
+                stage="retain_batch",
+                mode=language_mode,
+            )
+            if language_context is not None:
+                evaluation = await evaluate_language_integrity_safely(
+                    language_context,
+                    [
+                        GeneratedText(
+                            f"fact:{index}",
+                            fact.fact_text,
+                            (f"{fact.content_index}:{fact.chunk_index}",),
+                        )
+                        for index, fact in enumerate(extracted_facts)
+                    ],
+                    stage="retain_batch",
+                    mode=language_mode,
+                )
+                if evaluation is not None:
+                    if evaluation.mismatches:
+                        outcome = "mismatch_observed"
+                    elif evaluation.checked:
+                        outcome = "passed"
+                    else:
+                        outcome = "abstained"
+                    record_outcome(stage="retain_batch", mode=language_mode, outcome=outcome)
+        except Exception:
+            # This runs after a paid-for provider batch completed. Observability must
+            # never discard valid extraction output in the default observe mode.
+            logger.exception("Batch language-integrity observation failed open")
+            record_outcome(stage="retain_batch", mode=language_mode, outcome="error")
 
     await _write_batch_extraction_errors(pool, operation_id, schema, extraction_errors)
 

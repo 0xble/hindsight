@@ -1,0 +1,9 @@
+#!/bin/sh
+# Optional, bypassable feedback. The GitHub `qualification` check is the merge authority.
+set -eu
+
+# Git exports repository-selection variables to hooks; anchor to the selected worktree.
+unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_PREFIX GIT_COMMON_DIR
+root=$(git rev-parse --show-toplevel)
+cd "$root"
+exec ./bin/ci preflight

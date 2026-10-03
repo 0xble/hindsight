@@ -1,0 +1,187 @@
+#!/usr/bin/env bash
+# Repository CI contract.
+#
+#   ./bin/ci preflight                 fast, offline, bypassable developer feedback
+#   ./bin/ci gate <exact-HEAD-SHA>     merge requirement, run by the GitHub gate
+#   ./bin/ci nightly <exact-HEAD-SHA>  gate plus the broad offline suite, run on schedule
+#
+# Stages run in a fixed order so the first failure is the one worth fixing.
+# Live-provider, Oracle, and slow tests need credentials or minutes each and are
+# excluded from every profile; they stay available for manual runs.
+
+set -euo pipefail
+
+usage() {
+  printf 'Usage: ./bin/ci preflight | gate <exact-HEAD-SHA> | nightly <exact-HEAD-SHA>\n' >&2
+  exit 64
+}
+
+profile="${1:-}"
+case "$profile" in
+  preflight) [[ $# -eq 1 ]] || usage ;;
+  gate|nightly) [[ $# -eq 2 && "$2" =~ ^[0-9a-f]{40}$ ]] || usage ;;
+  *) usage ;;
+esac
+
+root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
+cd "$root"
+
+# Check before installs, imports or any test stage; the helper is stdlib-only.
+# A missing Python interpreter fails closed rather than skipping the safeguard.
+python3 scripts/ci/test_db_guard.py
+
+if ! command -v uv >/dev/null 2>&1; then
+  echo "env_missing: uv not found on PATH" >&2
+  exit 127
+fi
+
+run() {
+  local stage=$1
+  shift
+  printf '>> %s\n' "$stage"
+  "$@"
+}
+
+api() {
+  (cd hindsight-api-slim && "$@")
+}
+
+workflow_policy() {
+  uv run --directory hindsight-api-slim --frozen python ../tests/ci/test_validate_fork_workflows.py
+  uv run --directory hindsight-api-slim --frozen python ../scripts/ci/validate_fork_workflows.py
+}
+
+if [[ "$profile" == preflight ]]; then
+  # Works on a dirty developer checkout. No tests and no database.
+  run whitespace git diff --check
+  run whitespace-staged git diff --cached --check
+  run lint api uv run --frozen ruff check .
+  run format api uv run --frozen ruff format --check .
+  run workflow-policy workflow_policy
+  printf 'PASS: preflight at %s\n' "$(git rev-parse HEAD)"
+  exit 0
+fi
+
+expected=$2
+assert_candidate() {
+  local actual
+  actual=$(git rev-parse HEAD)
+  if [[ "$actual" != "$expected" ]]; then
+    printf 'ERROR: HEAD mismatch: expected %s, got %s\n' "$expected" "$actual" >&2
+    exit 1
+  fi
+  if ! git diff --quiet --ignore-submodules=none || ! git diff --cached --quiet --ignore-submodules=none; then
+    printf 'ERROR: tracked candidate tree is dirty at %s\n' "$expected" >&2
+    exit 1
+  fi
+}
+
+# Maintained-patch and upstream-recovery regressions registered in MAINTENANCE.md.
+PATCH_REGRESSIONS=(
+  tests/test_database_safety.py
+  tests/test_codex_quota_reset_defer.py
+  tests/test_provider_quota_reset_defer.py
+  tests/test_op_cancellation.py
+  tests/test_worker.py
+  tests/test_ocr_quality.py
+  tests/test_consolidation_failure_isolation.py
+  tests/test_consolidation_prompt_budget.py
+  tests/test_refresh_outcome_metadata.py
+  tests/test_bank_template_full_roundtrip.py
+  tests/test_db_abstraction.py
+  tests/test_language_integrity.py
+  tests/test_language_integrity_retain.py
+  tests/test_consolidation_retry_budget.py
+  tests/test_fact_extraction_retry.py
+  tests/test_language_prevention.py
+  tests/test_language_prevention_atomicity.py
+  tests/test_language_prevention_dedup.py
+  tests/test_language_prevention_review.py
+  tests/test_language_code_spans.py
+  tests/test_consolidation_language_sources.py
+  tests/test_consolidation_batch_atomicity.py
+  tests/test_observation_invalidation.py
+  tests/test_alembic_dag.py
+  tests/test_migration_entities_bank_trgm.py
+  tests/test_consolidation_dedup.py
+  tests/test_consolidation_detail_loss.py
+  tests/test_consolidation_detail_loss_round5.py
+  tests/test_consolidation_detail_loss_round6.py
+  tests/test_consolidation_detail_loss_round7.py
+  tests/test_consolidation_guard_provenance.py
+  tests/test_worker_retry_knobs.py
+  tests/test_content_policy_refusal_permanent.py
+  tests/test_operation_status.py
+  tests/test_response_schema_validation.py
+  tests/test_consolidation_schema_correction.py
+  tests/test_consolidation_deadlock_order.py
+  tests/test_consolidation_scope_parallelism.py
+  tests/test_consolidation_fair_selection.py
+  tests/test_consolidation_fair_fetch.py
+  tests/test_consolidation_lane_benchmark.py
+  tests/test_append_after_chunking_change.py
+  tests/test_retain_append_mode.py
+  tests/test_no_extractable_text.py
+  tests/test_parser_empty_output.py
+  tests/test_iris_parser_stub.py
+  tests/test_llama_parse_parser.py
+  tests/test_operation_metadata_sql.py
+  tests/test_consolidation_fold_fallback.py
+  tests/test_consolidation_temporal_merge.py
+  tests/test_openrouter_null_content.py
+  tests/test_llm_trace.py
+  tests/test_hierarchical_config.py
+  tests/test_metrics.py
+  tests/test_batch_api.py
+  tests/test_migration_shape.py
+  tests/test_curation_batch_http.py
+  tests/test_delete_missing_bank_store_owned.py
+  tests/test_list_banks_ordered_page.py
+  tests/test_memories_extension.py
+)
+
+OFFLINE_MARKERS="not oracle and not hs_llm_mat and not hs_llm_core and not integration and not slow"
+# These call a real LLM but carry no hs_llm_core marker upstream. Fork CI holds no
+# provider secrets (HINDSIGHT-003), so they run only in manual, credentialed runs.
+LIVE_LLM_TESTS=(
+  --deselect tests/test_fact_extraction_output_ratio.py
+  --deselect tests/test_fact_extraction_analysis.py::test_fact_extraction_basic_analysis
+)
+
+build_smoke() {
+  api uv build
+  api uv run --frozen python -m compileall -q hindsight_api
+  api uv run --frozen python -c "import hindsight_api, hindsight_api.config, hindsight_api.main"
+}
+
+client_discriminators() {
+  uv run --directory hindsight-clients/python --frozen pytest tests/test_operation_details.py tests/test_curation_fields.py
+  (cd hindsight-clients/go && go test -run '^Test(OperationResponseDetails|Curation)' .)
+  cargo test --manifest-path hindsight-clients/rust/Cargo.toml --test curation_fields
+}
+
+curation_system() {
+  (cd hindsight-system-tests && PYTEST_ADDOPTS= uv run --frozen pytest tests/test_18_raw_curation_batches.py)
+}
+
+assert_candidate
+export CI=true
+run install api uv sync --frozen --group dev --extra all
+run workflow-policy workflow_policy
+run database-guard-tests api uv run --frozen pytest -o addopts= ../tests/ci/test_test_db_guard.py
+run lint api uv run --frozen ruff check .
+run format api uv run --frozen ruff format --check .
+run types api uv run --frozen ty check hindsight_api
+if [[ "$profile" == gate ]]; then
+  run patch-regressions api uv run --frozen --extra all pytest -m "$OFFLINE_MARKERS" "${PATCH_REGRESSIONS[@]}"
+else
+  run offline-suite api uv run --frozen --extra all pytest -m "$OFFLINE_MARKERS" "${LIVE_LLM_TESTS[@]}" --ignore=tests/test_curation_batch.py
+fi
+run curation-batch-regressions api uv run --frozen --extra all pytest -n0 tests/test_curation_batch.py
+run curation-batch-system curation_system
+run client-discriminators client_discriminators
+run codex-integration uv run --no-project --with pytest --with tiktoken==0.12.0 pytest hindsight-integrations/codex/tests -q
+run build-smoke build_smoke
+
+assert_candidate
+printf 'PASS: %s validated %s and unchanged tracked tree\n' "$profile" "$expected"

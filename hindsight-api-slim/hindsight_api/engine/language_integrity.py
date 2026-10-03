@@ -1,0 +1,858 @@
+"""Conservative, asynchronous checks for LLM-generated language drift.
+
+This guard deliberately abstains on short, ambiguous, or materially multilingual
+source text. It is a safety net after prompt-level language instructions, not a
+claim that statistical language identification is infallible.
+"""
+
+from __future__ import annotations
+
+import ast
+import asyncio
+import json
+import logging
+import re
+import textwrap
+import threading
+import tokenize
+import unicodedata
+from collections import Counter
+from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
+from enum import StrEnum
+from io import StringIO
+from pathlib import Path
+from typing import Any
+
+_CONFIDENCE_FLOOR = 0.80
+_MARGIN_FLOOR = 0.30
+_MIN_LETTERS = 20
+_MIN_NOVEL_SCRIPT_LETTERS = 4
+_MAX_NAME_RUN_LETTERS = 4
+_MIXED_MIN_LETTERS = 100
+_MIXED_MIN_FOREIGN_LETTERS = 40
+_MIXED_MIN_FOREIGN_SHARE = 0.20
+_ABSTAIN_LANGUAGES = frozenset({"zxx"})
+_SEGMENT_BOUNDARY = re.compile(r"(?:\n+|(?<=[.!?。！？;])\s+)")
+_LITERAL_CODE = re.compile(r"```.*?```|`[^`]*`", re.DOTALL)
+_QUOTED_SPAN = re.compile(
+    r"\"[^\"]*\"|“[^”]*”|«[^»]*»|(?<!\w)'[^']+'(?!\w)|(?<!\w)‘[^’]+’(?!\w)|^\s*>[^\n]*(?:\n\s*>[^\n]*)*",
+    re.MULTILINE,
+)
+_WORD = re.compile(r"[^\W\d_]+", re.UNICODE)
+logger = logging.getLogger(__name__)
+# Independent confirmation for same-script mismatches. Statistical language ID
+# can be confidently wrong on names and technical prose, so Latin-to-Latin
+# blocking requires characteristic function words on both sides.
+_LANGUAGE_MARKERS: dict[str, frozenset[str]] = {
+    "en": frozenset(
+        {"a", "an", "and", "are", "as", "at", "for", "from", "in", "is", "of", "on", "that", "the", "to", "was", "with"}
+    ),
+    "de": frozenset({"das", "dem", "den", "der", "des", "die", "ein", "eine", "für", "in", "ist", "mit", "und", "zu"}),
+    "es": frozenset(
+        {"al", "con", "de", "del", "el", "en", "la", "las", "los", "para", "por", "que", "se", "un", "una", "y"}
+    ),
+    "fr": frozenset({"au", "avec", "de", "des", "du", "en", "et", "la", "le", "les", "pour", "que", "un", "une"}),
+    "it": frozenset(
+        {"che", "con", "del", "della", "di", "e", "gli", "i", "il", "in", "la", "le", "lo", "per", "un", "una"}
+    ),
+    "nl": frozenset({"de", "een", "en", "het", "in", "is", "met", "op", "te", "van", "voor"}),
+    "pt": frozenset({"a", "as", "com", "da", "de", "do", "e", "em", "o", "os", "para", "por", "que", "um", "uma"}),
+}
+
+
+class LanguageIntegrityMode(StrEnum):
+    """Configured response to a confidently detected generated-language mismatch."""
+
+    OFF = "off"
+    OBSERVE = "observe"
+    RETRY = "retry"
+    REJECT = "reject"
+
+
+@dataclass(frozen=True, slots=True)
+class LanguageProfile:
+    language: str
+    confidence: float
+    margin: float
+    letter_count: int
+    dominant_script: str
+    mixed: bool = False
+
+    @property
+    def actionable(self) -> bool:
+        return (
+            not self.mixed
+            and self.language not in _ABSTAIN_LANGUAGES
+            and self.letter_count >= _MIN_LETTERS
+            and self.confidence >= _CONFIDENCE_FLOOR
+            and self.margin >= _MARGIN_FLOOR
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class GeneratedText:
+    """One generated value and the source-text group it must preserve."""
+
+    key: str
+    text: str
+    source_keys: tuple[str, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class LanguageContext:
+    """Source profiles prepared once, before generation and corrective retry."""
+
+    source_texts: dict[str, str]
+    source_profiles: dict[str, LanguageProfile]
+    source_prose: dict[str, str]
+    supported_languages: dict[str, frozenset[str]]
+    supported_scripts: dict[str, frozenset[str]]
+
+
+@dataclass(frozen=True, slots=True)
+class LanguageMismatch:
+    key: str
+    source_language: str
+    generated_language: str
+
+
+@dataclass(frozen=True, slots=True)
+class LanguageVerdict:
+    """Per-output, text-free evidence. Copied spans are not independent assertions."""
+
+    key: str
+    status: str
+    reason: str
+    source_keys: tuple[str, ...]
+    policy_version: str = "source-spans-v4"
+
+
+@dataclass(frozen=True, slots=True)
+class LanguageCheckResult:
+    """Bounded validation result that distinguishes checks from abstentions."""
+
+    mismatches: tuple[LanguageMismatch, ...]
+    checked: int
+    abstained: int
+    verdicts: tuple[LanguageVerdict, ...] = ()
+
+
+class LanguageIntegrityError(RuntimeError):
+    retryable = False
+
+
+class GeneratedLanguageMismatch(LanguageIntegrityError):
+    """Strict-mode terminal failure after corrective regeneration also drifted."""
+
+    retryable = False
+
+    def __init__(self, mismatches: Sequence[LanguageMismatch]):
+        self.mismatches = tuple(mismatches)
+        pairs = sorted({f"{item.source_language}->{item.generated_language}" for item in mismatches})
+        super().__init__(f"generated language differs from source language ({', '.join(pairs)})")
+
+
+class LanguageIntegrityUnavailable(LanguageIntegrityError):
+    """Raised in strict mode when the detector itself cannot run."""
+
+
+def configured_mode(config: Any) -> LanguageIntegrityMode:
+    raw = getattr(config, "llm_language_integrity", LanguageIntegrityMode.OBSERVE)
+    if not isinstance(raw, str):
+        return LanguageIntegrityMode.OBSERVE
+    return LanguageIntegrityMode(raw.lower())
+
+
+def should_check(config: Any) -> bool:
+    """Return whether source-language validation applies to this operation."""
+
+    return configured_mode(config) is not LanguageIntegrityMode.OFF and not getattr(config, "llm_output_language", None)
+
+
+def build_retry_instruction(mismatches: Sequence[LanguageMismatch]) -> str:
+    keys = ", ".join(sorted({item.key for item in mismatches}))
+    expected = ", ".join(
+        f"{item.key}={item.source_language}" for item in mismatches if item.generated_language != "unchecked"
+    )
+    return (
+        "\n\nLANGUAGE CORRECTION: The previous generated text switched away from the source's language. "
+        f"Regenerate the structured response and correct only these text fields: {keys}. "
+        f"Original-source language codes for detected mismatches: {expected or 'unresolved; do not guess'}. "
+        "Each corrected field must preserve the language of its own cited source. Keep unaffected fields in "
+        "their own source-specific languages; a multilingual response is valid. Preserve names, identifiers, "
+        "URLs, quoted text, and required JSON keys exactly."
+    )
+
+
+def record_outcome(*, stage: str, mode: LanguageIntegrityMode, outcome: str) -> None:
+    """Record a text-free, bounded-cardinality result without affecting the request."""
+
+    try:
+        from hindsight_api.metrics import get_metrics_collector
+
+        get_metrics_collector().record_language_integrity(stage=stage, mode=mode.value, outcome=outcome)
+    except Exception:
+        logger.exception("Language-integrity metric recording failed; stage=%s mode=%s", stage, mode.value)
+
+
+_identifier: Any | None = None
+_identifier_init_lock = threading.Lock()
+_classification_lock = threading.Lock()
+
+
+def _get_identifier() -> Any:
+    global _identifier
+    if _identifier is None:
+        with _identifier_init_lock:
+            if _identifier is None:
+                import py3langid.langid as langid
+
+                assert langid.__file__ is not None
+                model_path = Path(langid.__file__).resolve().parent / langid.MODEL_FILE
+                _identifier = langid.LanguageIdentifier.from_modelpath(str(model_path), norm_probs=True)
+    return _identifier
+
+
+def _letter_count(text: str) -> int:
+    return sum(unicodedata.category(char).startswith("L") for char in text)
+
+
+def _letter_script(char: str) -> str:
+    name = unicodedata.name(char, "")
+    script = next(
+        (
+            candidate
+            for candidate in (
+                "LATIN",
+                "CYRILLIC",
+                "GREEK",
+                "ARABIC",
+                "HEBREW",
+                "DEVANAGARI",
+                "BENGALI",
+                "GEORGIAN",
+                "ARMENIAN",
+                "HIRAGANA",
+                "KATAKANA",
+                "HANGUL",
+                "THAI",
+            )
+            if candidate in name
+        ),
+        "HAN" if "CJK UNIFIED IDEOGRAPH" in name else "OTHER",
+    )
+    return "EAST_ASIAN" if script in {"HAN", "HIRAGANA", "KATAKANA", "HANGUL"} else script
+
+
+def _script_counts(text: str) -> Counter[str]:
+    counts: Counter[str] = Counter()
+    for char in text:
+        if not unicodedata.category(char).startswith("L"):
+            continue
+        counts[_letter_script(char)] += 1
+    return counts
+
+
+def _non_latin_script_runs(text: str) -> list[tuple[str, str]]:
+    runs: list[tuple[str, str]] = []
+    script = ""
+    letters: list[str] = []
+    for char in text:
+        if not unicodedata.category(char).startswith("L"):
+            if letters:
+                runs.append((script, "".join(letters)))
+                letters = []
+            script = ""
+            continue
+        next_script = _letter_script(char)
+        if next_script in {"LATIN", "OTHER"}:
+            if letters:
+                runs.append((script, "".join(letters)))
+                letters = []
+            script = ""
+            continue
+        if letters and next_script != script:
+            runs.append((script, "".join(letters)))
+            letters = []
+        script = next_script
+        letters.append(char)
+    if letters:
+        runs.append((script, "".join(letters)))
+    return runs
+
+
+def has_introduced_script_prose(
+    source_text: str, generated_text: str, *, supported_scripts: frozenset[str] = frozenset()
+) -> bool:
+    """Detect substantial novel non-Latin prose in an otherwise Latin source.
+
+    This stdlib-only signal runs before language-ID abstention. Literal code,
+    source-compatible foreign-script runs (including copied quotations), and
+    short name-sized runs are excluded so it remains narrower than a global
+    English-only policy. Independently profiled source scripts also authorize
+    paraphrases, even when their document-level share is small.
+    """
+
+    generated_runs = _non_latin_script_runs(_without_code(generated_text))
+    if not generated_runs:
+        return False  # Routine Latin prose needs no full-source script scan.
+    source_evidence = source_text
+    source_text = _source_prose(source_text)
+    source_counts = _script_counts(source_text)
+    if source_counts["LATIN"] < _MIN_NOVEL_SCRIPT_LETTERS:
+        return False
+    source_total = sum(source_counts.values())
+    source_foreign_letters = sum(count for script, count in source_counts.items() if script not in {"LATIN", "OTHER"})
+    if (
+        source_total
+        and source_foreign_letters >= _MIN_NOVEL_SCRIPT_LETTERS
+        and (source_foreign_letters / source_total >= _MIXED_MIN_FOREIGN_SHARE)
+    ):
+        return False
+
+    source_runs = _non_latin_script_runs(source_evidence)
+    if len(generated_runs) == 1 and len(generated_runs[0][1]) <= _MAX_NAME_RUN_LETTERS:
+        return False
+
+    novel_counts: Counter[str] = Counter()
+    for script, run in generated_runs:
+        if script in supported_scripts:
+            continue
+        if not any(
+            script == source_script and _script_run_is_evidenced(script, run, source_run)
+            for source_script, source_run in source_runs
+        ):
+            novel_counts[script] += len(run)
+    return any(count >= _MIN_NOVEL_SCRIPT_LETTERS for count in novel_counts.values())
+
+
+def _script_run_is_evidenced(script: str, generated: str, source: str) -> bool:
+    if generated in source:
+        return True
+    # Bounded affix changes preserve source-backed names in word-based scripts.
+    # Do not apply stem matching to CJK, where a few characters can be prose.
+    shorter = min(len(generated), len(source))
+    if script == "EAST_ASIAN" or shorter < 5 or abs(len(generated) - len(source)) > 2:
+        return False
+    if source in generated:
+        return True
+    common_prefix = 0
+    for left, right in zip(generated, source):
+        if left != right:
+            break
+        common_prefix += 1
+    return common_prefix >= max(4, shorter - 2)
+
+
+def _dominant_script(text: str) -> str:
+    counts = _script_counts(text)
+    return counts.most_common(1)[0][0] if counts else "OTHER"
+
+
+def _script_letters(text: str, script: str) -> str:
+    return "".join(
+        char.casefold()
+        for char in text
+        if unicodedata.category(char).startswith("L") and _letter_script(char) == script
+    )
+
+
+def _preserves_foreign_script_text(source_text: str, generated_text: str, generated_script: str) -> bool:
+    """Return true when generated foreign-script text is copied from the source."""
+
+    generated_letters = _script_letters(generated_text, generated_script)
+    if len(generated_letters) < _MIN_LETTERS:
+        return False
+    return generated_letters in _script_letters(source_text, generated_script)
+
+
+def _marker_count(text: str, language: str) -> int:
+    markers = _LANGUAGE_MARKERS.get(language)
+    if markers is None:
+        return 0
+    return sum(word.casefold() in markers for word in _WORD.findall(text))
+
+
+def _same_script_mismatch_confirmed(
+    *, source_text: str, generated_text: str, source_language: str, generated_language: str
+) -> bool:
+    source_expected = _marker_count(source_text, source_language)
+    source_other = _marker_count(source_text, generated_language)
+    generated_expected = _marker_count(generated_text, generated_language)
+    generated_other = _marker_count(generated_text, source_language)
+    return (
+        source_expected >= 2
+        and generated_expected >= 2
+        and source_expected > source_other
+        and generated_expected > generated_other
+    )
+
+
+def _rank(text: str) -> tuple[str, float, float]:
+    ranked = _get_identifier().rank(text)[:2]
+    first_language, first_score = str(ranked[0][0]), float(ranked[0][1])
+    second_score = float(ranked[1][1]) if len(ranked) > 1 else 0.0
+    return first_language, first_score, first_score - second_score
+
+
+def _materially_mixed(text: str, primary_language: str) -> bool:
+    scripts = _script_counts(text)
+    material_scripts = [count for count in scripts.values() if count >= _MIN_LETTERS]
+    if len(material_scripts) >= 2:
+        total = sum(material_scripts)
+        minority = total - max(material_scripts)
+        if minority >= _MIXED_MIN_FOREIGN_LETTERS and minority / total >= _MIXED_MIN_FOREIGN_SHARE:
+            return True
+
+    language_letters: Counter[str] = Counter()
+    segments = [segment for segment in _SEGMENT_BOUNDARY.split(text) if segment.strip()]
+    if len(segments) <= 1:
+        return False  # The caller already ranked this entire source; do not rank it twice.
+    for segment in segments:
+        letters = _letter_count(segment)
+        if letters < 30:
+            continue
+        language, confidence, margin = _rank(segment)
+        if language in _ABSTAIN_LANGUAGES or confidence < _CONFIDENCE_FLOOR or margin < _MARGIN_FLOOR:
+            continue
+        language_letters[language] += letters
+    total = sum(language_letters.values())
+    foreign = total - language_letters[primary_language]
+    return (
+        total >= _MIXED_MIN_LETTERS
+        and foreign >= _MIXED_MIN_FOREIGN_LETTERS
+        and foreign / total >= _MIXED_MIN_FOREIGN_SHARE
+    )
+
+
+def _profile(text: str, *, source: bool) -> LanguageProfile:
+    letters = _letter_count(text)
+    if letters < _MIN_LETTERS:
+        return LanguageProfile("zxx", 0.0, 0.0, letters, _dominant_script(text))
+    language, confidence, margin = _rank(text)
+    mixed = source and _materially_mixed(text, language)
+    return LanguageProfile(language, confidence, margin, letters, _dominant_script(text), mixed)
+
+
+def _is_syntax_code(text: str) -> bool:
+    """Recognize code without executing it or trusting a Markdown language tag."""
+
+    text = textwrap.dedent(text).strip()
+    # JSON containers are structured literals; a bare quoted sentence is prose.
+    if text.startswith(("{", "[")):
+        try:
+            if isinstance(json.loads(text), (dict, list)):
+                return True
+        except (ValueError, RecursionError):
+            pass
+    try:
+        tree = ast.parse(text)
+    except (SyntaxError, ValueError, RecursionError):
+        return False
+    if not tree.body:
+        return False
+    # Parsing alone accepts bare identifiers and quoted sentences as expression
+    # statements. Only calls (including awaited calls) authorize such statements,
+    # at every nesting level, so a small program cannot hide adjacent prose.
+    for node in ast.walk(tree):
+        # Python accepts Unicode identifiers, so CJK prose such as label:sentence
+        # or sentence(...) can parse successfully. Identifier fields must not
+        # authorize stripping that prose; string literal values remain exempt.
+        for field, value in ast.iter_fields(node):
+            if field not in {"id", "attr", "arg", "name", "asname", "names", "module", "rest", "kwd_attrs"}:
+                continue
+            identifiers = value if isinstance(value, list) else [value]
+            if any(
+                isinstance(identifier, str) and any(not char.isascii() and char.isalpha() for char in identifier)
+                for identifier in identifiers
+            ):
+                return False
+        if isinstance(node, ast.Expr):
+            expression = node.value.value if isinstance(node.value, ast.Await) else node.value
+            if not isinstance(expression, ast.Call):
+                return False
+    return True
+
+
+def _code_comment_prose(text: str) -> str:
+    """Return comments from a recognized span; string literals remain code data."""
+    # ast.parse discards comments, so syntax validity cannot authorize erasing
+    # their prose. Tokenization distinguishes real comments from '#' in strings.
+    try:
+        tokens = tokenize.generate_tokens(StringIO(textwrap.dedent(text).strip()).readline)
+        return "\n".join(token.string for token in tokens if token.type == tokenize.COMMENT) or " "
+    except (tokenize.TokenError, IndentationError, SyntaxError):
+        return text  # Never exempt prose when tokenization cannot prove its role.
+
+
+def _without_code(text: str) -> str:
+    """Remove only whole recognized code spans or actual code fragments.
+
+    Delimiters and incidental programming words are ordinary prose.  In
+    particular, one ``continue`` or a tiny declaration must not erase the rest
+    of a backticked natural-language sentence.
+    """
+
+    declaration = (
+        r"(?:const|let|var)\s+[\w$]+\s*=\s*(?:'(?:[^']*)'|\"(?:[^\"]*)\"|`(?:[^`]*)`|\d+|true|false|null|[\w.]+)\s*;?"
+    )
+    whole_line = re.compile(
+        rf"\s*(?:{declaration}|(?:async\s+)?def\s+\w+\s*\([^)]*\)\s*:|class\s+\w+(?:\([^)]*\))?\s*:|"
+        r"(?:from\s+[\w.]+\s+import\s+[\w*, ]*|import\s+[\w., ]+)|"
+        r"(?:print|assert|len|range|console\.log)\s*\([^)]*\)|"
+        r"(?:return|raise|yield)\s+(?:f?['\"`][^'\"`]*['\"`]|\w+(?:\([^)]*\))?)|"
+        r"\w+\s*(?:=|:=)\s*(?:f?['\"`][^'\"`]*['\"`]|\d+|\w+(?:\([^)]*\))?))\s*"
+    )
+    declaration_prefix = re.compile(rf"^\s*{declaration[:-2]};\s*")
+
+    def strip_code(line: str) -> str:
+        if _is_syntax_code(line):
+            return _code_comment_prose(line)
+        if whole_line.fullmatch(line):
+            return " "
+        # A known statement preceding prose is removable, but the residual is
+        # still evaluated as prose.  Never use a keyword search as authority.
+        return declaration_prefix.sub(" ", line, count=1)
+
+    def replace(match: re.Match[str]) -> str:
+        fenced = match.group().startswith("```")
+        if fenced:
+            # The optional info string is only the opening-fence line. Parsing
+            # it before trimming preserves an untagged fence's first body line.
+            fenced_content = match.group()[3:-3]
+            opening_line_end = fenced_content.find("\n")
+            # Strip only an empty opening line or a syntactic language tag.
+            # A newline alone does not make preceding natural-language prose
+            # an info string; dropping it would bypass generated-language checks.
+            opening_line = fenced_content[:opening_line_end].strip() if opening_line_end >= 0 else None
+            has_info_line = opening_line is not None and (
+                not opening_line or re.fullmatch(r"[A-Za-z][A-Za-z0-9_+-]*", opening_line) is not None
+            )
+            body = fenced_content[opening_line_end + 1 :] if has_info_line else fenced_content
+        else:
+            body = match.group().strip("`").strip()
+        if not fenced:
+            return strip_code(body)
+        # The old line allowlist missed suites and structured literals. Exempt a
+        # complete syntax-validated body, not a fence label or a keyword match.
+        if _is_syntax_code(body):
+            return _code_comment_prose(body)
+        # A fence can contain prose around a small code fragment. Classify each
+        # line so that fragment cannot exempt the surrounding foreign prose.
+        return "\n".join(strip_code(line) for line in body.splitlines())
+
+    return _LITERAL_CODE.sub(replace, text)
+
+
+def _represented_source(text: str) -> str:
+    """Decode JSON/JSONL values before treating prose quotation marks as quotations.
+
+    Transcript envelopes quote every value syntactically; those quotes do not
+    turn the whole utterance into a quoted foreign-language exception.
+    """
+
+    def values(value: Any) -> list[str]:
+        if isinstance(value, str):
+            return [value]
+        if isinstance(value, dict):
+            return [part for child in value.values() for part in values(child)]
+        if isinstance(value, list):
+            return [part for child in value for part in values(child)]
+        return []
+
+    try:
+        return "\n".join(values(json.loads(text)))
+    except (ValueError, RecursionError):
+        lines = text.splitlines()
+        if len(lines) > 1:
+            try:
+                return "\n".join(part for line in lines if line.strip() for part in values(json.loads(line)))
+            except (ValueError, RecursionError):
+                pass
+        return text
+
+
+def _source_prose(text: str) -> str:
+    """Quoted spans authorize copying, not a new language for surrounding prose."""
+    return _QUOTED_SPAN.sub(" ", _LITERAL_CODE.sub(" ", text))
+
+
+def _prepare_context_sync(source_texts: Mapping[str, str]) -> LanguageContext:
+    with _classification_lock:
+        represented = {text: _represented_source(text) for text in set(source_texts.values())}
+        copied_texts = {key: represented[text] for key, text in source_texts.items()}
+        prose_by_text = {text: _source_prose(text) for text in set(copied_texts.values())}
+        profiles_by_text = {text: _profile(prose, source=True) for text, prose in prose_by_text.items()}
+        supported_by_text = {}
+        scripts_by_text = {}
+        for text, profile in profiles_by_text.items():
+            evidence = [profile]
+            for part in _SEGMENT_BOUNDARY.split(prose_by_text[text]):
+                if profile.actionable and _letter_count(part) < _MIXED_MIN_FOREIGN_LETTERS:
+                    continue
+                segment = _profile(part, source=False)
+                if not segment.actionable:
+                    continue
+                # A confident whole-document profile can hide a substantial
+                # same-script clause. Admit only independently corroborated
+                # foreign-language evidence, not a technical-prose classifier error.
+                if (
+                    profile.actionable
+                    and segment.language != profile.language
+                    and segment.dominant_script == profile.dominant_script
+                ):
+                    if not _same_script_mismatch_confirmed(
+                        source_text=prose_by_text[text],
+                        generated_text=part,
+                        source_language=profile.language,
+                        generated_language=segment.language,
+                    ):
+                        continue
+                evidence.append(segment)
+            supported_by_text[text] = frozenset(p.language for p in evidence if p.actionable)
+            scripts_by_text[text] = frozenset(p.dominant_script for p in evidence if p.actionable)
+    return LanguageContext(
+        copied_texts,
+        {key: profiles_by_text[text] for key, text in copied_texts.items()},
+        {key: prose_by_text[text] for key, text in copied_texts.items()},
+        {key: supported_by_text[text] for key, text in copied_texts.items()},
+        {key: scripts_by_text[text] for key, text in copied_texts.items()},
+    )
+
+
+def _source_text_for_keys(context: LanguageContext, keys: tuple[str, ...]) -> str | None:
+    if not keys or any(key not in context.source_texts for key in keys):
+        return None
+    return "\n".join(context.source_texts[key] for key in keys)
+
+
+def _expected_source(context: LanguageContext, keys: tuple[str, ...]) -> tuple[LanguageProfile, str] | None:
+    profiles = [context.source_profiles[key] for key in keys if key in context.source_profiles]
+    actionable = [profile for profile in profiles if profile.actionable]
+    if not actionable or len(profiles) != len(keys) or len(actionable) != len(profiles):
+        return None
+    languages = {profile.language for profile in actionable}
+    scripts = {profile.dominant_script for profile in actionable}
+    if len(languages) != 1 or len(scripts) != 1:
+        return None
+    combined_text = "\n".join(context.source_texts[key] for key in keys if key in context.source_texts)
+    return actionable[0], combined_text
+
+
+def _is_copied(source: str, text: str) -> bool:
+    # source is whitespace-normalized once per source set by _evaluate_sync.
+    # Preserve punctuation/word boundaries; never concatenate letters across spans.
+    normalized = " ".join(text.split()).strip(" \"'“”‘’«»")
+    return bool(normalized) and normalized in source
+
+
+def _novel_segments(source: str, text: str) -> list[str]:
+    # Code is not prose. Only source-evidenced quotations are removed: quotation
+    # marks alone must not offer a bypass for a newly generated translation.
+    text = _without_code(text)
+    text = _QUOTED_SPAN.sub(
+        lambda match: " " if _is_copied(source, match.group().lstrip("> ")) else match.group(), text
+    )
+    return [segment for segment in _SEGMENT_BOUNDARY.split(text) if segment.strip() and not _is_copied(source, segment)]
+
+
+def _evaluate_sync(context: LanguageContext, generated: Sequence[GeneratedText]) -> LanguageCheckResult:
+    # Serialize the process-global NumPy classifier, off the event loop.
+    with _classification_lock:
+        mismatches: list[LanguageMismatch] = []
+        verdicts: list[LanguageVerdict] = []
+        sources = {keys: _source_text_for_keys(context, keys) for keys in {item.source_keys for item in generated}}
+        copy_sources = {keys: " ".join(source.split()) for keys, source in sources.items() if source is not None}
+        for item in generated:
+            source = sources[item.source_keys]
+            status, reason = "unchecked", "missing_original_source"
+            mismatch = None
+            if source is not None:
+                copy_source = copy_sources[item.source_keys]
+                if _is_copied(copy_source, item.text):
+                    status, reason = "copied", "source_evidenced_span_not_independent_assertion"
+                elif has_introduced_script_prose(
+                    source,
+                    item.text,
+                    # The fallback must not override minority source-language authority.
+                    # Only accepted unquoted source profiles supply these scripts; the
+                    # segment checks below still reject unsupported same-script languages.
+                    supported_scripts=frozenset().union(*(context.supported_scripts[key] for key in item.source_keys)),
+                ):
+                    mismatch = LanguageMismatch(
+                        item.key, _profile(source, source=False).language, _profile(item.text, source=False).language
+                    )
+                else:
+                    expected = _expected_source(context, item.source_keys)
+                    # Mixed documents are allowed when each novel segment has
+                    # reliable source-language evidence. No global English default.
+                    # A quoted foreign span authorizes copying it, not translating the
+                    # surrounding account into that language. Infer language authority
+                    # from unquoted prose only (literal copies were handled above).
+                    prose = "\n".join(context.source_prose[key] for key in item.source_keys)
+                    supported = set().union(*(context.supported_languages[key] for key in item.source_keys))
+                    unknown = False
+                    segments = _novel_segments(copy_source, item.text)
+                    # Sentence boundaries alone miss same-Latin clauses buried in a
+                    # long English sentence. Only lexical foreign-language candidates
+                    # get overlapping 12-word checks (linear work, not every substring).
+                    # Copied quotes/code were already removed by _novel_segments.
+                    windows: set[str] = set()
+                    if expected is not None and expected[0].dominant_script == "LATIN":
+                        for segment in segments:
+                            words = _WORD.findall(segment)
+                            for start in range(0, max(0, len(words) - 11), 4):
+                                window = " ".join(words[start : start + 12])
+                                if _is_copied(copy_source, window):
+                                    continue
+                                expected_markers = max((_marker_count(window, lang) for lang in supported), default=0)
+                                if any(
+                                    _marker_count(window, lang) >= max(3, expected_markers + 1)
+                                    for lang in _LANGUAGE_MARKERS.keys() - supported
+                                ):
+                                    windows.add(window)
+                    segments.extend(sorted(windows))
+                    for segment in segments:
+                        if not _letter_count(segment):
+                            continue
+                        profile = _profile(segment, source=False)
+                        if not profile.actionable:
+                            unknown = True
+                            continue
+                        if profile.language in supported:
+                            continue
+                        if expected is None:
+                            unknown = True
+                            continue
+                        source_profile, _ = expected
+                        same_script = profile.dominant_script == source_profile.dominant_script
+                        if (
+                            same_script
+                            and profile.dominant_script == "LATIN"
+                            and not _same_script_mismatch_confirmed(
+                                source_text=prose,
+                                generated_text=segment,
+                                source_language=source_profile.language,
+                                generated_language=profile.language,
+                            )
+                        ):
+                            unknown = True
+                            continue
+                        if not same_script and _preserves_foreign_script_text(source, segment, profile.dominant_script):
+                            continue
+                        mismatch = LanguageMismatch(item.key, source_profile.language, profile.language)
+                        break
+                    if mismatch is None:
+                        if unknown or (segments and not supported):
+                            reason = "ambiguous_source_or_output"
+                        else:
+                            status, reason = "preserved", "source_language_or_literal"
+                if mismatch is not None:
+                    status, reason = "mismatch", "unsupported_translation"
+                    mismatches.append(mismatch)
+            verdicts.append(LanguageVerdict(item.key, status, reason, item.source_keys))
+        abstained = sum(v.status == "unchecked" for v in verdicts)
+        return LanguageCheckResult(tuple(mismatches), len(verdicts) - abstained, abstained, tuple(verdicts))
+
+
+def enforcement_failures(result: LanguageCheckResult, mode: LanguageIntegrityMode) -> tuple[LanguageMismatch, ...]:
+    """Strict prevention cannot promote an unchecked output as validated evidence."""
+    unchecked = tuple(
+        LanguageMismatch(v.key, "original-source", "unchecked") for v in result.verdicts if v.status == "unchecked"
+    )
+    return result.mismatches + (unchecked if mode is LanguageIntegrityMode.REJECT else ())
+
+
+async def prepare_context(source_texts: Mapping[str, str]) -> LanguageContext:
+    """Profile source text once without blocking the event loop."""
+
+    return await asyncio.to_thread(_prepare_context_sync, source_texts)
+
+
+async def find_mismatches(context: LanguageContext, generated: Sequence[GeneratedText]) -> tuple[LanguageMismatch, ...]:
+    """Classify one output batch against a prepared source context."""
+
+    return (await evaluate_language_integrity(context, generated)).mismatches
+
+
+async def evaluate_language_integrity(
+    context: LanguageContext, generated: Sequence[GeneratedText]
+) -> LanguageCheckResult:
+    """Classify outputs and report how many were checked versus abstained."""
+
+    return await asyncio.to_thread(_evaluate_sync, context, tuple(generated))
+
+
+async def evaluate_language_integrity_safely(
+    context: LanguageContext,
+    generated: Sequence[GeneratedText],
+    *,
+    stage: str,
+    mode: LanguageIntegrityMode,
+) -> LanguageCheckResult | None:
+    """Evaluate outputs, returning None after a fail-open detector error."""
+
+    try:
+        result = await evaluate_language_integrity(context, generated)
+        for verdict in result.verdicts:
+            record_outcome(stage=stage, mode=mode, outcome="output_" + verdict.status)
+            logger.info(
+                "language_integrity stage=%s mode=%s key=%s status=%s reason=%s policy=%s sources=%s",
+                stage,
+                mode.value,
+                verdict.key,
+                verdict.status,
+                verdict.reason,
+                verdict.policy_version,
+                verdict.source_keys,
+            )
+        return result
+    except Exception as exc:
+        logger.exception("Language-integrity output profiling failed; stage=%s mode=%s", stage, mode.value)
+        record_outcome(stage=stage, mode=mode, outcome="error")
+        if mode is LanguageIntegrityMode.REJECT:
+            raise LanguageIntegrityUnavailable("language-integrity output profiling failed") from exc
+        return None
+
+
+async def prepare_context_safely(
+    source_texts: Mapping[str, str], *, stage: str, mode: LanguageIntegrityMode
+) -> LanguageContext | None:
+    """Profile sources, failing open unless the operator selected strict mode."""
+
+    try:
+        return await prepare_context(source_texts)
+    except Exception as exc:
+        logger.exception("Language-integrity source profiling failed; stage=%s mode=%s", stage, mode.value)
+        record_outcome(stage=stage, mode=mode, outcome="error")
+        if mode is LanguageIntegrityMode.REJECT:
+            raise LanguageIntegrityUnavailable("language-integrity source profiling failed") from exc
+        return None
+
+
+async def find_mismatches_safely(
+    context: LanguageContext,
+    generated: Sequence[GeneratedText],
+    *,
+    stage: str,
+    mode: LanguageIntegrityMode,
+) -> tuple[LanguageMismatch, ...]:
+    """Validate outputs, failing open unless the operator selected strict mode."""
+
+    result = await evaluate_language_integrity_safely(context, generated, stage=stage, mode=mode)
+    return result.mismatches if result is not None else ()
+
+
+def build_source_instruction(context: LanguageContext, source_keys: Sequence[str]) -> str:
+    """Return a prompt-tail directive when all requested sources share one language."""
+
+    if _expected_source(context, tuple(source_keys)) is None:
+        return ""
+    return (
+        "\n\nLANGUAGE INTEGRITY: Preserve the source's language in every generated text field. "
+        "Do not translate or switch languages unless the source explicitly requests translation. "
+        "Original-source language codes (stored generated facts may themselves have drifted): "
+        + ", ".join(f"{key}={context.source_profiles[key].language}" for key in source_keys)
+        + "."
+    )

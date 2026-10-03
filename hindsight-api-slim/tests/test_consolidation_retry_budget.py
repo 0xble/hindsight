@@ -1,7 +1,6 @@
 """Tests for consolidation retry budget configurability (issue #1042) and
 failure classification (issue #3684)."""
 
-from hindsight_api.engine.response_models import LLMCallResult, TokenUsage
 import json
 from datetime import datetime, timezone
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -10,13 +9,16 @@ import pytest
 from pydantic import BaseModel, ValidationError
 
 from hindsight_api.engine.consolidation.consolidator import _consolidate_batch_with_llm
+from hindsight_api.engine.language_integrity import GeneratedLanguageMismatch
 from hindsight_api.engine.llm_interface import OutputTooLongError, ProviderRateLimitResetError
 from hindsight_api.engine.providers.openai_compatible_llm import ProviderResponseError
+from hindsight_api.engine.response_models import LLMCallResult, TokenUsage
 
 
 @pytest.fixture
 def mock_llm_config():
     llm = AsyncMock()
+    llm._provider_impl = None
     response = MagicMock()
     response.creates = []
     response.updates = []
@@ -47,6 +49,10 @@ def mock_config():
     config.consolidation_max_completion_tokens = None
     config.llm_strict_schema_consolidation = False
     config.llm_temperature_consolidation = 0.0
+    config.consolidation_max_context_tokens = 100_000
+    config.llm_supports_max_items = False
+    config.llm_output_language = None
+    config.llm_language_integrity = "off"
     return config
 
 
@@ -335,3 +341,188 @@ class TestConsolidationFailureClassification:
         await self._run(mock_llm_config, mock_config)
 
         assert no_real_sleep.await_count == 0
+
+
+class TestConsolidationLanguageIntegrity:
+    source = (
+        "The operations team completed the important review findings and the low-cost hardening work "
+        "through regression tests, then ran the focused and canonical validation suites successfully."
+    )
+    spanish = (
+        "El equipo de operaciones completó los hallazgos importantes de la revisión y el trabajo de "
+        "endurecimiento mediante pruebas de regresión, y luego ejecutó correctamente las validaciones canónicas."
+    )
+    english = "The operations team completed the review and hardening work through canonical validation."
+    typescript_source = (
+        "TypeScript operating rules require strict mode, a pinned compiler version, shared types when useful, "
+        "runtime validation distinct from compile-time types, generated clients bound to committed source schemas, "
+        "and domain rules outside React components, Server Actions, route handlers, and provider functions."
+    )
+    mixed_language_typescript_drift = (
+        "TypeScript stack 的 operating rules 要求启用 strict mode、pin compiler version、在有用时共享 types、"
+        "不要把 compile-time types 误认为 runtime validation、让 generated clients 绑定到 committed source schemas，"
+        "并且不要把 domain rules 藏在 React components、Server Actions、route handlers 或 provider functions 中。"
+    )
+
+    @staticmethod
+    def _batch(text: str):
+        from hindsight_api.engine.consolidation.consolidator import _ConsolidationBatchResponse, _CreateAction
+
+        return _ConsolidationBatchResponse(creates=[_CreateAction(text=text, source_fact_ids=["m1"])])
+
+    @classmethod
+    def _response(cls, text: str):
+        return LLMCallResult(content=cls._batch(text), usage=TokenUsage())
+
+    @pytest.mark.asyncio
+    async def test_observe_mode_does_not_mutate_the_prompt(self, mock_llm_config, mock_config):
+        mock_config.llm_language_integrity = "observe"
+        mock_config.llm_output_language = None
+        mock_llm_config.call.return_value = LLMCallResult(content=self._batch(self.spanish), usage=TokenUsage())
+
+        result = await _consolidate_batch_with_llm(
+            llm_config=mock_llm_config,
+            memories=[{"id": "m1", "text": self.source}],
+            original_source_text_by_id={"m1": self.source},
+            union_observations=[],
+            union_source_facts={},
+            config=mock_config,
+        )
+
+        assert not result.failed
+        user_message = mock_llm_config.call.await_args.kwargs["messages"][1]["content"]
+        assert "LANGUAGE INTEGRITY" not in user_message
+        assert "LANGUAGE CORRECTION" not in user_message
+
+    @pytest.mark.asyncio
+    async def test_corrective_retry_uses_prepared_source_profile(self, mock_llm_config, mock_config):
+        mock_config.llm_language_integrity = "retry"
+        mock_config.llm_output_language = None
+        mock_config.consolidation_max_attempts = 1
+        mock_llm_config.call.side_effect = [self._response(self.spanish), self._response(self.english)]
+
+        result = await _consolidate_batch_with_llm(
+            llm_config=mock_llm_config,
+            memories=[{"id": "m1", "text": self.source}],
+            original_source_text_by_id={"m1": self.source},
+            union_observations=[],
+            union_source_facts={},
+            config=mock_config,
+        )
+
+        assert not result.failed
+        assert result.creates[0].text.startswith("The operations team")
+        assert mock_llm_config.call.await_count == 2
+        retry_prompt = mock_llm_config.call.await_args_list[1].kwargs["messages"][1]["content"]
+        assert "LANGUAGE CORRECTION" in retry_prompt
+
+    @pytest.mark.asyncio
+    async def test_multilingual_retry_targets_only_mismatching_action(self, mock_llm_config, mock_config):
+        from hindsight_api.engine.consolidation.consolidator import _ConsolidationBatchResponse, _CreateAction
+
+        mock_config.llm_language_integrity = "retry"
+        mock_config.llm_output_language = None
+        mock_config.consolidation_max_attempts = 1
+        first = LLMCallResult(
+            content=_ConsolidationBatchResponse(
+                creates=[
+                    _CreateAction(text=self.spanish, source_fact_ids=["en"]),
+                    _CreateAction(text=self.spanish, source_fact_ids=["es"]),
+                ]
+            ),
+            usage=TokenUsage(),
+        )
+        corrected = LLMCallResult(
+            content=_ConsolidationBatchResponse(
+                creates=[
+                    _CreateAction(text=self.english, source_fact_ids=["en"]),
+                    _CreateAction(text=self.spanish, source_fact_ids=["es"]),
+                ]
+            ),
+            usage=TokenUsage(),
+        )
+        mock_llm_config.call.side_effect = [first, corrected]
+
+        result = await _consolidate_batch_with_llm(
+            llm_config=mock_llm_config,
+            memories=[{"id": "en", "text": self.source}, {"id": "es", "text": self.spanish}],
+            original_source_text_by_id={"en": self.source, "es": self.spanish},
+            union_observations=[],
+            union_source_facts={},
+            config=mock_config,
+        )
+
+        assert [action.text for action in result.creates] == [self.english, self.spanish]
+        retry_prompt = mock_llm_config.call.await_args_list[1].kwargs["messages"][1]["content"]
+        assert "correct only these text fields: create:0" in retry_prompt
+        assert "create:1" not in retry_prompt
+        assert "a multilingual response is valid" in retry_prompt
+
+    @pytest.mark.asyncio
+    async def test_reject_mode_propagates_after_one_correction(self, mock_llm_config, mock_config):
+        mock_config.llm_language_integrity = "reject"
+        mock_config.llm_output_language = None
+        mock_config.consolidation_max_attempts = 1
+        mock_llm_config.call.side_effect = [self._response(self.spanish), self._response(self.spanish)]
+
+        with pytest.raises(GeneratedLanguageMismatch):
+            await _consolidate_batch_with_llm(
+                llm_config=mock_llm_config,
+                memories=[{"id": "m1", "text": self.source}],
+                original_source_text_by_id={"m1": self.source},
+                union_observations=[],
+                union_source_facts={},
+                config=mock_config,
+            )
+
+        assert mock_llm_config.call.await_count == 2
+
+    @pytest.mark.asyncio
+    async def test_reject_mode_rejects_introduced_han_prose_after_language_id_abstains(
+        self, mock_llm_config, mock_config
+    ):
+        mock_config.llm_language_integrity = "reject"
+        mock_config.llm_output_language = None
+        mock_config.consolidation_max_attempts = 1
+        mock_llm_config.call.side_effect = [
+            self._response(self.mixed_language_typescript_drift),
+            self._response(self.mixed_language_typescript_drift),
+        ]
+
+        with pytest.raises(GeneratedLanguageMismatch):
+            await _consolidate_batch_with_llm(
+                llm_config=mock_llm_config,
+                memories=[{"id": "m1", "text": self.typescript_source}],
+                original_source_text_by_id={"m1": self.typescript_source},
+                union_observations=[],
+                union_source_facts={},
+                config=mock_config,
+            )
+
+        assert mock_llm_config.call.await_count == 2
+
+    @pytest.mark.asyncio
+    async def test_language_retry_does_not_consume_transport_retry_budget(
+        self, mock_llm_config, mock_config, no_real_sleep
+    ):
+        mock_config.llm_language_integrity = "retry"
+        mock_config.llm_output_language = None
+        mock_config.consolidation_max_attempts = 2
+        mock_llm_config.call.side_effect = [
+            self._response(self.spanish),
+            ConnectionResetError("connection reset"),
+            self._response(self.english),
+        ]
+
+        result = await _consolidate_batch_with_llm(
+            llm_config=mock_llm_config,
+            memories=[{"id": "m1", "text": self.source}],
+            original_source_text_by_id={"m1": self.source},
+            union_observations=[],
+            union_source_facts={},
+            config=mock_config,
+        )
+
+        assert not result.failed
+        assert mock_llm_config.call.await_count == 3
+        assert no_real_sleep.await_count == 1

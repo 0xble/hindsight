@@ -28,6 +28,7 @@ from hindsight_api import RequestContext
 from hindsight_api.config import _get_raw_config
 from hindsight_api.engine.memories import FactRecord, get_memories
 from hindsight_api.engine.memory_engine import MemoryEngine, _renamed_scopes, fq_table
+from hindsight_api.engine.retain.fact_storage import update_memory_units_metadata_and_tags
 
 # Two chunk-sized blocks (chunk size is 3000 chars). Keeping BLOCK_A byte-identical
 # across a re-ingest is what keeps the second retain on the delta path: chunking is
@@ -85,10 +86,13 @@ async def _retain(
     tags: list[str],
     request_context: RequestContext,
     observation_scopes: str | None = None,
+    metadata: dict | None = None,
 ) -> None:
     item: dict = {"content": content, "context": "hotel amenities", "document_id": document_id, "tags": list(tags)}
     if observation_scopes is not None:
         item["observation_scopes"] = observation_scopes
+    if metadata is not None:
+        item["metadata"] = metadata
     await memory.retain_batch_async(
         bank_id=bank_id,
         contents=[item],  # type: ignore[list-item]
@@ -256,6 +260,127 @@ async def test_observation_scopes_change_re_retain_invalidates_observations(
             "invalidated so consolidation can rebuild them under the new scoping"
         )
 
+    finally:
+        await memory.delete_bank(bank_id, request_context=request_context)
+
+
+@pytest.mark.asyncio
+async def test_identical_metadata_retain_does_not_rewrite_surviving_units(
+    memory: MemoryEngine, request_context: RequestContext
+):
+    """A metadata-only no-op must not create fresh heap/index tuples."""
+    bank_id = f"test_retain_metadata_noop_{uuid.uuid4().hex[:8]}"
+    document_id = "metadata-noop"
+
+    async def rows():
+        pool = await memory._get_pool()
+        async with pool.acquire() as conn:
+            return await conn.fetch(
+                """
+                SELECT id, tags, metadata, observation_scopes, updated_at
+                FROM memory_units
+                WHERE bank_id = $1 AND document_id = $2
+                ORDER BY id
+                """,
+                bank_id,
+                document_id,
+            )
+
+    try:
+        metadata = {"source": "crm"}
+        await _retain(
+            memory,
+            bank_id,
+            document_id,
+            _DOCUMENT_V1,
+            [_KEPT_HOTEL],
+            request_context,
+            observation_scopes="combined",
+            metadata=metadata,
+        )
+        before = await rows()
+        assert len(before) >= 2, "Setup: the document should create multiple surviving units"
+
+        await _retain(
+            memory,
+            bank_id,
+            document_id,
+            _DOCUMENT_V1,
+            [_KEPT_HOTEL],
+            request_context,
+            observation_scopes="combined",
+            metadata=metadata,
+        )
+        after_noop = await rows()
+        assert [(row["id"], row["updated_at"]) for row in after_noop] == [
+            (row["id"], row["updated_at"]) for row in before
+        ]
+
+        await _retain(
+            memory,
+            bank_id,
+            document_id,
+            _DOCUMENT_V1,
+            [_KEPT_HOTEL],
+            request_context,
+            observation_scopes="per_tag",
+            metadata={"source": "support"},
+        )
+        after_change = await rows()
+        assert any(row["updated_at"] != before[index]["updated_at"] for index, row in enumerate(after_change))
+        assert all(row["observation_scopes"] == '"per_tag"' for row in after_change)
+    finally:
+        await memory.delete_bank(bank_id, request_context=request_context)
+
+
+@pytest.mark.asyncio
+async def test_label_projection_noop_does_not_rewrite_units(memory: MemoryEngine, request_context: RequestContext):
+    """A retained entity-label projection must be compared against its final tags."""
+    bank_id = f"test_retain_label_noop_{uuid.uuid4().hex[:8]}"
+    document_id = "label-noop"
+    try:
+        await _retain(memory, bank_id, document_id, _DOCUMENT_V1, [_KEPT_HOTEL], request_context)
+        pool = await memory._get_pool()
+        async with pool.acquire() as conn:
+            async with conn.transaction():
+                row = await conn.fetchrow(
+                    f"""
+                    SELECT id, updated_at
+                    FROM {fq_table("memory_units")}
+                    WHERE bank_id = $1 AND document_id = $2
+                    ORDER BY id
+                    LIMIT 1
+                    """,
+                    bank_id,
+                    document_id,
+                )
+                assert row is not None
+                await conn.execute(
+                    f"""
+                    UPDATE {fq_table("memory_units")}
+                    SET tags = $2
+                    WHERE id = $1
+                    """,
+                    row["id"],
+                    ["hotel-1234", "entity:person"],
+                )
+                before = await conn.fetchrow(
+                    f"SELECT tags, updated_at FROM {fq_table('memory_units')} WHERE id = $1", row["id"]
+                )
+                await update_memory_units_metadata_and_tags(
+                    conn,
+                    bank_id,
+                    document_id,
+                    [_KEPT_HOTEL],
+                    {},
+                    label_tag_keys={"entity"},
+                )
+                after = await conn.fetchrow(
+                    f"SELECT tags, updated_at FROM {fq_table('memory_units')} WHERE id = $1", row["id"]
+                )
+
+        assert after["tags"] == before["tags"]
+        assert after["updated_at"] == before["updated_at"]
     finally:
         await memory.delete_bank(bank_id, request_context=request_context)
 

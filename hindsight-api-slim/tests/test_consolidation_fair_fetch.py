@@ -116,7 +116,9 @@ async def test_round_holds_every_waiting_group_not_just_the_oldest(memory: Memor
                 )
 
         rounds: list[set[tuple[str, ...]]] = []
-        original_fetch = C._fetch_unconsolidated_rows
+        # The fork's opt-in fair selector scans a wider window than upstream's
+        # overfetch helper, preserving its established large-backlog behavior.
+        original_fetch = C._fetch_fair_unconsolidated_rows
 
         async def spy(*args, **kwargs):
             rows = await original_fetch(*args, **kwargs)
@@ -133,9 +135,10 @@ async def test_round_holds_every_waiting_group_not_just_the_oldest(memory: Memor
                     consolidation_batch_size=4,
                     consolidation_llm_batch_size=1,
                     consolidation_llm_parallelism=4,
+                    consolidation_fair_group_selection=True,
                 ),
                 patch.object(memory, "submit_async_consolidation"),
-                patch.object(C, "_fetch_unconsolidated_rows", spy),
+                patch.object(C, "_fetch_fair_unconsolidated_rows", spy),
             ):
                 result = await C.run_consolidation_job(
                     memory_engine=memory, bank_id=bank_id, request_context=request_context

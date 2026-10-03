@@ -11,12 +11,15 @@ BadRequestError handler and not for non-dict JSON responses.
 
 from hindsight_api.engine.response_models import LLMCallResult, TokenUsage
 from hindsight_api.engine.retain.fact_extraction import ExtractionPrompt
+
 import dataclasses
 import json
 from datetime import datetime, timezone
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+
+from hindsight_api.engine.response_models import LLMCallResult, TokenUsage
 
 
 def test_output_retry_split_preserves_conversation_array_boundaries():

@@ -70,6 +70,17 @@ hindsight_client_api/models/create_mental_model_request.py
 hindsight_client_api/models/create_mental_model_response.py
 hindsight_client_api/models/create_page_request.py
 hindsight_client_api/models/create_webhook_request.py
+hindsight_client_api/models/curation_apply_request.py
+hindsight_client_api/models/curation_change.py
+hindsight_client_api/models/curation_conflict_response.py
+hindsight_client_api/models/curation_fact_type.py
+hindsight_client_api/models/curation_fields.py
+hindsight_client_api/models/curation_inventory.py
+hindsight_client_api/models/curation_preview.py
+hindsight_client_api/models/curation_preview_request.py
+hindsight_client_api/models/curation_receipt.py
+hindsight_client_api/models/curation_revert_request.py
+hindsight_client_api/models/curation_target_revision.py
 hindsight_client_api/models/default_scopes_preview.py
 hindsight_client_api/models/delete_document_response.py
 hindsight_client_api/models/delete_operation_response.py
@@ -100,6 +111,7 @@ hindsight_client_api/models/extracted_fact_attachment.py
 hindsight_client_api/models/extraction_chunk.py
 hindsight_client_api/models/features_info.py
 hindsight_client_api/models/file_content_block.py
+hindsight_client_api/models/file_convert_retain_operation_details.py
 hindsight_client_api/models/file_retain_response.py
 hindsight_client_api/models/graph_data_response.py
 hindsight_client_api/models/http_validation_error.py
@@ -127,6 +139,7 @@ hindsight_client_api/models/llm_request_list_response.py
 hindsight_client_api/models/llm_request_stats_bucket.py
 hindsight_client_api/models/llm_request_stats_response.py
 hindsight_client_api/models/llm_request_token_sums.py
+hindsight_client_api/models/maintenance_debt.py
 hindsight_client_api/models/map_field_input.py
 hindsight_client_api/models/map_field_output.py
 hindsight_client_api/models/memories_timeseries_response.py
@@ -158,8 +171,10 @@ hindsight_client_api/models/not1.py
 hindsight_client_api/models/observation_scope.py
 hindsight_client_api/models/observation_scopes.py
 hindsight_client_api/models/observation_scopes_response.py
+hindsight_client_api/models/ocr_quality_reason.py
 hindsight_client_api/models/operation_progress.py
 hindsight_client_api/models/operation_response.py
+hindsight_client_api/models/operation_response_details.py
 hindsight_client_api/models/operation_status_response.py
 hindsight_client_api/models/operations_list_response.py
 hindsight_client_api/models/prompt_block_model.py

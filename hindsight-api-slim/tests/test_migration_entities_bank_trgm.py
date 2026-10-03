@@ -131,7 +131,10 @@ def test_resolver_candidate_query_can_use_the_index(head_db_url):
                 "AND indexdef LIKE '%USING btree (bank_id%'"
             )
         ).scalars():
-            conn.execute(text(f'DROP INDEX "{name}"'))
+            # A newer fork migration uses one competing unique index for
+            # curation pin foreign keys. Remove those dependencies only in this
+            # test transaction, whose rollback restores both index and keys.
+            conn.execute(text(f'DROP INDEX "{name}" CASCADE'))
         conn.execute(text("ANALYZE entities"))
         conn.execute(text("SET LOCAL enable_seqscan = off"))
         params = {"names": ["entity name 42"], "bank": "trgm-a"}
@@ -183,7 +186,10 @@ def test_upgrade_keeps_old_index_when_btree_gin_is_unavailable(head_db_url, monk
         with engine.connect() as conn:
             assert _index_def(conn, _OLD_INDEX) is not None, "the old index must stay when btree_gin is missing"
             assert _index_def(conn, _NEW_INDEX) is None
-            assert conn.execute(text("SELECT version_num FROM alembic_version")).scalar() == _REVISION
+            # The fork keeps its normalized-observation index on a separate
+            # migration head, so version rows also include that private lineage.
+            versions = set(conn.execute(text("SELECT version_num FROM alembic_version")).scalars())
+            assert _REVISION in versions
     finally:
         monkeypatch.undo()
         engine.dispose()

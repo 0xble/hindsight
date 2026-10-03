@@ -5,9 +5,13 @@ disk, so they are cheap to run in CI and catch DAG accidents (divergent
 heads, unreachable revisions) at merge time instead of at deploy time.
 """
 
+import io
 from pathlib import Path
 
+import pytest
 from alembic.config import Config
+from alembic.operations import Operations
+from alembic.runtime.environment import EnvironmentContext
 from alembic.script import ScriptDirectory
 
 
@@ -18,21 +22,30 @@ def _script_directory() -> ScriptDirectory:
     return ScriptDirectory.from_config(cfg)
 
 
-def test_single_head() -> None:
-    """The DAG must have exactly one head.
+def test_one_upstream_head_plus_designated_fork_index_head() -> None:
+    """Reject accidental heads while preserving the fork index's separate lineage.
 
-    A second head means a branch was added without a merge revision, which
+    An unexpected head means a branch was added without a merge revision, which
     makes ``alembic upgrade head`` (singular) ambiguous and forces the next
     migration author to orphan whichever head they don't pick as parent.
     v0.5.3 shipped in exactly that state; this test would have caught it.
 
-    Fix for a new head: ``alembic merge heads -m "<reason>"``.
+    The maintained fork's normalized-observation index has an intentional second
+    head. The runtime upgrades plural ``heads``, and keeping this revision lineage
+    preserves compatibility with already-installed databases. Apart from that
+    designated fork head, upstream must still have exactly one head.
     """
     script = _script_directory()
     heads = script.get_heads()
-    assert len(heads) == 1, (
-        f"Alembic has {len(heads)} heads ({heads}); expected exactly 1. "
-        "Unify them with ``alembic merge heads -m '<reason>'``."
+    fork_head = "f8e6c4b2a091"
+    assert fork_head in heads, "the fork curation-capsule head must remain in the migration DAG"
+    assert script.get_revision(fork_head).down_revision == "e6f7a8b9c0d1", (
+        "curation capsules must extend the installed normalized-observation index lineage"
+    )
+    upstream_heads = set(heads) - {fork_head}
+    assert len(upstream_heads) == 1, (
+        f"Alembic has unexpected heads ({heads}); expected one upstream head "
+        "plus the designated fork curation-capsule head."
     )
 
 
@@ -45,3 +58,25 @@ def test_single_base() -> None:
     script = _script_directory()
     bases = script.get_bases()
     assert len(bases) == 1, f"Alembic has {len(bases)} bases ({bases}); expected exactly 1."
+
+
+@pytest.mark.parametrize("target_schema", [None, "offline_tenant"])
+def test_normalized_observation_index_emits_offline_sql(target_schema: str | None) -> None:
+    """Render the actual fork revision without a connection or catalog reads."""
+    script = _script_directory()
+    cfg = Config()
+    if target_schema:
+        cfg.set_main_option("target_schema", target_schema)
+    output = io.StringIO()
+    migration = script.get_revision("e6f7a8b9c0d1").module
+    with EnvironmentContext(cfg, script, as_sql=True, output_buffer=output) as env:
+        env.configure(dialect_name="postgresql")
+        with env.begin_transaction(), Operations.context(env.get_context()):
+            migration.upgrade()
+            migration.downgrade()
+    sql = output.getvalue()
+    prefix = f'"{target_schema}".' if target_schema else ""
+    assert f"ON {prefix}memory_units" in sql
+    assert "CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_memory_units_observation_norm_text_md5" in sql
+    assert f"DROP INDEX CONCURRENTLY IF EXISTS {prefix}idx_memory_units_observation_norm_text_md5" in sql
+    assert "SELECT NOT i.indisvalid" not in sql
