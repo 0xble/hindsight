@@ -1,0 +1,45 @@
+name: Repository nightly
+
+on:
+  schedule:
+    - cron: '53 6 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: nightly-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  nightly:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+      - uses: actions/setup-python@v6
+        with:
+          python-version-file: .python-version
+      - name: Run exact-SHA nightly
+        env:
+          EXPECTED_SHA: ${{ github.sha }}
+        run: ./bin/ci nightly "$EXPECTED_SHA"
+
+  qualification:
+    name: qualification
+    needs: [nightly]
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - name: Require nightly success
+        env:
+          NIGHTLY_RESULT: ${{ needs.nightly.result }}
+        run: test "$NIGHTLY_RESULT" = success

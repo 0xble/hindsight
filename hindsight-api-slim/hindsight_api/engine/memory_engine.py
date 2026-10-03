@@ -62,7 +62,6 @@ from ..worker.stage import set_stage
 from .audit import AuditLogger, audit_context
 from .bank_stats_cache import BankStatsCache, DistributedBankStatsCache
 from .chunk_ids import parse_chunk_id
-from .chunk_ids import build_chunk_id, parse_chunk_id, resolve_chunk_id_in
 from .curation_batch import (
     BatchCapsule,
     CurationApplyRequest,

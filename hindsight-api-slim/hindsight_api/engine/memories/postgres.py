@@ -27,11 +27,6 @@ import uuid
 from collections.abc import AsyncIterator, Awaitable, Callable, Mapping, Sequence
 from datetime import datetime
 from typing import TYPE_CHECKING, Any
-
-from ..retain.types import EmbeddingLike, EntityResolutionResult
-from ..schema import fq_store_table, fq_store_table_explicit
-from ..search.tags import TagGroup, TagsMatch
-from typing import Any
 from uuid import UUID
 
 from ..curation_batch import (
@@ -43,7 +38,9 @@ from ..curation_batch import (
     PreparedCorrection,
 )
 from ..db.base import DatabaseConnection
-from ..search.tags import TagsMatch
+from ..retain.types import EmbeddingLike, EntityResolutionResult
+from ..schema import fq_store_table, fq_store_table_explicit
+from ..search.tags import TagGroup, TagsMatch
 from .base import (
     AttachmentRef,
     BankContentCounts,
@@ -57,12 +54,12 @@ from .base import (
     EntityResolverHandle,
     ExistingChunk,
     MemoriesExtension,
-    MemoryLocation,
     MemoryEvidence,
+    MemoryLocation,
     MemoryPatch,
     MemoryScopeWatermark,
-    ObservationChunkIds,
     MemoryTextSize,
+    ObservationChunkIds,
     RecallArms,
     RelabelResult,
     RelinkPassResult,

@@ -1,0 +1,44 @@
+name: Repository gate
+
+on:
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: gate-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  gate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+      - uses: actions/setup-python@v6
+        with:
+          python-version-file: .python-version
+      - name: Run exact-SHA gate
+        env:
+          EXPECTED_SHA: ${{ github.event.pull_request.head.sha }}
+        run: ./bin/ci gate "$EXPECTED_SHA"
+
+  qualification:
+    name: qualification
+    needs: [gate]
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - name: Require gate success
+        env:
+          GATE_RESULT: ${{ needs.gate.result }}
+        run: test "$GATE_RESULT" = success

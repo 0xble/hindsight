@@ -1016,6 +1016,8 @@ class EntityResolverHandle(Protocol):
         conn=None,
         bank_id: str | None = None,
     ) -> None: ...
+
+
 @dataclass(frozen=True)
 class MemoryTextSize:
     """Body-free size metadata for a bank-scoped source read."""
