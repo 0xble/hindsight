@@ -38,7 +38,7 @@ from hindsight_api.engine.memories import get_memories
 from hindsight_api.engine.memories.pg import curation_batch as store
 from hindsight_api.engine.memories.pg import graph
 from hindsight_api.engine.memory_engine import MemoryEngine
-from hindsight_api.engine.schema import fq_table
+from hindsight_api.engine.schema import fq_store_table, fq_table
 from hindsight_api.engine.task_backend import SyncTaskBackend
 
 pytestmark = [pytest.mark.asyncio, pytest.mark.memory_backend_incompatible]
@@ -342,7 +342,7 @@ async def test_queued_prune_keeps_pinned_orphans_and_cooccurrences(memory, seede
             [(seeded.bank, e) for e in seeded.entities],
         )
     receipt = await apply(memory, seeded, manifest(await preview(memory, seeded)))
-    result = await graph.entity_prune_pass(backend=memory._backend, fq_table=fq_table, bank_id=seeded.bank)
+    result = await graph.entity_prune_pass(backend=memory._backend, fq_table=fq_store_table, bank_id=seeded.bank)
     assert result.orphan_entities_pruned == 0 and result.stale_cooccurrences_pruned == 0
     async with memory._pool.acquire() as conn:
         assert await conn.fetchval("SELECT count(*) FROM entities WHERE bank_id=$1", seeded.bank) == 2
@@ -370,7 +370,7 @@ async def test_asymmetric_captured_cooccurrence_pin_protects_orphan_partner(memo
         await conn.execute("INSERT INTO entity_maintenance_queue(bank_id,entity_id) VALUES($1,$2)", seeded.bank, orphan)
 
     receipt = await apply(memory, seeded, manifest(await preview(memory, seeded)), "asymmetric-pin")
-    result = await graph.entity_prune_pass(backend=memory._backend, fq_table=fq_table, bank_id=seeded.bank)
+    result = await graph.entity_prune_pass(backend=memory._backend, fq_table=fq_store_table, bank_id=seeded.bank)
     assert result.orphan_entities_pruned == 0 and result.stale_cooccurrences_pruned == 0
     async with memory._pool.acquire() as conn:
         assert await conn.fetchval("SELECT 1 FROM entities WHERE id=$1", orphan)
@@ -384,7 +384,7 @@ async def test_asymmetric_captured_cooccurrence_pin_protects_orphan_partner(memo
             orphan,
         )
     assert (await revert(memory, seeded, receipt, "asymmetric-pin")).status == "reverted"
-    result = await graph.entity_prune_pass(backend=memory._backend, fq_table=fq_table, bank_id=seeded.bank)
+    result = await graph.entity_prune_pass(backend=memory._backend, fq_table=fq_store_table, bank_id=seeded.bank)
     assert result.orphan_entities_pruned == 1
     async with memory._pool.acquire() as conn:
         assert not await conn.fetchval("SELECT 1 FROM entities WHERE id=$1", orphan)
