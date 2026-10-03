@@ -425,9 +425,13 @@ class ConfigResolver:
                 return {"config": row["config"]} if row and row["config"] else {}
             except Exception as e:
                 logger.error(f"Failed to load bank config for {bank_id}: {e}")
-                # Re-raise nothing: the original swallowed this and returned {}. Returning the
-                # empty dict keeps that behaviour, but it must NOT be cached as if it were an
-                # answer -- bank_info_cache drops empty values for exactly this reason.
+                if not cached:
+                    # A fresh read is used by correctness-sensitive callers (including language
+                    # enforcement). Never turn an unavailable bank override into the global default.
+                    raise
+                # Re-raise nothing for cached reads: the original swallowed this and returned {}.
+                # Returning the empty dict keeps that behaviour, but it must NOT be cached as if it
+                # were an answer -- bank_info_cache drops empty values for exactly this reason.
                 return {}
 
         row = (

@@ -178,6 +178,9 @@ use the configurable policy below without destructive changes to source facts.
   strategy overrides uncached, so stale strategy modes or a changed default cannot
   bypass a newer reject. Remote edits affect the next operation without waiting
   for the worker's bank-info TTL; they do not change an already-running operation.
+  If that fresh bank-config read fails, the error is propagated and the operation
+  fails closed rather than silently inheriting the global mode; the failure is not
+  cached. Ordinary cached reads retain their existing empty-on-read-error behavior.
 - **Upstream:** Pinned preflight at `ec39e10900c6a971f1a73cd37402228d5cccaa25`.
   [Issue #4016](https://github.com/vectorize-io/hindsight/issues/4016) and the
   [unmerged predecessor #4018](https://github.com/vectorize-io/hindsight/pull/4018)
