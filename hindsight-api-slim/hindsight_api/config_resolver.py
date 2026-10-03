@@ -15,7 +15,7 @@ import logging
 from dataclasses import dataclass, fields, replace
 from functools import lru_cache
 from types import UnionType
-from typing import TYPE_CHECKING, Any, Union, get_args, get_origin
+from typing import TYPE_CHECKING, Any, Literal, Union, get_args, get_origin
 
 from hindsight_api.config import (
     RECALL_BUDGET_FUNCTIONS,
@@ -202,6 +202,7 @@ class ConfigResolver:
         # Normalize keys and filter to configurable fields only
         normalized_tenant = normalize_config_dict(tenant_overrides)
         configurable_tenant = {k: v for k, v in normalized_tenant.items() if k in self._configurable_fields}
+        configurable_tenant = _sanitize_language_integrity_overrides(configurable_tenant, scope)
         if configurable_tenant:
             logger.debug(f"Applied tenant config overrides for {scope}: {list(configurable_tenant.keys())}")
         return configurable_tenant
@@ -390,12 +391,12 @@ class ConfigResolver:
 
         Args:
             bank_id: Bank identifier
-            cached: read through the per-process cache. True on the RETAIN path, where this runs
-                once per sub-batch and a bank config that lags by one TTL changes nothing a caller
-                can see. False for anything that answers a reader about the bank's own config: the
-                cache is per PROCESS, so a write served by one pod is invisible to the others until
-                their entry expires, and a deployment runs several. Read-your-writes on a config
-                edit is not a race a user should have to lose.
+            cached: read through the per-process cache for ordinary operation settings.
+                Retain and consolidation separately read their language enforcement policy with
+                False: a correctness gate must not lag a remote edit by the cache TTL. False also
+                for anything that answers a reader about the bank's own config: the cache is per
+                PROCESS, so a write served by one pod is invisible to the others until their entry
+                expires. Read-your-writes on a config edit is not a race a user should have to lose.
 
         Returns:
             Dict of config overrides (only configurable fields, normalized keys)
@@ -424,9 +425,13 @@ class ConfigResolver:
                 return {"config": row["config"]} if row and row["config"] else {}
             except Exception as e:
                 logger.error(f"Failed to load bank config for {bank_id}: {e}")
-                # Re-raise nothing: the original swallowed this and returned {}. Returning the
-                # empty dict keeps that behaviour, but it must NOT be cached as if it were an
-                # answer -- bank_info_cache drops empty values for exactly this reason.
+                if not cached:
+                    # A fresh read is used by correctness-sensitive callers (including language
+                    # enforcement). Never turn an unavailable bank override into the global default.
+                    raise
+                # Re-raise nothing for cached reads: the original swallowed this and returned {}.
+                # Returning the empty dict keeps that behaviour, but it must NOT be cached as if it
+                # were an answer -- bank_info_cache drops empty values for exactly this reason.
                 return {}
 
         row = (
@@ -752,7 +757,7 @@ _WIDENED_FIELD_TYPES: dict[str, tuple[type, ...]] = {
 def _runtime_types(declared: Any) -> tuple[type, ...]:
     """Runtime-checkable base classes for a dataclass field annotation.
 
-    Unwraps unions (``str | None``) and generic aliases (``list[str]`` -> ``list``);
+    Unwraps unions (``str | None``), literals and generic aliases (``list[str]`` -> ``list``);
     ``None`` is dropped because callers handle the tombstone separately. Returns an
     empty tuple for anything not reducible to concrete classes, which the callers
     read as "no type contract to enforce".
@@ -760,6 +765,8 @@ def _runtime_types(declared: Any) -> tuple[type, ...]:
     if declared is type(None):
         return ()
     origin = get_origin(declared)
+    if origin is Literal:
+        return tuple(dict.fromkeys(type(value) for value in get_args(declared)))
     if origin in (Union, UnionType):
         return tuple(t for arg in get_args(declared) for t in _runtime_types(arg))
     if origin is not None:
@@ -860,6 +867,38 @@ def _validate_consolidation_strategies(value: Any) -> None:
             raise ValueError(f"Invalid consolidation strategy at index {index}: {location}: {first['msg']}") from e
 
 
+@lru_cache(maxsize=1)
+def _language_integrity_modes() -> tuple[str, ...]:
+    """Keep bank validation tied to the mode declaration rather than a second enum."""
+    declared = next(field.type for field in fields(HindsightConfig) if field.name == "llm_language_integrity")
+    return get_args(declared)
+
+
+def _valid_language_integrity_override(value: Any) -> bool:
+    return isinstance(value, str) and value in _language_integrity_modes()
+
+
+def _sanitize_language_integrity_overrides(overrides: dict[str, Any], scope: str) -> dict[str, Any]:
+    """Drop invalid language-integrity modes from tenant overrides at every depth."""
+    sanitized = copy.deepcopy(overrides)
+
+    def sanitize(mapping: dict[str, Any], location: str) -> None:
+        if "llm_language_integrity" in mapping:
+            mode = mapping["llm_language_integrity"]
+            if mode is None or not _valid_language_integrity_override(mode):
+                del mapping["llm_language_integrity"]
+                if mode is not None:
+                    logger.warning("Ignoring invalid tenant llm_language_integrity override for %s", location)
+        strategies = mapping.get("retain_strategies")
+        if isinstance(strategies, dict):
+            for strategy_name, strategy in strategies.items():
+                if isinstance(strategy, dict):
+                    sanitize(strategy, f"{location} retain strategy {strategy_name!r}")
+
+    sanitize(sanitized, scope)
+    return sanitized
+
+
 def _validate_config_value_types(updates: dict[str, Any]) -> None:
     """Reject values whose type contradicts the declared HindsightConfig type.
 
@@ -878,6 +917,8 @@ def _validate_config_value_types(updates: dict[str, Any]) -> None:
             continue
         if not _value_matches_type(value, allowed):
             raise ValueError(f"{key} must be {_describe_types(allowed)}, got {type(value).__name__}")
+        if key == "llm_language_integrity" and not _valid_language_integrity_override(value):
+            raise ValueError(f"llm_language_integrity must be one of {', '.join(_language_integrity_modes())}")
 
 
 def _coerce_stored_bank_overrides(bank_id: str, overrides: dict[str, Any], where: str = "") -> dict[str, Any]:
@@ -900,6 +941,14 @@ def _coerce_stored_bank_overrides(bank_id: str, overrides: dict[str, Any], where
     field_types = _configurable_field_types()
     coerced: dict[str, Any] = {}
     for key, value in overrides.items():
+        if key == "llm_language_integrity":
+            # A null mode inherits, including within a strategy. Never turn an
+            # inherited reject into configured_mode(None)'s observe fallback.
+            if value is None:
+                continue
+            if not _valid_language_integrity_override(value):
+                logger.warning("Bank %s has invalid llm_language_integrity%s; ignoring the override", bank_id, where)
+                continue
         allowed = field_types.get(key)
         # None passes through: the caller has already dropped top-level tombstones,
         # and inside a retain strategy a null is a deliberate override to None.
@@ -1037,6 +1086,12 @@ def apply_strategy(config: HindsightConfig, strategy_name: str) -> HindsightConf
 
     configurable = HindsightConfig.get_configurable_fields()
     filtered = {k: v for k, v in overrides.items() if k in configurable}
+    if "llm_language_integrity" in filtered:
+        mode = filtered["llm_language_integrity"]
+        if mode is None:
+            del filtered["llm_language_integrity"]
+        else:
+            _validate_config_value_types({"llm_language_integrity": mode})
 
     if not filtered:
         return config

@@ -6232,6 +6232,13 @@ class MemoryEngine(MemoryEngineInterface):
 
         await self._ensure_bank_exists(bank_id, request_context)
 
+        # Snapshot the enforcement policy once for this retain operation. Ordinary
+        # settings remain cache-backed, but language-integrity enforcement must not
+        # change between sub-batches if another worker edits the bank config.
+        language_integrity_mode = (
+            await self._resolve_retain_config(bank_id, request_context, strategy)
+        ).llm_language_integrity
+
         # Engine-owned copy: the orchestrator clears per-item "content" strings
         # after building the document's combined text (memory pressure
         # optimization, see retain/orchestrator.py). Without an internal copy
@@ -6332,6 +6339,7 @@ class MemoryEngine(MemoryEngineInterface):
                 outbox_callback=outbox_callback,
                 outbox_callback_factory=outbox_callback_factory,
                 start_time=start_time,
+                language_integrity_mode=language_integrity_mode,
             )
             result = execution.unit_ids
             total_usage = execution.usage
@@ -6391,6 +6399,7 @@ class MemoryEngine(MemoryEngineInterface):
                     document_tags=document_tags,
                     operation_id=operation_id,
                     strategy=strategy,
+                    language_integrity_mode=language_integrity_mode,
                     outbox_callback=group_outbox_callback,
                 )
                 for local_idx, origin_idx in enumerate(group.origins):
@@ -6596,6 +6605,8 @@ class MemoryEngine(MemoryEngineInterface):
         bank_id: str,
         request_context: "RequestContext",
         strategy: str | None,
+        *,
+        language_integrity_mode: str | None = None,
     ) -> HindsightConfig:
         """Resolve the config a retain runs under, strategy overrides applied.
 
@@ -6610,7 +6621,17 @@ class MemoryEngine(MemoryEngineInterface):
         effective_strategy = strategy or resolved_config.retain_default_strategy
         if effective_strategy:
             resolved_config = apply_strategy(resolved_config, effective_strategy)
-        return resolved_config
+
+        # The per-process cache can lag a policy edit made by another API/worker.
+        # Keep ordinary settings cached, but resolve the enforcement gate (including
+        # its current explicit/default strategy) fresh at this operation boundary.
+        if language_integrity_mode is None:
+            policy_config = await self._config_resolver.resolve_full_config(bank_id, request_context, cached=False)
+            policy_strategy = strategy or policy_config.retain_default_strategy
+            if policy_strategy:
+                policy_config = apply_strategy(policy_config, policy_strategy)
+            language_integrity_mode = policy_config.llm_language_integrity
+        return replace(resolved_config, llm_language_integrity=language_integrity_mode)
 
     @staticmethod
     def _retain_chunking_config(config: HindsightConfig) -> _RetainChunkingConfig:
@@ -6635,6 +6656,7 @@ class MemoryEngine(MemoryEngineInterface):
         outbox_callback: RetainOutboxCallback | None,
         outbox_callback_factory: RetainOutboxCallbackFactory | None,
         start_time: float,
+        language_integrity_mode: str | None = None,
     ) -> _RetainExecutionResult:
         """Run a batch with no shared document_id through the token splitter and
         the sequential sub-batch loop (or a single pass for a small batch).
@@ -6647,6 +6669,11 @@ class MemoryEngine(MemoryEngineInterface):
         here, because splitting one document across differently-bodied sub-batches
         trips the streaming pipeline's content-hash ownership check.
         """
+        if language_integrity_mode is None:
+            language_integrity_mode = (
+                await self._resolve_retain_config(bank_id, request_context, strategy)
+            ).llm_language_integrity
+
         if outbox_callback is None and outbox_callback_factory is not None:
             outbox_callback = outbox_callback_factory(contents)
 
@@ -6679,7 +6706,12 @@ class MemoryEngine(MemoryEngineInterface):
         _store = _get_memories_session()
         retain_session = None
         if _store.store_owned_for(bank_id):
-            _session_config = await self._resolve_retain_config(bank_id, request_context, strategy)
+            _session_config = await self._resolve_retain_config(
+                bank_id,
+                request_context,
+                strategy,
+                language_integrity_mode=language_integrity_mode,
+            )
             retain_session = await _store.begin_retain(bank_id=bank_id, config=_session_config)
 
         pending_outbox_callbacks: list[RetainOutboxCallback] = []
@@ -6726,7 +6758,12 @@ class MemoryEngine(MemoryEngineInterface):
             # retain config before splitting — the splitter and the orchestrator
             # must chunk identically for the slices to line up with what gets
             # stored (see _split_contents_into_sub_batches).
-            retain_config = await self._resolve_retain_config(bank_id, request_context, strategy)
+            retain_config = await self._resolve_retain_config(
+                bank_id,
+                request_context,
+                strategy,
+                language_integrity_mode=language_integrity_mode,
+            )
             chunking_config = self._retain_chunking_config(retain_config)
 
             # In update_mode="append", retain_batch prepends the existing document
@@ -6860,6 +6897,7 @@ class MemoryEngine(MemoryEngineInterface):
                     chunk_index_offset=offset_,
                     body_accum=body_accum,
                     retain_session=retain_session,
+                    language_integrity_mode=language_integrity_mode,
                 )
                 return _SubBatchOutcome(
                     index=idx,
@@ -7031,6 +7069,7 @@ class MemoryEngine(MemoryEngineInterface):
                     document_tags=document_tags,
                     operation_id=operation_id,
                     strategy=strategy,
+                    language_integrity_mode=language_integrity_mode,
                     outbox_callback=outbox_callback,
                     outbox_callback_factory=outbox_callback_factory,
                     retain_session=retain_session,
@@ -7115,6 +7154,7 @@ class MemoryEngine(MemoryEngineInterface):
         chunk_index_offset: int = 0,
         body_accum: "dict[str, DocumentBodyAccumulator] | None" = None,
         retain_session=None,
+        language_integrity_mode: str | None = None,
     ) -> "RetainBatchResult":
         """
         Internal method for batch processing without chunking logic.
@@ -7156,6 +7196,17 @@ class MemoryEngine(MemoryEngineInterface):
         effective_strategy = strategy or resolved_config.retain_default_strategy
         if effective_strategy:
             resolved_config = apply_strategy(resolved_config, effective_strategy)
+
+        # This worker path resolves independently of the splitting caller. Reuse
+        # its fresh enforcement policy without changing the provider/strategy order
+        # above or making ordinary settings opt out of the cache.
+        policy_config = await self._resolve_retain_config(
+            bank_id,
+            request_context,
+            strategy,
+            language_integrity_mode=language_integrity_mode,
+        )
+        resolved_config = replace(resolved_config, llm_language_integrity=policy_config.llm_language_integrity)
 
         # Create parent span for retain operation
         with create_operation_span("retain", bank_id):
