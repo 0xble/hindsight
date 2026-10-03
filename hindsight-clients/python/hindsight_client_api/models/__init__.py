@@ -67,6 +67,7 @@ from hindsight_client_api.models.curation_change import CurationChange
 from hindsight_client_api.models.curation_conflict_response import CurationConflictResponse
 from hindsight_client_api.models.curation_fact_type import CurationFactType
 from hindsight_client_api.models.curation_fields import CurationFields
+from hindsight_client_api.models.curation_guard import CurationGuard
 from hindsight_client_api.models.curation_inventory import CurationInventory
 from hindsight_client_api.models.curation_preview import CurationPreview
 from hindsight_client_api.models.curation_preview_request import CurationPreviewRequest
@@ -74,7 +75,6 @@ from hindsight_client_api.models.curation_receipt import CurationReceipt
 from hindsight_client_api.models.curation_revert_request import CurationRevertRequest
 from hindsight_client_api.models.curation_target_revision import CurationTargetRevision
 from hindsight_client_api.models.default_scopes_preview import DefaultScopesPreview
-from hindsight_client_api.models.curation_guard import CurationGuard
 from hindsight_client_api.models.delete_document_response import DeleteDocumentResponse
 from hindsight_client_api.models.delete_operation_response import DeleteOperationResponse
 from hindsight_client_api.models.delete_response import DeleteResponse
