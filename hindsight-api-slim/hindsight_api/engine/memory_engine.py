@@ -26,6 +26,7 @@ from collections.abc import AsyncIterator, Awaitable, Callable, Iterable, Iterat
 from contextlib import AsyncExitStack, asynccontextmanager, contextmanager
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime, timedelta, timezone
+from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, Literal, NoReturn, ParamSpec, TypeVar, cast
 
 import asyncpg
@@ -726,10 +727,13 @@ from .retain.types import RetainBatchResult, RetainContentDict, merge_processed_
 from .search.reranking import CrossEncoderReranker, apply_combined_scoring
 from .search.tag_resolution import MAX_VOCABULARY, TagResolutionError, needs_resolution, resolve_tag_groups
 from .search.tags import (
+    TagClause,
     TagGroup,
     TagsMatch,
     build_tag_groups_where_clause,
     build_tags_where_clause,
+    filter_results_by_tag_groups,
+    filter_results_by_tags,
     strict_tag_group,
     strict_tags_match,
 )
@@ -1772,6 +1776,41 @@ class RefreshTagFiltering:
     tags: list[str] | None
     tags_match: TagsMatch
     tag_groups: list[TagGroup] | None
+
+
+class KnowledgeTagFilter:
+    """Which knowledge pages a tree or search read may return, by their tags.
+
+    Same semantics as recall's ``tags``/``tags_match``/``tag_groups``, applied to the
+    page's mental-model tags. The default (no tags, no groups) filters nothing.
+    """
+
+    tags: list[str] | None = None
+    tags_match: TagsMatch = "any"
+    tag_groups: list[TagGroup] | None = None
+
+    @property
+    def active(self) -> bool:
+        return bool(self.tags) or bool(self.tag_groups) or self.tags_match == "exact"
+
+    def clause(self, param_offset: int) -> TagClause:
+        """SQL over the page's mental-model ``tags``, starting with ``AND`` (or empty).
+
+        The column is left unqualified on purpose: Oracle's dialect rewrites ``tags && :n``
+        / ``tags @> :n`` with a regex that only matches a bare column name, so ``mm.tags``
+        would come out as broken SQL there. It is unambiguous in the ``kp``/``mm`` join
+        because ``knowledge_pages`` has no ``tags`` column.
+        """
+        flat = build_tags_where_clause(self.tags, param_offset, "", self.tags_match)
+        groups = build_tag_groups_where_clause(self.tag_groups, flat.next_param_offset, "")
+        return TagClause(f"{flat.sql} {groups.sql}", flat.params + groups.params, groups.next_param_offset)
+
+    def matches(self, tags: list[str] | None) -> bool:
+        probe = [SimpleNamespace(tags=tags)]
+        return bool(
+            filter_results_by_tags(probe, self.tags, self.tags_match)
+            and filter_results_by_tag_groups(probe, self.tag_groups)
+        )
 
 
 @dataclass(frozen=True)
@@ -11626,6 +11665,8 @@ class MemoryEngine(MemoryEngineInterface):
         Returns:
             Dictionary with counts of deleted items
         """
+        from .schema import fq_store_table
+
         await self._authenticate_tenant(request_context)
         if self._operation_validator:
             from hindsight_api.extensions import BankWriteContext, BankWriteOperation
@@ -11666,7 +11707,7 @@ class MemoryEngine(MemoryEngineInterface):
                     # bank delete could hold its documents while waiting for the
                     # bank row held by a concurrent document delete.
                     bank_row = await conn.fetchrow(
-                        f"SELECT bank_id FROM {fq_table('banks')} WHERE bank_id = $1 FOR NO KEY UPDATE",
+                        f"SELECT bank_id FROM {fq_store_table('banks')} WHERE bank_id = $1 FOR NO KEY UPDATE",
                         bank_id,
                     )
                     bank_present = bank_row is not None
@@ -11690,7 +11731,7 @@ class MemoryEngine(MemoryEngineInterface):
                             # leaving observations behind that outlive the sources they summarise.
                             if not _scope_store_owned:
                                 unit_id_rows = await conn.fetch(
-                                    f"SELECT id FROM {fq_table('memory_units')} WHERE bank_id = $1 AND fact_type = $2",
+                                    f"SELECT id FROM {fq_store_table('memory_units')} WHERE bank_id = $1 AND fact_type = $2",
                                     bank_id,
                                     fact_type,
                                 )
@@ -11715,7 +11756,7 @@ class MemoryEngine(MemoryEngineInterface):
                             units_count = int(_typed_counts.get(fact_type, 0))
                         else:
                             units_count = await conn.fetchval(
-                                f"SELECT COUNT(*) FROM {fq_table('memory_units')} "
+                                f"SELECT COUNT(*) FROM {fq_store_table('memory_units')} "
                                 "WHERE bank_id = $1 AND fact_type = $2",
                                 bank_id,
                                 fact_type,
@@ -11727,15 +11768,17 @@ class MemoryEngine(MemoryEngineInterface):
                             )
                         # Links in lock order before the cascade reaches them (see delete_unit_links).
                         if not _scope_store_owned:
-                            await self._backend.ops.delete_unit_links(conn, fq_table("memory_links"), bank_id, unit_ids)
+                            await self._backend.ops.delete_unit_links(
+                                conn, fq_store_table("memory_links"), bank_id, unit_ids
+                            )
                         await conn.execute(
-                            f"DELETE FROM {fq_table('memory_units')} WHERE bank_id = $1 AND fact_type = $2",
+                            f"DELETE FROM {fq_store_table('memory_units')} WHERE bank_id = $1 AND fact_type = $2",
                             bank_id,
                             fact_type,
                         )
                         # Curation archive holds invalidated facts of the same types.
                         await conn.execute(
-                            f"DELETE FROM {fq_table('invalidated_memory_units')} WHERE bank_id = $1 AND fact_type = $2",
+                            f"DELETE FROM {fq_store_table('invalidated_memory_units')} WHERE bank_id = $1 AND fact_type = $2",
                             bank_id,
                             fact_type,
                         )
@@ -11746,7 +11789,7 @@ class MemoryEngine(MemoryEngineInterface):
                         # to observations, and this branch removes them all.
                         if fact_type == "observation":
                             await conn.execute(
-                                f"DELETE FROM {fq_table('observation_history')} WHERE bank_id = $1",
+                                f"DELETE FROM {fq_store_table('observation_history')} WHERE bank_id = $1",
                                 bank_id,
                             )
 
@@ -11769,13 +11812,13 @@ class MemoryEngine(MemoryEngineInterface):
                         _del_store = _get_memories_for_delete()
                         if not (bank_present and _del_store.store_owned_for(bank_id)):
                             units_count = await conn.fetchval(
-                                f"SELECT COUNT(*) FROM {fq_table('memory_units')} WHERE bank_id = $1", bank_id
+                                f"SELECT COUNT(*) FROM {fq_store_table('memory_units')} WHERE bank_id = $1", bank_id
                             )
                             entities_count = await conn.fetchval(
-                                f"SELECT COUNT(*) FROM {fq_table('entities')} WHERE bank_id = $1", bank_id
+                                f"SELECT COUNT(*) FROM {fq_store_table('entities')} WHERE bank_id = $1", bank_id
                             )
                             documents_count = await conn.fetchval(
-                                f"SELECT COUNT(*) FROM {fq_table('documents')} WHERE bank_id = $1", bank_id
+                                f"SELECT COUNT(*) FROM {fq_store_table('documents')} WHERE bank_id = $1", bank_id
                             )
                         else:
                             _counts = await _del_store.count_memories(conn=conn, fq_table=fq_table, bank_id=bank_id)
@@ -11797,9 +11840,9 @@ class MemoryEngine(MemoryEngineInterface):
                         legacy_files = [
                             row["storage_key"]
                             for row in await conn.fetch(
-                                f"SELECT storage_key FROM {fq_table('attachments')} "
+                                f"SELECT storage_key FROM {fq_store_table('attachments')} "
                                 f"WHERE bank_id = $1 AND storage_key NOT LIKE 'tenants/%' "
-                                f"UNION ALL SELECT file_storage_key FROM {fq_table('documents')} "
+                                f"UNION ALL SELECT file_storage_key FROM {fq_store_table('documents')} "
                                 f"WHERE bank_id = $1 AND file_storage_key IS NOT NULL "
                                 f"AND file_storage_key NOT LIKE 'tenants/%'",
                                 bank_id,
@@ -11807,27 +11850,29 @@ class MemoryEngine(MemoryEngineInterface):
                         ]
 
                         # Delete documents (cascades to chunks)
-                        await conn.execute(f"DELETE FROM {fq_table('documents')} WHERE bank_id = $1", bank_id)
+                        await conn.execute(f"DELETE FROM {fq_store_table('documents')} WHERE bank_id = $1", bank_id)
                         # Attachments hang off the bank, not a document, so clearing a bank
                         # that stays would otherwise keep every one of them.
-                        await conn.execute(f"DELETE FROM {fq_table('attachments')} WHERE bank_id = $1", bank_id)
+                        await conn.execute(f"DELETE FROM {fq_store_table('attachments')} WHERE bank_id = $1", bank_id)
 
                         # Delete memory units (cascades to unit_entities, memory_links)
-                        await conn.execute(f"DELETE FROM {fq_table('memory_units')} WHERE bank_id = $1", bank_id)
+                        await conn.execute(f"DELETE FROM {fq_store_table('memory_units')} WHERE bank_id = $1", bank_id)
 
                         # Observation history no longer cascades from memory_units (that FK was
                         # dropped so history can be recorded for observations kept outside SQL), so
                         # clear it by bank explicitly — otherwise every snapshot outlives the bank.
-                        await conn.execute(f"DELETE FROM {fq_table('observation_history')} WHERE bank_id = $1", bank_id)
+                        await conn.execute(
+                            f"DELETE FROM {fq_store_table('observation_history')} WHERE bank_id = $1", bank_id
+                        )
 
                         # Curation archive (rows with NULL document_id aren't covered by
                         # the documents cascade, so clear by bank explicitly).
                         await conn.execute(
-                            f"DELETE FROM {fq_table('invalidated_memory_units')} WHERE bank_id = $1", bank_id
+                            f"DELETE FROM {fq_store_table('invalidated_memory_units')} WHERE bank_id = $1", bank_id
                         )
 
                         # Delete entities (cascades to unit_entities, entity_cooccurrences, memory_links with entity_id)
-                        await conn.execute(f"DELETE FROM {fq_table('entities')} WHERE bank_id = $1", bank_id)
+                        await conn.execute(f"DELETE FROM {fq_store_table('entities')} WHERE bank_id = $1", bank_id)
 
                         # Sweep extension-owned bank-scoped tables (audit receipts,
                         # per-bank policy state, ...). These scope by bank_id without
@@ -11840,7 +11885,7 @@ class MemoryEngine(MemoryEngineInterface):
                             for spec in extra_tables:
                                 if not spec.delete_with_bank:
                                     continue
-                                qualified = fq_table(spec.name)
+                                qualified = fq_store_table(spec.name)
                                 # PG-only existence guard: a declared-but-unprovisioned
                                 # table must not abort the whole bank delete. (to_regclass
                                 # is PG syntax; extension bank tables are a PG feature.)
@@ -11860,7 +11905,8 @@ class MemoryEngine(MemoryEngineInterface):
                         if delete_bank_profile:
                             # Delete the bank profile and retrieve internal_id for HNSW index cleanup
                             internal_id = await conn.fetchval(
-                                f"DELETE FROM {fq_table('banks')} WHERE bank_id = $1 RETURNING internal_id", bank_id
+                                f"DELETE FROM {fq_store_table('banks')} WHERE bank_id = $1 RETURNING internal_id",
+                                bank_id,
                             )
                             if internal_id:
                                 bank_internal_id = str(internal_id)
@@ -16456,7 +16502,9 @@ class MemoryEngine(MemoryEngineInterface):
 
         async def expand_fn(memory_ids: list[str], depth: str) -> dict[str, Any]:
             async with backend.acquire() as conn:
-                return await tool_expand(conn, bank_id, memory_ids, depth)
+                return await tool_expand(
+                    conn, bank_id, memory_ids, depth, tags=tags, tags_match=tags_match, tag_groups=tag_groups
+                )
 
         # Load directives from the dedicated directives table.
         # Directives are hard rules that must be followed in all responses.

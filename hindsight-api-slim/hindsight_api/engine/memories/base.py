@@ -40,9 +40,10 @@ from __future__ import annotations
 import json
 import uuid
 from abc import ABC, abstractmethod
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, Any, Protocol, cast
 from uuid import UUID
 
 from ...extensions.base import Extension
@@ -61,6 +62,7 @@ from ..db.base import DatabaseConnection
 # actually exist -- the SQL builders below take this exact type, and a bare `str` made
 # every hop between them unverifiable.
 from ..search.tags import TagsMatch
+from ..search.types import RetrievalResult
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from ..search.retrieval import GraphRetriever
@@ -215,6 +217,201 @@ META_SOURCE_KEY_PREFIX = "src:"
 def source_key(unit_id: str) -> str:
     """The metadata key marking an observation as built on ``unit_id``."""
     return f"{META_SOURCE_KEY_PREFIX}{unit_id}"
+
+
+class AttachmentRef:
+    """Attachment short ids named by one document: the filename lives on the document edge."""
+
+    document_id: str | None
+    attachment_ids: list[str]
+
+
+class ObservationChunkIds:
+    """The chunk ids of each observation's sources, for recall ``include_chunks``.
+
+    ``chunk_ids_by_observation`` is in observation-rank order, each list in source order
+    and not yet deduplicated across observations. ``sources_by_observation`` is set only
+    when answering had to read the observations for their sources, so the caller can put
+    them back on its results rather than read them a second time.
+    """
+
+    chunk_ids_by_observation: dict[str, list[str]]
+    sources_by_observation: dict[str, list[str]] | None = None
+
+
+class DocumentSourceUnits:
+    """A document's experience/world memory ids and its total memory count, read before a delete."""
+
+    unit_ids: list[str]
+    units_count: int
+
+
+class DeletedDocument:
+    """What deleting a document found: whether it existed, and its uploaded file's storage key."""
+
+    deleted: bool
+    file_storage_key: str | None
+
+
+class DocumentTags:
+    """A document's current tags. ``tags`` is ``None`` when they could not be read — the
+    document is absent, or its record does not carry them — which is never "no tags"."""
+
+    found: bool
+    tags: list[str] | None
+
+
+def _epoch_ms_to_datetime(value: Any) -> datetime | None:
+    """Epoch milliseconds -> aware datetime, for records read from a store rather than from SQL.
+
+    A store returns timestamps as integers; the SQL rows these records stand in for come back as
+    datetimes, and the response builders call ``.isoformat()`` on them. Normalising here keeps
+    those builders unaware of where the record came from. ``0`` means unset, not the epoch.
+    """
+    if not value:
+        return None
+    if isinstance(value, datetime):
+        return value
+    try:
+        return datetime.fromtimestamp(int(value) / 1000.0, tz=timezone.utc)
+    except (TypeError, ValueError, OSError, OverflowError):
+        return None
+
+
+class SemanticBm25Result:
+    """One fact_type's dense + keyword candidates, plus the graph arm's seeds.
+
+    What a store's combined semantic/BM25 read hands back (the Postgres store's ``search``). Declared
+    here rather than in the Postgres store's modules so a store implementing the same read does not
+    have to import them.
+    """
+
+    semantic: list[RetrievalResult]
+    bm25: list[RetrievalResult]
+    graph_seeds: list[RetrievalResult] | None
+
+
+class MemoryLocation:
+    """Where one memory lives and what it is: the answer to the lookups that precede a delete
+    or a history read. ``source_memory_ids`` is filled only by :meth:`MemoriesExtension.observation_head`."""
+
+    unit_id: str
+    bank_id: str
+    fact_type: str
+    source_memory_ids: list[str] = field(default_factory=list)
+
+
+class TypedMemoryScope:
+    """A bank's memories of one fact_type, as a typed bank clear needs them: the ids (source
+    types only, for the stale-observation sweep) and the count it reports."""
+
+    unit_ids: list[str] = field(default_factory=list)
+    count: int = 0
+
+
+class BankContentCounts:
+    """What a whole-bank delete reports having removed."""
+
+    memory_units: int = 0
+    entities: int = 0
+    documents: int = 0
+
+
+class DocumentBase:
+    """The stored document an append builds on: its body and the version it was read at.
+
+    ``watermark`` is the token a conditional write compare-and-sets against (see
+    :meth:`MemoriesExtension.put_document`); ``None`` for a store that serializes appends
+    on a row lock instead.
+    """
+
+    original_text: str | None
+    content_hash: str | None
+    attachment_filenames: dict[str, str] = field(default_factory=dict)
+    watermark: int | None = None
+
+
+class ExistingChunk:
+    """A chunk already stored for a document: its id, position and content hash."""
+
+    chunk_id: str
+    chunk_index: int
+    content_hash: str | None
+
+
+class DocumentChunkState:
+    """A stored document's version, body (when asked for) and chunks, as a delta retain diffs them.
+
+    ``watermark`` is the store-state token the delta's write compare-and-sets against (see
+    :meth:`MemoriesExtension.put_document`); ``None`` where the write serializes on a row lock."""
+
+    content_hash: str | None
+    original_text: str | None
+    chunks: list[ExistingChunk] = field(default_factory=list)
+    watermark: int | None = None
+
+
+def document_chunk_state(
+    record: "Mapping | None", *, bank_id: str, document_id: str, include_text: bool
+) -> DocumentChunkState:
+    """A store-owned document record read as a :class:`DocumentChunkState`; empty if ``None``.
+
+    The record's own chunk hashes, not a download of every chunk's text: they were computed with
+    the same ``sha256(chunk.encode()).hexdigest()`` retain compares with. A chunk_id is
+    ``build_chunk_id(bank_id, document_id, index)`` by construction, so the record carries none.
+    All of it comes from the ONE record: un-pairing the watermark from the hash is what the
+    compare-and-set exists to prevent.
+    """
+    from ..chunk_ids import build_chunk_id
+
+    rec = record or {}
+    return DocumentChunkState(
+        content_hash=rec.get("content_hash"),
+        original_text=rec.get("original_text") if include_text else None,
+        chunks=[
+            ExistingChunk(
+                chunk_id=build_chunk_id(bank_id, document_id, index),
+                chunk_index=index,
+                content_hash=chunk_hash,
+            )
+            for index, chunk_hash in enumerate(rec.get("chunk_hashes") or [])
+        ],
+        watermark=rec.get("watermark"),
+    )
+
+
+class RelabelResult:
+    """What relabelling a document's memories did: how many it updated, and which of them
+    (``experience``/``world`` only) changed tags or observation scoping — the ones whose
+    observations are no longer valid."""
+
+    updated: int
+    rescoped_unit_ids: list[str] = field(default_factory=list)
+
+
+class EntityResolverHandle(Protocol):
+    """What the engine holds as its entity resolver: the Postgres store's SQL resolver, built once at
+    startup through ``sql_memories()`` and handed to :meth:`MemoriesExtension.resolve_entities`.
+
+    A Protocol rather than the Postgres ``EntityResolver`` class: this module may not import the
+    Postgres store's modules (``tests/test_store_table_boundary.py``). The two per-task stats
+    hooks are what the retain and import paths call on every batch whatever store owns the bank;
+    the memory edit calls the reassert / link pair after :meth:`MemoriesExtension.resolve_entities`
+    resolved something.
+    """
+
+    def discard_pending_stats(self) -> None: ...
+
+    async def flush_pending_stats(self) -> None: ...
+
+    async def reassert_entities_batch(self, bank_id: str, resolved_entities: list[Any], conn) -> None: ...
+
+    async def link_units_to_entities_batch(
+        self,
+        unit_entity_pairs: list[tuple[str, str]] | list[tuple[str, str, datetime | None]],
+        conn=None,
+        bank_id: str | None = None,
+    ) -> None: ...
 
 
 @dataclass

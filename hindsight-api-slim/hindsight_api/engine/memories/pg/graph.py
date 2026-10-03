@@ -36,16 +36,28 @@ from typing import Any
 
 from ....config import get_config
 from ...db.base import DatabaseConnection
-from ...retain.link_utils import (
+from ...search.tags import TagGroup, TagsMatch, build_tag_filter_clause
+from ..base import EntityPrunePassResult, RelinkPassResult
+from .links import (
     MAX_TEMPORAL_LINKS_PER_UNIT,
     _bulk_insert_links,
     _normalize_datetime,
     compute_semantic_links_ann,
 )
-from ...search.tags import TagsMatch
-from ..base import EntityPrunePassResult, RelinkPassResult
 
 logger = logging.getLogger(__name__)
+
+
+def _table(resolver, name: str) -> str:
+    """Resolve graph tables, retaining compatibility with pre-store callers."""
+    try:
+        return resolver(name)
+    except Exception as exc:
+        from ...schema import StoreTableAccessError, fq_store_table
+
+        if isinstance(exc, StoreTableAccessError):
+            return fq_store_table(name)
+        raise
 
 
 def _as_uuid(value: Any) -> uuid_module.UUID:
@@ -157,14 +169,14 @@ def _observations_via_source_match(
         bank_clause = f" AND src.bank_id = ${bank_placeholder}" if bank_placeholder else ""
         return (
             f"id IN (SELECT os.observation_id "
-            f"FROM {fq_table('observation_sources')} os "
-            f"JOIN {fq_table('memory_units')} src ON src.id = os.source_id "
+            f"FROM {_table(fq_table, 'observation_sources')} os "
+            f"JOIN {_table(fq_table, 'memory_units')} src ON src.id = os.source_id "
             f"WHERE src.{source_column} = ${source_placeholder}{bank_clause})"
         )
     bank_clause = f" AND bank_id = ${bank_placeholder}" if bank_placeholder else ""
     return (
         f"source_memory_ids && (SELECT array_agg(id) "
-        f"FROM {fq_table('memory_units')} "
+        f"FROM {_table(fq_table, 'memory_units')} "
         f"WHERE {source_column} = ${source_placeholder}{bank_clause})"
     )
 
@@ -180,6 +192,7 @@ async def graph_units(
     chunk_id: str | None = None,
     tags: list[str] | None = None,
     tags_match: TagsMatch = "all_strict",
+    tag_groups: list[TagGroup] | None = None,
     limit: int = 1000,
 ) -> dict[str, Any]:
     """Memory nodes for the graph view, plus the total matching count.
@@ -190,7 +203,7 @@ async def graph_units(
     observation whose *sources* carry them, since observations have neither of
     their own.
     """
-    from ...search.tags import build_tags_where_clause_simple
+    from ...search.tags import build_tag_groups_where_clause, build_tags_where_clause_simple
 
     ops = _ops_for(conn)
     conditions: list[str] = []
@@ -229,11 +242,15 @@ async def graph_units(
         # Exact match with no tags is the "global" scope: rows carrying no tags at
         # all. (Other modes treat empty tags as "no filter".)
         conditions.append("(tags IS NULL OR tags = '{}')")
+    if tag_groups:
+        groups = build_tag_groups_where_clause(tag_groups, len(params) + 1)
+        conditions.append(groups.sql.removeprefix("AND "))
+        params.extend(groups.params)
 
     where_clause = "WHERE " + " AND ".join(conditions) if conditions else ""
 
     total_row = await conn.fetchrow(
-        f"SELECT COUNT(*) AS total FROM {fq_table('memory_units')} {where_clause}",
+        f"SELECT COUNT(*) AS total FROM {_table(fq_table, 'memory_units')} {where_clause}",
         *params,
     )
     total = total_row["total"] if total_row else 0
@@ -242,7 +259,7 @@ async def graph_units(
     rows = await conn.fetch(
         f"""
         SELECT {_GRAPH_UNIT_COLUMNS}
-        FROM {fq_table("memory_units")}
+        FROM {_table(fq_table, "memory_units")}
         {where_clause}
         ORDER BY mentioned_at DESC NULLS LAST, event_date DESC
         LIMIT ${len(params)}
@@ -274,8 +291,8 @@ async def graph_entity_rows(
     rows = await conn.fetch(
         f"""
         SELECT ue.unit_id, e.id AS entity_id, e.canonical_name
-        FROM {fq_table("unit_entities")} ue
-        JOIN {fq_table("entities")} e ON ue.entity_id = e.id
+        FROM {_table(fq_table, "unit_entities")} ue
+        JOIN {_table(fq_table, "entities")} e ON ue.entity_id = e.id
         WHERE ue.unit_id = ANY($1::uuid[])
         ORDER BY ue.unit_id
         """,
@@ -311,7 +328,7 @@ async def graph_direct_links(
                ml.link_type,
                ml.weight,
                NULL::text AS entity_name
-        FROM {fq_table("memory_links")} ml
+        FROM {_table(fq_table, "memory_links")} ml
         WHERE ml.from_unit_id = ANY($1::uuid[])
           AND ml.to_unit_id = ANY($1::uuid[])
         ORDER BY ml.weight DESC NULLS LAST
@@ -332,8 +349,15 @@ async def entity_memory_counts(
     fq_table: Callable[[str], str],
     bank_id: str,
     entity_ids: list[str] | None = None,
+    tags: list[str] | None = None,
+    tags_match: TagsMatch = "any",
+    tag_groups: list | None = None,
 ) -> dict[str, int]:
     """Live memory count per entity id, for the entities in ``bank_id``.
+
+    ``tags``/``tags_match``/``tag_groups`` count only the matching memories. The clause runs in an
+    unaliased subquery because the Oracle rewriter needs a bare ``tags`` column
+    (see ``visible_entity_stats_sql``); with no filter the query is unchanged.
 
     The GROUP BY is what makes this an orphan test: an entity with no surviving
     `unit_entities` row produces no group, so it is simply absent from the
@@ -343,7 +367,11 @@ async def entity_memory_counts(
     and joining is what keeps the count to *live* memories (deleted units take
     their postings with them via ON DELETE CASCADE).
     """
-    params: list[Any] = [bank_id]
+    built = build_tag_filter_clause(tags, tags_match, tag_groups, param_offset=2)
+    params: list[Any] = [bank_id, *built.params]
+    tag_filter = ""
+    if built.sql:
+        tag_filter = f"AND mu.id IN (SELECT id FROM {_table(fq_table, 'memory_units')} WHERE bank_id = $1 {built.sql})"
     entity_filter = ""
     if entity_ids is not None:
         if not entity_ids:
@@ -354,9 +382,10 @@ async def entity_memory_counts(
     rows = await conn.fetch(
         f"""
         SELECT ue.entity_id, COUNT(*) AS n
-        FROM {fq_table("unit_entities")} ue
-        JOIN {fq_table("memory_units")} mu ON mu.id = ue.unit_id
+        FROM {_table(fq_table, "unit_entities")} ue
+        JOIN {_table(fq_table, "memory_units")} mu ON mu.id = ue.unit_id
         WHERE mu.bank_id = $1
+        {tag_filter}
         {entity_filter}
         GROUP BY ue.entity_id
         """,
@@ -385,9 +414,9 @@ def _entity_rows_for_units_sql(
     ``uuid[]`` of unit IDs. The placeholder is referenced twice — both
     sides of the UNION need it — so callers should not reuse the slot.
     """
-    ue = fq_table("unit_entities")
-    ents = fq_table("entities")
-    mu = fq_table("memory_units")
+    ue = _table(fq_table, "unit_entities")
+    ents = _table(fq_table, "entities")
+    mu = _table(fq_table, "memory_units")
     p = unit_ids_placeholder
 
     direct = (
@@ -398,7 +427,7 @@ def _entity_rows_for_units_sql(
     )
 
     if ops.uses_observation_sources_table:
-        os_t = fq_table("observation_sources")
+        os_t = _table(fq_table, "observation_sources")
         inherited = (
             f"SELECT os.observation_id AS unit_id, e.id AS entity_id, e.canonical_name "
             f"FROM {os_t} os "
@@ -520,7 +549,7 @@ async def resolve_entity_names(
     if not uuids:
         return {}
     rows = await conn.fetch(
-        f"SELECT id, canonical_name FROM {fq_table('entities')} WHERE id = ANY($1::uuid[]) AND bank_id = $2",
+        f"SELECT id, canonical_name FROM {_table(fq_table, 'entities')} WHERE id = ANY($1::uuid[]) AND bank_id = $2",
         uuids,
         bank_id,
     )
@@ -574,7 +603,7 @@ async def enqueue_relink_victims(
     victim_rows = await conn.fetch(
         f"""
         SELECT DISTINCT from_unit_id
-        FROM {fq_table("memory_links")}
+        FROM {_table(fq_table, "memory_links")}
         WHERE to_unit_id = ANY($1::uuid[])
           AND bank_id = $2
           AND link_type IN ('temporal', 'semantic')
@@ -592,7 +621,7 @@ async def enqueue_relink_victims(
 
     await ops.enqueue_graph_maintenance(
         conn,
-        fq_table("graph_maintenance_queue"),
+        _table(fq_table, "graph_maintenance_queue"),
         bank_id,
         list(victim_ids),
     )
@@ -628,7 +657,7 @@ async def relink_pass(
     probe — so it has to acquire its own.
 
     ``config`` is the caller's resolved configuration. The Postgres pass takes
-    its caps from retain's link_utils (so relink and retain agree on what "full"
+    its caps from retain's links module (so relink and retain agree on what "full"
     means) and never reads it; it is accepted so a store that *does* tune its
     relinking gets it.
 
@@ -658,7 +687,7 @@ async def relink_pass(
             async with conn.transaction():
                 unit_ids = await ops.claim_graph_maintenance_batch(
                     conn,
-                    fq_table("graph_maintenance_queue"),
+                    _table(fq_table, "graph_maintenance_queue"),
                     bank_id,
                     _DRAIN_BATCH_SIZE,
                 )
@@ -703,7 +732,7 @@ async def _relink_batch(
     victim_rows = await conn.fetch(
         f"""
         SELECT id::text AS id, event_date, fact_type, embedding::text AS embedding
-        FROM {fq_table("memory_units")}
+        FROM {_table(fq_table, "memory_units")}
         WHERE id = ANY($1::uuid[])
           AND bank_id = $2
           AND fact_type IN ('experience', 'world')
@@ -723,7 +752,7 @@ async def _relink_batch(
     count_rows = await conn.fetch(
         f"""
         SELECT from_unit_id, link_type, COUNT(*) AS cnt
-        FROM {fq_table("memory_links")}
+        FROM {_table(fq_table, "memory_links")}
         WHERE from_unit_id = ANY($1::uuid[])
           AND bank_id = $2
           AND link_type IN ('temporal', 'semantic')
@@ -750,7 +779,7 @@ async def _relink_batch(
         if lateral_unit_ids:
             rows = await ops.fetch_temporal_neighbors(
                 conn,
-                fq_table("memory_units"),
+                _table(fq_table, "memory_units"),
                 bank_id,
                 lateral_unit_ids,
                 lateral_event_dates,
@@ -848,9 +877,9 @@ async def enqueue_entity_prune_candidates(
         return 0
 
     ops = _ops_for(conn)
-    queue_table = fq_table("entity_maintenance_queue")
-    ue_table = fq_table("unit_entities")
-    entities_table = fq_table("entities")
+    queue_table = _table(fq_table, "entity_maintenance_queue")
+    ue_table = _table(fq_table, "unit_entities")
+    entities_table = _table(fq_table, "entities")
     unit_uuids = _as_uuids(list(affected_unit_ids))
 
     # Chunked because a bulk delete can hand in thousands of unit ids and the
@@ -941,7 +970,7 @@ async def entity_prune_pass(
                     ops = backend.ops
                     entity_ids = await ops.claim_entity_maintenance_batch(
                         conn,
-                        fq_table("entity_maintenance_queue"),
+                        _table(fq_table, "entity_maintenance_queue"),
                         bank_id,
                         _ENTITY_PRUNE_BATCH_SIZE,
                     )
@@ -953,17 +982,17 @@ async def entity_prune_pass(
                     if isinstance(ops, PostgreSQLOps):
                         orphaned = await ops.prune_orphan_entities(
                             conn,
-                            fq_table("entities"),
-                            fq_table("unit_entities"),
+                            _table(fq_table, "entities"),
+                            _table(fq_table, "unit_entities"),
                             bank_id,
                             entity_ids,
-                            pins_table=fq_table("curation_entity_pins"),
+                            pins_table=_table(fq_table, "curation_entity_pins"),
                         )
                     else:
                         orphaned = await ops.prune_orphan_entities(
                             conn,
-                            fq_table("entities"),
-                            fq_table("unit_entities"),
+                            _table(fq_table, "entities"),
+                            _table(fq_table, "unit_entities"),
                             bank_id,
                             entity_ids,
                         )
@@ -973,16 +1002,16 @@ async def entity_prune_pass(
                     if isinstance(ops, PostgreSQLOps):
                         stale = await ops.prune_stale_cooccurrences(
                             conn,
-                            fq_table("entity_cooccurrences"),
-                            fq_table("unit_entities"),
+                            _table(fq_table, "entity_cooccurrences"),
+                            _table(fq_table, "unit_entities"),
                             entity_ids,
-                            pins_table=fq_table("curation_entity_pins"),
+                            pins_table=_table(fq_table, "curation_entity_pins"),
                         )
                     else:
                         stale = await ops.prune_stale_cooccurrences(
                             conn,
-                            fq_table("entity_cooccurrences"),
-                            fq_table("unit_entities"),
+                            _table(fq_table, "entity_cooccurrences"),
+                            _table(fq_table, "unit_entities"),
                             entity_ids,
                         )
                     return _PruneBatch(
