@@ -461,7 +461,8 @@ def test_accounting_preprocessing_is_cpu_bounded_on_256k_aggregate_input():
         d.dropped_supported_anchors(text[:-12], "Plain prose.", [], [])
         times.append(process_time() - start)
     print(f"ACCOUNTING_256K_AGGREGATE_CPU_SECONDS={times}")
-    assert max(times) < 5.0
+    # maintenance/detail-loss.md fixes this sentinel's 1.0-second limit.
+    assert max(times) < 1.0
 
 
 @pytest.mark.asyncio
