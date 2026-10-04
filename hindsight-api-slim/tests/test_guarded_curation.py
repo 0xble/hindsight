@@ -18,6 +18,9 @@ from hindsight_api.engine.curation_guard import (
     memory_snapshot_sha256,
     snapshot_sha256,
 )
+from hindsight_api.engine.memories import get_memories
+from hindsight_api.engine.memories.pg import graph as pg_graph
+from hindsight_api.engine.schema import fq_table
 
 pytestmark = [pytest.mark.asyncio, pytest.mark.memory_backend_incompatible]
 
@@ -260,6 +263,7 @@ async def test_row_lock_contention_returns_prompt_conflict_and_rolls_back(api_cl
 async def test_guard_is_advertised_and_entity_changes_rejected(api_client, case):
     spec = (await api_client.get("/openapi.json")).json()
     assert "curation_guard" in spec["components"]["schemas"]["UpdateMemoryRequest"]["properties"]
+    assert "409" in spec["paths"]["/v1/default/banks/{bank_id}/memories/{memory_id}"]["patch"]["responses"]
     guard = await guard_for(api_client, case)
     response = await api_client.patch(
         case.path,
@@ -296,3 +300,82 @@ async def test_edit_rechecks_after_off_transaction_embedding(api_client, case, m
     current = (await api_client.get(case.path)).json()
     assert current["text"] == "A concurrent authoritative correction"
     assert current["state"] == "valid"
+
+
+async def test_relink_read_cannot_insert_stale_link_after_guarded_edit(api_client, case, memory, request_context):
+    """A relink read racing a guarded edit must serialize, not resurrect a deleted edge."""
+    victim_id = uuid.uuid4()
+    async with memory._backend.acquire() as conn:
+        await conn.execute(
+            "INSERT INTO memory_units(id,bank_id,text,fact_type,event_date) VALUES ($1,$2,'victim','world',$3)",
+            victim_id,
+            case.bank,
+            datetime(2026, 9, 29, tzinfo=UTC),
+        )
+        await conn.execute(
+            "INSERT INTO memory_links(from_unit_id,to_unit_id,link_type,weight,bank_id) "
+            "VALUES ($1,$2,'temporal',0.5,$3)",
+            victim_id,
+            uuid.UUID(case.memory_id),
+            case.bank,
+        )
+        await conn.execute("INSERT INTO graph_maintenance_queue(bank_id,unit_id) VALUES ($1,$2)", case.bank, victim_id)
+
+    read_done = asyncio.Event()
+    release_relink = asyncio.Event()
+
+    async def paused_relink_batch(conn, table_fn, bank_id, victim_ids, ops, backend):
+        row = await conn.fetchrow(
+            "SELECT from_unit_id,to_unit_id,link_type,weight FROM memory_links WHERE bank_id=$1 AND from_unit_id=$2",
+            bank_id,
+            victim_ids[0],
+        )
+        assert row is not None
+        read_done.set()
+        await release_relink.wait()
+        await conn.execute(
+            "INSERT INTO memory_links(from_unit_id,to_unit_id,link_type,weight,bank_id) "
+            "VALUES ($1,$2,$3,$4,$5) ON CONFLICT DO NOTHING",
+            row["from_unit_id"],
+            row["to_unit_id"],
+            row["link_type"],
+            row["weight"],
+            bank_id,
+        )
+        return 1
+
+    backend = await memory._get_backend()
+    store = get_memories()
+    config = await memory._config_resolver.resolve_full_config(case.bank, request_context)
+    relink_task = None
+    guard = await guard_for(api_client, case)
+    with (
+        patch.object(pg_graph, "_relink_batch", side_effect=paused_relink_batch),
+        patch.object(memory, "submit_async_graph_maintenance", return_value=None),
+    ):
+        relink_task = asyncio.create_task(
+            store.relink_pass(backend=backend, fq_table=fq_table, bank_id=case.bank, config=config)
+        )
+        await asyncio.wait_for(read_done.wait(), timeout=2.0)
+        response = await api_client.patch(
+            case.path,
+            json={"text": "The migration was only proposed.", "curation_guard": guard.model_dump()},
+        )
+        assert response.status_code == 409, response.text
+        release_relink.set()
+        await asyncio.wait_for(relink_task, timeout=2.0)
+
+    async with memory._backend.acquire() as conn:
+        assert (
+            await conn.fetchval("SELECT text FROM memory_units WHERE bank_id=$1 AND id=$2", case.bank, case.memory_id)
+            == "The migration happened."
+        )
+        assert (
+            await conn.fetchval(
+                "SELECT count(*) FROM memory_links WHERE bank_id=$1 AND from_unit_id=$2 AND to_unit_id=$3",
+                case.bank,
+                victim_id,
+                uuid.UUID(case.memory_id),
+            )
+            == 1
+        )

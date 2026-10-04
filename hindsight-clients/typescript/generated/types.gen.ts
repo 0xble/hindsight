@@ -1927,6 +1927,36 @@ export type CurationFields = {
 };
 
 /**
+ * CurationGuard
+ */
+export type CurationGuard = {
+  /**
+   * Protocol
+   */
+  protocol: "raw-curation-v1";
+  /**
+   * Expected Memory Sha256
+   *
+   * Lowercase SHA-256 hex digest.
+   */
+  expected_memory_sha256: string;
+  /**
+   * Expected Source Sha256
+   *
+   * Lowercase SHA-256 hex digest.
+   */
+  expected_source_sha256: string;
+  /**
+   * Require No Observations
+   */
+  require_no_observations: true;
+  /**
+   * Require Quiescent Consolidation
+   */
+  require_quiescent_consolidation: true;
+};
+
+/**
  * CurationInventory
  */
 export type CurationInventory = {
@@ -2081,36 +2111,6 @@ export type DefaultScopesPreview = {
    * Samples
    */
   samples: Array<StrategyScopePreview>;
-};
-
-/**
- * CurationGuard
- */
-export type CurationGuard = {
-  /**
-   * Protocol
-   */
-  protocol: "raw-curation-v1";
-  /**
-   * Expected Memory Sha256
-   *
-   * Lowercase SHA-256 hex digest.
-   */
-  expected_memory_sha256: string;
-  /**
-   * Expected Source Sha256
-   *
-   * Lowercase SHA-256 hex digest.
-   */
-  expected_source_sha256: string;
-  /**
-   * Require No Observations
-   */
-  require_no_observations: true;
-  /**
-   * Require Quiescent Consolidation
-   */
-  require_quiescent_consolidation: true;
 };
 
 /**
@@ -8053,6 +8053,10 @@ export type UpdateMemoryData = {
 };
 
 export type UpdateMemoryErrors = {
+  /**
+   * Curation conflict
+   */
+  409: CurationConflictResponse;
   /**
    * Validation Error
    */

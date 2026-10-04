@@ -6033,6 +6033,7 @@ def _register_routes(app: FastAPI):
 
     @app.patch(
         "/v1/default/banks/{bank_id}/memories/{memory_id}",
+        responses={409: {"model": CurationConflictResponse, "description": "Curation conflict"}},
         summary="Curate memory unit",
         description="Edit a memory's text and/or change its curation state "
         "(invalidate / revert). Invalidated memories are excluded from recall, "

@@ -12986,7 +12986,7 @@ class MemoryEngine(MemoryEngineInterface):
             async with acquire_with_retry(backend) as conn:
                 async with conn.transaction():
                     if curation_guard is not None:
-                        await lock_curation_tables(conn, fq_table)
+                        await lock_curation_tables(conn, fq_table, bank_id)
                         current_snapshot = await store.get_memory_unit(
                             conn=conn,
                             ops=self._backend.ops,

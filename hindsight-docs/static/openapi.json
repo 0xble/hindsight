@@ -1173,6 +1173,16 @@
               }
             }
           },
+          "409": {
+            "description": "Curation conflict",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CurationConflictResponse"
+                }
+              }
+            }
+          },
           "422": {
             "description": "Validation Error",
             "content": {
@@ -11380,6 +11390,49 @@
         "type": "object",
         "title": "CurationFields"
       },
+      "CurationGuard": {
+        "properties": {
+          "protocol": {
+            "type": "string",
+            "const": "raw-curation-v1",
+            "title": "Protocol"
+          },
+          "expected_memory_sha256": {
+            "type": "string",
+            "maxLength": 64,
+            "minLength": 64,
+            "title": "Expected Memory Sha256",
+            "description": "Lowercase SHA-256 hex digest."
+          },
+          "expected_source_sha256": {
+            "type": "string",
+            "maxLength": 64,
+            "minLength": 64,
+            "title": "Expected Source Sha256",
+            "description": "Lowercase SHA-256 hex digest."
+          },
+          "require_no_observations": {
+            "type": "boolean",
+            "const": true,
+            "title": "Require No Observations"
+          },
+          "require_quiescent_consolidation": {
+            "type": "boolean",
+            "const": true,
+            "title": "Require Quiescent Consolidation"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "protocol",
+          "expected_memory_sha256",
+          "expected_source_sha256",
+          "require_no_observations",
+          "require_quiescent_consolidation"
+        ],
+        "title": "CurationGuard"
+      },
       "CurationInventory": {
         "properties": {
           "targets": {
@@ -11623,49 +11676,6 @@
         ],
         "title": "DefaultScopesPreview",
         "description": "The scopes no strategy claims \u2014 they consolidate under the bank-wide settings."
-      },
-      "CurationGuard": {
-        "properties": {
-          "protocol": {
-            "type": "string",
-            "const": "raw-curation-v1",
-            "title": "Protocol"
-          },
-          "expected_memory_sha256": {
-            "type": "string",
-            "maxLength": 64,
-            "minLength": 64,
-            "title": "Expected Memory Sha256",
-            "description": "Lowercase SHA-256 hex digest."
-          },
-          "expected_source_sha256": {
-            "type": "string",
-            "maxLength": 64,
-            "minLength": 64,
-            "title": "Expected Source Sha256",
-            "description": "Lowercase SHA-256 hex digest."
-          },
-          "require_no_observations": {
-            "type": "boolean",
-            "const": true,
-            "title": "Require No Observations"
-          },
-          "require_quiescent_consolidation": {
-            "type": "boolean",
-            "const": true,
-            "title": "Require Quiescent Consolidation"
-          }
-        },
-        "additionalProperties": false,
-        "type": "object",
-        "required": [
-          "protocol",
-          "expected_memory_sha256",
-          "expected_source_sha256",
-          "require_no_observations",
-          "require_quiescent_consolidation"
-        ],
-        "title": "CurationGuard"
       },
       "DeleteDocumentResponse": {
         "properties": {

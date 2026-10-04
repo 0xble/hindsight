@@ -35,6 +35,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from ....config import get_config
+from ...curation_guard import try_lock_curation_bank
 from ...db.base import DatabaseConnection
 from ...retain.link_utils import (
     MAX_TEMPORAL_LINKS_PER_UNIT,
@@ -656,6 +657,12 @@ async def relink_pass(
 
         async with acquire_with_retry(backend) as conn:
             async with conn.transaction():
+                # Guarded curation and relinking share this bank advisory lock.
+                # Acquire it before claiming or reading victims so a relinker
+                # cannot insert a pre-edit link after a guarded edit commits.
+                if not await try_lock_curation_bank(conn, bank_id):
+                    drained = False
+                    break
                 unit_ids = await ops.claim_graph_maintenance_batch(
                     conn,
                     fq_table("graph_maintenance_queue"),
@@ -876,6 +883,7 @@ class _PruneBatch:
     claimed: int
     orphan_entities_pruned: int
     stale_cooccurrences_pruned: int
+    busy: bool = False
 
 
 async def entity_prune_pass(
@@ -939,6 +947,11 @@ async def entity_prune_pass(
             async with acquire_with_retry(backend) as conn:
                 async with conn.transaction():
                     ops = backend.ops
+                    # Guarded curation, relinking, and entity pruning share this
+                    # bank advisory lock. Do not claim prune work while a
+                    # curation transaction may be changing its entity closure.
+                    if not await try_lock_curation_bank(conn, bank_id):
+                        return _PruneBatch(claimed=0, orphan_entities_pruned=0, stale_cooccurrences_pruned=0, busy=True)
                     entity_ids = await ops.claim_entity_maintenance_batch(
                         conn,
                         fq_table("entity_maintenance_queue"),
@@ -1007,6 +1020,9 @@ async def entity_prune_pass(
         # that times out is not slow work, it is a sick database — retry a few
         # times and let the failure surface.
         batch = await retry_with_backoff(_run_batch, max_retries=_PRUNE_BATCH_MAX_RETRIES)
+        if batch.busy:
+            drained = False
+            break
         if batch.claimed == 0:
             break
 

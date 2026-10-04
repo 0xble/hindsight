@@ -19,6 +19,16 @@ class CurationConflictError(ValueError):
     """The reviewed snapshot is no longer safe to curate."""
 
 
+async def try_lock_curation_bank(conn: DatabaseConnection, bank_id: str) -> bool:
+    """Try to serialize bank-scoped curation and graph-link maintenance."""
+    return bool(
+        await conn.fetchval(
+            "SELECT pg_try_advisory_xact_lock(hashtextextended('hindsight:curation:' || $1, 0))",
+            bank_id,
+        )
+    )
+
+
 class CurationGuard(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -85,7 +95,7 @@ def memory_snapshot_sha256(memory: Mapping[str, Any]) -> str:
     return snapshot_sha256(snapshot)
 
 
-async def lock_curation_tables(conn: DatabaseConnection, fq_table: Callable[[str], str]) -> None:
+async def lock_curation_tables(conn: DatabaseConnection, fq_table: Callable[[str], str], bank_id: str) -> None:
     """Bound the PostgreSQL-only write window, including observation phantoms.
 
     Source-ID arrays have no FK locking discipline. A row lock on the raw fact
@@ -95,6 +105,8 @@ async def lock_curation_tables(conn: DatabaseConnection, fq_table: Callable[[str
     """
     if conn.backend_type != "postgresql":
         raise CurationConflictError("Guarded curation requires the PostgreSQL memory store.")
+    if not await try_lock_curation_bank(conn, bank_id):
+        raise CurationConflictError("Curation window is busy, no guarded write applied.")
     # SELECT ... FOR UPDATE takes a compatible ROW SHARE table lock: NOWAIT
     # table locks alone cannot stop a later DML statement waiting on its rows.
     # Bound every lock acquisition until commit, without leaking to pool reuse.
