@@ -158,8 +158,11 @@ async def test_hierarchical_fields_categorization():
 
     # Verify count is correct
     # 51 upstream fields plus the fork's consolidation_max_context_tokens (HINDSIGHT-002),
-    # consolidation_fair_group_selection, consolidation_lane_llm_parallelism, and file_delete_after_retain.
-    assert len(configurable) == 55
+    # consolidation_fair_group_selection, consolidation_lane_llm_parallelism, file_delete_after_retain,
+    # and llm_language_integrity.
+    assert "llm_language_integrity" in configurable
+    assert "llm_output_language" in static
+    assert len(configurable) == 56
 
     # Verify credential fields (NEVER exposed)
     assert "llm_api_key" in credentials

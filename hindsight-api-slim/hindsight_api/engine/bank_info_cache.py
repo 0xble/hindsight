@@ -25,10 +25,11 @@ The cost is that every bank-write path has to invalidate, and a forgotten one pr
 the TTL no longer bounds. `test_bank_info_cache_invalidation` is what makes a forgotten site fail
 loudly instead of silently.
 
-What that permits is bounded by what these two rows carry: a bank's display name, its
-disposition, its mission and its config. None is a correctness gate on a write, and this cache is
-deliberately NOT used for anything that authorises or routes a request. Set the TTL to 0 to
-disable it and read on every call.
+What that permits is bounded by the caller: display name, disposition, mission and ordinary
+config settings can lag by the TTL. Correctness gates must be resolved separately without this
+cache: retain and consolidation read their language enforcement policy fresh at operation
+boundaries. This cache is deliberately NOT used for anything that authorises or routes a
+request. Set the TTL to 0 to disable it and read on every call.
 
 Keyed on ``(schema, bank_id)``, never ``bank_id`` alone: schema is the tenant boundary, and a
 cache keyed on the bank id alone would serve one tenant's bank row to another whenever two
