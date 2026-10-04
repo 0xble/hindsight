@@ -39,6 +39,7 @@ from ...curation_batch import (
     revision,
     snapshot_revision,
 )
+from ...curation_guard import try_lock_curation_bank
 from ...db.base import DatabaseConnection
 from ...schema import fq_table
 from . import writes
@@ -73,11 +74,7 @@ async def lock(conn: DatabaseConnection, bank_id: str) -> None:
     a table lock, this does not block ordinary DML for unrelated banks while a
     preview, apply, or revert is capturing or mutating its closure.
     """
-    acquired = await conn.fetchval(
-        "SELECT pg_try_advisory_xact_lock(hashtextextended('hindsight:curation:' || $1, 0))",
-        bank_id,
-    )
-    if not acquired:
+    if not await try_lock_curation_bank(conn, bank_id):
         raise CurationBatchConflict("Curation window is busy")
 
 

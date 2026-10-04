@@ -175,10 +175,13 @@ run database-guard-tests api uv run --frozen pytest -o addopts= ../tests/ci/test
 run lint api uv run --frozen ruff check .
 run format api uv run --frozen ruff format --check .
 run types api uv run --frozen ty check hindsight_api
+# Guard tests deliberately exercise a quiescent PostgreSQL write window. The
+# optional NOWAIT table guard must not share it with unrelated xdist writers.
+run curation-guard api uv run --frozen --extra all pytest -n 0 tests/test_guarded_curation.py
 if [[ "$profile" == gate ]]; then
   run patch-regressions api uv run --frozen --extra all pytest -m "$OFFLINE_MARKERS" "${PATCH_REGRESSIONS[@]}"
 else
-  run offline-suite api uv run --frozen --extra all pytest -m "$OFFLINE_MARKERS" "${LIVE_LLM_TESTS[@]}" --ignore=tests/test_curation_batch.py
+  run offline-suite api uv run --frozen --extra all pytest -m "$OFFLINE_MARKERS" "${LIVE_LLM_TESTS[@]}" --ignore=tests/test_curation_batch.py --ignore=tests/test_guarded_curation.py
 fi
 run curation-batch-regressions api uv run --frozen --extra all pytest -n0 tests/test_curation_batch.py
 run curation-batch-system curation_system
