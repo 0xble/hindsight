@@ -6632,7 +6632,9 @@ class MemoryEngine(MemoryEngineInterface):
         # Keep ordinary settings cached, but resolve the enforcement gate (including
         # its current explicit/default strategy) fresh at this operation boundary.
         if language_integrity_mode is None:
-            policy_config = await self._config_resolver.resolve_full_config(bank_id, request_context, cached=False)
+            policy_config = await self._config_resolver.resolve_full_config(
+                bank_id, request_context, cached=False, fail_closed=True
+            )
             policy_strategy = strategy or policy_config.retain_default_strategy
             if policy_strategy:
                 policy_config = apply_strategy(policy_config, policy_strategy)
