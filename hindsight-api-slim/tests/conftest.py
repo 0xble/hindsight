@@ -438,13 +438,19 @@ def _cleanup_stale_test_data(db_url: str) -> None:
 
             # Truncate test data in dependency order
             for table in [
+                "curation_entity_pins",
+                "curation_batches",
                 "entity_cooccurrences",
                 "unit_entities",
                 "memory_links",
+                "observation_history",
+                "invalidated_memory_units",
                 "entities",
                 "memory_units",
                 "chunks",
                 "documents",
+                "graph_maintenance_queue",
+                "entity_maintenance_queue",
                 "mental_models",
                 "directives",
                 "async_operations",
