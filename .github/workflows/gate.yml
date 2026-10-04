@@ -42,4 +42,15 @@ jobs:
       - name: Require gate success
         env:
           GATE_RESULT: ${{ needs.gate.result }}
-        run: test "$GATE_RESULT" = success
+          DRAFT_PR: ${{ github.event.pull_request.draft }}
+        run: |
+          set -euo pipefail
+          if [ "$GATE_RESULT" = success ]; then
+            exit 0
+          fi
+          if [ "$DRAFT_PR" = "true" ]; then
+            echo 'draft: gate not run' >&2
+          else
+            echo 'gate not qualified' >&2
+          fi
+          exit 1
