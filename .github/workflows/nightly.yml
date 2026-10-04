@@ -30,6 +30,7 @@ jobs:
       - name: Run exact-SHA nightly
         env:
           EXPECTED_SHA: ${{ github.sha }}
+          GITHUB_ACTIONS: true
         run: ./bin/ci nightly "$EXPECTED_SHA"
 
   qualification:
