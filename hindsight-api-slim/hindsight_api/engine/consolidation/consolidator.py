@@ -70,8 +70,8 @@ from ..llm_wrapper import sanitize_llm_output
 from ..memories import FactRecord, StoredMemory, get_memories
 from ..memories.base import MemoryTextSize
 from ..memory_engine import Budget, fq_table
-from ..schema import fq_store_table
 from ..retain import embedding_utils
+from ..schema import fq_store_table
 from ..structured_output import provider_json_schema, strict_json_schema
 from ..token_encoding import count_tokens
 from .detail_loss import Anchor, Evidence, dropped_merge_anchors, dropped_supported_anchors, without_temporal_suffix
