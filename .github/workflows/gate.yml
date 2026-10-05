@@ -48,7 +48,7 @@ jobs:
           if [ "$GATE_RESULT" = success ]; then
             exit 0
           fi
-          if [ "$DRAFT_PR" = "true" ]; then
+          if [ "$DRAFT_PR" = "true" ] && [ "$GATE_RESULT" = skipped ]; then
             echo 'draft: gate not run' >&2
           else
             echo 'gate not qualified' >&2
