@@ -225,9 +225,10 @@ async def test_fair_selection_runs_groups_concurrently_without_same_scope_overla
     max_distinct = 0
     started: list[frozenset[str]] = []
     lock = asyncio.Lock()
+    distinct_scopes_entered = asyncio.Event()
     orig_find = consolidator_mod._find_related_observations
 
-    async def tracked_find(*, memory_engine, bank_id, query, request_context, tags=None):
+    async def tracked_find(*, memory_engine, bank_id, query, request_context, tags=None, config=None):
         nonlocal max_distinct
         scope = frozenset(tags or [])
         async with lock:
@@ -235,10 +236,19 @@ async def test_fair_selection_runs_groups_concurrently_without_same_scope_overla
             in_flight[scope] += 1
             peak[scope] = max(peak[scope], in_flight[scope])
             max_distinct = max(max_distinct, sum(1 for v in in_flight.values() if v))
+            if max_distinct >= 2:
+                distinct_scopes_entered.set()
         try:
-            await asyncio.sleep(0.05)
+            # Hold the first recall until a different scope is actually in flight,
+            # rather than guessing that its DB reads finish within 50ms.
+            await asyncio.wait_for(distinct_scopes_entered.wait(), 10)
             return await orig_find(
-                memory_engine=memory_engine, bank_id=bank_id, query=query, request_context=request_context, tags=tags
+                memory_engine=memory_engine,
+                bank_id=bank_id,
+                query=query,
+                request_context=request_context,
+                tags=tags,
+                config=config,
             )
         finally:
             async with lock:

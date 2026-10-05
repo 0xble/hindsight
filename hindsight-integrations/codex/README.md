@@ -20,7 +20,7 @@ Three Codex hooks keep memory in sync automatically:
 
 ## Installation
 
-> ✨ **Recommended: [Hindsight Cloud](https://ui.hindsight.vectorize.io/signup)** — free tier, no self-hosting required. Skip the local daemon entirely.
+> ✨ **Recommended: [Hindsight Cloud](https://ui.hindsight.vectorize.io)** — free tier, no self-hosting required. Skip the local daemon entirely.
 
 ```bash
 curl -fsSL https://hindsight.vectorize.io/get-codex | bash
@@ -53,7 +53,7 @@ For personal overrides (stable across updates), create `~/.hindsight/codex.json`
 
 ### Hindsight Cloud (recommended)
 
-> ✨ Sign up free at [Hindsight Cloud](https://ui.hindsight.vectorize.io/signup) — no self-hosting, no LLM API key, no daemon to manage.
+> ✨ Sign up free at [Hindsight Cloud](https://ui.hindsight.vectorize.io) — no self-hosting, no LLM API key, no daemon to manage.
 
 ```json
 {
@@ -83,14 +83,17 @@ export ANTHROPIC_API_KEY=your-key
 | `autoRecall` | `true` | Inject memories before each prompt |
 | `autoRetain` | `true` | Store conversations after each turn |
 | `retainMode` | `"full-session"` | `"full-session"` or `"chunked"` |
+| `retainStrategy` | `null` | Optional existing named strategy on the destination bank. `"agent-session"` also adds source-role and assertion-status safeguards to the item context. Explicit strategies skip legacy bank-wide mission writes. |
 | `retainEveryNTurns` | `10` | Retain every N turns (1 = every turn) |
 | `recallBudget` | `"mid"` | Recall depth: `"low"`, `"mid"`, `"high"` |
-| `recallMaxTokens` | `1024` | Max tokens for injected memories |
+| `recallMaxTokens` | `1024` | Positive integer cap for the complete injected memory context, including preamble, time, fact metadata and wrappers |
 | `recallMinScores` | `{}` | Optional score floors applied after recall, keyed by score field (for example `{"semantic": 0.65, "reranker": 0.2}`). Missing or `null` scores pass so BM25-only and passthrough-reranker hits are not accidentally suppressed. When a cross-encoder reranker is active, the `reranker` floor is the main precision gate; treat reranker scores as query-local and not calibrated across queries. |
 | `recallTimeout` | `10` | Timeout in seconds for recall API calls |
 | `dynamicBankId` | `false` | Separate bank per project/session |
 | `dynamicBankGranularity` | `["agent", "project"]` | Fields for dynamic bank ID |
 | `debug` | `false` | Log debug info to stderr |
+
+The installer prepares a private `~/.hindsight/codex/tokenizer-venv` with `tiktoken==0.12.0` and a SHA-256-verified local `o200k_base` encoding asset. A launcher checks that the private interpreter starts before executing recall once. If a Python upgrade breaks the private interpreter, it selects the current `python3` instead. Recall counts the complete context with the tokenizer without making network requests. If setup fails, or the pinned package or verified asset is unavailable, the standalone hook uses UTF-8 byte length as a conservative upper bound for Codex's byte-BPE tokens. This fallback may leave token capacity unused. Facts retain their complete text, type and date, in API rank order. Oversized facts are skipped, and no context is emitted if the wrapper or every complete fact exceeds the cap.
 
 ### Environment variable overrides
 
@@ -100,6 +103,7 @@ All settings can also be set via environment variables:
 export HINDSIGHT_API_URL=https://api.hindsight.vectorize.io
 export HINDSIGHT_API_TOKEN=your-api-key
 export HINDSIGHT_BANK_ID=my-project
+export HINDSIGHT_RETAIN_STRATEGY=agent-session
 export HINDSIGHT_RECALL_TIMEOUT=30
 export HINDSIGHT_DEBUG=true
 ```
@@ -109,6 +113,16 @@ export HINDSIGHT_DEBUG=true
 **Recall** — before each prompt, Hindsight searches your memory bank for facts relevant to what you're about to ask. Found memories are injected as context so Codex has continuity across sessions.
 
 **Retain** — after each turn, Codex's conversation is stored to Hindsight. The memory engine extracts facts, relationships, and experiences — so you don't need to re-explain your stack, preferences, or past decisions.
+
+The standalone hook preserves each source record's timezone-aware `timestamp` as `source_timestamp`. This is the message or tool record time, not a claimed fact event date. Text retention labels it inside the role envelope. JSON retention keeps user message times and each assistant or tool block's own time, because grouped assistant content can span several days. Missing, malformed or timezone-naive times are omitted. The hook never substitutes ingestion time or assigns one date to the whole retained session.
+
+### Explicit Agent-Session Retention
+
+Before selecting `agent-session`, provision and review that named strategy on the intended bank through its configuration owner, then read back the bank's strategy configuration. The hook does not create strategies or change a shared bank's default strategy. This preserves collectors' source-specific strategies and other clients' bank policy.
+
+Set `"retainStrategy": "agent-session"` in `~/.hindsight/codex.json`, or set `HINDSIGHT_RETAIN_STRATEGY=agent-session`. This adds instructions to the existing `retainContext` about quoted and unknown speakers, assistant guidance versus adopted preferences, proposed versus completed actions, and agent-reported versus independently verified outcomes. The source content and message roles remain intact. These instructions are model guidance, not a guarantee of extraction accuracy.
+
+When an explicit strategy is selected, all hooks skip the legacy `bankMission` and `retainMission` update, including the reflect mission, because the destination bank is already provisioned. Other named strategies receive their configured context without the agent-session safeguards. An absent strategy or empty string keeps the legacy route. A server rejection does not trigger a retry without the strategy. Selection, strategy provisioning, installation and live extraction verification are separate steps.
 
 ## Dynamic bank IDs
 

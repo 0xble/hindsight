@@ -8,6 +8,7 @@ columns can't appear in GROUP BY).
 import json
 import uuid as uuid_mod
 from datetime import UTC, datetime
+from typing import cast
 
 from .base import DatabaseConnection
 from .ops import (
@@ -17,7 +18,7 @@ from .ops import (
     TagListingParts,
     UpdatedWindow,
     bank_serialization_sql,
-    document_serialization_sql,
+    key_serialization_sql,
     memory_unit_columns,
 )
 from .result import DictResultRow as ResultRow
@@ -263,7 +264,8 @@ class OracleOps(DataAccessOps):
                 orig_name,
             )
             if row:
-                results.append(row)
+                # `fetchrow` hands back the base row type; these tables are read as dicts.
+                results.append(cast(ResultRow, row))
         return results
 
     async def bulk_reassert_entities(
@@ -587,7 +589,7 @@ class OracleOps(DataAccessOps):
                 uid,
             )
             if row:
-                rows.append(row)
+                rows.append(cast(ResultRow, row))
         return rows
 
     async def fetch_temporal_neighbors(
@@ -648,7 +650,7 @@ class OracleOps(DataAccessOps):
                 half_limit,
                 uid,
             )
-            rows.extend(unit_rows)
+            rows.extend(cast("list[ResultRow]", unit_rows))
         return rows
 
     def build_entity_expansion_cte(
@@ -1446,7 +1448,7 @@ class OracleOps(DataAccessOps):
               AND o.operation_type = $1
               AND (o.next_retry_at IS NULL OR o.next_retry_at <= NOW())
               AND {bank_serialization_sql(table, "o")}
-              AND {document_serialization_sql(table, "o")}
+              AND {key_serialization_sql(table, "o")}
             ORDER BY o.created_at
             LIMIT $2
             FOR UPDATE SKIP LOCKED
@@ -1485,7 +1487,7 @@ class OracleOps(DataAccessOps):
                   AND (o.next_retry_at IS NULL OR o.next_retry_at <= NOW())
                   AND o.operation_id != ALL($1::uuid[])
                   AND {bank_serialization_sql(table, "o")}
-                  AND {document_serialization_sql(table, "o")}
+                  AND {key_serialization_sql(table, "o")}
                 ORDER BY o.created_at
                 LIMIT $2
                 FOR UPDATE SKIP LOCKED
@@ -1502,7 +1504,7 @@ class OracleOps(DataAccessOps):
               AND o.operation_type != 'consolidation'
               AND (o.next_retry_at IS NULL OR o.next_retry_at <= NOW())
               AND {bank_serialization_sql(table, "o")}
-              AND {document_serialization_sql(table, "o")}
+              AND {key_serialization_sql(table, "o")}
             ORDER BY o.created_at
             LIMIT $1
             FOR UPDATE SKIP LOCKED

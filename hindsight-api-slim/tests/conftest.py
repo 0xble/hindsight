@@ -6,12 +6,40 @@ import asyncio
 import importlib.util
 import inspect
 import os
+import socket
+import sys
+from collections.abc import Iterator
 from pathlib import Path
 
 import filelock
 import pytest
 import pytest_asyncio
 from dotenv import load_dotenv
+
+# Load the stdlib-only guard by path so --confcutdir/direct API runs are safe too.
+_guard_spec = importlib.util.spec_from_file_location(
+    "hindsight_test_db_guard", Path(__file__).resolve().parents[2] / "scripts/ci/test_db_guard.py"
+)
+assert _guard_spec is not None and _guard_spec.loader is not None
+_db_guard = importlib.util.module_from_spec(_guard_spec)
+_guard_spec.loader.exec_module(_db_guard)
+
+
+def _check_test_database_safety(url: str | None = None) -> None:
+    # Runtime refusals must be ordinary test/fixture errors. pytest.exit is a
+    # BaseException that tears down xdist workers instead of reporting the cause.
+    _db_guard.check_test_database_environment()
+    _db_guard.assert_safe_database_url(url)
+
+
+def _check_test_session_database_safety(url: str | None = None) -> None:
+    try:
+        _check_test_database_safety(url)
+    except ValueError as exc:
+        raise pytest.UsageError(str(exc)) from None
+
+
+_check_test_session_database_safety()
 
 # Force torch to initialize exactly once, in the main thread, at conftest import
 # time — before any fixture spins up an event loop or sentence-transformers'
@@ -179,7 +207,7 @@ def _restore_global_metrics_collector():
 
 # Default pg0 instance configuration for tests
 DEFAULT_PG0_INSTANCE_NAME = "hindsight-test"
-DEFAULT_PG0_PORT = int(os.environ.get("HINDSIGHT_TEST_PG_PORT", "5556"))
+DEFAULT_PG0_PORT = int(os.environ.get("HINDSIGHT_TEST_PG_PORT", "5557"))
 
 # Keep the background MaintenanceLoop from auto-starting during tests. In
 # production it sweeps retention and re-schedules consolidation, but its timers
@@ -201,6 +229,8 @@ os.environ.setdefault("HINDSIGHT_API_LLM_TRACE_RETENTION_DAYS", "-1")
 # Load environment variables from .env at the start of test session
 def pytest_configure(config):
     """Load environment variables before running tests."""
+    # Reject inherited URLs even if the workspace .env would replace them.
+    _check_test_session_database_safety()
     # Look for .env in the workspace root (two levels up from tests dir)
     env_file = Path(__file__).parent.parent.parent / ".env"
     if env_file.exists():
@@ -208,8 +238,60 @@ def pytest_configure(config):
         # session, matching the precedence hindsight_api used to apply at import
         # time (removed in #2961 so library imports are side-effect-free).
         load_dotenv(env_file, override=True)
+        _check_test_session_database_safety()
     else:
         print(f"Warning: {env_file} not found, tests may fail without proper configuration")
+
+    from hindsight_api import config as api_config
+
+    # Tests constructing engines/configs directly must not reuse the live bare-pg0
+    # default. Do not set the API env var: db_url must still choose its pg0 fixture.
+    _check_test_session_database_safety(api_config.DEFAULT_DATABASE_URL)
+    _install_database_connection_guards(config)
+
+
+def _install_database_connection_guards(config: pytest.Config) -> None:
+    """Catch URLs resolved after startup, including libpq's native socket path."""
+    _db_guard.install_driver_guards(config)
+    _db_guard.install_startup_guards(config)
+
+    from hindsight_api import config as api_config
+
+    patches = pytest.MonkeyPatch()
+
+    def cleanup():
+        patches.undo()
+        api_config.clear_config_cache()
+
+    config.add_cleanup(cleanup)
+    patches.setattr(api_config, "DEFAULT_DATABASE_URL", f"pg0://{DEFAULT_PG0_INSTANCE_NAME}:{DEFAULT_PG0_PORT}")
+    api_config.clear_config_cache()
+    original_get_pg0 = EmbeddedPostgres._get_pg0
+    original_ensure_running = EmbeddedPostgres.ensure_running
+
+    def safe_get_pg0(instance):
+        # Explicit bare pg0 bypasses DEFAULT_DATABASE_URL. Redirect before pg0
+        # looks up the persistent live instance's receipt or checks its health.
+        if instance.name == "hindsight" and instance.port is None:
+            instance.name = DEFAULT_PG0_INSTANCE_NAME
+            instance.port = DEFAULT_PG0_PORT
+        elif instance.port is None:
+            # Dedicated migration/unit fixtures also construct named pg0 with
+            # no port. Never let those fall back to pg0's low-port allocator.
+            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as reservation:
+                reservation.bind(("127.0.0.1", 0))
+                instance.port = reservation.getsockname()[1]
+        if instance.port is not None:
+            _check_test_database_safety(f"pg0://test:{instance.port}")
+        return original_get_pg0(instance)
+
+    async def safe_ensure_running(instance):
+        url = await original_ensure_running(instance)
+        _check_test_database_safety(url)
+        return url
+
+    patches.setattr(EmbeddedPostgres, "_get_pg0", safe_get_pg0)
+    patches.setattr(EmbeddedPostgres, "ensure_running", safe_ensure_running)
 
 
 @pytest.fixture(scope="session")
@@ -220,26 +302,28 @@ def db_url():
     If HINDSIGHT_API_DATABASE_URL is set, use it directly.
     Otherwise, return None to indicate pg0 should be used (managed by pg0_instance fixture).
     """
-    return os.getenv("HINDSIGHT_API_DATABASE_URL")
+    url = os.getenv("HINDSIGHT_API_DATABASE_URL")
+    _check_test_database_safety(url)
+    return url
 
 
 @pytest.fixture(scope="session")
-def pg0_db_url(db_url, tmp_path_factory, worker_id):
+def pg0_db_url(db_url, tmp_path_factory, worker_id) -> Iterator[str]:
     """
     Session-scoped fixture that ensures pg0 is running, migrations are applied,
     and returns the database URL.
 
     If HINDSIGHT_API_DATABASE_URL is a plain postgresql:// URL, uses it directly.
     If HINDSIGHT_API_DATABASE_URL is a pg0:// URL, resolves it to a real URL first.
-    Otherwise, starts pg0 once for the entire test session.
-
-    Uses filelock to ensure only one pytest-xdist worker starts pg0.
-    Migrations use PostgreSQL advisory locks internally, so they're safe to call
-    from multiple workers - only one will actually run migrations.
-
-    Note: We don't stop pg0 at the end because pytest-xdist runs workers in separate
-    processes that share the same pg0 instance. pg0 will persist for the next test run.
+    Serial runs retain the requested instance and port. Each xdist worker instead
+    owns a uniquely named pg0 instance on an available port, dropped at teardown.
+    Sharing memory_units across the whole offline suite accumulates per-bank HNSW
+    indexes and lets one worker's index DDL block every other's retain/recall. That
+    made otherwise short append regressions exceed the 300-second test timeout.
     """
+    # Also validate explicit fixture overrides before migrations or pg0 startup.
+    _check_test_database_safety(db_url)
+
     from hindsight_api.pg0 import parse_pg0_url as _parse_pg0_url
 
     # Determine pg0 instance name/port from db_url (if it's a pg0:// URL) or use defaults
@@ -248,7 +332,8 @@ def pg0_db_url(db_url, tmp_path_factory, worker_id):
         from hindsight_api.migrations import run_migrations
 
         run_migrations(db_url)
-        return db_url
+        yield db_url
+        return
 
     if db_url:
         _parsed = _parse_pg0_url(db_url)
@@ -266,53 +351,69 @@ def pg0_db_url(db_url, tmp_path_factory, worker_id):
         # Running with xdist - use parent dir shared by all workers
         root_tmp_dir = tmp_path_factory.getbasetemp().parent
 
-    # Use a lock file to ensure only one worker starts pg0
+    owns_instance = worker_id != "master"
+    if owns_instance:
+        # The pytest session directory also separates concurrent runs/worktrees.
+        pg0_instance_name = f"{pg0_instance_name}-{root_tmp_dir.name}-{worker_id}"
+
+    pg0 = None
+
+    # Serial runs can reuse their instance. Worker names also distinguish
+    # parallel sessions, so their setup receipts are never shared.
     lock_file = root_tmp_dir / f"pg0_setup_{pg0_instance_name}.lock"
     url_file = root_tmp_dir / f"pg0_url_{pg0_instance_name}.txt"
-
-    with filelock.FileLock(str(lock_file)):
-        if url_file.exists():
-            # Another worker already started pg0
-            url = url_file.read_text().strip()
-        else:
-            # First worker - start pg0
-            # Bump max_connections so 8 xdist workers * pool_max_size=15 fits well
-            # under the cap (postgres default is 100, which is easy to exhaust now
-            # that consolidation_llm_parallelism=4 increases peak conns per op).
-            pg0 = EmbeddedPostgres(
-                name=pg0_instance_name,
-                port=pg0_instance_port,
-                config={"max_connections": "300"},
-            )
-
-            # Run ensure_running in a new event loop
-            loop = asyncio.new_event_loop()
-            try:
-                url = loop.run_until_complete(pg0.ensure_running())
-            finally:
-                loop.close()
-
-            # Save URL for other workers
-            url_file.write_text(url)
 
     # Run migrations - uses PostgreSQL advisory lock internally,
     # so safe to call from multiple workers (only one will actually run migrations)
     from hindsight_api.migrations import run_migrations
 
-    run_migrations(url)
+    try:
+        with filelock.FileLock(str(lock_file)):
+            if url_file.exists() and not owns_instance:
+                url = url_file.read_text().strip()
+            else:
+                # Select an OS-assigned ephemeral port and keep selection/start
+                # under the same cross-session lock. pg0's implicit allocator
+                # walks from 5432 and can pick protected 5436 on hosted workers.
+                startup_lock = root_tmp_dir.parent / "hindsight_pg0_start.lock"
+                with filelock.FileLock(str(startup_lock)):
+                    if owns_instance:
+                        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as reservation:
+                            reservation.bind(("127.0.0.1", 0))
+                            pg0_instance_port = reservation.getsockname()[1]
+                    _check_test_database_safety(f"pg0://{pg0_instance_name}:{pg0_instance_port}")
+                    pg0 = EmbeddedPostgres(
+                        name=pg0_instance_name,
+                        port=pg0_instance_port,
+                        config={"max_connections": "300"},
+                    )
+                    loop = asyncio.new_event_loop()
+                    try:
+                        url = loop.run_until_complete(pg0.ensure_running())
+                    finally:
+                        loop.close()
+                url_file.write_text(url)
 
-    # Clean up stale test data from previous sessions. Per-bank vector indexes
-    # accumulate across runs (each test bank creates 3 HNSW indexes) and
-    # eventually exhaust pg0's shared memory / max_locks_per_transaction.
-    # Only one xdist worker needs to do this.
-    cleanup_lock = root_tmp_dir / f"pg0_cleanup_{pg0_instance_name}.lock"
-    cleanup_done = root_tmp_dir / f"pg0_cleanup_{pg0_instance_name}.done"
-    with filelock.FileLock(str(cleanup_lock)):
-        if not cleanup_done.exists():
-            _cleanup_stale_test_data(url)
-            cleanup_done.write_text("done")
+        # Reused pg0 receipts and resolved URLs must pass before any DB operation.
+        _check_test_database_safety(url)
+        run_migrations(url)
 
-    return url
+        # Serial instances persist between runs. Worker-owned instances are new,
+        # but use the same cleanup boundary before any test starts.
+        cleanup_lock = root_tmp_dir / f"pg0_cleanup_{pg0_instance_name}.lock"
+        cleanup_done = root_tmp_dir / f"pg0_cleanup_{pg0_instance_name}.done"
+        with filelock.FileLock(str(cleanup_lock)):
+            if not cleanup_done.exists():
+                _cleanup_stale_test_data(url)
+                cleanup_done.write_text("done")
+        yield url
+    finally:
+        if owns_instance and pg0 is not None:
+            loop = asyncio.new_event_loop()
+            try:
+                loop.run_until_complete(pg0.drop())
+            finally:
+                loop.close()
 
 
 def _cleanup_stale_test_data(db_url: str) -> None:
@@ -337,13 +438,19 @@ def _cleanup_stale_test_data(db_url: str) -> None:
 
             # Truncate test data in dependency order
             for table in [
+                "curation_entity_pins",
+                "curation_batches",
                 "entity_cooccurrences",
                 "unit_entities",
                 "memory_links",
+                "observation_history",
+                "invalidated_memory_units",
                 "entities",
                 "memory_units",
                 "chunks",
                 "documents",
+                "graph_maintenance_queue",
+                "entity_maintenance_queue",
                 "mental_models",
                 "directives",
                 "async_operations",
@@ -725,7 +832,6 @@ async def api_client(memory):
     audit-enabled variant.
     """
     import httpx
-
     from hindsight_api.api import create_app
 
     app = create_app(memory, initialize_memory=False)

@@ -20,7 +20,8 @@ from hindsight_api.engine.response_models import MemoryFact, RecallResult
 from tests.test_consolidation_scope_parallelism import _insert_memory, _override_config
 
 
-@pytest.mark.slow
+# This bounded synthetic probe is also a correctness regression in the offline
+# gate: retain its measurements, but do not hide all coverage behind `slow`.
 @pytest.mark.parametrize("near_identical", [False, True], ids=["distinct", "near-identical"])
 @pytest.mark.asyncio
 @pytest.mark.memory_backend_incompatible
@@ -44,7 +45,7 @@ async def test_single_lane_benchmark(memory: MemoryEngine, request_context, capl
                     [str(facts[0])],
                 )
 
-            async def find(*, memory_engine, bank_id, query, request_context, tags=None):
+            async def find(*, memory_engine, bank_id, query, request_context, tags=None, config=None):
                 async with memory._pool.acquire() as conn:
                     row = await conn.fetchrow(
                         "SELECT text, source_memory_ids FROM memory_units WHERE id=$1", observation_id

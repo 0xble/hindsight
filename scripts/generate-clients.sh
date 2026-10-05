@@ -111,6 +111,13 @@ GEN_TMP_DIR="$(mktemp -d -t hindsight-py-gen.XXXXXX)"
 GEN_CONTAINER="hindsight-py-gen-$$"
 GO_GEN_DIR=""
 cleanup_generator() {
+    # A failed staged generation must not remove maintained package inputs.
+    if [ -f "$README_BACKUP" ] && [ ! -f "$README_FILE" ]; then
+        cp "$README_BACKUP" "$README_FILE"
+    fi
+    if [ -f "$WRAPPER_BACKUP" ] && [ ! -f "$WRAPPER_FILE" ]; then
+        cp "$WRAPPER_BACKUP" "$WRAPPER_FILE"
+    fi
     docker rm -f "$GEN_CONTAINER" >/dev/null 2>&1 || true
     rm -rf "$GEN_TMP_DIR"
     if [ -n "$GO_GEN_DIR" ]; then
@@ -130,7 +137,34 @@ docker create \
     -c 'sleep infinity' >/dev/null
 docker start "$GEN_CONTAINER" >/dev/null
 docker exec "$GEN_CONTAINER" mkdir -p /local/out
-docker cp "$OPENAPI_SPEC" "$GEN_CONTAINER:/local/openapi.json"
+# Canonical 3.1 primitive type arrays express nullability correctly, but the
+# pinned Python/Go generator collapses their missing/null distinction. Normalize
+# only the equivalent single primitive + null form in this staged input.
+GEN_SPEC_FILE="$GEN_TMP_DIR/client-openapi.json"
+python3 - "$OPENAPI_SPEC" "$GEN_SPEC_FILE" <<'PY'
+import json
+import sys
+
+def normalize(value):
+    if isinstance(value, dict):
+        types = value.get("type")
+        if isinstance(types, list) and len(types) == 2 and "null" in types:
+            other = next(kind for kind in types if kind != "null")
+            value["type"] = other
+            value["nullable"] = True
+        for child in value.values():
+            normalize(child)
+    elif isinstance(value, list):
+        for child in value:
+            normalize(child)
+
+with open(sys.argv[1]) as source:
+    schema = json.load(source)
+normalize(schema)
+with open(sys.argv[2], "w") as output:
+    json.dump(schema, output)
+PY
+docker cp "$GEN_SPEC_FILE" "$GEN_CONTAINER:/local/openapi.json"
 docker cp "$PYTHON_CLIENT_DIR/openapi-generator-config.yaml" "$GEN_CONTAINER:/local/config.yaml"
 
 # The generator may exit non-zero due to a known bug writing
@@ -157,7 +191,8 @@ echo "Syncing generated tree into $PYTHON_CLIENT_DIR..."
 cp -R "$GEN_TMP_DIR/hindsight_client_api" "$PYTHON_CLIENT_DIR/"
 # OpenAPI Generator's oneOf Pydantic wrapper ignores raw operation detail JSON.
 # Apply the checked-in discriminator patch to the freshly generated output.
-python3 "$PROJECT_ROOT/scripts/patch-operation-details-client.py"
+python3 "$PROJECT_ROOT/scripts/patch-operation-details-client.py" --language python
+python3 "$PROJECT_ROOT/scripts/patch-curation-fields-client.py"
 if [ -d "$GEN_TMP_DIR/.openapi-generator" ]; then
     rm -rf "$PYTHON_CLIENT_DIR/.openapi-generator"
     cp -R "$GEN_TMP_DIR/.openapi-generator" "$PYTHON_CLIENT_DIR/"
@@ -354,6 +389,135 @@ else:
 PATCH_SCRIPT
 fi
 
+# Patch content models in Python SDK to support deserializing and serializing block dicts
+echo "Patching content models in Python client..."
+python3 << PATCH_CONTENT_SCRIPT
+import os
+
+inner_file = "$PYTHON_CLIENT_DIR/hindsight_client_api/models/content_any_of_inner.py"
+if os.path.exists(inner_file):
+    with open(inner_file, 'r') as f:
+        content = f.read()
+
+    old_init = '''    def __init__(self, *args, **kwargs) -> None:
+        if args:
+            if len(args) > 1:
+                raise ValueError("If a position argument is used, only 1 is allowed to set \`actual_instance\`")
+            if kwargs:
+                raise ValueError("If a position argument is used, keyword arguments cannot be used.")
+            super().__init__(actual_instance=args[0])
+        else:
+            super().__init__(**kwargs)'''
+
+    new_init = '''    def __init__(self, *args, **kwargs) -> None:
+        if args:
+            if len(args) > 1:
+                raise ValueError("If a position argument is used, only 1 is allowed to set \`actual_instance\`")
+            if kwargs:
+                raise ValueError("If a position argument is used, keyword arguments cannot be used.")
+            value = args[0]
+        elif "actual_instance" in kwargs:
+            super().__init__(**kwargs)
+            return
+        elif kwargs:
+            value = kwargs
+        else:
+            super().__init__()
+            return
+
+        if isinstance(value, dict):
+            block_class = {
+                "text": TextContentBlock,
+                "image": ImageContentBlock,
+                "file": FileContentBlock,
+            }.get(value.get("type"))
+            if block_class is None:
+                raise ValueError(f"Unknown content block type: {value.get('type')!r}")
+            value = block_class.from_dict(value)
+        super().__init__(actual_instance=value)'''
+
+    if old_init in content:
+        content = content.replace(old_init, new_init)
+        with open(inner_file, 'w') as f:
+            f.write(content)
+        print("  ✓ content_any_of_inner.py patched successfully")
+    else:
+        raise SystemExit("Could not find expected __init__ in content_any_of_inner.py")
+
+content_file = "$PYTHON_CLIENT_DIR/hindsight_client_api/models/content.py"
+if os.path.exists(content_file):
+    with open(content_file, 'r') as f:
+        c_content = f.read()
+
+    old_to_dict = '''    def to_dict(self) -> Optional[Union[Dict[str, Any], List[ContentAnyOfInner], str]]:
+        """Returns the dict representation of the actual instance"""
+        if self.actual_instance is None:
+            return None
+
+        if hasattr(self.actual_instance, "to_dict") and callable(self.actual_instance.to_dict):
+            return self.actual_instance.to_dict()
+        else:
+            return self.actual_instance'''
+
+    new_to_dict = '''    def to_dict(self) -> Optional[Union[Dict[str, Any], List[ContentAnyOfInner], str]]:
+        """Returns the dict representation of the actual instance"""
+        if self.actual_instance is None:
+            return None
+
+        if hasattr(self.actual_instance, "to_dict") and callable(self.actual_instance.to_dict):
+            return self.actual_instance.to_dict()
+        elif isinstance(self.actual_instance, list):
+            return [
+                item.to_dict() if hasattr(item, "to_dict") and callable(item.to_dict) else item
+                for item in self.actual_instance
+            ]
+        else:
+            return self.actual_instance'''
+
+    if old_to_dict in c_content:
+        c_content = c_content.replace(old_to_dict, new_to_dict)
+        with open(content_file, 'w') as f:
+            f.write(c_content)
+        print("  ✓ content.py patched successfully")
+    else:
+        raise SystemExit("Could not find expected to_dict in content.py")
+PATCH_CONTENT_SCRIPT
+# A patch's omitted nullable fields must remain omitted after loading JSON.
+# The pinned generator calls obj.get for every field, falsely marking missing
+# fields explicitly null. Keep presence for this new patch contract.
+python3 - "$PYTHON_CLIENT_DIR/hindsight_client_api/models/curation_fields.py" <<'PY'
+import re
+import sys
+from pathlib import Path
+
+path = Path(sys.argv[1])
+source = path.read_text()
+marker = "        return _dict\n"
+if source.count(marker) != 1:
+    raise RuntimeError("CurationFields serializer shape changed")
+source = source.replace(marker, """        for key in ("context", "occurred_start", "occurred_end"):
+            if key in self.model_fields_set and getattr(self, key) is None:
+                _dict[key] = None
+        return _dict
+""")
+source, count = re.subn(
+    r"        _obj = cls\.model_validate\(\{.*?\n        \}\)",
+    "        _obj = cls.model_validate({key: obj[key] for key in cls.__properties if key in obj})",
+    source,
+    count=1,
+    flags=re.DOTALL,
+)
+if count != 1:
+    raise RuntimeError("CurationFields presence patch no longer matches generator output")
+path.write_text(source)
+
+# The generator emits whitespace-only blank lines in the touched Memory API.
+# Normalize that file deterministically so regenerated additions pass preflight.
+api_path = path.parent.parent / "api" / "memory_api.py"
+api_path.write_text("\n".join(line.rstrip() for line in api_path.read_text().splitlines()) + "\n")
+
+PY
+
 echo "✓ Python client generated at $PYTHON_CLIENT_DIR"
 echo ""
 
@@ -474,6 +638,29 @@ else
     rm -rf "$GO_GEN_DIR"
     GO_GEN_DIR=""
 
+    # The maintained nullable-patch helpers use AdditionalProperties to carry
+    # explicit nulls. Replacing a value must clear that marker, and decoding a
+    # known null must preserve it rather than discard presence information.
+    python3 - "$GO_CLIENT_DIR/model_curation_fields.go" <<'PY'
+import sys
+from pathlib import Path
+
+path = Path(sys.argv[1])
+source = path.read_text()
+for field, key in (("Context", "context"), ("OccurredStart", "occurred_start"), ("OccurredEnd", "occurred_end")):
+    setter = f"\to.{field} = &v\n"
+    if source.count(setter) != 1:
+        raise RuntimeError(f"CurationFields {field} setter shape changed")
+    source = source.replace(setter, setter + f'\tdelete(o.AdditionalProperties, "{key}")\n')
+    drop = f'\t\tdelete(additionalProperties, "{key}")\n'
+    if source.count(drop) != 1:
+        raise RuntimeError(f"CurationFields {field} decoder shape changed")
+    source = source.replace(drop, f'\t\tif value, present := additionalProperties["{key}"]; !present || value != nil {{\n' + drop + '\t\t}\n')
+path.write_text(source)
+PY
+
+    gofmt -w "$GO_CLIENT_DIR/model_curation_fields.go"
+
     # Remove OpenAPI Generator boilerplate files
     echo "Removing boilerplate files..."
     rm -rf docs/ git_push.sh .travis.yml .gitlab-ci.yml .openapi-generator-ignore .openapi-generator/
@@ -517,6 +704,11 @@ else
         sed -i.bak 's|"net/url"|"net/url"\n\t"os"|' api_files.go
         rm -f api_files.go.bak
     fi
+
+    # Nullable operation-detail unions must decode by operation_type, not shape.
+    # Apply after copying fresh Go output (the earlier Python patch cannot own it).
+    python3 "$PROJECT_ROOT/scripts/patch-operation-details-client.py" --language go
+    gofmt -w model_operation_response_details.go
 
     # Initialize module and build
     echo "Building Go client..."

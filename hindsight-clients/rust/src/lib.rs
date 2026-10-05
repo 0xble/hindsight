@@ -22,6 +22,67 @@
 // Include the generated client code (which already exports Error and ResponseValue)
 include!(concat!(env!("OUT_DIR"), "/hindsight_client_generated.rs"));
 
+/// Three-state patch value: omit a field, clear it, or replace its value.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub enum NullablePatch<T> {
+    /// Leave the stored field unchanged.
+    #[default]
+    Unset,
+    /// Set the stored field to null.
+    Clear,
+    /// Set the stored field to this value.
+    Value(T),
+}
+
+impl<T> NullablePatch<T> {
+    /// Whether this value should be omitted from the serialized patch.
+    pub fn is_unset(&self) -> bool {
+        matches!(self, Self::Unset)
+    }
+}
+
+impl<T: serde::Serialize> serde::Serialize for NullablePatch<T> {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        match self {
+            Self::Unset | Self::Clear => serializer.serialize_none(),
+            Self::Value(value) => value.serialize(serializer),
+        }
+    }
+}
+
+impl<'de, T: serde::Deserialize<'de>> serde::Deserialize<'de> for NullablePatch<T> {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        Ok(match Option::<T>::deserialize(deserializer)? {
+            None => Self::Clear,
+            Some(value) => Self::Value(value),
+        })
+    }
+}
+
+/// Bounded raw-curation-v2 correction fields.
+///
+/// Omitted fields are unchanged. Context and occurrence dates can be explicitly
+/// cleared with [`NullablePatch::Clear`]. Entity associations are preserved.
+#[derive(Clone, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CurationFields {
+    /// Nonblank replacement text, at most 100000 characters.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub text: Option<String>,
+    /// Replacement context, or explicit null to clear.
+    #[serde(default, skip_serializing_if = "NullablePatch::is_unset")]
+    pub context: NullablePatch<String>,
+    /// Raw world or experience classification.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fact_type: Option<types::CurationFactType>,
+    /// Event start, including timezone, or explicit null to clear.
+    #[serde(default, skip_serializing_if = "NullablePatch::is_unset")]
+    pub occurred_start: NullablePatch<chrono::DateTime<chrono::Utc>>,
+    /// Event end, including timezone, or explicit null to clear.
+    #[serde(default, skip_serializing_if = "NullablePatch::is_unset")]
+    pub occurred_end: NullablePatch<chrono::DateTime<chrono::Utc>>,
+}
+
 /// Semantic version of this Rust client, kept in sync with the other language
 /// wrappers when a coordinated release is cut.
 pub const CLIENT_VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -164,4 +225,44 @@ mod tests {
         // Cleanup: delete the test bank's memories
         let _ = client.clear_bank_memories(&bank_id, None, None).await;
     }
+
+    #[tokio::test]
+    async fn test_raw_curation_409_status_and_body_are_readable_from_error() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        use tokio::net::TcpListener;
+
+        let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut request = [0_u8; 4096];
+            let _ = socket.read(&mut request).await.unwrap();
+            socket
+                .write_all(
+                    b"HTTP/1.1 409 Conflict\r\ncontent-type: application/json\r\ncontent-length: 29\r\nconnection: close\r\n\r\n{\"detail\":\"curation is busy\"}",
+                )
+                .await
+                .unwrap();
+        });
+
+        let base_url = format!("http://{address}");
+        let client = Client::new(&base_url);
+        let request = types::CurationPreviewRequest {
+            memory_ids: vec![],
+            protocol: "raw-curation-v2".to_string(),
+        };
+        let error = client
+            .preview_curation_batch("bank", None, &request)
+            .await
+            .expect_err("the fixture must return the curation conflict");
+        match error {
+            Error::UnexpectedResponse(response) => {
+                assert_eq!(response.status(), reqwest::StatusCode::CONFLICT);
+                assert_eq!(response.text().await.unwrap(), "{\"detail\":\"curation is busy\"}");
+            }
+            other => panic!("expected an unexpected-response error; got {other:?}"),
+        }
+        server.await.unwrap();
+    }
 }
+

@@ -11,6 +11,9 @@ import type {
   AddBankBackgroundData,
   AddBankBackgroundErrors,
   AddBankBackgroundResponses,
+  ApplyCurationBatchData,
+  ApplyCurationBatchErrors,
+  ApplyCurationBatchResponses,
   AuditLogStatsData,
   AuditLogStatsErrors,
   AuditLogStatsResponses,
@@ -32,6 +35,9 @@ import type {
   CloneBankData,
   CloneBankErrors,
   CloneBankResponses,
+  CreateBankAliasData,
+  CreateBankAliasErrors,
+  CreateBankAliasResponses,
   CreateDirectiveData,
   CreateDirectiveErrors,
   CreateDirectiveResponses,
@@ -50,6 +56,9 @@ import type {
   CreateWebhookData,
   CreateWebhookErrors,
   CreateWebhookResponses,
+  DeleteBankAliasData,
+  DeleteBankAliasErrors,
+  DeleteBankAliasResponses,
   DeleteBankData,
   DeleteBankErrors,
   DeleteBankResponses,
@@ -115,6 +124,9 @@ import type {
   GetChunkData,
   GetChunkErrors,
   GetChunkResponses,
+  GetCurationBatchData,
+  GetCurationBatchErrors,
+  GetCurationBatchResponses,
   GetDirectiveData,
   GetDirectiveErrors,
   GetDirectiveResponses,
@@ -174,6 +186,9 @@ import type {
   ListAuditLogsData,
   ListAuditLogsErrors,
   ListAuditLogsResponses,
+  ListBankAliasesData,
+  ListBankAliasesErrors,
+  ListBankAliasesResponses,
   ListBanksData,
   ListBanksErrors,
   ListBanksResponses,
@@ -218,6 +233,12 @@ import type {
   LlmRequestStatsResponses,
   MetricsEndpointMetricsGetData,
   MetricsEndpointMetricsGetResponses,
+  PreviewConsolidationStrategiesData,
+  PreviewConsolidationStrategiesErrors,
+  PreviewConsolidationStrategiesResponses,
+  PreviewCurationBatchData,
+  PreviewCurationBatchErrors,
+  PreviewCurationBatchResponses,
   PreviewPromptData,
   PreviewPromptErrors,
   PreviewPromptResponses,
@@ -248,9 +269,15 @@ import type {
   RetryOperationData,
   RetryOperationErrors,
   RetryOperationResponses,
+  RevertCurationBatchData,
+  RevertCurationBatchErrors,
+  RevertCurationBatchResponses,
   SearchKnowledgeBaseData,
   SearchKnowledgeBaseErrors,
   SearchKnowledgeBaseResponses,
+  SetBankAliasPrimaryData,
+  SetBankAliasPrimaryErrors,
+  SetBankAliasPrimaryResponses,
   TestBankLlmData,
   TestBankLlmErrors,
   TestBankLlmResponses,
@@ -426,6 +453,74 @@ export const previewPrompt = <ThrowOnError extends boolean = false>(
 ) =>
   (options.client ?? client).post<PreviewPromptResponses, PreviewPromptErrors, ThrowOnError>({
     url: "/v1/default/banks/{bank_id}/prompts/preview",
+    ...options,
+    headers: {
+      "Content-Type": "application/json",
+      ...options.headers,
+    },
+  });
+
+/**
+ * Preview a bounded raw-curation-v2 dependency closure
+ */
+export const previewCurationBatch = <ThrowOnError extends boolean = false>(
+  options: Options<PreviewCurationBatchData, ThrowOnError>
+) =>
+  (options.client ?? client).post<
+    PreviewCurationBatchResponses,
+    PreviewCurationBatchErrors,
+    ThrowOnError
+  >({
+    url: "/v1/default/banks/{bank_id}/curation-batches/preview",
+    ...options,
+    headers: {
+      "Content-Type": "application/json",
+      ...options.headers,
+    },
+  });
+
+/**
+ * Read a durable raw-curation-v2 receipt after a lost acknowledgement
+ */
+export const getCurationBatch = <ThrowOnError extends boolean = false>(
+  options: Options<GetCurationBatchData, ThrowOnError>
+) =>
+  (options.client ?? client).get<GetCurationBatchResponses, GetCurationBatchErrors, ThrowOnError>({
+    url: "/v1/default/banks/{bank_id}/curation-batches/{batch_id}",
+    ...options,
+  });
+
+/**
+ * Atomically apply a bounded raw-curation-v2 manifest
+ */
+export const applyCurationBatch = <ThrowOnError extends boolean = false>(
+  options: Options<ApplyCurationBatchData, ThrowOnError>
+) =>
+  (options.client ?? client).post<
+    ApplyCurationBatchResponses,
+    ApplyCurationBatchErrors,
+    ThrowOnError
+  >({
+    url: "/v1/default/banks/{bank_id}/curation-batches/{batch_id}",
+    ...options,
+    headers: {
+      "Content-Type": "application/json",
+      ...options.headers,
+    },
+  });
+
+/**
+ * Conditionally restore a raw-curation-v2 capsule without overwriting later work
+ */
+export const revertCurationBatch = <ThrowOnError extends boolean = false>(
+  options: Options<RevertCurationBatchData, ThrowOnError>
+) =>
+  (options.client ?? client).post<
+    RevertCurationBatchResponses,
+    RevertCurationBatchErrors,
+    ThrowOnError
+  >({
+    url: "/v1/default/banks/{bank_id}/curation-batches/{batch_id}/revert",
     ...options,
     headers: {
       "Content-Type": "application/json",
@@ -1233,6 +1328,74 @@ export const addBankBackground = <ThrowOnError extends boolean = false>(
   });
 
 /**
+ * List the bank's aliases
+ *
+ * Extra bank ids that reach this bank. Every endpoint accepts an alias wherever it accepts a bank id, so callers can be moved onto a new id in phases while the old one keeps working.
+ */
+export const listBankAliases = <ThrowOnError extends boolean = false>(
+  options: Options<ListBankAliasesData, ThrowOnError>
+) =>
+  (options.client ?? client).get<ListBankAliasesResponses, ListBankAliasesErrors, ThrowOnError>({
+    url: "/v1/default/banks/{bank_id}/aliases",
+    ...options,
+  });
+
+/**
+ * Add an alias to the bank
+ *
+ * Give the bank another id to answer to. Nothing is copied or moved: the bank keeps its own id and all of its data, and the alias is only a second way to reach it — which is what makes it a zero-downtime alternative to renaming.
+ *
+ * Returns 409 if the name is already a bank or another alias.
+ */
+export const createBankAlias = <ThrowOnError extends boolean = false>(
+  options: Options<CreateBankAliasData, ThrowOnError>
+) =>
+  (options.client ?? client).post<CreateBankAliasResponses, CreateBankAliasErrors, ThrowOnError>({
+    url: "/v1/default/banks/{bank_id}/aliases",
+    ...options,
+    headers: {
+      "Content-Type": "application/json",
+      ...options.headers,
+    },
+  });
+
+/**
+ * Remove an alias from the bank
+ *
+ * Stop an id reaching this bank. The bank and its memories are untouched; only the extra name goes away, and callers still using it get the same 404 (or new empty bank) they would have got before it existed.
+ */
+export const deleteBankAlias = <ThrowOnError extends boolean = false>(
+  options: Options<DeleteBankAliasData, ThrowOnError>
+) =>
+  (options.client ?? client).delete<DeleteBankAliasResponses, DeleteBankAliasErrors, ThrowOnError>({
+    url: "/v1/default/banks/{bank_id}/aliases/{alias}",
+    ...options,
+  });
+
+/**
+ * Show this alias in place of the bank id
+ *
+ * Present the bank under one of its aliases. Purely cosmetic: the bank keeps its own `bank_id`, which every other part of the system — authorisation, metering, exports, audit logs — continues to use.
+ *
+ * Promoting an alias demotes whichever one was shown before, so a bank is presented under at most one alias. Send `primary: false` to go back to showing its own id.
+ */
+export const setBankAliasPrimary = <ThrowOnError extends boolean = false>(
+  options: Options<SetBankAliasPrimaryData, ThrowOnError>
+) =>
+  (options.client ?? client).patch<
+    SetBankAliasPrimaryResponses,
+    SetBankAliasPrimaryErrors,
+    ThrowOnError
+  >({
+    url: "/v1/default/banks/{bank_id}/aliases/{alias}",
+    ...options,
+    headers: {
+      "Content-Type": "application/json",
+      ...options.headers,
+    },
+  });
+
+/**
  * Delete memory bank
  *
  * Delete an entire memory bank including all memories, entities, documents, and the bank profile itself. This is a destructive operation that cannot be undone.
@@ -1495,6 +1658,27 @@ export const listObservationScopes = <ThrowOnError extends boolean = false>(
     ListObservationScopesErrors,
     ThrowOnError
   >({ url: "/v1/default/banks/{bank_id}/observations/scopes", ...options });
+
+/**
+ * Preview consolidation strategies
+ *
+ * Report which of the bank's existing observation scopes each consolidation strategy would apply to, for a draft `consolidation_strategies` value (nothing is saved). Uses the same matching and first-strategy-wins rule as consolidation. Scans up to 10,000 distinct scopes; `complete` is false beyond that and the counts are lower bounds. Scopes with no observations yet do not exist and are not counted.
+ */
+export const previewConsolidationStrategies = <ThrowOnError extends boolean = false>(
+  options: Options<PreviewConsolidationStrategiesData, ThrowOnError>
+) =>
+  (options.client ?? client).post<
+    PreviewConsolidationStrategiesResponses,
+    PreviewConsolidationStrategiesErrors,
+    ThrowOnError
+  >({
+    url: "/v1/default/banks/{bank_id}/consolidation-strategies/preview",
+    ...options,
+    headers: {
+      "Content-Type": "application/json",
+      ...options.headers,
+    },
+  });
 
 /**
  * Recover failed consolidation

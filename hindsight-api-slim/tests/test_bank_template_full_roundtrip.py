@@ -65,6 +65,7 @@ _SAMPLE_VALUES: dict[str, Any] = {
     "retain_custom_instructions": "Extract one fact per decision, dated.",
     "retain_chunk_size": 2500,
     "retain_structured_chunk_size": 1800,
+    "file_delete_after_retain": False,
     "enable_observations": False,
     "observations_mission": "Observations cover preferences and skills only.",
     "enable_text_search": False,
@@ -98,6 +99,13 @@ _SAMPLE_VALUES: dict[str, Any] = {
     "consolidation_source_facts_max_tokens_per_observation": 256,
     "max_observations_per_scope": 13,
     "observation_scope_limits": [{"scope": ["run_*"], "limit": 2}],
+    "consolidation_strategies": [
+        {
+            "scopes": [{"tags": ["company:*"]}],
+            "observations_mission": "Record only generalized trends.",
+            "max_observations_per_scope": 20,
+        }
+    ],
     "reflect_source_facts_max_tokens": 4096,
     "mental_model_min_refresh_interval_seconds": 900,
     "knowledge_page_default_trigger": {"refresh_cron": "0 * * * *", "mode": "full"},
@@ -106,6 +114,7 @@ _SAMPLE_VALUES: dict[str, Any] = {
         "reflect_search_observations_include_entities": False,
     },
     "llm_gemini_safety_settings": [{"category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_NONE"}],
+    "llm_language_integrity": "reject",
     "recall_budget_function": "adaptive",
     "recall_budget_fixed_low": 50,
     "recall_budget_fixed_mid": 250,

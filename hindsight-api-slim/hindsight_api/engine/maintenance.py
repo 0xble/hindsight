@@ -62,7 +62,7 @@ from collections.abc import Coroutine
 from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING, Any
 
-from ..config import HindsightConfig, get_config
+from ..config import ConfigLike, get_config
 from ..models import RequestContext
 from .db_utils import acquire_with_retry
 from .schema import _is_oracle, fq_routine, fq_table, fq_table_explicit
@@ -236,7 +236,7 @@ class MaintenanceLoop:
 
     # ── retention ──────────────────────────────────────────────────────────
 
-    async def _run_retention(self, cfg: HindsightConfig) -> None:
+    async def _run_retention(self, cfg: ConfigLike) -> None:
         # Retention days are static server-level config, so one global cutoff
         # applies to every tenant schema (the routine sweeps them all).
         # Not gated on audit_log_enabled: it is per-bank overridable, so a bank
@@ -330,7 +330,7 @@ class MaintenanceLoop:
 
     # ── terminal operation cleanup ─────────────────────────────────────────
 
-    async def _run_operation_cleanup(self, cfg: HindsightConfig) -> None:
+    async def _run_operation_cleanup(self, cfg: ConfigLike) -> None:
         """Prune one bounded batch of expired terminal operations per tenant schema.
 
         Previously this rode the worker's task-claiming loop, so it only fired
@@ -528,6 +528,7 @@ class MaintenanceLoop:
         skipped_unknown = 0
         skipped_fresh = 0
         skipped_in_flight = 0
+        skipped_paused = 0
         for row in due:
             schema = row["schema_name"]
             bank_id = row["bank_id"]
@@ -572,7 +573,9 @@ class MaintenanceLoop:
                     skip_if_in_flight=True,
                     automatic=True,
                 )
-                if result.get("deduplicated"):
+                if result.get("paused"):
+                    skipped_paused += 1
+                elif result.get("deduplicated"):
                     skipped_in_flight += 1
                 else:
                     submitted += 1
@@ -581,10 +584,11 @@ class MaintenanceLoop:
             finally:
                 _current_schema.reset(token)
 
-        if submitted or skipped_unknown or skipped_fresh or skipped_in_flight:
+        if submitted or skipped_unknown or skipped_fresh or skipped_in_flight or skipped_paused:
             logger.info(
                 f"Scheduled mental model refresh: scheduled {submitted} model(s)"
                 + (f", {skipped_fresh} up-to-date" if skipped_fresh else "")
                 + (f", {skipped_in_flight} already in flight" if skipped_in_flight else "")
+                + (f", {skipped_paused} paused after a failed refresh" if skipped_paused else "")
                 + (f", skipped {skipped_unknown} in unrecognized schema(s)" if skipped_unknown else "")
             )

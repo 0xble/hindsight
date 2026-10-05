@@ -14,10 +14,11 @@ from collections import Counter
 from collections.abc import Iterator
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+from itertools import chain
 
-_MONTHS = "january february march april may june july august september october november december".split()
+_MONTHS: list[str] = "january february march april may june july august september october november december".split()
 _MONTH_DATE = re.compile(r"\b(" + "|".join(_MONTHS) + r")\s+(\d{1,2}),?\s+(\d{4})\b", re.I)
-_NUMBER_WORDS = dict(
+_NUMBER_WORDS: dict[str, int] = dict(
     zip(
         "zero one two three four five six seven eight nine ten eleven twelve thirteen fourteen fifteen sixteen seventeen eighteen nineteen twenty".split(),
         range(21),
@@ -43,7 +44,8 @@ _PATTERNS = {
 _SCALE = r"(?:[kmbt]|thousand|million|billion|trillion)"
 _DIGITS = r"(?:\d+(?:,\d{3})*(?:\.\d+)?|\.\d+)"
 # ISO-4217 codes, not arbitrary three-letter technical acronyms.
-_CURRENCY = r"(?i:usd|eur|gbp|cad|aud|nzd|jpy|cny|hkd|sgd|chf|sek|nok|dkk|inr|krw|mxn|brl|zar)"
+_CURRENCY_CODES = tuple("usd eur gbp cad aud nzd jpy cny hkd sgd chf sek nok dkk inr krw mxn brl zar".split())
+_CURRENCY = "(?i:" + "|".join(_CURRENCY_CODES) + ")"
 _SIGN = r"(?:-(?<![\w.]-))?"
 _MONEY = re.compile(
     rf"(?<![\w.])(?P<sign>{_SIGN})(?P<open>\()?"
@@ -121,23 +123,36 @@ _OPAQUE = re.compile(
 # Explicit case-sensitive contexts and literals do not need that shape signal.
 # Known limits: lowercase "key is prod" can change case unnoticed, and an
 # ordinary capitalized apposition ("API key Rotation policy") can falsely veto.
-# Generic UUID extraction can split a retained value when its key noun disappears,
-# so a full UUID captured by apposition may also falsely veto that restatement.
+# Predicate-first values and noun appositions keep the noun's slot identity, not
+# the value as subject. UPDATE's raw-token waiver requires the key noun to be
+# absent; unfamiliar noun-bearing bindings fail closed. Recognized inverse slots
+# allow at most eight qualifiers of forty characters each, not arbitrary prose.
 _IDENTIFIER_SHAPE = re.compile(r"[A-Z0-9_]|[A-Za-z0-9][.-][A-Za-z0-9]")
+_IDENTIFIER_NOUN = r"(?:key|token|identifier|id|secret name|env var|flag)"
+_IDENTIFIER_NOUN_PATTERN = re.compile(r"\b" + _IDENTIFIER_NOUN + r"\b", re.I)
 _IDENTIFIER_CONTEXT = (
-    r"(?:\bcase-sensitive(?:\s+(?:API\s+)?(?:key|token|identifier|id|secret name|env var|flag))?"
+    r"(?:\bcase-sensitive(?:\s+(?:API\s+)?" + _IDENTIFIER_NOUN + r")?"
     r"(?:\s*[:=]\s*|\s+(?:is|are|was|were|equals|set to)\s+|\s+)"
-    r"|(?P<shape>\b(?:key|token|identifier|id|secret name|env var|flag)"
-    r"(?:\s*[:=]\s*|\s+(?:is|are|was|were|equals|set to)\s+|\s+)))"
+    r"|(?P<shape>\b"
+    + _IDENTIFIER_NOUN
+    + r"(?:\s*[:=]\s*|\s+(?:is|are|was|were|equals|set to|has value|have value)\s+|\s+)))"
 )
 # Lookahead keeps a descriptive context from consuming the next explicit key:
 # "case-sensitive identifier is PROD" still discovers "identifier is PROD".
 _EXPLICIT_IDENTIFIER = re.compile(r"(?=" + _IDENTIFIER_CONTEXT + r"(?P<value>[A-Za-z0-9_][\w.-]{0,159})\b)", re.I)
+# Whitespace boundaries exclude URL/path/email/call components. Bound both the
+# token and qualifier grammar: an unbounded suffix would retry on dense input.
+_PREDICATE_FIRST_IDENTIFIER = re.compile(
+    r"(?<!\S)(?P<shape>(?P<value>[A-Za-z0-9_][\w.-]{0,159}))"
+    r"(?:\s+(?:is|are|was|were|equals)\s+|,\s+)(?:the|a|an)\s+"
+    r"(?P<slot>(?:[a-z][\w-]{0,39}\s+){0,8}?" + _IDENTIFIER_NOUN + r")\b",
+    re.I,
+)
 
 
 def _explicit_identifiers(text: str) -> Iterator[re.Match[str]]:
     seen: set[tuple[int, int]] = set()
-    for match in _EXPLICIT_IDENTIFIER.finditer(text):
+    for match in chain(_EXPLICIT_IDENTIFIER.finditer(text), _PREDICATE_FIRST_IDENTIFIER.finditer(text)):
         if match["shape"] and not _IDENTIFIER_SHAPE.search(match["value"]):
             continue
         tail = text[match.end("value") : match.end("value") + 20]
@@ -157,7 +172,14 @@ def _explicit_identifiers(text: str) -> Iterator[re.Match[str]]:
                 yield match
 
 
+# With these transforms absent from every substring, splitting around opaque
+# spans cannot alter already lowercase ASCII text either.
+_NORMALIZATION_TRIGGER = re.compile("|".join([*_MONTHS, *_NUMBER_WORDS]) + r"|\d(?:st|nd|rd|th)|[^\S \n]| {2}")
+
+
 def normalize(text: str) -> str:
+    if text.isascii() and text == text.casefold() and not _NORMALIZATION_TRIGGER.search(text):
+        return text
     text = unicodedata.normalize("NFKC", text)
     pieces: list[str] = []
     end = 0
@@ -211,6 +233,93 @@ def _canonical_amount(amount: str, scale: str = "") -> str:
     return (sign if whole != "0" or fraction else "") + whole + ("." + fraction if fraction else "")
 
 
+def _quantity_matches(
+    pattern: re.Pattern[str], normalized: str, numeric_starts: list[int] | None = None
+) -> Iterator[re.Match[str]]:
+    # These mandatory suffix fragments come from the same regex definitions.
+    # If absent, none of the maximal numeric starts can match that pattern.
+    if pattern in (_MONEY, _SUFFIX_MONEY):
+        # ASCII substring searches use the same mandatory currency spellings.
+        # Unicode keeps regex case semantics (e.g. dotted capital I).
+        lowered = normalized.lower() if normalized.isascii() else None
+        currency = (
+            any(code in lowered for code in _CURRENCY_CODES)
+            if lowered is not None
+            else bool(re.search(_CURRENCY, normalized))
+        )
+        if not currency and (pattern is _SUFFIX_MONEY or not any(symbol in normalized for symbol in "$€£")):
+            return
+    if pattern is _SCALED_NUMBER and not re.search(_SCALE + r"\b", normalized, re.I):
+        return
+    if pattern is _MONEY:
+        yield from pattern.finditer(normalized)
+    else:
+        starts = (
+            numeric_starts
+            if numeric_starts is not None
+            else (match.start() for match in _NUMERIC_SPANS.finditer(normalized))
+        )
+        for start in starts:
+            match = pattern.match(normalized, start)
+            if match is not None:
+                yield match
+
+
+def _evidence_free_work_fits(before: str, after: str) -> bool:
+    # Without evidence, only a full-path work-limit veto can prevent an empty
+    # result. Prove that path fits rather than allocating unsupported anchors.
+    if len(before) + len(after) > _MAX_INPUT_CHARS:
+        return False
+    old, new = normalize(before), normalize(after)
+    if max(len(old), len(new)) > _MAX_INPUT_CHARS:
+        return False
+    # Literal equivalents traverse a shared trie, so use the full path for
+    # them. Everything else uses only authoritative extractor spans.
+    if any(_PATTERNS["literal"].search(text) for text in (old, new)):
+        return False
+    # Count a superset of extractor candidates before overlap/shape filtering.
+    # Each raw pattern/value key produces at most one canonical anchor.
+    counts: list[int] = []
+    old_keys: set[tuple[str, str]] = set()
+    for index, text in enumerate((old, new)):
+        count = 0
+        patterns = [
+            ("money", _quantity_matches(_MONEY, text)),
+            ("suffix_money", _quantity_matches(_SUFFIX_MONEY, text)),
+            ("scaled_number", _quantity_matches(_SCALED_NUMBER, text)),
+            ("accounting", _ACCOUNTING_NUMBER.finditer(text)),
+            *((kind, pattern.finditer(text)) for kind, pattern in _PATTERNS.items() if kind != "literal"),
+            ("marker", _MARKERS.finditer(text)),
+        ]
+        for kind, matches in patterns:
+            if index == 0:
+                raw_counts = Counter(match[0] for match in matches)
+                count += raw_counts.total()
+                old_keys.update((kind, value) for value in raw_counts)
+            else:
+                count += sum(1 for _ in matches)
+        for match in _explicit_identifiers(text):
+            count += 1
+            if index == 0:
+                old_keys.add(("explicit_identifier", match["value"]))
+        counts.append(count)
+    prior, proposed = counts
+    unique = len(old_keys)
+    # No header/subject label can exist without one of these lexical forms.
+    labeled = (
+        ":" in old
+        or "=" in old
+        or re.search(r"\b(?:is|are|was|were|has|had|changed|grew|fell|equals|equal to)\b", old, re.I)
+    )
+    # Normalized lengths, extraction and indexed spans pay preprocessing.
+    # Labels pay at most one operation per old occurrence. Each unique anchor
+    # pays its loop, old/new contexts and worst-case unpaired cross product.
+    work = len(old) + len(new) + 2 * (prior + proposed)
+    work += prior if labeled else 0
+    work += unique * (1 + prior + proposed + prior * proposed)
+    return work <= _MAX_WORK
+
+
 def _extract_occurrences(normalized: str) -> list[_AnchorOccurrence]:
     result: list[_AnchorOccurrence] = []
     quantities: list[tuple[int, int]] = []
@@ -222,11 +331,7 @@ def _extract_occurrences(normalized: str) -> list[_AnchorOccurrence]:
     for pattern, kind in ((_MONEY, "money"), (_SUFFIX_MONEY, "money"), (_SCALED_NUMBER, "number")):
         quantities.sort()
         money_starts = [start for start, _ in quantities]
-        matches = (
-            pattern.finditer(normalized)
-            if pattern is _MONEY
-            else (match for start in numeric_starts if (match := pattern.match(normalized, start)) is not None)
-        )
+        matches = _quantity_matches(pattern, normalized, numeric_starts)
         for match in matches:
             parent = bisect_right(money_starts, match.start()) - 1
             if parent >= 0 and match.end() <= quantities[parent][1]:
@@ -413,10 +518,19 @@ def _clause_boundaries(text: str) -> list[int]:
     ordinary coordinated-slot separation and numeric 'between X and Y' ranges.
     """
     boundaries: list[int] = []
+    # The comma in "Abcd, the primary API key" joins value and slot. Splitting
+    # there would erase its context and falsely veto a lossless apposition.
+    apposition_commas = {
+        match.end("value")
+        for match in _PREDICATE_FIRST_IDENTIFIER.finditer(text)
+        if text[match.end("value")] == "," and _IDENTIFIER_SHAPE.search(match["value"])
+    }
     start = 0
     between = False
     header_end = -1
     for match in re.finditer(r"\n|[.;!?](?=\s|$)|(?<!\d),|,(?!\d{3}(?!\d))|\b(?:between|and)\b", text):
+        if match.start() in apposition_commas:
+            continue
         if match[0] in {"between", "and"}:
             if header_end < start:
                 prefix = _LIST_PREFIX.sub("", text[start : start + 120].lstrip(), count=1)
@@ -590,6 +704,13 @@ def _prepare(texts: list[str], budget: _Budget) -> dict[str, _TextIndex]:
                 if subject and subject[1].casefold() not in _STOP | {"there"}:
                     clause.label = _canonical_label(subject[1])
                     clause.label_end = main.find(clause_text, start, end) + subject.end(1)
+                predicate_first = _PREDICATE_FIRST_IDENTIFIER.match(clause_text)
+                if predicate_first and _IDENTIFIER_SHAPE.search(predicate_first["value"]):
+                    # "Abcd is the primary API key" binds Abcd to primary, not
+                    # to a subject named Abcd. The value precedes the slot label,
+                    # so it must not be marked as an occurrence inside that label.
+                    clause.label = _canonical_label(predicate_first["slot"])
+                    clause.label_end = 0
             clause.credit_identity = _credit_identity(clause_text, consumed=False)
             clause.available = bool(clause.credit_identity)
             if not clause.available:
@@ -847,6 +968,23 @@ def _superseded(
     return 0
 
 
+def _standalone_tokens(text: str, budget: _Budget) -> Counter[str]:
+    """Count exact whitespace-delimited tokens, not components of opaque values."""
+    budget.spend(len(text))
+    counts: Counter[str] = Counter()
+    for token in text.split():
+        # Strip only one sentence punctuation mark at a whitespace/end boundary.
+        # Internal punctuation, parentheses, suffixes and combining marks remain
+        # part of the token, so no substring can masquerade as a retained value.
+        if token[-1] in ".,;:!?":
+            token = token[:-1]
+        if token and token[0] in "\"'`“‘":
+            token = token[1:]
+        if token:
+            counts[token] += 1
+    return counts
+
+
 def dropped_supported_anchors(before: str, after: str, existing: list[Evidence], cited: list[Evidence]) -> list[Anchor]:
     """Return missing supported anchors; an exhausted work budget also vetoes an UPDATE.
 
@@ -861,6 +999,8 @@ def dropped_supported_anchors(before: str, after: str, existing: list[Evidence],
     try:
         if len(existing) + len(cited) > _MAX_SOURCES:
             raise _WorkLimit
+        if not existing and not cited and _evidence_free_work_fits(before, after):
+            return []
         budget = _Budget()
         indexes = _prepare([before, after] + [s.text for s in existing] + [s.text for s in cited], budget)
         old, new = indexes[before], indexes[after]
@@ -907,7 +1047,27 @@ def dropped_supported_anchors(before: str, after: str, existing: list[Evidence],
                 and _superseded(anchor, missing, old, new, unmatched, supporters, cited_indexes, budget) < missing
             ):
                 dropped.append(anchor)
-        return dropped
+        # Raw retention is a waiver only when the key noun genuinely disappears.
+        # Recognized predicate-first/apposition bindings use occurrence-level slot
+        # matching above; unfamiliar noun-bearing output fails closed instead of
+        # erasing a role swap on global token counts. Charge two shared token
+        # passes, never a separate output scan per identifier.
+        if not any(anchor.kind == "identifier" for anchor in dropped):
+            return dropped
+        budget.spend(len(before) + len(after))
+        if _IDENTIFIER_NOUN_PATTERN.search(after) or next(_explicit_identifiers(after), None) is not None:
+            return dropped
+        explicit_values = {match["value"] for match in _explicit_identifiers(before)}
+        before_tokens = _standalone_tokens(before, budget)
+        after_tokens = _standalone_tokens(after, budget)
+        return [
+            anchor
+            for anchor in dropped
+            if anchor.kind != "identifier"
+            or anchor.value not in explicit_values
+            or not before_tokens[anchor.value]
+            or after_tokens[anchor.value] < before_tokens[anchor.value]
+        ]
     except _WorkLimit:
         return [_LIMIT_ANCHOR]
 

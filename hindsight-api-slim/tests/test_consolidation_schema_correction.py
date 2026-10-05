@@ -75,7 +75,7 @@ class SDKStub:
 async def provider():
     llm = LLMProvider(
         provider="openai",
-        api_key="synthetic-not-a-credential",
+        api_key="test-key",
         base_url="https://example.invalid/v1",
         model="synthetic-model",
     )
@@ -179,15 +179,20 @@ async def test_concurrent_round_budget_caps_extra_completions(provider, config):
 
     # Alternate per-call local malformed/valid outputs without sharing a response queue.
     async def one():
-        llm = LLMProvider(provider="openai", api_key="synthetic", base_url="https://example.invalid", model="stub")
+        llm = LLMProvider(provider="openai", api_key="test-key", base_url="https://example.invalid", model="stub")
         await llm._provider_impl._client.close()
         stub = install(llm, [MISSING, VALID])
-        result = await batch(llm, config, schema_correction_budget=budget)
-        return len(stub.requests), result.failed
+        try:
+            result = await batch(llm, config, schema_correction_budget=budget)
+        except c._RoundCorrectionBudgetExhausted:
+            assert len(stub.requests) == 1
+            return len(stub.requests), True
+        assert not result.failed
+        return len(stub.requests), False
 
     results = await asyncio.gather(*(one() for _ in range(24)))
     assert sum(count - 1 for count, _ in results) == 10
-    assert sum(failed for _, failed in results) == 14
+    assert sum(deferred for _, deferred in results) == 14
     assert budget.stats.attempts == 10
     assert budget.stats.budget_exhausted == 14
 
@@ -239,8 +244,8 @@ async def test_default_size_requeued_rounds_share_per_1000_fact_bound(provider, 
 
     conn.transaction = transaction
 
-    async def fetch(conn, bank_id, fact_types, limit, scopes, deferred):
-        return list(pending[:limit])
+    async def fetch(conn, bank_id, fact_types, limit, scopes, deferred, **kwargs):
+        return [memory for memory in pending if str(memory["id"]) not in deferred][:limit]
 
     async def count(*args, **kwargs):
         return len(pending)
@@ -254,7 +259,10 @@ async def test_default_size_requeued_rounds_share_per_1000_fact_bound(provider, 
         remove(kwargs["unit_ids"])
 
     async def process(**kwargs):
-        stub = install(provider, [MISSING, {}])
+        # One correction-dependent batch per round; the remaining batches are
+        # valid initially. Exhaustion/pending behavior has a real-PG lane test.
+        needs_correction = kwargs["schema_correction_budget"].stats.attempts == 0
+        stub = install(provider, [MISSING, {}] if needs_correction else [{}])
         result = await c._consolidate_batch_with_llm(
             provider, kwargs["memories"], [], {}, config, schema_correction_budget=kwargs["schema_correction_budget"]
         )
@@ -287,6 +295,7 @@ async def test_default_size_requeued_rounds_share_per_1000_fact_bound(provider, 
     processed_rounds = [result for result in results if result["memories_processed"]]
     assert len(processed_rounds) == 10
     assert all(result["schema_correction_attempts"] == 1 for result in processed_rounds)
+    assert all(result["memories_failed"] == result["memories_deferred"] == 0 for result in processed_rounds)
     assert sum(result["memories_processed"] for result in processed_rounds) == 1000
     assert sum("Return a COMPLETE replacement" in request["messages"][-1]["content"] for request in requests) == 10
     assert engine.submit_async_consolidation.await_count == 10
@@ -343,7 +352,7 @@ async def test_codex_hidden_auth_retry_cannot_make_second_correction(provider, c
         patch.object(CodexLLM, "_load_codex_auth", return_value=("synthetic", "test-account")),
         patch.object(CodexLLM, "_load_codex_refresh_token", return_value="synthetic"),
     ):
-        impl = CodexLLM(provider="openai-codex", api_key="synthetic", base_url="", model="synthetic-model")
+        impl = CodexLLM(provider="openai-codex", api_key="test-key", base_url="", model="synthetic-model")
     provider._provider_impl = impl
     provider.provider = "openai-codex"
     first = "event: response.text.delta\ndata: " + json.dumps({"delta": json.dumps(MISSING)}) + "\n\n"
@@ -561,8 +570,11 @@ async def test_job_budget_survives_scopes_lanes_fetches_bisection_and_isolates_b
             observations = await memory.list_memory_units(
                 bank_id, fact_type="observation", limit=100, request_context=request_context
             )
-            assert failed["total"] == result["memories_failed"] > 0
-            assert pending["total"] == 0
+            # Failed multi-fact corrections may bisect, but credit exhaustion
+            # cannot turn any eventual leaf into a durable failed fact.
+            assert failed["total"] == result["memories_failed"] == 0
+            assert pending["total"] == result["memories_deferred"] > 0
+            assert pending["total"] + result["memories_processed"] == 24
             assert observations["total"] == result["observations_created"]
     finally:
         memory._consolidation_llm_config = original
@@ -596,6 +608,80 @@ async def test_empty_response_classification_is_not_schema_correction(provider, 
     result = await batch(provider, config, schema_correction_budget=budget)
     assert result.failed and len(stub.requests) == 1
     assert budget.stats.initial_failures == budget.stats.attempts == 0
+
+
+@pytest.mark.asyncio
+@pytest.mark.memory_backend_incompatible
+@pytest.mark.parametrize("later_failure", ["budget", "invalid", "stale"])
+async def test_job_counts_committed_scope_actions_when_a_later_scope_fails(
+    memory, request_context, provider, later_failure
+):
+    import uuid
+
+    from hindsight_api.config import _get_raw_config
+    from hindsight_api.engine.response_models import RecallResult
+
+    bank_id = f"schema-partial-count-{uuid.uuid4().hex[:8]}"
+    await memory.ensure_bank_profile(bank_id=bank_id, request_context=request_context)
+    original = memory._consolidation_llm_config
+    try:
+        fact_id = uuid.uuid4()
+        async with memory._pool.acquire() as conn:
+            await conn.execute(
+                "INSERT INTO memory_units (id, bank_id, text, fact_type, tags, observation_scopes, created_at) "
+                "VALUES ($1, $2, $3, 'experience', $4, $5::jsonb, now())",
+                fact_id,
+                bank_id,
+                "Synthetic fact",
+                ["scope:a", "scope:b"],
+                json.dumps("per_tag"),
+            )
+        valid = {"creates": [{"text": "Synthetic scoped observation", "source_fact_ids": [str(fact_id)]}]}
+        install(provider, [MISSING, valid, MISSING])
+        raw = _get_raw_config()
+        job_config = type(raw)(
+            **{
+                **{name: getattr(raw, name) for name in raw.__dataclass_fields__},
+                "enable_observations": True,
+                "consolidation_llm_batch_size": 1,
+                # One correction credit: scope a commits, scope b cannot correct.
+                "consolidation_max_memories_per_round": 100,
+                "llm_language_integrity": "off",
+                "consolidation_dedup_threshold": 1.0,
+            }
+        )
+        memory._consolidation_llm_config = SimpleNamespace(with_config=lambda config, **kwargs: provider)
+        process_batch = c._process_memory_batch
+
+        async def fail_later_scope(**kwargs):
+            if kwargs["obs_tags_override"] == ["scope:b"]:
+                if later_failure == "invalid":
+                    raise c._InvalidConsolidationReferences("synthetic invalid later scope")
+                if later_failure == "stale":
+                    raise c._StaleConsolidationReference("synthetic stale later scope")
+            return await process_batch(**kwargs)
+
+        with (
+            patch.object(memory._config_resolver, "resolve_full_config", return_value=job_config),
+            patch.object(c, "_find_related_observations", new=AsyncMock(return_value=RecallResult(results=[]))),
+            patch.object(c, "_process_memory_batch", new=fail_later_scope),
+            patch.object(memory, "submit_async_consolidation"),
+        ):
+            result = await c.run_consolidation_job(memory, bank_id, request_context)
+        observations = await memory.list_memory_units(
+            bank_id, fact_type="observation", limit=100, request_context=request_context
+        )
+        assert observations["total"] == result["observations_created"] == result["actions_executed"] == 1
+        assert observations["items"][0]["tags"] == ["scope:a"]
+        deferred = later_failure in {"budget", "stale"}
+        assert result["memories_processed"] == result["memories_failed"] == (0 if deferred else 1)
+        assert result["memories_deferred"] == int(deferred)
+        if later_failure == "budget":
+            assert result["schema_correction_attempts"] == 1
+            assert result["schema_correction_budget_exhausted"] > 0
+    finally:
+        memory._consolidation_llm_config = original
+        await memory.delete_bank(bank_id, request_context=request_context)
 
 
 @pytest.mark.asyncio
@@ -1416,3 +1502,53 @@ async def test_guard_hydration_excludes_body_that_grows_after_size_read(memory, 
         assert len(queries) == 2
     finally:
         await memory.delete_bank(bank_id=bank_id, request_context=request_context)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("reservation", ["start", "start_detail"])
+async def test_round_budget_detail_exhaustion_preserves_fallback(provider, config, reservation):
+    from hindsight_api.engine.response_models import MemoryFact
+
+    old_id = "11111111-1111-4111-8111-111111111111"
+    fact_id = "22222222-2222-4222-8222-222222222222"
+    obs_id = "33333333-3333-4333-8333-333333333333"
+    before = "The server timeout is 5 seconds. Deployment status is pending."
+    after = "Deployment status is green."
+    observation = SimpleNamespace(
+        id=obs_id,
+        text=before,
+        proof_count=1,
+        source_fact_ids=[old_id],
+        tags=[],
+        occurred_start=None,
+        occurred_end=None,
+        mentioned_at=None,
+    )
+    old = MemoryFact(id=old_id, text=before, mentioned_at=None, fact_type="world")
+    stub = install(
+        provider,
+        [
+            {
+                "updates": [{"text": after, "observation_id": obs_id, "source_fact_ids": [fact_id]}],
+                "deletes": [{"observation_id": obs_id}],
+            }
+        ],
+    )
+    budget = c._SchemaCorrectionBudget(100)
+    getattr(budget, reservation)()
+    result = await c._consolidate_batch_with_llm(
+        provider,
+        [{"id": fact_id, "text": after}],
+        [observation],
+        {old_id: old},
+        config,
+        schema_correction_budget=budget,
+    )
+    assert not result.failed
+    assert not result.updates and not result.deletes
+    assert len(result.creates) == 1 and result.creates[0]._preserve_separate
+    assert result.creates[0].text == after and result.creates[0].source_fact_ids == [fact_id]
+    assert observation.text == before
+    assert len(stub.requests) == 1
+    assert budget.detail_stats.budget_exhausted == 1
+    assert budget.detail_stats.correction_failed == 1 and budget.detail_stats.fallback == 1

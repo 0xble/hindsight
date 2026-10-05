@@ -11,7 +11,7 @@ import aiohttp
 from yarl import URL
 
 from ..aiohttp_session import per_phase_timeout, proxy_env_is_set
-from .base import FileParser, UnsupportedFileTypeError
+from .base import FileParser, NoExtractableContentError, UnsupportedFileTypeError
 
 logger = logging.getLogger(__name__)
 
@@ -62,6 +62,7 @@ class IrisParser(FileParser):
 
         Raises:
             UnsupportedFileTypeError: If the Iris API rejects the file type (4xx)
+            NoExtractableContentError: If successful extraction returns no usable text
             RuntimeError: If extraction fails for another reason
         """
         content_type = mimetypes.guess_type(filename)[0] or "application/octet-stream"
@@ -114,8 +115,8 @@ class IrisParser(FileParser):
                         error = data.get("error", "unknown error")
                         raise RuntimeError(f"Iris extraction failed for '{filename}': {error}")
                     text = data.get("text")
-                    if not text:
-                        raise RuntimeError(f"No content extracted from '{filename}'")
+                    if not text or not text.strip():
+                        raise NoExtractableContentError(f"No content extracted from '{filename}'")
                     return text
 
                 if time.monotonic() >= deadline:

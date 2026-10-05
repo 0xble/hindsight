@@ -9,7 +9,7 @@ import pytest
 from aiohttp import web
 
 from hindsight_api.engine.parsers import iris
-from hindsight_api.engine.parsers.base import UnsupportedFileTypeError
+from hindsight_api.engine.parsers.base import NoExtractableContentError, UnsupportedFileTypeError
 from hindsight_api.engine.parsers.iris import IrisParser
 from tests.aiohttp_stub import stub_server
 
@@ -78,6 +78,15 @@ async def test_extraction_failure_raises_runtime_error(monkeypatch):
     upstream = _Upstream(extraction_statuses=[{"ready": True, "data": {"success": False, "error": "corrupt"}}])
 
     with pytest.raises(RuntimeError, match="corrupt"):
+        await _convert(monkeypatch, upstream)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("text", [None, "", " \n"])
+async def test_successful_empty_extraction_is_typed(monkeypatch, text):
+    upstream = _Upstream(extraction_statuses=[{"ready": True, "data": {"success": True, "text": text}}])
+
+    with pytest.raises(NoExtractableContentError):
         await _convert(monkeypatch, upstream)
 
 

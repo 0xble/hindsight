@@ -35,6 +35,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from ....config import get_config
+from ...curation_guard import try_lock_curation_bank
 from ...db.base import DatabaseConnection
 from ...retain.link_utils import (
     MAX_TEMPORAL_LINKS_PER_UNIT,
@@ -42,9 +43,17 @@ from ...retain.link_utils import (
     _normalize_datetime,
     compute_semantic_links_ann,
 )
+from ...search.tags import TagsMatch
 from ..base import EntityPrunePassResult, RelinkPassResult
 
 logger = logging.getLogger(__name__)
+
+
+def _as_uuid(value: Any) -> uuid_module.UUID:
+    """Coerce an id to UUID. ``id::text`` comes back as str on PostgreSQL, but the Oracle
+    backend drops the cast and decodes RAW(16) id columns straight to UUID."""
+    return value if isinstance(value, uuid_module.UUID) else uuid_module.UUID(str(value))
+
 
 # Mirrors the ``top_k`` default in ``compute_semantic_links_ann`` at retain
 # time. If you change one, change the other — otherwise victims would either
@@ -171,7 +180,7 @@ async def graph_units(
     document_id: str | None = None,
     chunk_id: str | None = None,
     tags: list[str] | None = None,
-    tags_match: str = "all_strict",
+    tags_match: TagsMatch = "all_strict",
     limit: int = 1000,
 ) -> dict[str, Any]:
     """Memory nodes for the graph view, plus the total matching count.
@@ -506,7 +515,7 @@ async def resolve_entity_names(
     uuids: list = []
     for raw in {str(e) for e in entity_ids}:
         try:
-            uuids.append(uuid_module.UUID(raw))
+            uuids.append(_as_uuid(raw))
         except (ValueError, AttributeError, TypeError):
             continue
     if not uuids:
@@ -648,6 +657,12 @@ async def relink_pass(
 
         async with acquire_with_retry(backend) as conn:
             async with conn.transaction():
+                # Guarded curation and relinking share this bank advisory lock.
+                # Acquire it before claiming or reading victims so a relinker
+                # cannot insert a pre-edit link after a guarded edit commits.
+                if not await try_lock_curation_bank(conn, bank_id):
+                    drained = False
+                    break
                 unit_ids = await ops.claim_graph_maintenance_batch(
                     conn,
                     fq_table("graph_maintenance_queue"),
@@ -691,7 +706,7 @@ async def _relink_batch(
     # Load each victim's metadata. Victims whose units were deleted between
     # enqueue and now silently drop out — exactly the no-op behaviour we want
     # for stale queue rows.
-    victim_uuids = [uuid_module.UUID(vid) for vid in victim_ids]
+    victim_uuids = [_as_uuid(vid) for vid in victim_ids]
     victim_rows = await conn.fetch(
         f"""
         SELECT id::text AS id, event_date, fact_type, embedding::text AS embedding
@@ -707,7 +722,7 @@ async def _relink_batch(
     if not victim_rows:
         return 0
 
-    alive_uuids = [uuid_module.UUID(row["id"]) for row in victim_rows]
+    alive_uuids = [_as_uuid(row["id"]) for row in victim_rows]
 
     # Count current outgoing temporal/semantic links per victim so we only
     # probe for the ones genuinely below cap. Saves the bulk of the work when
@@ -733,7 +748,7 @@ async def _relink_batch(
     new_links: list[tuple] = []
 
     if temporal_needs:
-        lateral_unit_ids = [uuid_module.UUID(r["id"]) for r in temporal_needs if r["event_date"] is not None]
+        lateral_unit_ids = [_as_uuid(r["id"]) for r in temporal_needs if r["event_date"] is not None]
         lateral_event_dates = [
             _normalize_datetime(r["event_date"]) for r in temporal_needs if r["event_date"] is not None
         ]
@@ -868,6 +883,7 @@ class _PruneBatch:
     claimed: int
     orphan_entities_pruned: int
     stale_cooccurrences_pruned: int
+    busy: bool = False
 
 
 async def entity_prune_pass(
@@ -931,6 +947,11 @@ async def entity_prune_pass(
             async with acquire_with_retry(backend) as conn:
                 async with conn.transaction():
                     ops = backend.ops
+                    # Guarded curation, relinking, and entity pruning share this
+                    # bank advisory lock. Do not claim prune work while a
+                    # curation transaction may be changing its entity closure.
+                    if not await try_lock_curation_bank(conn, bank_id):
+                        return _PruneBatch(claimed=0, orphan_entities_pruned=0, stale_cooccurrences_pruned=0, busy=True)
                     entity_ids = await ops.claim_entity_maintenance_batch(
                         conn,
                         fq_table("entity_maintenance_queue"),
@@ -940,22 +961,43 @@ async def entity_prune_pass(
                     if not entity_ids:
                         return _PruneBatch(claimed=0, orphan_entities_pruned=0, stale_cooccurrences_pruned=0)
 
-                    orphaned = await ops.prune_orphan_entities(
-                        conn,
-                        fq_table("entities"),
-                        fq_table("unit_entities"),
-                        bank_id,
-                        entity_ids,
-                    )
+                    from ...db.ops_postgresql import PostgreSQLOps
+
+                    if isinstance(ops, PostgreSQLOps):
+                        orphaned = await ops.prune_orphan_entities(
+                            conn,
+                            fq_table("entities"),
+                            fq_table("unit_entities"),
+                            bank_id,
+                            entity_ids,
+                            pins_table=fq_table("curation_entity_pins"),
+                        )
+                    else:
+                        orphaned = await ops.prune_orphan_entities(
+                            conn,
+                            fq_table("entities"),
+                            fq_table("unit_entities"),
+                            bank_id,
+                            entity_ids,
+                        )
                     # The orphan prune above cascades cooccurrences via FK. This
                     # second delete catches the *stale-count* case: both entities
                     # still exist but no current unit witnesses them together.
-                    stale = await ops.prune_stale_cooccurrences(
-                        conn,
-                        fq_table("entity_cooccurrences"),
-                        fq_table("unit_entities"),
-                        entity_ids,
-                    )
+                    if isinstance(ops, PostgreSQLOps):
+                        stale = await ops.prune_stale_cooccurrences(
+                            conn,
+                            fq_table("entity_cooccurrences"),
+                            fq_table("unit_entities"),
+                            entity_ids,
+                            pins_table=fq_table("curation_entity_pins"),
+                        )
+                    else:
+                        stale = await ops.prune_stale_cooccurrences(
+                            conn,
+                            fq_table("entity_cooccurrences"),
+                            fq_table("unit_entities"),
+                            entity_ids,
+                        )
                     return _PruneBatch(
                         claimed=len(entity_ids),
                         orphan_entities_pruned=orphaned,
@@ -978,6 +1020,9 @@ async def entity_prune_pass(
         # that times out is not slow work, it is a sick database — retry a few
         # times and let the failure surface.
         batch = await retry_with_backoff(_run_batch, max_retries=_PRUNE_BATCH_MAX_RETRIES)
+        if batch.busy:
+            drained = False
+            break
         if batch.claimed == 0:
             break
 

@@ -118,6 +118,7 @@ async def test_hierarchical_fields_categorization():
     assert "retain_custom_instructions" in configurable
     assert "retain_chunk_size" in configurable
     assert "retain_structured_chunk_size" in configurable
+    assert "file_delete_after_retain" in configurable
     assert "enable_observations" in configurable
     assert "consolidation_llm_batch_size" in configurable
     assert "consolidation_source_facts_max_tokens" in configurable
@@ -137,6 +138,7 @@ async def test_hierarchical_fields_categorization():
     assert "retain_strategies" in configurable
     assert "max_observations_per_scope" in configurable
     assert "observation_scope_limits" in configurable
+    assert "consolidation_strategies" in configurable
     assert "reflect_source_facts_max_tokens" in configurable
     assert "llm_gemini_safety_settings" in configurable
     assert "mcp_enabled_tools" in configurable
@@ -155,9 +157,12 @@ async def test_hierarchical_fields_categorization():
     assert "reflect_default_options" in configurable
 
     # Verify count is correct
-    # 50 upstream fields plus the fork's consolidation_max_context_tokens (HINDSIGHT-002),
-    # consolidation_fair_group_selection, and consolidation_lane_llm_parallelism.
-    assert len(configurable) == 53
+    # 51 upstream fields plus the fork's consolidation_max_context_tokens (HINDSIGHT-002),
+    # consolidation_fair_group_selection, consolidation_lane_llm_parallelism, file_delete_after_retain,
+    # and llm_language_integrity.
+    assert "llm_language_integrity" in configurable
+    assert "llm_output_language" in static
+    assert len(configurable) == 56
 
     # Verify credential fields (NEVER exposed)
     assert "llm_api_key" in credentials
@@ -900,3 +905,33 @@ async def test_config_permissions_system(memory, request_context):
 
     finally:
         await memory.delete_bank(bank_id, request_context=request_context)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("tenant_policy", [False, True])
+async def test_original_file_policy_inherits_and_preserves_process_default(tenant_policy):
+    """Explicit booleans override, while bank null resumes tenant inheritance."""
+    from dataclasses import replace
+
+    from hindsight_api.config import _get_raw_config
+
+    original_default = _get_raw_config().file_delete_after_retain
+    bank_id = f"original-file-policy-{uuid.uuid4().hex}"
+    tenant = MockTenantExtension({"file_delete_after_retain": tenant_policy})
+    resolver = ConfigResolver(backend=FakeBankConfigBackend(), tenant_extension=tenant)
+    resolver._global_config = replace(resolver._global_config, file_delete_after_retain=not tenant_policy)
+    context = RequestContext(internal=True, tenant_id="preservation-tenant")
+    assert (await resolver.resolve_full_config(bank_id, context)).file_delete_after_retain is tenant_policy
+    await resolver.update_bank_config(bank_id, {"file_delete_after_retain": not tenant_policy}, context)
+    assert (await resolver.resolve_full_config(bank_id, context)).file_delete_after_retain is (not tenant_policy)
+    await resolver.update_bank_config(bank_id, {"file_delete_after_retain": None}, context)
+    assert (await resolver.resolve_full_config(bank_id, context)).file_delete_after_retain is tenant_policy
+    assert _get_raw_config().file_delete_after_retain is original_default
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("value", [0, 1, "false", {}, []])
+async def test_original_file_policy_rejects_non_booleans(value):
+    resolver = ConfigResolver(backend=FakeBankConfigBackend())
+    with pytest.raises(ValueError, match="file_delete_after_retain must be a boolean"):
+        await resolver.update_bank_config(f"original-file-type-{uuid.uuid4().hex}", {"file_delete_after_retain": value})

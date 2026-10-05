@@ -4,9 +4,14 @@
 
 Maintained fork: `0xble/hindsight` of `vectorize-io/hindsight`, branch `main`.
 Canonical checkout: `/Users/brianle/Repos/hindsight`. Accepted upstream baseline:
-`4cc131c0b238c8f206def60804d7b6591f6a45e7`. Publish only to `origin`; never
+`acfd15776469c6e5586cc7384830729138bcb0a8`. Publish only to `origin`; never
 push to `upstream`. Source synchronization, publication, installation, and
 runtime activation are separate stages.
+
+The 2026-09-30 baseline is a human-authorized, one-run checkpoint beyond
+`v0.10.2`, before the subsequent memories-store refactor. Recurring maintenance
+continues to use the stable-release rule below. Do not roll back this accepted
+baseline merely because its code is newer than the latest release tag.
 
 ## Preserve
 
@@ -17,14 +22,20 @@ signing, release, or publishing. Source inclusion never implies runtime adoption
 
 ## Required maintenance support
 
-Evaluate all four responsibilities every maintenance run, including no-change
+Evaluate these support units every maintenance run, including no-change
 runs; these extend this sole enrollment and scheduling unit:
 
-- [OCR admission and typed failures](maintenance/ocr.md): HINDSIGHT-001, HINDSIGHT-004 and HINDSIGHT-006.
+- [OCR admission and typed failures](maintenance/ocr.md): HINDSIGHT-001, HINDSIGHT-004, HINDSIGHT-006 and HINDSIGHT-009.
 - [Service hardening](maintenance/service-hardening.md): HINDSIGHT-002, HINDSIGHT-007 and HINDSIGHT-008.
 - [Fork CI governance](maintenance/ci.md): HINDSIGHT-003.
-- [Generated-language integrity](maintenance/language-integrity.md): HINDSIGHT-005.
+- [Generated-language integrity](maintenance/language-integrity.md): HINDSIGHT-005 and HINDSIGHT-008.
 - [Bounded consolidation schema correction](maintenance/schema-correction.md): consolidation-only divergence.
+- [Supported-detail preservation](maintenance/detail-loss.md): every run, together with bounded schema correction and generated-language integrity.
+- [Codex injection budget](maintenance/codex-injection-budget.md): every run, preserve the complete-context cap and offline tokenizer recovery.
+- [Original file preservation](maintenance/file-preservation.md): preserve bank-scoped policy, fail-closed worker reads and template roundtrips when adopting file/config changes.
+- [Codex session attribution](maintenance/codex-session-attribution.md): when adopting Codex retain/config changes, preserve explicit strategy scope and source-status safeguards.
+- [Bounded raw curation](maintenance/raw-curation-v2.md): preserve durable capsules, indexed pins, conditional recovery and deferred maintenance.
+- [Guarded raw curation](maintenance/raw-curation.md): optional atomic PATCH preconditions.
 
 ## Upstream-owned recovery
 

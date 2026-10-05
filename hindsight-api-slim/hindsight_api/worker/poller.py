@@ -22,6 +22,7 @@ from typing import TYPE_CHECKING, Any
 
 from ..config import (
     ENV_CONSOLIDATION_WALL_TIMEOUT,
+    ENV_REFLECT_WALL_TIMEOUT,
     ENV_RETAIN_WALL_TIMEOUT,
     get_config,
 )
@@ -86,6 +87,9 @@ _WALL_CEILINGS: dict[str, _WallCeiling] = {
         env_var=ENV_CONSOLIDATION_WALL_TIMEOUT,
         extends_on_progress=True,
     ),
+    # A refresh is one reflect plus its write, so it shares reflect's budget. Without
+    # a ceiling a wedged refresh held its worker slot until restart (#4581).
+    "refresh_mental_model": _WallCeiling(config_attr="reflect_wall_timeout", env_var=ENV_REFLECT_WALL_TIMEOUT),
 }
 
 
@@ -111,6 +115,10 @@ def _current_rss_bytes() -> int | None:
 # write the chance to land it, so shutdown does not hand back a row that is
 # about to be marked completed.
 _CANCEL_DRAIN_TIMEOUT = 5.0
+# A failed retry/defer write is reconciled with a few spaced attempts so a database
+# that is still in crash recovery has time to accept connections again.
+_RELEASE_RECONCILE_ATTEMPTS = 5
+_RELEASE_RECONCILE_BACKOFF_S = 2.0
 
 
 def _metric_operation_label(operation_type: str | None) -> str:
@@ -133,8 +141,9 @@ def _wall_timeout_for(task_type: str) -> float | None:
     For consolidation the ceiling bounds time *without progress* rather than
     total runtime — see ``_WallCeiling.extends_on_progress``.
 
-    Reflect self-bounds inside the engine (``reflect_wall_timeout``); unmapped
-    task types remain unbounded until they get an explicit ceiling.
+    Reflect self-bounds inside the engine (``reflect_wall_timeout``); a mental-model
+    refresh borrows that same value here. Unmapped task types remain unbounded until
+    they get an explicit ceiling.
     """
     ceiling = _WALL_CEILINGS.get(task_type)
     if ceiling is None:
@@ -854,6 +863,38 @@ class WorkerPoller:
         for operation_id in task.all_operation_ids:
             await self._schedule_retry(operation_id, retry_at, reason, task.schema)
 
+    async def _release_on_write_failure(self, task: ClaimedTask, kind: str, write: Awaitable[None]) -> None:
+        """Run a non-terminal status write; if it fails, reconcile the row for re-claim.
+
+        The retry/defer write is itself a DB write. When the database is restarting
+        (crash recovery after a backend is killed) the write raises, the task ends,
+        _cleanup_task forgets it, and the row stays 'processing' under a live worker
+        that never looks at it again: recover_own_tasks only runs at startup. That
+        stranded a consolidation round for hours. Mirror the terminal-write rescue
+        (issue #3228): hand the row back through _reclaim_own_processing_tasks,
+        retrying briefly so a database that is still recovering gets time to accept
+        connections.
+        """
+        try:
+            await write
+            return
+        except Exception:
+            logger.exception(f"Could not write {kind} for task {task.operation_id}; reconciling it for re-claim")
+        await self._reclaim_task_with_backoff(task)
+
+    async def _reclaim_task_with_backoff(self, task: ClaimedTask) -> None:
+        """Hand every row of a task back for re-claim, tolerating a briefly unavailable database."""
+        for operation_id in task.all_operation_ids:
+            for attempt in range(_RELEASE_RECONCILE_ATTEMPTS):
+                try:
+                    await self._reclaim_own_processing_tasks(task.schema, operation_id=operation_id)
+                    break
+                except Exception:
+                    if attempt + 1 >= _RELEASE_RECONCILE_ATTEMPTS:
+                        logger.exception(f"Could not reconcile task {operation_id}; it stays 'processing'")
+                    else:
+                        await asyncio.sleep(_RELEASE_RECONCILE_BACKOFF_S * (attempt + 1))
+
     async def _mark_completed(self, operation_id: str, schema: str | None):
         """Mark a processing task as completed, then propagate to parent if needed."""
         table = fq_table("async_operations", schema)
@@ -862,7 +903,7 @@ class WorkerPoller:
                 result = await conn.execute(
                     f"""
                     UPDATE {table}
-                    SET status = 'completed', completed_at = now(), updated_at = now()
+                    SET status = 'completed', error_message = NULL, completed_at = now(), updated_at = now()
                     WHERE operation_id = $1 AND status = 'processing'
                     """,
                     operation_id,
@@ -991,7 +1032,7 @@ class WorkerPoller:
                 await conn.execute(
                     f"""
                     UPDATE {table}
-                    SET status = 'completed', updated_at = now(), completed_at = now()
+                    SET status = 'completed', error_message = NULL, updated_at = now(), completed_at = now()
                     WHERE operation_id = $1
                     """,
                     uuid.UUID(parent_operation_id),
@@ -1017,12 +1058,15 @@ class WorkerPoller:
                 f"""
                 UPDATE {table}
                 SET status = 'pending', next_retry_at = $2, worker_id = NULL, claimed_at = NULL,
-                    retry_count = retry_count + 1, error_message = $3, updated_at = now()
+                    retry_count = retry_count + 1, error_message = $3, updated_at = now(),
+                    result_metadata = COALESCE(result_metadata, '{{}}'::jsonb) || $4::jsonb
                 WHERE operation_id = $1 AND status <> 'cancelled'
                 """,
                 operation_id,
                 retry_at,
                 error_message,
+                # Kept here because completion clears error_message (#4858).
+                json.dumps({"last_retry_error": error_message}),
             )
         if not _updated_row_count(result):
             logger.info(f"Task {operation_id} was cancelled or deleted, not scheduling a retry")
@@ -1211,15 +1255,15 @@ class WorkerPoller:
             stage = holder.stage if holder is not None else "unknown"
             message = e.describe(task_type, stage)
             logger.error(f"Task {task.operation_id} timed out: {message}")
-            await self._mark_all_failed(task, message)
+            await self._release_on_write_failure(task, "timeout failure", self._mark_all_failed(task, message))
             await self._notify_wall_timeout(task, message)
             terminal_success = False
         except DeferOperation as e:
             # Deferral is not a terminal outcome — do not record a completion.
-            await self._defer_all(task, e.exec_date, e.reason)
+            await self._release_on_write_failure(task, "defer", self._defer_all(task, e.exec_date, e.reason))
         except RetryTaskAt as e:
             # Retry is not a terminal outcome — do not record a completion.
-            await self._schedule_retry_all(task, e.retry_at, str(e))
+            await self._release_on_write_failure(task, "retry", self._schedule_retry_all(task, e.retry_at, str(e)))
         except Exception as e:
             # A store refusing the write because its own indexing is behind is backpressure, not a
             # failure: it clears itself as the fold catches up and says nothing about the payload.
@@ -1235,7 +1279,9 @@ class WorkerPoller:
                     retry_at,
                     str(e)[:200],
                 )
-                await self._defer_all(task, retry_at, f"store backpressure: {str(e)[:400]}")
+                await self._release_on_write_failure(
+                    task, "backpressure defer", self._defer_all(task, retry_at, f"store backpressure: {str(e)[:400]}")
+                )
                 return
             # exc_info rather than print_exc(): the stderr copy carries no task id
             # and is the first thing lost to log rotation (issue #3218).
@@ -1251,11 +1297,7 @@ class WorkerPoller:
                 # recover_own_tasks only runs at startup, and no dead-worker logic
                 # applies because the worker is alive. See issue #3228.
                 logger.exception(f"Could not mark task {task.operation_id} failed; reconciling it for re-claim")
-                for operation_id in task.all_operation_ids:
-                    try:
-                        await self._reclaim_own_processing_tasks(task.schema, operation_id=operation_id)
-                    except Exception:
-                        logger.exception(f"Could not reconcile task {operation_id}; it stays 'processing'")
+                await self._reclaim_task_with_backoff(task)
             terminal_success = False
 
         # Record the metric outside the executor's exception scope so a metrics
@@ -1600,7 +1642,7 @@ class WorkerPoller:
                             await conn.execute(
                                 f"""
                                 UPDATE {table}
-                                SET status = 'completed', completed_at = now(), updated_at = now()
+                                SET status = 'completed', error_message = NULL, completed_at = now(), updated_at = now()
                                 WHERE operation_id = $1
                                 """,
                                 parent_id,

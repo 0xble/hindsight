@@ -1,3 +1,4 @@
+import clsx from 'clsx';
 import React, {useMemo, useState} from 'react';
 import Link from '@docusaurus/Link';
 import useBaseUrl from '@docusaurus/useBaseUrl';
@@ -13,10 +14,11 @@ import styles from './index.module.css';
 
 /**
  * Pinned above the grid. These three are the ones we want a first-time visitor to see: the umbrella
- * coding-agent plugin, the SDK most TypeScript apps reach for, and the agent harness with the
- * deepest native integration.
+ * coding-agent plugin, and the two agent harnesses that ship Hindsight as a first-class memory
+ * provider — Hermes lists it in its own plugin catalog, so `hermes plugins install hindsight` is
+ * the whole setup.
  */
-const FEATURED_IDS = ['coding-agents', 'vercel-ai-sdk', 'openclaw'];
+const FEATURED_IDS = ['coding-agents', 'hermes', 'openclaw'];
 
 const INTEGRATIONS_JSON_URL =
   'https://github.com/vectorize-io/hindsight/edit/main/hindsight-docs/src/data/integrations.json';
@@ -166,16 +168,16 @@ export default function IntegrationsHub(): React.ReactElement {
     <Layout title="Integrations Hub" description="Browse official and community integrations for Hindsight agent memory">
 
       {/* Full-width hero with its own background */}
-      <div className={styles.heroSection}>
+      <div className={clsx('hs-hero-band', styles.heroSection)}>
         <h1 className={styles.heroTitle}>Integrations Hub</h1>
         <p className={styles.heroSubtitle}>
           Connect Hindsight to your stack. Browse official integrations and community-built connectors.
         </p>
 
-        <div className={styles.searchWrapper}>
+        <div className={styles.hubSearchWrapper}>
           <input
             type="text"
-            className={styles.searchInput}
+            className={styles.hubSearchInput}
             placeholder="Search integrations…"
             value={search}
             onChange={(e) => setSearch(e.target.value)}
@@ -183,7 +185,7 @@ export default function IntegrationsHub(): React.ReactElement {
             autoComplete="off"
           />
           {search && (
-            <button className={styles.searchClear} onClick={() => setSearch('')} aria-label="Clear search">
+            <button className={styles.hubSearchClear} onClick={() => setSearch('')} aria-label="Clear search">
               ×
             </button>
           )}
