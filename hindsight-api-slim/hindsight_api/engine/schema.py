@@ -62,6 +62,16 @@ def fq_store_table(table_name: str) -> str:
     return f"{get_current_schema()}.{table_name}"
 
 
+def fq_memory_store_table(table_name: str) -> str:
+    """Resolve a memories-store table for coordination SQL outside the store package.
+
+    Callers still route ordinary reads and writes through ``get_memories()``; this
+    narrow resolver is only for lock/existence probes that must share the store's
+    transaction and schema context.
+    """
+    return fq_store_table(table_name)
+
+
 def fq_routine(name: str) -> str:
     """Schema-qualified name of a cross-tenant discovery routine.
 

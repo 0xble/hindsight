@@ -15,6 +15,7 @@ import copy
 import difflib
 import functools
 import hashlib
+import importlib
 import inspect
 import json
 import logging
@@ -11461,7 +11462,7 @@ class MemoryEngine(MemoryEngineInterface):
                     # the bank, so call the PostgreSQL helpers directly instead of the
                     # store interface, which store-owned and duck-typed stores do not
                     # implement.
-                    from .memories.pg import curation_batch as _curation_sql
+                    _curation_sql = importlib.import_module(".memories.pg.curation_batch", package=__package__)
 
                     if self._database_backend_type == "postgresql":
                         await _curation_sql.lock(conn, bank_id)

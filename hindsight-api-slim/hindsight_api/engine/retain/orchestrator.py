@@ -28,7 +28,7 @@ from ...worker.stage import set_stage
 from ..chunk_ids import build_chunk_id
 from ..db_utils import acquire_with_retry
 from ..memory_engine import count_tokens, fq_table
-from ..schema import fq_store_table
+from ..schema import fq_memory_store_table
 
 if TYPE_CHECKING:
     from .attachment_store import RetainAttachmentLoader
@@ -3626,7 +3626,7 @@ async def _plan_append_tail_after_rechunk(
     """
     async with acquire_with_retry(pool) as conn:
         rows = await conn.fetch(
-            f"SELECT chunk_index, chunk_text, content_hash FROM {fq_store_table('chunks')} "
+            f"SELECT chunk_index, chunk_text, content_hash FROM {fq_memory_store_table('chunks')} "
             "WHERE document_id = $1 AND bank_id = $2 ORDER BY chunk_index",
             document_id,
             bank_id,

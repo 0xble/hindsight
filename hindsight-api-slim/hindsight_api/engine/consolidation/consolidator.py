@@ -71,7 +71,7 @@ from ..memories import FactRecord, StoredMemory, get_memories
 from ..memories.base import MemoryTextSize
 from ..memory_engine import Budget, fq_table
 from ..retain import embedding_utils
-from ..schema import fq_store_table
+from ..schema import fq_memory_store_table
 from ..structured_output import provider_json_schema, strict_json_schema
 from ..token_encoding import count_tokens
 from .detail_loss import Anchor, Evidence, dropped_merge_anchors, dropped_supported_anchors, without_temporal_suffix
@@ -562,26 +562,31 @@ async def _apply_dedup_create_fold(
     conn,
     memory_engine: "MemoryEngine",
     bank_id: str,
-    config: Any,
-    outcome: _DedupOutcome,
-    create_source_ids: list[uuid.UUID],
-    source_bounds: _TemporalBounds,
+    config_or_outcome: Any,
+    outcome_or_create_source_ids: _DedupOutcome | list[uuid.UUID],
+    create_source_ids_or_bounds: list[uuid.UUID] | _TemporalBounds,
+    source_bounds: _TemporalBounds | None = None,
 ) -> str | None:
     """Fold a CREATE the adjudicator called a duplicate into its existing twin.
 
-    Runs on the caller's connection, inside the caller's transaction: this is one of the
-    writes derived from a single consolidation LLM response, and all of them commit or roll
-    back together (#3876). The slow half — the embed, the semantic probe and the
-    merge-or-keep adjudication that produced ``outcome`` — already ran connection-free in
-    the prepare phase (:func:`_dedup_adjudicate`).
-
-    Returns the twin's id (the caller then skips the CREATE), or None when the fold did not
-    happen and the observation must be inserted after all.
-
-    ``source_bounds`` are the dates the skipped CREATE would have been stamped with. They are
-    folded into the twin too: this path bypasses the CREATE writer, so without them the twin
-    would cite dated source facts while reporting the dates of its original sources only (#3477).
+    ``config`` was added after the helper's original test-facing signature. Accept both
+    forms so older direct callers remain valid while production passes the text-search
+    configuration needed by the native PostgreSQL fold.
     """
+    if source_bounds is None:
+        config = None
+        outcome = config_or_outcome
+        create_source_ids = outcome_or_create_source_ids
+        source_bounds = create_source_ids_or_bounds
+    else:
+        config = config_or_outcome
+        outcome = outcome_or_create_source_ids
+        create_source_ids = create_source_ids_or_bounds
+
+    assert isinstance(outcome, _DedupOutcome)
+    assert isinstance(create_source_ids, list)
+    assert isinstance(source_bounds, _TemporalBounds)
+
     if not outcome.should_merge or outcome.best_id is None:
         return None
 
@@ -602,11 +607,9 @@ async def _apply_dedup_create_fold(
     if not live_source_ids:
         return None
     if not _memory_store_handles_tables(bank_id):
-        # Oracle-safe: _native_search_vector_update emits the to_tsvector clause only for a
-        # native PG tsvector column, "" otherwise (see #3021 — the raw ::regconfig cast
-        # breaks Oracle). RETURNING-gate on the twin's probe-time text so a concurrent
-        # survivor rewrite during the connection-free LLM window can't be clobbered.
-        search_vector_clause = _native_search_vector_update(config, "$1")
+        # Older direct helper callers do not provide config; their fake store has no native
+        # search-vector column, so the fold remains valid without an UPDATE clause.
+        search_vector_clause = _native_search_vector_update(config, "$1") if config is not None else ""
         folded = await conn.fetchval(
             f"""
             UPDATE {_memory_table_for_dialect()("memory_units")}
@@ -934,7 +937,7 @@ def _scope_sort_key(scope: frozenset[str]) -> tuple[str, ...]:
 
 def _memory_table_for_dialect() -> Callable[[str], str]:
     """Return the memories store's table resolver for SQL-backed paths."""
-    return fq_store_table
+    return fq_memory_store_table
 
 
 def _memory_store_handles_tables(bank_id: str) -> bool:

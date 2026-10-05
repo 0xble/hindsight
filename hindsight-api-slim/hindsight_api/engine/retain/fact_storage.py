@@ -530,6 +530,10 @@ async def update_memory_units_metadata_and_tags(
 
     Returns:
         Number of memory units updated.
+
+    The PostgreSQL store's document update lock contract is:
+        WHERE bank_id = $1 AND document_id = $2
+        ORDER BY id FOR UPDATE
     """
     from ..memories import get_memories
     from .entity_labels import split_label_tags
