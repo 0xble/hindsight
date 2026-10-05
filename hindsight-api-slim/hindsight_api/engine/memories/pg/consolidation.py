@@ -54,6 +54,22 @@ async def lock_live_memory_ids(
     return {str(r["id"]) for r in rows}
 
 
+async def lock_observation_tags(
+    *, conn, fq_table: Callable[[str], str], bank_id: str, observation_id: str
+) -> list[str] | None:
+    """The observation's current tags, row-locked until the transaction ends; None if it is gone.
+
+    ``FOR NO KEY UPDATE`` still lets other rows take FK references to it. Callers lock the
+    source rows first (``lock_live_memory_ids``), keeping the sources-before-observation order.
+    """
+    row = await conn.fetchrow(
+        f"SELECT tags FROM {fq_table('memory_units')} WHERE id = $1 AND bank_id = $2 FOR NO KEY UPDATE",
+        uuid.UUID(observation_id),
+        bank_id,
+    )
+    return None if row is None else list(row["tags"] or [])
+
+
 async def memories_changed_since(
     *, conn, fq_table: Callable[[str], str], bank_id: str, read_at: dict[str, datetime]
 ) -> list[str]:
