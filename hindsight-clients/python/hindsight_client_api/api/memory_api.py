@@ -5937,6 +5937,7 @@ class MemoryApi:
 
         _response_types_map: Dict[str, Optional[str]] = {
             '200': "object",
+            '409': "CurationConflictResponse",
             '422': "HTTPValidationError",
         }
         response_data = await self.api_client.call_api(
@@ -6017,6 +6018,7 @@ class MemoryApi:
 
         _response_types_map: Dict[str, Optional[str]] = {
             '200': "object",
+            '409': "CurationConflictResponse",
             '422': "HTTPValidationError",
         }
         response_data = await self.api_client.call_api(
@@ -6097,6 +6099,7 @@ class MemoryApi:
 
         _response_types_map: Dict[str, Optional[str]] = {
             '200': "object",
+            '409': "CurationConflictResponse",
             '422': "HTTPValidationError",
         }
         response_data = await self.api_client.call_api(

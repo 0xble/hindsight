@@ -20,6 +20,7 @@ var _ MappedNullable = &BankTemplateConfig{}
 // BankTemplateConfig Bank configuration fields within a template manifest.  Only includes configurable (per-bank) fields. Credential fields (API keys, base URLs) are intentionally excluded for security.
 type BankTemplateConfig struct {
 	ReflectMission NullableString `json:"reflect_mission,omitempty"`
+	FileDeleteAfterRetain NullableBool `json:"file_delete_after_retain,omitempty"`
 	RetainMission NullableString `json:"retain_mission,omitempty"`
 	RetainExtractionMode NullableString `json:"retain_extraction_mode,omitempty"`
 	RetainCustomInstructions NullableString `json:"retain_custom_instructions,omitempty"`
@@ -52,6 +53,7 @@ type BankTemplateConfig struct {
 	ReflectDefaultOptions map[string]interface{} `json:"reflect_default_options,omitempty"`
 	MentalModelMinRefreshIntervalSeconds NullableInt32 `json:"mental_model_min_refresh_interval_seconds,omitempty"`
 	LlmGeminiSafetySettings []interface{} `json:"llm_gemini_safety_settings,omitempty"`
+	LlmLanguageIntegrity NullableString `json:"llm_language_integrity,omitempty"`
 	RecallBudgetFunction NullableString `json:"recall_budget_function,omitempty"`
 	RecallBudgetFixedLow NullableInt32 `json:"recall_budget_fixed_low,omitempty"`
 	RecallBudgetFixedMid NullableInt32 `json:"recall_budget_fixed_mid,omitempty"`
@@ -132,6 +134,48 @@ func (o *BankTemplateConfig) SetReflectMissionNil() {
 // UnsetReflectMission ensures that no value is present for ReflectMission, not even an explicit nil
 func (o *BankTemplateConfig) UnsetReflectMission() {
 	o.ReflectMission.Unset()
+}
+
+// GetFileDeleteAfterRetain returns the FileDeleteAfterRetain field value if set, zero value otherwise (both if not set or set to explicit null).
+func (o *BankTemplateConfig) GetFileDeleteAfterRetain() bool {
+	if o == nil || IsNil(o.FileDeleteAfterRetain.Get()) {
+		var ret bool
+		return ret
+	}
+	return *o.FileDeleteAfterRetain.Get()
+}
+
+// GetFileDeleteAfterRetainOk returns a tuple with the FileDeleteAfterRetain field value if set, nil otherwise
+// and a boolean to check if the value has been set.
+// NOTE: If the value is an explicit nil, `nil, true` will be returned
+func (o *BankTemplateConfig) GetFileDeleteAfterRetainOk() (*bool, bool) {
+	if o == nil {
+		return nil, false
+	}
+	return o.FileDeleteAfterRetain.Get(), o.FileDeleteAfterRetain.IsSet()
+}
+
+// HasFileDeleteAfterRetain returns a boolean if a field has been set.
+func (o *BankTemplateConfig) HasFileDeleteAfterRetain() bool {
+	if o != nil && o.FileDeleteAfterRetain.IsSet() {
+		return true
+	}
+
+	return false
+}
+
+// SetFileDeleteAfterRetain gets a reference to the given NullableBool and assigns it to the FileDeleteAfterRetain field.
+func (o *BankTemplateConfig) SetFileDeleteAfterRetain(v bool) {
+	o.FileDeleteAfterRetain.Set(&v)
+}
+// SetFileDeleteAfterRetainNil sets the value for FileDeleteAfterRetain to be an explicit nil
+func (o *BankTemplateConfig) SetFileDeleteAfterRetainNil() {
+	o.FileDeleteAfterRetain.Set(nil)
+}
+
+// UnsetFileDeleteAfterRetain ensures that no value is present for FileDeleteAfterRetain, not even an explicit nil
+func (o *BankTemplateConfig) UnsetFileDeleteAfterRetain() {
+	o.FileDeleteAfterRetain.Unset()
 }
 
 // GetRetainMission returns the RetainMission field value if set, zero value otherwise (both if not set or set to explicit null).
@@ -1406,6 +1450,48 @@ func (o *BankTemplateConfig) SetLlmGeminiSafetySettings(v []interface{}) {
 	o.LlmGeminiSafetySettings = v
 }
 
+// GetLlmLanguageIntegrity returns the LlmLanguageIntegrity field value if set, zero value otherwise (both if not set or set to explicit null).
+func (o *BankTemplateConfig) GetLlmLanguageIntegrity() string {
+	if o == nil || IsNil(o.LlmLanguageIntegrity.Get()) {
+		var ret string
+		return ret
+	}
+	return *o.LlmLanguageIntegrity.Get()
+}
+
+// GetLlmLanguageIntegrityOk returns a tuple with the LlmLanguageIntegrity field value if set, nil otherwise
+// and a boolean to check if the value has been set.
+// NOTE: If the value is an explicit nil, `nil, true` will be returned
+func (o *BankTemplateConfig) GetLlmLanguageIntegrityOk() (*string, bool) {
+	if o == nil {
+		return nil, false
+	}
+	return o.LlmLanguageIntegrity.Get(), o.LlmLanguageIntegrity.IsSet()
+}
+
+// HasLlmLanguageIntegrity returns a boolean if a field has been set.
+func (o *BankTemplateConfig) HasLlmLanguageIntegrity() bool {
+	if o != nil && o.LlmLanguageIntegrity.IsSet() {
+		return true
+	}
+
+	return false
+}
+
+// SetLlmLanguageIntegrity gets a reference to the given NullableString and assigns it to the LlmLanguageIntegrity field.
+func (o *BankTemplateConfig) SetLlmLanguageIntegrity(v string) {
+	o.LlmLanguageIntegrity.Set(&v)
+}
+// SetLlmLanguageIntegrityNil sets the value for LlmLanguageIntegrity to be an explicit nil
+func (o *BankTemplateConfig) SetLlmLanguageIntegrityNil() {
+	o.LlmLanguageIntegrity.Set(nil)
+}
+
+// UnsetLlmLanguageIntegrity ensures that no value is present for LlmLanguageIntegrity, not even an explicit nil
+func (o *BankTemplateConfig) UnsetLlmLanguageIntegrity() {
+	o.LlmLanguageIntegrity.Unset()
+}
+
 // GetRecallBudgetFunction returns the RecallBudgetFunction field value if set, zero value otherwise (both if not set or set to explicit null).
 func (o *BankTemplateConfig) GetRecallBudgetFunction() string {
 	if o == nil || IsNil(o.RecallBudgetFunction.Get()) {
@@ -2292,6 +2378,9 @@ func (o BankTemplateConfig) ToMap() (map[string]interface{}, error) {
 	if o.ReflectMission.IsSet() {
 		toSerialize["reflect_mission"] = o.ReflectMission.Get()
 	}
+	if o.FileDeleteAfterRetain.IsSet() {
+		toSerialize["file_delete_after_retain"] = o.FileDeleteAfterRetain.Get()
+	}
 	if o.RetainMission.IsSet() {
 		toSerialize["retain_mission"] = o.RetainMission.Get()
 	}
@@ -2387,6 +2476,9 @@ func (o BankTemplateConfig) ToMap() (map[string]interface{}, error) {
 	}
 	if o.LlmGeminiSafetySettings != nil {
 		toSerialize["llm_gemini_safety_settings"] = o.LlmGeminiSafetySettings
+	}
+	if o.LlmLanguageIntegrity.IsSet() {
+		toSerialize["llm_language_integrity"] = o.LlmLanguageIntegrity.Get()
 	}
 	if o.RecallBudgetFunction.IsSet() {
 		toSerialize["recall_budget_function"] = o.RecallBudgetFunction.Get()

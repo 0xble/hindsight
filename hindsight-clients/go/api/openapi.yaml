@@ -774,6 +774,12 @@ paths:
             application/json:
               schema: {}
           description: Successful Response
+        "409":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CurationConflictResponse'
+          description: Curation conflict
         "422":
           content:
             application/json:
@@ -6539,6 +6545,9 @@ components:
         reflect_mission:
           nullable: true
           type: string
+        file_delete_after_retain:
+          nullable: true
+          type: boolean
         retain_mission:
           nullable: true
           type: string
@@ -6651,6 +6660,14 @@ components:
           items: {}
           nullable: true
           type: array
+        llm_language_integrity:
+          enum:
+          - "off"
+          - observe
+          - retry
+          - reject
+          nullable: true
+          type: string
         recall_budget_function:
           nullable: true
           type: string
@@ -7934,6 +7951,32 @@ components:
           title: Occurred End
           nullable: true
       title: CurationFields
+    CurationGuard:
+      additionalProperties: {}
+      properties:
+        protocol:
+          title: Protocol
+        expected_memory_sha256:
+          description: Lowercase SHA-256 hex digest.
+          maxLength: 64
+          minLength: 64
+          title: Expected Memory Sha256
+        expected_source_sha256:
+          description: Lowercase SHA-256 hex digest.
+          maxLength: 64
+          minLength: 64
+          title: Expected Source Sha256
+        require_no_observations:
+          title: Require No Observations
+        require_quiescent_consolidation:
+          title: Require Quiescent Consolidation
+      required:
+      - expected_memory_sha256
+      - expected_source_sha256
+      - protocol
+      - require_no_observations
+      - require_quiescent_consolidation
+      title: CurationGuard
     CurationInventory:
       additionalProperties: {}
       example:
@@ -13658,6 +13701,8 @@ components:
         reason:
           nullable: true
           type: string
+        curation_guard:
+          $ref: '#/components/schemas/CurationGuard'
       title: UpdateMemoryRequest
     UpdateMentalModelRequest:
       description: Request model for updating a mental model.

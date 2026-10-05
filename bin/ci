@@ -46,8 +46,69 @@ api() {
   (cd hindsight-api-slim && "$@")
 }
 
+write_local_receipt() {
+  local expected_sha="${1:?}" remote path owner repo branch state_root receipt tmp
+  remote=$(git remote get-url origin 2>/dev/null) || {
+    echo 'cannot write local gate receipt: origin remote is unavailable' >&2
+    return 1
+  }
+  remote=${remote%/}
+  remote=${remote%.git}
+  case "$remote" in
+    *://*)
+      path=${remote#*://}
+      path=${path#*/}
+      ;;
+    *:*)
+      path=${remote##*:}
+      ;;
+    *)
+      path=$remote
+      ;;
+  esac
+  repo=${path##*/}
+  owner=${path%/*}
+  owner=$(printf '%s' "$owner" | tr '[:upper:]' '[:lower:]')
+  repo=$(printf '%s' "$repo" | tr '[:upper:]' '[:lower:]')
+  [[ "$owner" =~ ^[a-z0-9][a-z0-9._-]*$ && "$repo" =~ ^[a-z0-9][a-z0-9._-]*$ ]] || {
+    echo "cannot write local gate receipt: unsupported origin URL $remote" >&2
+    return 1
+  }
+  branch=$(git branch --show-current)
+  state_root="${CI_RECEIPT_ROOT:-${XDG_STATE_HOME:-$HOME/.local/state}/ci-receipts}"
+  receipt="$state_root/$owner/$repo/$expected_sha.json"
+  tmp="$receipt.tmp.$$"
+  mkdir -p "$(dirname "$receipt")"
+  umask 077
+  python3 - "$tmp" "$owner/$repo" "$expected_sha" "$branch" <<'PY'
+import json
+import os
+import sys
+from datetime import datetime, timezone
+
+path, repository, sha, branch = sys.argv[1:]
+record = {
+    "schema_version": 1,
+    "repository": repository,
+    "sha": sha,
+    "branch": branch,
+    "command": "./bin/ci gate",
+    "gate_exit": 0,
+    "clean_tracked_tree": True,
+    "timestamp": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+}
+fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+with os.fdopen(fd, "w", encoding="utf-8") as stream:
+    json.dump(record, stream, indent=2)
+    stream.write("\n")
+PY
+  mv -f -- "$tmp" "$receipt"
+  printf 'local gate receipt: %s\n' "$receipt"
+}
+
 workflow_policy() {
   uv run --directory hindsight-api-slim --frozen python ../tests/ci/test_validate_fork_workflows.py
+  uv run --directory hindsight-api-slim --frozen python ../tests/ci/test_local_gate_receipt.py
   uv run --directory hindsight-api-slim --frozen python ../scripts/ci/validate_fork_workflows.py
 }
 
@@ -84,13 +145,17 @@ PATCH_REGRESSIONS=(
   tests/test_op_cancellation.py
   tests/test_worker.py
   tests/test_ocr_quality.py
+  tests/test_pdf_ocr.py
   tests/test_consolidation_failure_isolation.py
   tests/test_consolidation_prompt_budget.py
   tests/test_refresh_outcome_metadata.py
   tests/test_bank_template_full_roundtrip.py
+  tests/test_hierarchical_config.py
+  tests/test_file_preservation_policy.py
   tests/test_db_abstraction.py
   tests/test_language_integrity.py
   tests/test_language_integrity_retain.py
+  tests/test_bank_language_integrity.py
   tests/test_consolidation_retry_budget.py
   tests/test_fact_extraction_retry.py
   tests/test_language_prevention.py
@@ -172,10 +237,13 @@ run database-guard-tests api uv run --frozen pytest -o addopts= ../tests/ci/test
 run lint api uv run --frozen ruff check .
 run format api uv run --frozen ruff format --check .
 run types api uv run --frozen ty check hindsight_api
+# Guard tests deliberately exercise a quiescent PostgreSQL write window. The
+# optional NOWAIT table guard must not share it with unrelated xdist writers.
+run curation-guard api uv run --frozen --extra all pytest -n 0 tests/test_guarded_curation.py
 if [[ "$profile" == gate ]]; then
   run patch-regressions api uv run --frozen --extra all pytest -m "$OFFLINE_MARKERS" "${PATCH_REGRESSIONS[@]}"
 else
-  run offline-suite api uv run --frozen --extra all pytest -m "$OFFLINE_MARKERS" "${LIVE_LLM_TESTS[@]}" --ignore=tests/test_curation_batch.py
+  run offline-suite api uv run --frozen --extra all pytest -m "$OFFLINE_MARKERS" "${LIVE_LLM_TESTS[@]}" --ignore=tests/test_curation_batch.py --ignore=tests/test_guarded_curation.py
 fi
 run curation-batch-regressions api uv run --frozen --extra all pytest -n0 tests/test_curation_batch.py
 run curation-batch-system curation_system
@@ -184,4 +252,7 @@ run codex-integration uv run --no-project --with pytest --with tiktoken==0.12.0 
 run build-smoke build_smoke
 
 assert_candidate
+if [[ "$profile" == gate && "${GITHUB_ACTIONS:-}" != true ]]; then
+  write_local_receipt "$expected"
+fi
 printf 'PASS: %s validated %s and unchanged tracked tree\n' "$profile" "$expected"

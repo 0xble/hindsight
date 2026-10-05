@@ -243,6 +243,7 @@ export type {
   CurationConflictResponse,
   CurationFactType,
   CurationFields,
+  CurationGuard,
   CurationInventory,
   CurationPreview,
   CurationPreviewRequest,

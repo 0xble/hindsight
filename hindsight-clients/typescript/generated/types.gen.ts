@@ -523,6 +523,12 @@ export type BankTemplateConfig = {
    */
   reflect_mission?: string | null;
   /**
+   * File Delete After Retain
+   *
+   * Delete original upload bytes after conversion queues retention; null inherits
+   */
+  file_delete_after_retain?: boolean | null;
+  /**
    * Retain Mission
    *
    * Steers what gets extracted during retain
@@ -722,6 +728,12 @@ export type BankTemplateConfig = {
    * Per-bank Gemini/VertexAI safety filter settings
    */
   llm_gemini_safety_settings?: Array<unknown> | null;
+  /**
+   * Llm Language Integrity
+   *
+   * Source-relative generated-language policy. Null inherits the parent policy.
+   */
+  llm_language_integrity?: "off" | "observe" | "retry" | "reject" | null;
   /**
    * Recall Budget Function
    *
@@ -1918,6 +1930,36 @@ export type CurationFields = {
    * Occurred End
    */
   occurred_end?: string | null;
+};
+
+/**
+ * CurationGuard
+ */
+export type CurationGuard = {
+  /**
+   * Protocol
+   */
+  protocol: "raw-curation-v1";
+  /**
+   * Expected Memory Sha256
+   *
+   * Lowercase SHA-256 hex digest.
+   */
+  expected_memory_sha256: string;
+  /**
+   * Expected Source Sha256
+   *
+   * Lowercase SHA-256 hex digest.
+   */
+  expected_source_sha256: string;
+  /**
+   * Require No Observations
+   */
+  require_no_observations: true;
+  /**
+   * Require Quiescent Consolidation
+   */
+  require_quiescent_consolidation: true;
 };
 
 /**
@@ -7108,6 +7150,10 @@ export type UpdateMemoryRequest = {
    * Optional free-text reason recorded when invalidating.
    */
   reason?: string | null;
+  /**
+   * Optional raw-curation-v1 atomic snapshot/source preconditions. Requires the PostgreSQL memory store, explicitly paused quiescent consolidation and no dependent observations. Rejects entity-changing requests. A conflict is HTTP 409 without the curation write.
+   */
+  curation_guard?: CurationGuard | null;
 };
 
 /**
@@ -8013,6 +8059,10 @@ export type UpdateMemoryData = {
 };
 
 export type UpdateMemoryErrors = {
+  /**
+   * Curation conflict
+   */
+  409: CurationConflictResponse;
   /**
    * Validation Error
    */

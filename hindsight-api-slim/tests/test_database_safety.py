@@ -214,7 +214,7 @@ def test_xdist_pg0_allocates_an_explicit_safe_port(request, monkeypatch, tmp_pat
     def fake_pg0(**kwargs):
         captured.update(kwargs)
         return SimpleNamespace(
-            ensure_running=AsyncMock(return_value="postgresql://localhost:5575/db"), stop=AsyncMock()
+            ensure_running=AsyncMock(return_value="postgresql://localhost:5575/db"), drop=AsyncMock()
         )
 
     monkeypatch.setattr(conftest, "EmbeddedPostgres", fake_pg0)
@@ -229,6 +229,58 @@ def test_xdist_pg0_allocates_an_explicit_safe_port(request, monkeypatch, tmp_pat
         conftest._db_guard.assert_safe_database_url(f"pg0://test:{captured['port']}")
     finally:
         fixture.close()
+
+
+@pytest.mark.parametrize("worker_id", ["gw0", "master"])
+@pytest.mark.parametrize("failure_stage", [None, "startup", "migration", "test"])
+def test_pg0_fixture_drops_only_worker_owned_instances(request, monkeypatch, tmp_path, worker_id, failure_stage):
+    """Worker data is disposable even on setup/test failure; serial data persists."""
+    from types import SimpleNamespace
+    from unittest.mock import Mock
+
+    import hindsight_api.migrations
+
+    conftest = next(
+        plugin
+        for plugin in request.config.pluginmanager.get_plugins()
+        if getattr(plugin, "__file__", None) == str(Path(__file__).with_name("conftest.py"))
+    )
+    postgres = SimpleNamespace(
+        ensure_running=AsyncMock(return_value="postgresql://localhost:5575/db"),
+        stop=AsyncMock(),
+        drop=AsyncMock(),
+    )
+    if failure_stage == "startup":
+        postgres.ensure_running.side_effect = RuntimeError("simulated startup failure")
+    migrations = Mock()
+    if failure_stage == "migration":
+        migrations.side_effect = RuntimeError("simulated migration failure")
+    constructor = Mock(return_value=postgres)
+    monkeypatch.setattr(conftest, "EmbeddedPostgres", constructor)
+    monkeypatch.setattr(conftest, "_cleanup_stale_test_data", lambda url: None)
+    monkeypatch.setattr(hindsight_api.migrations, "run_migrations", migrations)
+    worker_dir = tmp_path / "gw0"
+    worker_dir.mkdir()
+    fixture = conftest.pg0_db_url.__wrapped__(
+        "pg0://fixture-test:5575", SimpleNamespace(getbasetemp=lambda: worker_dir), worker_id
+    )
+    if failure_stage in ("startup", "migration"):
+        with pytest.raises(RuntimeError, match=f"simulated {failure_stage} failure"):
+            next(fixture)
+    else:
+        assert next(fixture) == "postgresql://localhost:5575/db"
+        if failure_stage == "test":
+            with pytest.raises(AssertionError, match="simulated test failure"):
+                fixture.throw(AssertionError("simulated test failure"))
+        else:
+            fixture.close()
+    if worker_id == "master":
+        assert constructor.call_args.kwargs["name"] == "fixture-test"
+        postgres.drop.assert_not_awaited()
+    else:
+        assert constructor.call_args.kwargs["name"] == f"fixture-test-{tmp_path.name}-gw0"
+        postgres.drop.assert_awaited_once_with()
+    postgres.stop.assert_not_awaited()
 
 
 @pytest.mark.parametrize("port", [5436, 5556])

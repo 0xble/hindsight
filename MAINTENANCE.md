@@ -25,15 +25,17 @@ signing, release, or publishing. Source inclusion never implies runtime adoption
 Evaluate these support units every maintenance run, including no-change
 runs; these extend this sole enrollment and scheduling unit:
 
-- [OCR admission and typed failures](maintenance/ocr.md): HINDSIGHT-001, HINDSIGHT-004 and HINDSIGHT-006.
+- [OCR admission and typed failures](maintenance/ocr.md): HINDSIGHT-001, HINDSIGHT-004, HINDSIGHT-006 and HINDSIGHT-009.
 - [Service hardening](maintenance/service-hardening.md): HINDSIGHT-002 and HINDSIGHT-007.
 - [Fork CI governance](maintenance/ci.md): HINDSIGHT-003.
-- [Generated-language integrity](maintenance/language-integrity.md): HINDSIGHT-005.
+- [Generated-language integrity](maintenance/language-integrity.md): HINDSIGHT-005 and HINDSIGHT-008.
 - [Bounded consolidation schema correction](maintenance/schema-correction.md): consolidation-only divergence.
 - [Supported-detail preservation](maintenance/detail-loss.md): every run, together with bounded schema correction and generated-language integrity.
 - [Codex injection budget](maintenance/codex-injection-budget.md): every run, preserve the complete-context cap and offline tokenizer recovery.
+- [Original file preservation](maintenance/file-preservation.md): preserve bank-scoped policy, fail-closed worker reads and template roundtrips when adopting file/config changes.
 - [Codex session attribution](maintenance/codex-session-attribution.md): when adopting Codex retain/config changes, preserve explicit strategy scope and source-status safeguards.
 - [Bounded raw curation](maintenance/raw-curation-v2.md): preserve durable capsules, indexed pins, conditional recovery and deferred maintenance.
+- [Guarded raw curation](maintenance/raw-curation.md): optional atomic PATCH preconditions.
 
 ## Upstream-owned recovery
 

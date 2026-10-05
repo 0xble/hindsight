@@ -29,6 +29,7 @@ jobs:
       - name: Run exact-SHA gate
         env:
           EXPECTED_SHA: ${{ github.event.pull_request.head.sha }}
+          GITHUB_ACTIONS: true
         run: ./bin/ci gate "$EXPECTED_SHA"
 
   qualification:

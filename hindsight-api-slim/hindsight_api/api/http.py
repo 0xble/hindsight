@@ -226,6 +226,7 @@ def FieldWithDefault(default_factory: Callable, **kwargs) -> Any:
 
 
 from hindsight_api.config import ConfigLike, HindsightConfig, StaticConfigProxy, get_config
+from hindsight_api.engine.curation_guard import CurationConflictError, CurationGuard
 from hindsight_api.engine.interface import BankTemplateImportWrite
 from hindsight_api.engine.memory_engine import (
     KEEP_PARENT,
@@ -2774,6 +2775,12 @@ class UpdateMemoryRequest(BaseModel):
         default=None,
         description="Optional free-text reason recorded when invalidating.",
     )
+    curation_guard: CurationGuard | None = Field(
+        default=None,
+        description="Optional raw-curation-v1 atomic snapshot/source preconditions. Requires the PostgreSQL "
+        "memory store, explicitly paused quiescent consolidation and no dependent observations. "
+        "Rejects entity-changing requests. A conflict is HTTP 409 without the curation write.",
+    )
 
     @model_validator(mode="after")
     def _require_an_edit(self) -> "UpdateMemoryRequest":
@@ -3773,6 +3780,9 @@ class BankTemplateConfig(BaseModel):
     """
 
     reflect_mission: str | None = Field(default=None, description="Mission/context for Reflect operations")
+    file_delete_after_retain: bool | None = Field(
+        default=None, description="Delete original upload bytes after conversion queues retention; null inherits"
+    )
     retain_mission: str | None = Field(default=None, description="Steers what gets extracted during retain")
     retain_extraction_mode: str | None = Field(
         default=None,
@@ -3897,6 +3907,9 @@ class BankTemplateConfig(BaseModel):
     )
     llm_gemini_safety_settings: list | None = Field(
         default=None, description="Per-bank Gemini/VertexAI safety filter settings"
+    )
+    llm_language_integrity: Literal["off", "observe", "retry", "reject"] | None = Field(
+        default=None, description="Source-relative generated-language policy. Null inherits the parent policy."
     )
     recall_budget_function: str | None = Field(
         default=None, description="Recall budget mapping function: 'fixed' or 'adaptive'"
@@ -6082,6 +6095,7 @@ def _register_routes(app: FastAPI):
 
     @app.patch(
         "/v1/default/banks/{bank_id}/memories/{memory_id}",
+        responses={409: {"model": CurationConflictResponse, "description": "Curation conflict"}},
         summary="Curate memory unit",
         description="Edit a memory's text and/or change its curation state "
         "(invalidate / revert). Invalidated memories are excluded from recall, "
@@ -6121,6 +6135,7 @@ def _register_routes(app: FastAPI):
                 resolve_entities=request.resolve_entities,
                 state=request.state,
                 reason=request.reason,
+                curation_guard=request.curation_guard,
                 request_context=request_context,
             )
             if data is None:
@@ -6129,6 +6144,8 @@ def _register_routes(app: FastAPI):
             return data
         except OperationValidationError as e:
             raise HTTPException(status_code=e.status_code, detail=e.reason)
+        except CurationConflictError as e:
+            raise HTTPException(status_code=409, detail=str(e))
         except ValueError as e:
             raise HTTPException(status_code=400, detail=str(e))
         except (AuthenticationError, HTTPException):

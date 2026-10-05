@@ -15,7 +15,7 @@ import logging
 from dataclasses import dataclass, fields, replace
 from functools import lru_cache
 from types import UnionType
-from typing import TYPE_CHECKING, Any, Union, get_args, get_origin
+from typing import TYPE_CHECKING, Any, Literal, Union, get_args, get_origin
 
 from hindsight_api.config import (
     RECALL_BUDGET_FUNCTIONS,
@@ -36,6 +36,17 @@ if TYPE_CHECKING:
     from hindsight_api.engine.db.base import DatabaseBackend
 
 logger = logging.getLogger(__name__)
+
+
+class ConfigUnavailableError(RuntimeError):
+    """A fail-closed caller could not establish the current configuration."""
+
+
+def _validate_file_preservation_policy(overrides: dict[str, Any], scope: str) -> None:
+    """A destructive consumer cannot drop a malformed preservation override."""
+    value = overrides.get("file_delete_after_retain")
+    if value is not None and not isinstance(value, bool):
+        raise ConfigUnavailableError(f"Cannot resolve {scope}: file_delete_after_retain must be a boolean or null")
 
 
 class BankConfigPersistenceConflictError(ValueError):
@@ -182,7 +193,9 @@ class ConfigResolver:
         # The API-visible subset, resolved once: every config read filters to it.
         self._public_fields = frozenset(self._configurable_fields - self._credential_fields)
 
-    async def _resolve_tenant_overrides(self, scope: str, context: RequestContext | None = None) -> dict[str, Any]:
+    async def _resolve_tenant_overrides(
+        self, scope: str, context: RequestContext | None = None, *, fail_closed: bool = False
+    ) -> dict[str, Any]:
         """Tenant-level overrides to apply on top of the global config.
 
         Returns only the fields the tenant actually overrides — the global config is
@@ -196,12 +209,22 @@ class ConfigResolver:
             tenant_overrides = await self.tenant_extension.get_tenant_config(context)
         except Exception as e:
             logger.warning(f"Failed to load tenant config for {scope}: {e}")
+            if fail_closed:
+                raise ConfigUnavailableError(f"Cannot load tenant config for {scope}") from e
             return {}
         if not tenant_overrides:
             return {}
         # Normalize keys and filter to configurable fields only
         normalized_tenant = normalize_config_dict(tenant_overrides)
+        if fail_closed:
+            _validate_file_preservation_policy(normalized_tenant, f"tenant config for {scope}")
+        # Preservation null means inherit, as it does for bank overrides. Applying
+        # it literally would turn a process deletion policy into preservation.
+        # Other tenant fields can use None as a value, so only clear this policy.
+        if normalized_tenant.get("file_delete_after_retain") is None:
+            normalized_tenant.pop("file_delete_after_retain", None)
         configurable_tenant = {k: v for k, v in normalized_tenant.items() if k in self._configurable_fields}
+        configurable_tenant = _sanitize_language_integrity_overrides(configurable_tenant, scope)
         if configurable_tenant:
             logger.debug(f"Applied tenant config overrides for {scope}: {list(configurable_tenant.keys())}")
         return configurable_tenant
@@ -226,7 +249,12 @@ class ConfigResolver:
         return resolved
 
     async def resolve_full_config(
-        self, bank_id: str, context: RequestContext | None = None, *, cached: bool = True
+        self,
+        bank_id: str,
+        context: RequestContext | None = None,
+        *,
+        cached: bool = True,
+        fail_closed: bool = False,
     ) -> HindsightConfig:
         """
         Resolve full HindsightConfig for a bank with hierarchical overrides applied.
@@ -242,14 +270,17 @@ class ConfigResolver:
         Args:
             bank_id: Bank identifier
             context: Request context for tenant config resolution
+            fail_closed: Require a fresh bank row and successful tenant/bank reads.
+                Destructive consumers must not substitute defaults when policy is unavailable.
+                Existing callers retain best-effort resolution by default.
 
         Returns:
             Complete HindsightConfig with hierarchical overrides applied
         """
-        overrides = await self._resolve_tenant_overrides(f"bank {bank_id}", context)
+        overrides = await self._resolve_tenant_overrides(f"bank {bank_id}", context, fail_closed=fail_closed)
 
         # Load bank config overrides
-        bank_overrides = await self._load_bank_config(bank_id, cached=cached)
+        bank_overrides = await self._load_bank_config(bank_id, cached=cached, fail_closed=fail_closed)
         if bank_overrides:
             overrides.update(bank_overrides)
             logger.debug(f"Applied bank config overrides for bank {bank_id}: {list(bank_overrides.keys())}")
@@ -384,18 +415,20 @@ class ConfigResolver:
         )
         return dict(zip(bank_ids, permission_filtered, strict=True))
 
-    async def _load_bank_config(self, bank_id: str, *, cached: bool = True) -> dict[str, Any]:
+    async def _load_bank_config(
+        self, bank_id: str, *, cached: bool = True, fail_closed: bool = False
+    ) -> dict[str, Any]:
         """
         Load bank config overrides from banks.config JSONB column.
 
         Args:
             bank_id: Bank identifier
-            cached: read through the per-process cache. True on the RETAIN path, where this runs
-                once per sub-batch and a bank config that lags by one TTL changes nothing a caller
-                can see. False for anything that answers a reader about the bank's own config: the
-                cache is per PROCESS, so a write served by one pod is invisible to the others until
-                their entry expires, and a deployment runs several. Read-your-writes on a config
-                edit is not a race a user should have to lose.
+            cached: read through the per-process cache for ordinary operation settings.
+                Retain and consolidation separately read their language enforcement policy with
+                False: a correctness gate must not lag a remote edit by the cache TTL. False also
+                for anything that answers a reader about the bank's own config: the cache is per
+                PROCESS, so a write served by one pod is invisible to the others until their entry
+                expires. Read-your-writes on a config edit is not a race a user should have to lose.
 
         Returns:
             Dict of config overrides (only configurable fields, normalized keys)
@@ -419,27 +452,34 @@ class ConfigResolver:
                         """,
                         bank_id,
                     )
-                # Wrapped in a dict because the cache stores dicts; `{}` means "no row, or no
-                # config", which is also what this function returns for that case anyway.
-                return {"config": row["config"]} if row and row["config"] else {}
             except Exception as e:
                 logger.error(f"Failed to load bank config for {bank_id}: {e}")
+                if fail_closed:
+                    # Correctness-sensitive callers must not turn an unavailable bank override into
+                    # the global default. Ordinary fresh reads retain the historical best-effort
+                    # fallback, even though they bypass the cache.
+                    raise ConfigUnavailableError(f"Cannot load bank config for {bank_id}: {e}") from e
                 # Re-raise nothing: the original swallowed this and returned {}. Returning the
                 # empty dict keeps that behaviour, but it must NOT be cached as if it were an
                 # answer -- bank_info_cache drops empty values for exactly this reason.
                 return {}
+            if row is None and fail_closed:
+                raise ConfigUnavailableError(f"Cannot load bank config for {bank_id}: bank does not exist")
+            # An existing bank with empty/null config explicitly inherits defaults.
+            # A missing or failed read must never be mistaken for that in strict mode.
+            return {"config": row["config"]} if row and row["config"] else {}
 
         row = (
             await bank_info_cache.get_or_load(bank_id, "config", _read_config_row)
-            if cached
+            if cached and not fail_closed
             else await _read_config_row()
         )
         if row.get("config"):
-            return self._active_bank_overrides(bank_id, row["config"])
+            return self._active_bank_overrides(bank_id, row["config"], fail_closed=fail_closed)
 
         return {}
 
-    def _active_bank_overrides(self, bank_id: str, config_data: Any) -> dict[str, Any]:
+    def _active_bank_overrides(self, bank_id: str, config_data: Any, *, fail_closed: bool = False) -> dict[str, Any]:
         """Parse a stored ``banks.config`` value into active, normalized overrides."""
         if not config_data:
             return {}
@@ -450,6 +490,8 @@ class ConfigResolver:
 
         # Normalize keys (handle both env var format and Python field format)
         normalized = normalize_config_dict(config_data)
+        if fail_closed:
+            _validate_file_preservation_policy(normalized, f"bank config for {bank_id}")
 
         # Only active overrides for configurable fields. JSON null is a tombstone
         # for "Server Default" in the bank-config UI and must not override defaults.
@@ -752,7 +794,7 @@ _WIDENED_FIELD_TYPES: dict[str, tuple[type, ...]] = {
 def _runtime_types(declared: Any) -> tuple[type, ...]:
     """Runtime-checkable base classes for a dataclass field annotation.
 
-    Unwraps unions (``str | None``) and generic aliases (``list[str]`` -> ``list``);
+    Unwraps unions (``str | None``), literals and generic aliases (``list[str]`` -> ``list``);
     ``None`` is dropped because callers handle the tombstone separately. Returns an
     empty tuple for anything not reducible to concrete classes, which the callers
     read as "no type contract to enforce".
@@ -760,6 +802,8 @@ def _runtime_types(declared: Any) -> tuple[type, ...]:
     if declared is type(None):
         return ()
     origin = get_origin(declared)
+    if origin is Literal:
+        return tuple(dict.fromkeys(type(value) for value in get_args(declared)))
     if origin in (Union, UnionType):
         return tuple(t for arg in get_args(declared) for t in _runtime_types(arg))
     if origin is not None:
@@ -860,6 +904,38 @@ def _validate_consolidation_strategies(value: Any) -> None:
             raise ValueError(f"Invalid consolidation strategy at index {index}: {location}: {first['msg']}") from e
 
 
+@lru_cache(maxsize=1)
+def _language_integrity_modes() -> tuple[str, ...]:
+    """Keep bank validation tied to the mode declaration rather than a second enum."""
+    declared = next(field.type for field in fields(HindsightConfig) if field.name == "llm_language_integrity")
+    return get_args(declared)
+
+
+def _valid_language_integrity_override(value: Any) -> bool:
+    return isinstance(value, str) and value in _language_integrity_modes()
+
+
+def _sanitize_language_integrity_overrides(overrides: dict[str, Any], scope: str) -> dict[str, Any]:
+    """Drop invalid language-integrity modes from tenant overrides at every depth."""
+    sanitized = copy.deepcopy(overrides)
+
+    def sanitize(mapping: dict[str, Any], location: str) -> None:
+        if "llm_language_integrity" in mapping:
+            mode = mapping["llm_language_integrity"]
+            if mode is None or not _valid_language_integrity_override(mode):
+                del mapping["llm_language_integrity"]
+                if mode is not None:
+                    logger.warning("Ignoring invalid tenant llm_language_integrity override for %s", location)
+        strategies = mapping.get("retain_strategies")
+        if isinstance(strategies, dict):
+            for strategy_name, strategy in strategies.items():
+                if isinstance(strategy, dict):
+                    sanitize(strategy, f"{location} retain strategy {strategy_name!r}")
+
+    sanitize(sanitized, scope)
+    return sanitized
+
+
 def _validate_config_value_types(updates: dict[str, Any]) -> None:
     """Reject values whose type contradicts the declared HindsightConfig type.
 
@@ -878,6 +954,8 @@ def _validate_config_value_types(updates: dict[str, Any]) -> None:
             continue
         if not _value_matches_type(value, allowed):
             raise ValueError(f"{key} must be {_describe_types(allowed)}, got {type(value).__name__}")
+        if key == "llm_language_integrity" and not _valid_language_integrity_override(value):
+            raise ValueError(f"llm_language_integrity must be one of {', '.join(_language_integrity_modes())}")
 
 
 def _coerce_stored_bank_overrides(bank_id: str, overrides: dict[str, Any], where: str = "") -> dict[str, Any]:
@@ -900,6 +978,14 @@ def _coerce_stored_bank_overrides(bank_id: str, overrides: dict[str, Any], where
     field_types = _configurable_field_types()
     coerced: dict[str, Any] = {}
     for key, value in overrides.items():
+        if key == "llm_language_integrity":
+            # A null mode inherits, including within a strategy. Never turn an
+            # inherited reject into configured_mode(None)'s observe fallback.
+            if value is None:
+                continue
+            if not _valid_language_integrity_override(value):
+                logger.warning("Bank %s has invalid llm_language_integrity%s; ignoring the override", bank_id, where)
+                continue
         allowed = field_types.get(key)
         # None passes through: the caller has already dropped top-level tombstones,
         # and inside a retain strategy a null is a deliberate override to None.
@@ -1037,6 +1123,12 @@ def apply_strategy(config: HindsightConfig, strategy_name: str) -> HindsightConf
 
     configurable = HindsightConfig.get_configurable_fields()
     filtered = {k: v for k, v in overrides.items() if k in configurable}
+    if "llm_language_integrity" in filtered:
+        mode = filtered["llm_language_integrity"]
+        if mode is None:
+            del filtered["llm_language_integrity"]
+        else:
+            _validate_config_value_types({"llm_language_integrity": mode})
 
     if not filtered:
         return config

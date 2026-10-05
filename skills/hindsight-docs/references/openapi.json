@@ -825,6 +825,16 @@
               }
             }
           },
+          "409": {
+            "description": "Curation conflict",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CurationConflictResponse"
+                }
+              }
+            }
+          },
           "422": {
             "description": "Validation Error",
             "content": {
@@ -9062,6 +9072,18 @@
             "title": "Reflect Mission",
             "description": "Mission/context for Reflect operations"
           },
+          "file_delete_after_retain": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "File Delete After Retain",
+            "description": "Delete original upload bytes after conversion queues retention; null inherits"
+          },
           "retain_mission": {
             "anyOf": [
               {
@@ -9469,6 +9491,24 @@
             ],
             "title": "Llm Gemini Safety Settings",
             "description": "Per-bank Gemini/VertexAI safety filter settings"
+          },
+          "llm_language_integrity": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "off",
+                  "observe",
+                  "retry",
+                  "reject"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Llm Language Integrity",
+            "description": "Source-relative generated-language policy. Null inherits the parent policy."
           },
           "recall_budget_function": {
             "anyOf": [
@@ -11130,6 +11170,49 @@
         ],
         "title": "CreateWebhookRequest",
         "description": "Request model for registering a webhook."
+      },
+      "CurationGuard": {
+        "properties": {
+          "protocol": {
+            "type": "string",
+            "const": "raw-curation-v1",
+            "title": "Protocol"
+          },
+          "expected_memory_sha256": {
+            "type": "string",
+            "maxLength": 64,
+            "minLength": 64,
+            "title": "Expected Memory Sha256",
+            "description": "Lowercase SHA-256 hex digest."
+          },
+          "expected_source_sha256": {
+            "type": "string",
+            "maxLength": 64,
+            "minLength": 64,
+            "title": "Expected Source Sha256",
+            "description": "Lowercase SHA-256 hex digest."
+          },
+          "require_no_observations": {
+            "type": "boolean",
+            "const": true,
+            "title": "Require No Observations"
+          },
+          "require_quiescent_consolidation": {
+            "type": "boolean",
+            "const": true,
+            "title": "Require Quiescent Consolidation"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "protocol",
+          "expected_memory_sha256",
+          "expected_source_sha256",
+          "require_no_observations",
+          "require_quiescent_consolidation"
+        ],
+        "title": "CurationGuard"
       },
       "DefaultScopesPreview": {
         "properties": {
@@ -19199,6 +19282,17 @@
             ],
             "title": "Reason",
             "description": "Optional free-text reason recorded when invalidating."
+          },
+          "curation_guard": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/CurationGuard"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Optional raw-curation-v1 atomic snapshot/source preconditions. Requires the PostgreSQL memory store, explicitly paused quiescent consolidation and no dependent observations. Rejects entity-changing requests. A conflict is HTTP 409 without the curation write."
           }
         },
         "type": "object",

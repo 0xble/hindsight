@@ -71,6 +71,7 @@ from .curation_batch import (
     CurationReceipt,
     CurationRevertRequest,
 )
+from .curation_guard import CurationConflictError, CurationGuard, lock_curation_tables, verify_curation_guard
 from .db import DatabaseBackend, DatabaseConnection, ResultRow, create_database_backend
 from .db.ops_postgresql import pg_search_vector_expr
 from .db.postgresql import PostgreSQLBackend
@@ -4167,6 +4168,22 @@ class MemoryEngine(MemoryEngineInterface):
         if not bank_id or not storage_key or not document_id:
             raise ValueError("bank_id, storage_key, and document_id are required for file_convert_retain task")
 
+        # Resolve the original-file policy in the worker's tenant context before
+        # queuing downstream work. A resolution failure must leave the original
+        # untouched and must not enqueue a retain that a retry would duplicate.
+        from hindsight_api.models import RequestContext
+
+        convert_context = RequestContext(
+            internal=True,
+            user_initiated=True,
+            tenant_id=task_dict.get("_tenant_id"),
+            api_key_id=task_dict.get("_api_key_id"),
+            retry_count=task_dict.get("_retry_count", 0),
+        )
+        config = await self._config_resolver.resolve_full_config(
+            bank_id, convert_context, cached=False, fail_closed=True
+        )
+
         logger.info(f"[FILE_CONVERT_RETAIN] Starting for bank_id={bank_id}, document_id={document_id}, file={filename}")
 
         try:
@@ -4201,15 +4218,7 @@ class MemoryEngine(MemoryEngineInterface):
         if self._operation_validator:
             try:
                 from hindsight_api.extensions.operation_validator import FileConvertResult
-                from hindsight_api.models import RequestContext
 
-                convert_context = RequestContext(
-                    internal=True,
-                    user_initiated=True,
-                    tenant_id=task_dict.get("_tenant_id"),
-                    api_key_id=task_dict.get("_api_key_id"),
-                    retry_count=task_dict.get("_retry_count", 0),
-                )
                 await self._operation_validator.on_file_convert_complete(
                     FileConvertResult(
                         bank_id=bank_id,
@@ -4317,9 +4326,6 @@ class MemoryEngine(MemoryEngineInterface):
         )
 
         # Delete file bytes from storage if configured (saves storage costs)
-        from ..config import get_config
-
-        config = get_config()
         if config.file_delete_after_retain:
             try:
                 await self._file_storage.delete(storage_key)
@@ -6608,6 +6614,13 @@ class MemoryEngine(MemoryEngineInterface):
 
         await self._ensure_bank_exists(bank_id, request_context)
 
+        # Snapshot the enforcement policy once for this retain operation. Ordinary
+        # settings remain cache-backed, but language-integrity enforcement must not
+        # change between sub-batches if another worker edits the bank config.
+        language_integrity_mode = (
+            await self._resolve_retain_config(bank_id, request_context, strategy)
+        ).llm_language_integrity
+
         # Engine-owned copy: the orchestrator clears per-item "content" strings
         # after building the document's combined text (memory pressure
         # optimization, see retain/orchestrator.py). Without an internal copy
@@ -6708,6 +6721,7 @@ class MemoryEngine(MemoryEngineInterface):
                 outbox_callback=outbox_callback,
                 outbox_callback_factory=outbox_callback_factory,
                 start_time=start_time,
+                language_integrity_mode=language_integrity_mode,
             )
             result = execution.unit_ids
             total_usage = execution.usage
@@ -6767,6 +6781,7 @@ class MemoryEngine(MemoryEngineInterface):
                     document_tags=document_tags,
                     operation_id=operation_id,
                     strategy=strategy,
+                    language_integrity_mode=language_integrity_mode,
                     outbox_callback=group_outbox_callback,
                 )
                 for local_idx, origin_idx in enumerate(group.origins):
@@ -6972,6 +6987,8 @@ class MemoryEngine(MemoryEngineInterface):
         bank_id: str,
         request_context: "RequestContext",
         strategy: str | None,
+        *,
+        language_integrity_mode: str | None = None,
     ) -> HindsightConfig:
         """Resolve the config a retain runs under, strategy overrides applied.
 
@@ -6986,7 +7003,19 @@ class MemoryEngine(MemoryEngineInterface):
         effective_strategy = strategy or resolved_config.retain_default_strategy
         if effective_strategy:
             resolved_config = apply_strategy(resolved_config, effective_strategy)
-        return resolved_config
+
+        # The per-process cache can lag a policy edit made by another API/worker.
+        # Keep ordinary settings cached, but resolve the enforcement gate (including
+        # its current explicit/default strategy) fresh at this operation boundary.
+        if language_integrity_mode is None:
+            policy_config = await self._config_resolver.resolve_full_config(
+                bank_id, request_context, cached=False, fail_closed=True
+            )
+            policy_strategy = strategy or policy_config.retain_default_strategy
+            if policy_strategy:
+                policy_config = apply_strategy(policy_config, policy_strategy)
+            language_integrity_mode = policy_config.llm_language_integrity
+        return replace(resolved_config, llm_language_integrity=language_integrity_mode)
 
     @staticmethod
     def _retain_chunking_config(config: HindsightConfig) -> _RetainChunkingConfig:
@@ -7011,6 +7040,7 @@ class MemoryEngine(MemoryEngineInterface):
         outbox_callback: RetainOutboxCallback | None,
         outbox_callback_factory: RetainOutboxCallbackFactory | None,
         start_time: float,
+        language_integrity_mode: str | None = None,
     ) -> _RetainExecutionResult:
         """Run a batch with no shared document_id through the token splitter and
         the sequential sub-batch loop (or a single pass for a small batch).
@@ -7023,6 +7053,11 @@ class MemoryEngine(MemoryEngineInterface):
         here, because splitting one document across differently-bodied sub-batches
         trips the streaming pipeline's content-hash ownership check.
         """
+        if language_integrity_mode is None:
+            language_integrity_mode = (
+                await self._resolve_retain_config(bank_id, request_context, strategy)
+            ).llm_language_integrity
+
         if outbox_callback is None and outbox_callback_factory is not None:
             outbox_callback = outbox_callback_factory(contents)
 
@@ -7055,7 +7090,12 @@ class MemoryEngine(MemoryEngineInterface):
         _store = _get_memories_session()
         retain_session = None
         if _store.store_owned_for(bank_id):
-            _session_config = await self._resolve_retain_config(bank_id, request_context, strategy)
+            _session_config = await self._resolve_retain_config(
+                bank_id,
+                request_context,
+                strategy,
+                language_integrity_mode=language_integrity_mode,
+            )
             retain_session = await _store.begin_retain(bank_id=bank_id, config=_session_config)
 
         pending_outbox_callbacks: list[RetainOutboxCallback] = []
@@ -7102,7 +7142,12 @@ class MemoryEngine(MemoryEngineInterface):
             # retain config before splitting — the splitter and the orchestrator
             # must chunk identically for the slices to line up with what gets
             # stored (see _split_contents_into_sub_batches).
-            retain_config = await self._resolve_retain_config(bank_id, request_context, strategy)
+            retain_config = await self._resolve_retain_config(
+                bank_id,
+                request_context,
+                strategy,
+                language_integrity_mode=language_integrity_mode,
+            )
             chunking_config = self._retain_chunking_config(retain_config)
 
             # In update_mode="append", retain_batch prepends the existing document
@@ -7226,6 +7271,7 @@ class MemoryEngine(MemoryEngineInterface):
                     chunk_index_offset=offset_,
                     body_accum=body_accum,
                     retain_session=retain_session,
+                    language_integrity_mode=language_integrity_mode,
                 )
                 return _SubBatchOutcome(
                     index=idx,
@@ -7400,6 +7446,7 @@ class MemoryEngine(MemoryEngineInterface):
                     document_tags=document_tags,
                     operation_id=operation_id,
                     strategy=strategy,
+                    language_integrity_mode=language_integrity_mode,
                     outbox_callback=outbox_callback,
                     outbox_callback_factory=outbox_callback_factory,
                     retain_session=retain_session,
@@ -7487,6 +7534,7 @@ class MemoryEngine(MemoryEngineInterface):
         chunk_index_offset: int = 0,
         body_accum: "dict[str, DocumentBodyAccumulator] | None" = None,
         retain_session=None,
+        language_integrity_mode: str | None = None,
     ) -> "RetainBatchResult":
         """
         Internal method for batch processing without chunking logic.
@@ -7528,6 +7576,17 @@ class MemoryEngine(MemoryEngineInterface):
         effective_strategy = strategy or resolved_config.retain_default_strategy
         if effective_strategy:
             resolved_config = apply_strategy(resolved_config, effective_strategy)
+
+        # This worker path resolves independently of the splitting caller. Reuse
+        # its fresh enforcement policy without changing the provider/strategy order
+        # above or making ordinary settings opt out of the cache.
+        policy_config = await self._resolve_retain_config(
+            bank_id,
+            request_context,
+            strategy,
+            language_integrity_mode=language_integrity_mode,
+        )
+        resolved_config = replace(resolved_config, llm_language_integrity=policy_config.llm_language_integrity)
 
         # Create parent span for retain operation
         with create_operation_span("retain", bank_id):
@@ -12231,6 +12290,7 @@ class MemoryEngine(MemoryEngineInterface):
         resolve_entities: bool = True,
         state: str | None = None,
         reason: str | None = None,
+        curation_guard: CurationGuard | None = None,
         request_context: "RequestContext",
     ) -> dict[str, Any] | None:
         """Curate a single raw memory unit: edit its fields and/or change its state.
@@ -12355,6 +12415,12 @@ class MemoryEngine(MemoryEngineInterface):
         from .memories import get_memories
 
         store = get_memories()
+
+        # v1 intentionally excludes entity edits: their Phase-1 find-or-create
+        # effects can outlive a rejected compare-and-set. A caller needing those
+        # effects uses ordinary curation, without claiming guarded reversibility.
+        if curation_guard is not None and (entities is not None or store.store_owned_for(bank_id)):
+            raise CurationConflictError("Guarded curation does not support entity edits or an external memory store.")
 
         # -- Phase 1: read current state, resolve entities, and compute embeddings with NO write
         # transaction held. A slow embedder must never pin a pooled connection across the decision,
@@ -12542,6 +12608,22 @@ class MemoryEngine(MemoryEngineInterface):
         try:
             async with acquire_with_retry(backend) as conn:
                 async with conn.transaction():
+                    if curation_guard is not None:
+                        await lock_curation_tables(conn, fq_table, bank_id)
+                        current_snapshot = await store.get_memory_unit(
+                            conn=conn,
+                            ops=self._backend.ops,
+                            fq_table=fq_table,
+                            bank_id=bank_id,
+                            unit_id=str(memory_uuid),
+                        )
+                        await verify_curation_guard(
+                            conn=conn,
+                            fq_table=fq_table,
+                            bank_id=bank_id,
+                            memory=current_snapshot,
+                            guard=curation_guard,
+                        )
                     # Re-read under the write transaction: moving the embed out widened the read→write
                     # window, so re-validate existence and skip cleanly if the row was concurrently
                     # moved or deleted between the phases.
@@ -12603,6 +12685,10 @@ class MemoryEngine(MemoryEngineInterface):
                             )
                             locked_names = [e["canonical_name"] for e in emap2.get(str(memory_uuid), [])]
                             if locked_names != edit_plan.names:
+                                if curation_guard is not None:
+                                    raise CurationConflictError(
+                                        "Entity names changed during embedding, no guarded write applied."
+                                    )
                                 edit_embedding = await self._reembed_memory_text(
                                     text=edit_plan.new_text,
                                     occurred_start=edit_plan.new_occ_start,
@@ -12699,6 +12785,10 @@ class MemoryEngine(MemoryEngineInterface):
                             locked_names = [e["canonical_name"] for e in emap2.get(str(memory_uuid), [])]
                             revert_embedding = revert_plan.embedding
                             if locked_names != revert_plan.names:
+                                if curation_guard is not None:
+                                    raise CurationConflictError(
+                                        "Archived entity names changed, no guarded restore applied."
+                                    )
                                 revert_embedding = await self._reembed_memory_text(
                                     text=restored.text,
                                     occurred_start=restored.occurred_start,
@@ -12720,6 +12810,13 @@ class MemoryEngine(MemoryEngineInterface):
                         need_graph = True
 
                 phase2_committed = True
+        except asyncpg.LockNotAvailableError as exc:
+            # PostgreSQL uses 55P03 for both NOWAIT and lock_timeout. Catch
+            # outside the entire transaction: row/FK locks can contend after
+            # the table guard succeeds, and all preceding writes must roll back.
+            if curation_guard is not None:
+                raise CurationConflictError("Curation write window is busy, no guarded write applied.") from exc
+            raise
         finally:
             # Entities were resolved (and possibly autocommitted) in Phase 1 but the edit did not
             # durably apply (row concurrently invalidated → live2 None, or Phase 2 raised), so the
@@ -12740,8 +12837,10 @@ class MemoryEngine(MemoryEngineInterface):
                     logger.warning(f"Failed to submit orphan-entity cleanup after a failed edit in bank {bank_id}: {e}")
 
         consolidation_submitted = False
-        if need_consolidation:
-            config = await self._config_resolver.resolve_full_config(bank_id, request_context)
+        # Guarded writes never schedule consolidation, even if another process
+        # resumes the bank after commit or this process caches an enabled flag.
+        if need_consolidation and curation_guard is None:
+            config = await self._config_resolver.resolve_full_config(bank_id, request_context, cached=False)
             if config.enable_auto_consolidation:
                 try:
                     await self.submit_async_consolidation(bank_id=bank_id, request_context=request_context)

@@ -950,6 +950,12 @@ async def test_cross_bank_edges_are_rejected_before_any_cascade(memory, seeded):
 async def test_cross_bank_dependency_races_conflict_without_mutation(memory, seeded, dependency, stage):
     another = f"test-curation-v2-{uuid.uuid4().hex}"
     await memory.ensure_bank_profile(another, request_context=CTX)
+    # The forged rows must remain stable while the curation operation checks its
+    # closure.  Leaving this bank's worker enabled makes the observation case
+    # depend on whether background consolidation happens to consume the foreign
+    # fixture before the assertion, and can even delete its raw source while the
+    # test is attaching entity postings.
+    await memory.update_bank_config(another, {"enable_auto_consolidation": False}, request_context=CTX)
 
     # SQL is necessary to forge forbidden foreign dependencies and to compare
     # exact rows/capsules/pins; the public graph API deduplicates incident links.

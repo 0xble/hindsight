@@ -35,6 +35,7 @@ dependencies = [
     # vocabularies ship in the wheel so nothing is downloaded at runtime.
     # Contained to engine/token_encoding.py — see that module for the rationale.
     "toktok-rs>=0.1.3", # 0.1.3 adds truncate()/batch_truncate()
+    "py3langid>=0.4.0,<0.5", # 0.4 adds usable packaged-model loading; 0.3's from_modelpath fails
     "httpx>=0.27.0",
     "fastmcp>=3.2.0", # SSRF/path traversal, OAuth confused deputy, command injection fixes
     "python-dateutil>=2.8.0",
@@ -87,6 +88,8 @@ dependencies = [
     # wheels (tracked upstream in BerriAI/litellm#31261).
     "litellm>=1.91.3,<1.92; sys_platform == 'darwin'",
     "markitdown[pdf,docx,pptx,xlsx,xls]>=0.1.4", # File to markdown conversion
+    "pypdfium2==5.4.0", # Bounded PDF page rendering, matches the existing locked dependency
+    "psutil==7.2.2", # Sampled RSS protection for the disposable PDF OCR process
     "obstore>=0.4.0", # S3/GCS/Azure object storage client (Rust-backed)
     "winloop>=0.1.0; sys_platform == 'win32'",
     "uvloop>=0.22.1; sys_platform != 'win32'",
@@ -232,6 +235,7 @@ dev = [
     # PINNED, not floated: ty is pre-1.0 and what it reports changes between releases -- an
     # unpinned upgrade turns a clean tree red without a code change.
     "ty==0.0.84",
+    "pyyaml>=6.0.2",
     "testcontainers>=4.0.0",
 ]
 
@@ -265,6 +269,7 @@ ignore = [
 known-third-party = ["alembic"]
 
 # Production HTTP is aiohttp, async only (see .claude/skills/code-review/SKILL.md).
+
 [tool.ruff.lint.flake8-tidy-imports.banned-api]
 "httpx".msg = "Use aiohttp (async) via hindsight_api.engine.aiohttp_session. httpx is allowed only to configure or classify a third-party SDK built on it, with a `# noqa: TID251` saying so."
 "requests".msg = "Sync HTTP is forbidden in production code; use aiohttp via hindsight_api.engine.aiohttp_session."
@@ -279,6 +284,8 @@ known-third-party = ["alembic"]
 # Tests may use httpx (FastAPI TestClient / ASGITransport). `exclude` above already
 # skips them on a directory run; this covers ruff invoked on an explicit test path.
 "tests/**" = ["TID251"]
+
+
 
 [tool.ruff.format]
 quote-style = "double"
