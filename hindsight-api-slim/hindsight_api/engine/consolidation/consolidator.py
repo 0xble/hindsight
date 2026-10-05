@@ -1099,7 +1099,7 @@ async def _resolve_original_source_texts(
         }
         async with acquire_with_retry(pool) as conn:
             rows = await conn.fetch(
-                f"SELECT chunk_id, chunk_text FROM {fq_table('chunks')} "
+                f"SELECT chunk_id, chunk_text FROM {_memory_table_for_dialect()('chunks')} "
                 "WHERE bank_id = $1 AND chunk_id = ANY($2::text[])",
                 bank_id,
                 list(chunk_id_by_source_id.values()),
