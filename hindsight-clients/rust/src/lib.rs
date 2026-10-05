@@ -59,6 +59,14 @@ impl<'de, T: serde::Deserialize<'de>> serde::Deserialize<'de> for NullablePatch<
     }
 }
 
+/// Raw fact classifications accepted by curation corrections.
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum CurationFactType {
+    World,
+    Experience,
+}
+
 /// Bounded raw-curation-v2 correction fields.
 ///
 /// Omitted fields are unchanged. Context and occurrence dates can be explicitly
@@ -74,7 +82,7 @@ pub struct CurationFields {
     pub context: NullablePatch<String>,
     /// Raw world or experience classification.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub fact_type: Option<types::CurationFactType>,
+    pub fact_type: Option<CurationFactType>,
     /// Event start, including timezone, or explicit null to clear.
     #[serde(default, skip_serializing_if = "NullablePatch::is_unset")]
     pub occurred_start: NullablePatch<chrono::DateTime<chrono::Utc>>,
