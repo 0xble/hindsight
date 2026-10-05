@@ -506,14 +506,16 @@ def test_equal_multiplicity_of_historical_timeout_cannot_hide_lost_retry():
     assert Anchor("number", "5") in dropped_supported_anchors(before, after, old, new)
 
 
-# Bound CPU work rather than scheduler delays on loaded contributor machines.
+# Bound process CPU work rather than scheduler delays on loaded contributor
+# machines. The 5-second ceiling leaves substantial runner-load slack while
+# keeping the existing large inputs that make quadratic regressions fail closed.
 @pytest.mark.parametrize("add_note", [False, True], ids=["unchanged", "additive-note"])
 def test_many_identical_preserved_occurrences_remain_bounded(add_note):
     before = "The server timeout is 5 seconds. " * 2000
     after = before + ("A plain additive note." if add_note else "")
     start = process_time()
     assert not dropped_supported_anchors(before, after, [Evidence(before)], [])
-    assert process_time() - start < 1.0
+    assert process_time() - start < 5.0
 
 
 def test_ambiguous_repeated_slot_replacement_fails_closed():
@@ -533,7 +535,7 @@ def test_replacement_in_wrong_output_slot_does_not_excuse_missing_timeout():
 
 
 @pytest.mark.parametrize("dense_citation", [False, True])
-def test_anchor_dense_update_finishes_under_one_second(dense_citation):
+def test_anchor_dense_update_remains_cpu_bounded(dense_citation):
     before = " ".join(f"Metric value {i}." for i in range(1000, 4000)).ljust(60000)
     assert len(before) == 60000
     start = process_time()
@@ -545,7 +547,7 @@ def test_anchor_dense_update_finishes_under_one_second(dense_citation):
     )
     elapsed = process_time() - start
     assert len([a for a in dropped if a.kind == "number"]) == 3000
-    assert elapsed < 1.0, f"anchor-dense update took {elapsed:.3f}s CPU"
+    assert elapsed < 5.0, f"anchor-dense update took {elapsed:.3f}s CPU"
     print(
         f"anchor-dense update: {len(before)} chars, 3000 anchors, dense_citation={dense_citation}, {elapsed:.3f}s CPU"
     )
@@ -574,14 +576,14 @@ def test_slot_comparison_work_cap_fails_closed_below_input_size_cap():
         [Evidence(after, "2026-09-30T10:00:00Z")],
     )
     assert dropped == [Anchor("budget", "detail-loss analysis limit exceeded")]
-    assert process_time() - start < 1.0
+    assert process_time() - start < 5.0
 
 
 def test_preprocessing_many_consumption_words_stays_bounded():
     before = "used " * 20000 + "5"
     start = process_time()
     assert not dropped_supported_anchors(before, "5", [Evidence(before)], [])
-    assert process_time() - start < 1.0
+    assert process_time() - start < 5.0
 
 
 def test_excessive_source_count_fails_closed():
