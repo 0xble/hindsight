@@ -36,6 +36,7 @@ NEW_FIELDS: list[tuple[str, object]] = [
     ("retain_chunk_batch_size", 7),
     ("mcp_enabled_tools", ["list_banks", "get_bank_profile"]),
     ("consolidation_llm_batch_size", 11),
+    ("consolidation_round_correction_budget", 3),
     ("consolidation_source_facts_max_tokens", 2048),
     ("consolidation_source_facts_max_tokens_per_observation", 256),
     ("max_observations_per_scope", 13),

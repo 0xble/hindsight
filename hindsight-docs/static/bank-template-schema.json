@@ -657,6 +657,20 @@
           "description": "Max memory units fed into a single consolidation round",
           "title": "Consolidation Max Memories Per Round"
         },
+        "consolidation_round_correction_budget": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Max schema/detail-loss correction completions per consolidation round; null uses the round-size formula",
+          "title": "Consolidation Round Correction Budget"
+        },
         "consolidation_llm_parallelism": {
           "anyOf": [
             {
@@ -669,6 +683,45 @@
           "default": null,
           "description": "Number of consolidation LLM batches processed concurrently",
           "title": "Consolidation Llm Parallelism"
+        },
+        "consolidation_lane_llm_parallelism": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Number of LLM batches prepared concurrently within one observation-scope lane; DB applies remain serialized",
+          "title": "Consolidation Lane Llm Parallelism"
+        },
+        "consolidation_fair_group_selection": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Fetch the oldest facts of many observation-scope groups per consolidation round instead of the oldest facts overall, so parallel lanes are not left idle behind one large group",
+          "title": "Consolidation Fair Group Selection"
+        },
+        "consolidation_max_context_tokens": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Hard input-token budget for one consolidation LLM call; oversized prompts are split before they are sent. Keep below the provider context limit",
+          "title": "Consolidation Max Context Tokens"
         },
         "recall_include_chunks": {
           "anyOf": [

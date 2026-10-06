@@ -965,6 +965,8 @@ export class HindsightClient {
       consolidationFairGroupSelection?: boolean;
       /** Memories consolidated per round. */
       consolidationMaxMemoriesPerRound?: number;
+      /** Max schema/detail-loss correction completions per consolidation round; unset uses the round-size formula. */
+      consolidationRoundCorrectionBudget?: number;
       /** Pre-call input budget before adaptive splitting. */
       consolidationMaxContextTokens?: number;
       /** Max tokens for source facts across all observations in a pass. */
@@ -1072,6 +1074,8 @@ export class HindsightClient {
       updates.consolidation_fair_group_selection = options.consolidationFairGroupSelection;
     if (options.consolidationMaxMemoriesPerRound !== undefined)
       updates.consolidation_max_memories_per_round = options.consolidationMaxMemoriesPerRound;
+    if (options.consolidationRoundCorrectionBudget !== undefined)
+      updates.consolidation_round_correction_budget = options.consolidationRoundCorrectionBudget;
     if (options.consolidationMaxContextTokens !== undefined)
       updates.consolidation_max_context_tokens = options.consolidationMaxContextTokens;
     if (options.consolidationSourceFactsMaxTokens !== undefined)

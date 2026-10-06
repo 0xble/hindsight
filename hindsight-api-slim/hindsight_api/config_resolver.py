@@ -956,6 +956,8 @@ def _validate_config_value_types(updates: dict[str, Any]) -> None:
             raise ValueError(f"{key} must be {_describe_types(allowed)}, got {type(value).__name__}")
         if key == "llm_language_integrity" and not _valid_language_integrity_override(value):
             raise ValueError(f"llm_language_integrity must be one of {', '.join(_language_integrity_modes())}")
+        if key == "consolidation_round_correction_budget" and value < 0:
+            raise ValueError("consolidation_round_correction_budget must be >= 0")
 
 
 def _coerce_stored_bank_overrides(bank_id: str, overrides: dict[str, Any], where: str = "") -> dict[str, Any]:

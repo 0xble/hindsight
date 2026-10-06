@@ -23,7 +23,6 @@ from hindsight_api.config_resolver import (
 from hindsight_api.engine.consolidation.prompts import build_consolidation_input
 from hindsight_api.worker.exceptions import format_task_error
 
-
 # The fields found holding JSON objects in the field report on #3218.
 _STRING_FIELDS = (
     "observations_mission",
@@ -65,8 +64,13 @@ class TestValidateConfigValueTypes:
                 "mcp_enabled_tools": ["recall"],
                 "memory_defense": {"mode": "off"},
                 "recall_budget_adaptive_low": 0.05,
+                "consolidation_round_correction_budget": 0,
             }
         )
+
+    def test_negative_correction_budget_is_rejected(self):
+        with pytest.raises(ValueError, match="consolidation_round_correction_budget must be >= 0"):
+            _validate_config_value_types({"consolidation_round_correction_budget": -1})
 
     def test_none_clears_override(self):
         for field in _STRING_FIELDS:

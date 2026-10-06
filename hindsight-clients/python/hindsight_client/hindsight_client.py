@@ -2845,6 +2845,7 @@ class Hindsight:
         consolidation_lane_llm_parallelism: int | None = None,
         consolidation_fair_group_selection: bool | None = None,
         consolidation_max_memories_per_round: int | None = None,
+        consolidation_round_correction_budget: int | None = None,
         consolidation_max_context_tokens: int | None = None,
         mental_model_min_refresh_interval_seconds: int | None = None,
         knowledge_page_default_trigger: dict[str, Any] | None = None,
@@ -2913,6 +2914,7 @@ class Hindsight:
                 consolidation_lane_llm_parallelism=consolidation_lane_llm_parallelism,
                 consolidation_fair_group_selection=consolidation_fair_group_selection,
                 consolidation_max_memories_per_round=consolidation_max_memories_per_round,
+                consolidation_round_correction_budget=consolidation_round_correction_budget,
                 consolidation_max_context_tokens=consolidation_max_context_tokens,
                 mental_model_min_refresh_interval_seconds=mental_model_min_refresh_interval_seconds,
                 knowledge_page_default_trigger=knowledge_page_default_trigger,
@@ -2978,6 +2980,7 @@ class Hindsight:
         consolidation_lane_llm_parallelism: int | None = None,
         consolidation_fair_group_selection: bool | None = None,
         consolidation_max_memories_per_round: int | None = None,
+        consolidation_round_correction_budget: int | None = None,
         consolidation_max_context_tokens: int | None = None,
         mental_model_min_refresh_interval_seconds: int | None = None,
         knowledge_page_default_trigger: dict[str, Any] | None = None,
@@ -3054,6 +3057,8 @@ class Hindsight:
             consolidation_fair_group_selection: Fetch the oldest facts of many observation-scope groups
                 per consolidation round instead of the oldest facts overall.
             consolidation_max_memories_per_round: Memories consolidated per round.
+            consolidation_round_correction_budget: Max schema/detail-loss correction completions per consolidation round;
+                unset keeps the round-size formula and 0 disables corrections.
             consolidation_max_context_tokens: Pre-call input budget before adaptive splitting.
             mental_model_min_refresh_interval_seconds: Debounce between mental-model refreshes.
             reflect_default_options: Default reflect options for this bank, applied whenever a
@@ -3125,6 +3130,7 @@ class Hindsight:
                 "consolidation_lane_llm_parallelism": consolidation_lane_llm_parallelism,
                 "consolidation_fair_group_selection": consolidation_fair_group_selection,
                 "consolidation_max_memories_per_round": consolidation_max_memories_per_round,
+                "consolidation_round_correction_budget": consolidation_round_correction_budget,
                 "consolidation_max_context_tokens": consolidation_max_context_tokens,
                 "mental_model_min_refresh_interval_seconds": mental_model_min_refresh_interval_seconds,
                 "knowledge_page_default_trigger": knowledge_page_default_trigger,
