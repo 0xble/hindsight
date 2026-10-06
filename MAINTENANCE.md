@@ -26,7 +26,7 @@ Evaluate these support units every maintenance run, including no-change
 runs; these extend this sole enrollment and scheduling unit:
 
 - [OCR admission and typed failures](maintenance/ocr.md): HINDSIGHT-001, HINDSIGHT-004, HINDSIGHT-006 and HINDSIGHT-009.
-- [Service hardening](maintenance/service-hardening.md): HINDSIGHT-002, HINDSIGHT-007 and HINDSIGHT-008.
+- [Service hardening](maintenance/service-hardening.md): HINDSIGHT-002, HINDSIGHT-007 and HINDSIGHT-010.
 - [Fork CI governance](maintenance/ci.md): HINDSIGHT-003.
 - [Generated-language integrity](maintenance/language-integrity.md): HINDSIGHT-005 and HINDSIGHT-008.
 - [Bounded consolidation schema correction](maintenance/schema-correction.md): consolidation-only divergence.

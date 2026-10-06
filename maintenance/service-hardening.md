@@ -120,7 +120,7 @@ The fork lane exact-fold snapshot can become stale after an earlier CREATE in th
 
 The fork-only normalized-observation index revision `e6f7a8b9c0d1` was introduced by `621dda7e65`; it is absent from release `5fc4ce20917b916240cef27c212c387a177f115b`. Its invalid-index catalog probe returned no result in offline Alembic mode and aborted SQL emission. Skip only that catalog probe during `--sql` generation; retain online interrupted-index recovery and concurrent/idempotent index DDL. `tests/test_alembic_dag.py` renders the real upgrade/downgrade using offline PostgreSQL operations for default and tenant schemas, without opening a connection. Existing online normalized-index regressions preserve recovery coverage. Upstream guidance was pinned at `d863f78aa24408583d69bbc32203649fc6fc230a`; targeted Alembic-offline search found no equivalent fix. Retire this divergence with the owning exact-CREATE fold behavior, not merely an upstream migration rename.
 
-## HINDSIGHT-008: Total OpenAI-compatible request deadline
+## HINDSIGHT-010: Total OpenAI-compatible request deadline
 
 - **Status:** Active on a branch based on deployed `ad4f7587931eec0b39607e9a4736acd09b6c63db`; source publication is not activation.
 - **Behavior:** Keep the resolved per-request timeout as a wall-clock cap for structured, free-form, tool, and native Ollama requests, even when the upstream sends keepalive bytes. SDK deadline expiration remains `APITimeoutError`, so existing retry counts, backoff, and error classification do not change.
