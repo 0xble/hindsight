@@ -31,6 +31,7 @@ def setup_test_env():
         "HINDSIGHT_API_TEMPORAL_SEMANTIC_MIN_SIMILARITY",
         "HINDSIGHT_API_SEMANTIC_LINK_MIN_SIMILARITY",
         "HINDSIGHT_API_CONSOLIDATION_DEDUP_THRESHOLD",
+        "HINDSIGHT_API_CONSOLIDATION_ROUND_CORRECTION_BUDGET",
         "HINDSIGHT_API_DATABASE_URL",
         "HINDSIGHT_API_MIGRATION_DATABASE_URL",
     ]
@@ -111,6 +112,27 @@ def test_valid_retain_config_succeeds():
     assert config.retain_max_completion_tokens == 64000
     assert config.retain_chunk_size == 3000
     assert config.retain_structured_chunk_size is None
+
+
+def test_round_correction_budget_defaults_to_formula(monkeypatch):
+    from hindsight_api.config import ENV_CONSOLIDATION_ROUND_CORRECTION_BUDGET, HindsightConfig
+
+    monkeypatch.delenv(ENV_CONSOLIDATION_ROUND_CORRECTION_BUDGET, raising=False)
+    monkeypatch.setenv("HINDSIGHT_API_LLM_PROVIDER", "mock")
+
+    assert HindsightConfig.from_env().consolidation_round_correction_budget is None
+
+
+def test_round_correction_budget_reads_zero_and_rejects_negative(monkeypatch):
+    from hindsight_api.config import ENV_CONSOLIDATION_ROUND_CORRECTION_BUDGET, HindsightConfig
+
+    monkeypatch.setenv("HINDSIGHT_API_LLM_PROVIDER", "mock")
+    monkeypatch.setenv(ENV_CONSOLIDATION_ROUND_CORRECTION_BUDGET, "0")
+    assert HindsightConfig.from_env().consolidation_round_correction_budget == 0
+
+    monkeypatch.setenv(ENV_CONSOLIDATION_ROUND_CORRECTION_BUDGET, "-1")
+    with pytest.raises(ValueError, match=ENV_CONSOLIDATION_ROUND_CORRECTION_BUDGET):
+        HindsightConfig.from_env()
 
 
 def test_retain_structured_chunk_size_reads_from_env():

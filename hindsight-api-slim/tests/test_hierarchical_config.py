@@ -146,6 +146,7 @@ async def test_hierarchical_fields_categorization():
     assert "enable_auto_consolidation" in configurable
     assert "consolidation_llm_parallelism" in configurable
     assert "consolidation_lane_llm_parallelism" in configurable
+    assert "consolidation_round_correction_budget" in configurable
     assert "audit_log_enabled" in configurable
     assert "store_document_text" in configurable
     assert "enable_text_search" in configurable
@@ -159,10 +160,10 @@ async def test_hierarchical_fields_categorization():
     # Verify count is correct
     # 51 upstream fields plus the fork's consolidation_max_context_tokens (HINDSIGHT-002),
     # consolidation_fair_group_selection, consolidation_lane_llm_parallelism, file_delete_after_retain,
-    # and llm_language_integrity.
+    # llm_language_integrity, and consolidation_round_correction_budget.
     assert "llm_language_integrity" in configurable
     assert "llm_output_language" in static
-    assert len(configurable) == 56
+    assert len(configurable) == 57
 
     # Verify credential fields (NEVER exposed)
     assert "llm_api_key" in credentials

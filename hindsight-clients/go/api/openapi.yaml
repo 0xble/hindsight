@@ -6707,6 +6707,10 @@ components:
         consolidation_max_memories_per_round:
           nullable: true
           type: integer
+        consolidation_round_correction_budget:
+          nullable: true
+          type: integer
+          minimum: 0
         consolidation_llm_parallelism:
           nullable: true
           type: integer

@@ -213,6 +213,21 @@ def test_round_budget_scales_down_without_rounding_up(round_size, credits):
     assert budget.stats.budget_exhausted == 1
 
 
+def test_explicit_round_correction_budget_is_honored():
+    budget = c._SchemaCorrectionBudget(1000, correction_budget=2)
+    budget.start()
+    budget.start()
+    with pytest.raises(c._RoundCorrectionBudgetExhausted):
+        budget.start()
+    assert budget.stats.attempts == 2
+    assert budget.stats.budget_exhausted == 1
+
+
+def test_explicit_negative_round_correction_budget_is_rejected():
+    with pytest.raises(ValueError, match="correction_budget must be >= 0"):
+        c._SchemaCorrectionBudget(1000, correction_budget=-1)
+
+
 @pytest.mark.asyncio
 async def test_default_size_requeued_rounds_share_per_1000_fact_bound(provider, config, monkeypatch):
     """Exercise real round/requeue and provider guards with in-memory store/apply seams."""

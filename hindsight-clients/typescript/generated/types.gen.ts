@@ -813,6 +813,12 @@ export type BankTemplateConfig = {
    */
   consolidation_max_memories_per_round?: number | null;
   /**
+   * Consolidation Round Correction Budget
+   *
+   * Max schema/detail-loss correction completions per consolidation round; null uses the round-size formula
+   */
+  consolidation_round_correction_budget?: number | null;
+  /**
    * Consolidation Llm Parallelism
    *
    * Number of consolidation LLM batches processed concurrently

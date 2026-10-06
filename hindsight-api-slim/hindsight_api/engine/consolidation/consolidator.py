@@ -2255,7 +2255,10 @@ async def _run_consolidation_job(
     perf = ConsolidationPerfLog(bank_id)
     max_memories_per_batch = config.consolidation_batch_size
     max_memories_per_round = config.consolidation_max_memories_per_round
-    schema_correction_budget = _SchemaCorrectionBudget(max_memories_per_round)
+    schema_correction_budget = _SchemaCorrectionBudget(
+        max_memories_per_round,
+        getattr(config, "consolidation_round_correction_budget", None),
+    )
     llm_batch_size = max(1, config.consolidation_llm_batch_size)
     fair_group_selection = bool(getattr(config, "consolidation_fair_group_selection", False))
 
@@ -4616,18 +4619,27 @@ class _RoundCorrectionBudgetExhausted(CompletionAttemptLimitError):
 class _SchemaCorrectionBudget:
     """Round-size-scaled budget, shared by scopes, lanes and adaptive bisection.
 
-    Allocate one credit per complete 100 configured fact slots, capped at ten.
-    Requeued 100-fact rounds therefore cannot each receive ten credits. Unlimited
-    or sub-100-fact rounds fail closed rather than inventing a 1000-fact allowance.
+    Allocate one credit per complete 100 configured fact slots, capped at ten, unless
+    ``correction_budget`` explicitly overrides the limit. Requeued 100-fact rounds
+    therefore cannot each receive ten credits. Unlimited or sub-100-fact rounds fail
+    closed rather than inventing a 1000-fact allowance.
 
     Reserve at the provider attempt boundary, not at wrapper entry: unsupported
     providers and locally rejected prompts must not consume completion credits.
     The lock guards only await-free increments and is safe across event loops.
     """
 
-    def __init__(self, max_memories_per_round: int = 1000) -> None:
+    def __init__(
+        self,
+        max_memories_per_round: int = 1000,
+        correction_budget: int | None = None,
+    ) -> None:
+        if correction_budget is not None and correction_budget < 0:
+            raise ValueError("correction_budget must be >= 0")
         self.stats = _SchemaCorrectionStats()
-        self._limit = min(10, max(0, max_memories_per_round) // 100)
+        self._limit = (
+            correction_budget if correction_budget is not None else min(10, max(0, max_memories_per_round) // 100)
+        )
         self._spent = 0
         self.detail_stats = _DetailLossStats()
         self._lock = Lock()
