@@ -120,4 +120,14 @@ The fork lane exact-fold snapshot can become stale after an earlier CREATE in th
 
 The fork-only normalized-observation index revision `e6f7a8b9c0d1` was introduced by `621dda7e65`; it is absent from release `5fc4ce20917b916240cef27c212c387a177f115b`. Its invalid-index catalog probe returned no result in offline Alembic mode and aborted SQL emission. Skip only that catalog probe during `--sql` generation; retain online interrupted-index recovery and concurrent/idempotent index DDL. `tests/test_alembic_dag.py` renders the real upgrade/downgrade using offline PostgreSQL operations for default and tenant schemas, without opening a connection. Existing online normalized-index regressions preserve recovery coverage. Upstream guidance was pinned at `d863f78aa24408583d69bbc32203649fc6fc230a`; targeted Alembic-offline search found no equivalent fix. Retire this divergence with the owning exact-CREATE fold behavior, not merely an upstream migration rename.
 
+## HINDSIGHT-008: Total OpenAI-compatible request deadline
+
+- **Status:** Active on a branch based on deployed `ad4f7587931eec0b39607e9a4736acd09b6c63db`; source publication is not activation.
+- **Behavior:** Keep the resolved per-request timeout as a wall-clock cap for structured, free-form, tool, and native Ollama requests, even when the upstream sends keepalive bytes. SDK deadline expiration remains `APITimeoutError`, so existing retry counts, backoff, and error classification do not change.
+- **Adopted source:** Related upstream [#4784](https://github.com/vectorize-io/hindsight/pull/4784), merged as `878f43998dfc0e95257f8f09893d945d3da045b7`. The fork narrows that solution to the OpenAI-compatible provider and retains SDK timeout classification rather than exposing a new bare `TimeoutError` on the SDK path. No upstream publication is authorized for this delivery.
+- **Configuration:** Dedup already wraps the consolidation provider via `with_config`; its distinct trace label does not select a global timeout. Preserve the regression proving consolidation `300` wins over global `120`.
+- **Regression:** `tests/test_openai_total_deadline.py`, `tests/test_llm_timeout_propagation.py`, `tests/test_llm_transport_diagnostics.py`, and `tests/test_consolidation_dedup.py`.
+- **Retire when:** A released upstream implementation adopted by the fork passes these regressions while preserving timeout classification and retry semantics. Do not duplicate the deadline if that implementation is reconciled.
+- **Rollback:** Revert this scoped provider change and tests; no data rollback or runtime activation is part of source rollback.
+
 Run the API-local regression commands from `hindsight-api-slim`.
