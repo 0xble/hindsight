@@ -3863,6 +3863,11 @@ class BankTemplateConfig(BaseModel):
     consolidation_max_memories_per_round: int | None = Field(
         default=None, description="Max memory units fed into a single consolidation round"
     )
+    consolidation_round_correction_budget: int | None = Field(
+        default=None,
+        ge=0,
+        description="Max schema/detail-loss correction completions per consolidation round; null uses the round-size formula",
+    )
     consolidation_llm_parallelism: int | None = Field(
         default=None, description="Number of consolidation LLM batches processed concurrently"
     )

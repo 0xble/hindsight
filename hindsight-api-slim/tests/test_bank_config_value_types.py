@@ -65,8 +65,13 @@ class TestValidateConfigValueTypes:
                 "mcp_enabled_tools": ["recall"],
                 "memory_defense": {"mode": "off"},
                 "recall_budget_adaptive_low": 0.05,
+                "consolidation_round_correction_budget": 0,
             }
         )
+
+    def test_negative_correction_budget_is_rejected(self):
+        with pytest.raises(ValueError, match="consolidation_round_correction_budget must be >= 0"):
+            _validate_config_value_types({"consolidation_round_correction_budget": -1})
 
     def test_none_clears_override(self):
         for field in _STRING_FIELDS:

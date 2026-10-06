@@ -847,6 +847,7 @@ ENV_ENABLE_OBSERVATIONS = "HINDSIGHT_API_ENABLE_OBSERVATIONS"
 ENV_ENABLE_AUTO_CONSOLIDATION = "HINDSIGHT_API_ENABLE_AUTO_CONSOLIDATION"
 ENV_CONSOLIDATION_BATCH_SIZE = "HINDSIGHT_API_CONSOLIDATION_BATCH_SIZE"
 ENV_CONSOLIDATION_MAX_MEMORIES_PER_ROUND = "HINDSIGHT_API_CONSOLIDATION_MAX_MEMORIES_PER_ROUND"
+ENV_CONSOLIDATION_ROUND_CORRECTION_BUDGET = "HINDSIGHT_API_CONSOLIDATION_ROUND_CORRECTION_BUDGET"
 ENV_CONSOLIDATION_LLM_BATCH_SIZE = "HINDSIGHT_API_CONSOLIDATION_LLM_BATCH_SIZE"
 ENV_CONSOLIDATION_DEDUP_THRESHOLD = "HINDSIGHT_API_CONSOLIDATION_DEDUP_THRESHOLD"
 ENV_CONSOLIDATION_LLM_PARALLELISM = "HINDSIGHT_API_CONSOLIDATION_LLM_PARALLELISM"
@@ -1746,6 +1747,7 @@ DEFAULT_CONSOLIDATION_BATCH_SIZE = 50  # Memories to load per batch (internal me
 DEFAULT_CONSOLIDATION_MAX_MEMORIES_PER_ROUND = (
     100  # Max memories per consolidation round (0 = unlimited). Limits how long one bank holds a worker slot.
 )
+DEFAULT_CONSOLIDATION_ROUND_CORRECTION_BUDGET = None
 DEFAULT_CONSOLIDATION_LLM_BATCH_SIZE = 8  # Facts per LLM call (1 = no batching; >1 = batch mode)
 # Cosine >= this between a newly-created or freshly-updated observation and an existing one
 # triggers a focused 1-by-1 LLM "merge or keep" pass (the LLM reads both, so numbers/negation/
@@ -3452,6 +3454,7 @@ class HindsightConfig:
     consolidation_batch_size: int
     consolidation_dedup_threshold: float
     consolidation_max_memories_per_round: int
+    consolidation_round_correction_budget: int | None
     consolidation_llm_batch_size: int
     consolidation_llm_parallelism: int
     consolidation_lane_llm_parallelism: int
@@ -3815,6 +3818,7 @@ class HindsightConfig:
         "consolidation_lane_llm_parallelism",
         "consolidation_fair_group_selection",
         "consolidation_max_memories_per_round",
+        "consolidation_round_correction_budget",
         "consolidation_max_context_tokens",
         "consolidation_source_facts_max_tokens",
         "consolidation_source_facts_max_tokens_per_observation",
@@ -4078,6 +4082,12 @@ class HindsightConfig:
 
         if self.bm25_max_query_terms < 0:
             raise ValueError(f"Invalid bm25_max_query_terms: {self.bm25_max_query_terms}. Must be >= 0")
+
+        if self.consolidation_round_correction_budget is not None and self.consolidation_round_correction_budget < 0:
+            raise ValueError(
+                f"{ENV_CONSOLIDATION_ROUND_CORRECTION_BUDGET} must be >= 0, "
+                f"got {self.consolidation_round_correction_budget}"
+            )
 
         # Validate bedrock_service_tier
         valid_bedrock_tiers = (None, "flex", "priority", "reserved")
@@ -5058,6 +5068,10 @@ class HindsightConfig:
                     ENV_CONSOLIDATION_MAX_MEMORIES_PER_ROUND,
                     str(DEFAULT_CONSOLIDATION_MAX_MEMORIES_PER_ROUND),
                 )
+            ),
+            consolidation_round_correction_budget=_env_int_or(
+                ENV_CONSOLIDATION_ROUND_CORRECTION_BUDGET,
+                DEFAULT_CONSOLIDATION_ROUND_CORRECTION_BUDGET,
             ),
             consolidation_dedup_threshold=float(
                 os.getenv(ENV_CONSOLIDATION_DEDUP_THRESHOLD, str(DEFAULT_CONSOLIDATION_DEDUP_THRESHOLD))
