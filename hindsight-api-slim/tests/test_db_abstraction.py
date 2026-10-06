@@ -1508,3 +1508,57 @@ class TestOracleSessionAndClobBinding:
         assert not _needs_clob_bind("")
         assert not _needs_clob_bind(None)
         assert not _needs_clob_bind(42)
+
+    def test_blob_bind_covers_bytes_past_raw_limit(self):
+        from hindsight_api.engine.db.oracle import _needs_blob_bind
+
+        assert _needs_blob_bind(b"x" * 2001)
+        assert _needs_blob_bind(bytearray(1_000_000))
+        assert not _needs_blob_bind(b"x" * 2000)
+        assert not _needs_blob_bind(bytes(16))  # a UUID bound as RAW(16)
+        assert not _needs_blob_bind("x" * 5000)
+        assert not _needs_blob_bind(None)
+
+    def test_clob_lob_covers_text_past_32k_bytes(self):
+        from hindsight_api.engine.db.oracle import _needs_clob_lob
+
+        assert _needs_clob_lob("x" * 32768)
+        assert _needs_clob_lob("é" * 16384)  # 32 768 bytes in UTF-8
+        assert not _needs_clob_lob("x" * 32767)
+        assert not _needs_clob_lob("é" * 8000)
+        assert not _needs_clob_lob(b"x" * 40000)
+        assert not _needs_clob_lob(None)
+
+    @pytest.mark.asyncio
+    async def test_large_bytes_and_text_bind_as_temporary_lobs(self):
+        # A file past 2000 bytes binds as RAW, and text past 32 767 bytes as LONG even with
+        # a CLOB input size (documents.original_text in MERGE ... USING (SELECT :N ... FROM DUAL));
+        # both fail with ORA-01461 unless bound as a real LOB.
+        import oracledb
+
+        from hindsight_api.engine.db.oracle import OracleConnection
+
+        class FakeLob:
+            def __init__(self, lob_type):
+                self.lob_type = lob_type
+                self.data = None
+
+            async def write(self, data):
+                self.data = data
+
+        class FakeConn:
+            async def createlob(self, lob_type):
+                return FakeLob(lob_type)
+
+        conn = OracleConnection.__new__(OracleConnection)
+        conn._conn = FakeConn()
+        payload = bytes(range(256)) * 20  # 5120 bytes
+        text = "laudo pericial " * 4000  # 60 000 bytes
+        params = {"1": "doc-id", "2": payload, "3": bytes(16), "4": text, "5": "x" * 5000}
+
+        await conn._bind_large_values_as_lobs(params)
+
+        assert params["2"].lob_type == oracledb.DB_TYPE_BLOB and params["2"].data == payload
+        assert params["4"].lob_type == oracledb.DB_TYPE_CLOB and params["4"].data == text
+        assert params["1"] == "doc-id" and params["3"] == bytes(16)  # a UUID stays RAW(16)
+        assert params["5"] == "x" * 5000  # 4 000-32 767 bytes stay a string with a CLOB input size
