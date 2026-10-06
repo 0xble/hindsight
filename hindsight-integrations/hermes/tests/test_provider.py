@@ -315,6 +315,8 @@ def test_building_the_embedded_client_announces_before_it_waits(provider, monkey
 
     assert order == ["announced", "started"], order
     instance.shutdown()
+
+
 def test_retain_omits_strategy_by_default(provider):
     """No strategy configured means no key on the item, so the bank keeps deciding."""
     instance, fake = provider()

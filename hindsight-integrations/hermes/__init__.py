@@ -4,7 +4,7 @@ and multi-strategy retrieval; cloud (API key), local_external, or local_embedded
 Config: $HERMES_HOME/hindsight/config.json (profile-scoped), else ~/.hindsight/
 config.json (legacy, shared), else env: HINDSIGHT_API_KEY / BANK_ID / BUDGET /
 API_URL / MODE / TIMEOUT / IDLE_TIMEOUT / RETAIN_TAGS / RETAIN_OBSERVATION_SCOPES /
-RETAIN_SOURCE / RETAIN_USER_PREFIX / RETAIN_ASSISTANT_PREFIX, and
+RETAIN_SOURCE / RETAIN_STRATEGY / RETAIN_USER_PREFIX / RETAIN_ASSISTANT_PREFIX, and
 HINDSIGHT_EMBED_PORT_HEALTH_GRACE_TIMEOUT (config.json port_health_grace_timeout).
 """
 
