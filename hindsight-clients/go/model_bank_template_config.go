@@ -67,6 +67,7 @@ type BankTemplateConfig struct {
 	StoreDocumentText NullableBool `json:"store_document_text,omitempty"`
 	EnableAutoConsolidation NullableBool `json:"enable_auto_consolidation,omitempty"`
 	ConsolidationMaxMemoriesPerRound NullableInt32 `json:"consolidation_max_memories_per_round,omitempty"`
+	ConsolidationRoundCorrectionBudget NullableInt32 `json:"consolidation_round_correction_budget,omitempty"`
 	ConsolidationLlmParallelism NullableInt32 `json:"consolidation_llm_parallelism,omitempty"`
 	ConsolidationLaneLlmParallelism NullableInt32 `json:"consolidation_lane_llm_parallelism,omitempty"`
 	ConsolidationFairGroupSelection NullableBool `json:"consolidation_fair_group_selection,omitempty"`
@@ -2038,6 +2039,48 @@ func (o *BankTemplateConfig) UnsetConsolidationMaxMemoriesPerRound() {
 	o.ConsolidationMaxMemoriesPerRound.Unset()
 }
 
+// GetConsolidationRoundCorrectionBudget returns the ConsolidationRoundCorrectionBudget field value if set, zero value otherwise (both if not set or set to explicit null).
+func (o *BankTemplateConfig) GetConsolidationRoundCorrectionBudget() int32 {
+	if o == nil || IsNil(o.ConsolidationRoundCorrectionBudget.Get()) {
+		var ret int32
+		return ret
+	}
+	return *o.ConsolidationRoundCorrectionBudget.Get()
+}
+
+// GetConsolidationRoundCorrectionBudgetOk returns a tuple with the ConsolidationRoundCorrectionBudget field value if set, nil otherwise
+// and a boolean to check if the value has been set.
+// NOTE: If the value is an explicit nil, `nil, true` will be returned
+func (o *BankTemplateConfig) GetConsolidationRoundCorrectionBudgetOk() (*int32, bool) {
+	if o == nil {
+		return nil, false
+	}
+	return o.ConsolidationRoundCorrectionBudget.Get(), o.ConsolidationRoundCorrectionBudget.IsSet()
+}
+
+// HasConsolidationRoundCorrectionBudget returns a boolean if a field has been set.
+func (o *BankTemplateConfig) HasConsolidationRoundCorrectionBudget() bool {
+	if o != nil && o.ConsolidationRoundCorrectionBudget.IsSet() {
+		return true
+	}
+
+	return false
+}
+
+// SetConsolidationRoundCorrectionBudget gets a reference to the given NullableInt32 and assigns it to the ConsolidationRoundCorrectionBudget field.
+func (o *BankTemplateConfig) SetConsolidationRoundCorrectionBudget(v int32) {
+	o.ConsolidationRoundCorrectionBudget.Set(&v)
+}
+// SetConsolidationRoundCorrectionBudgetNil sets the value for ConsolidationRoundCorrectionBudget to be an explicit nil
+func (o *BankTemplateConfig) SetConsolidationRoundCorrectionBudgetNil() {
+	o.ConsolidationRoundCorrectionBudget.Set(nil)
+}
+
+// UnsetConsolidationRoundCorrectionBudget ensures that no value is present for ConsolidationRoundCorrectionBudget, not even an explicit nil
+func (o *BankTemplateConfig) UnsetConsolidationRoundCorrectionBudget() {
+	o.ConsolidationRoundCorrectionBudget.Unset()
+}
+
 // GetConsolidationLlmParallelism returns the ConsolidationLlmParallelism field value if set, zero value otherwise (both if not set or set to explicit null).
 func (o *BankTemplateConfig) GetConsolidationLlmParallelism() int32 {
 	if o == nil || IsNil(o.ConsolidationLlmParallelism.Get()) {
@@ -2518,6 +2561,9 @@ func (o BankTemplateConfig) ToMap() (map[string]interface{}, error) {
 	}
 	if o.ConsolidationMaxMemoriesPerRound.IsSet() {
 		toSerialize["consolidation_max_memories_per_round"] = o.ConsolidationMaxMemoriesPerRound.Get()
+	}
+	if o.ConsolidationRoundCorrectionBudget.IsSet() {
+		toSerialize["consolidation_round_correction_budget"] = o.ConsolidationRoundCorrectionBudget.Get()
 	}
 	if o.ConsolidationLlmParallelism.IsSet() {
 		toSerialize["consolidation_llm_parallelism"] = o.ConsolidationLlmParallelism.Get()
