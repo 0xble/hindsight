@@ -88,6 +88,7 @@ _JSON_ARROW_TEXT_RE = re.compile(r'("?\w+"?)\s*->>\s*\'(\w+)\'')  # handles both
 # column group must accept the quoted form too — same shape as the arrow regex above.
 _JSON_HAS_KEY_RE = re.compile(r"(\"?\w+\"?)\s*\?\s*'(\w+)'")
 _JSONB_CONTAINS_RE = re.compile(r"(\w+)\s*@>\s*:(\d+)")
+_RESULT_METADATA_CONTAINS_RE = re.compile(r"((?:\w+\.)?result_metadata)\s*@>\s*:(\d+)", re.IGNORECASE)
 
 # ---------------------------------------------------------------------------
 # Argument conversion helpers
@@ -477,6 +478,18 @@ def _rewrite_pg_to_oracle(query: str) -> RewriteResult:
     # JSON operators
     query = _JSON_ARROW_TEXT_RE.sub(r"JSON_VALUE(\1, '$.\2')", query)
     query = _JSON_HAS_KEY_RE.sub(r"JSON_EXISTS(\1, '$.\2')", query)
+    # result_metadata::jsonb @> :N — every call site binds a single-key
+    # {"parent_operation_id": <uuid>} document to find an operation's
+    # siblings/children (poller rollup, orphan reconciliation, operation
+    # detail and retry). Oracle has no bound-document containment, so
+    # single-key containment becomes a JSON_VALUE comparison on both sides.
+    # Runs BEFORE the generic rewrite below: that one emits
+    # JSON_EXISTS(col, '$' PASSING :N AS cond), which declares a bind variable
+    # the '$' path never references — Oracle evaluates it to false for every
+    # row, so a batch_retain parent never found its children and stayed pending.
+    query = _RESULT_METADATA_CONTAINS_RE.sub(
+        r"JSON_VALUE(\1, '$.parent_operation_id') = JSON_VALUE(:\2, '$.parent_operation_id')", query
+    )
     query = _JSONB_CONTAINS_RE.sub(r"JSON_EXISTS(\1, '$' PASSING :\2 AS cond)", query)
 
     # pgvector distance operator: col <=> :N → VECTOR_DISTANCE(col, :N, COSINE)
