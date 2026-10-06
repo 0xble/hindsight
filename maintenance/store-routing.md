@@ -2,7 +2,7 @@
 
 Part of the root [maintenance contract](../MAINTENANCE.md).
 
-## HINDSIGHT-010: SQL-backed consolidation reads
+## HINDSIGHT-011: SQL-backed consolidation reads
 
 - **Status:** Active
 - **Origin:** Fork-only regression introduced by the Oracle table-routing adaptation in `faf3fa46220ffb5aeb24b3df1e3d35171f68bbd1`. The reconciled upstream store boundary used `store.store_owned_for(bank_id)` for the default SQL store; widening that predicate to Oracle made `_resolve_original_source_texts()` pass `conn=None` to the SQL-backed PostgresMemories implementation.
