@@ -1244,8 +1244,8 @@ def _filter_unpersistable_references(
     reaches the stored observation. Valid sibling actions are kept, because every
     source they cite is persisted exactly as validated. Batch facts that only
     dropped actions cited are retried by the caller's bounded sub-batch loop
-    after valid siblings commit. Unknown-only citations and unsafe target actions
-    still reject the whole response.
+    after valid siblings commit. Unknown-only citations, DELETE target failures, and
+    filtered replies after a correction attempt still reject the whole response.
     """
     valid_fact_ids = {str(memory["id"]) for memory in memories}
     valid_observation_ids = {str(observation.id) for observation in union_observations}
@@ -1274,13 +1274,13 @@ def _filter_unpersistable_references(
     updates = []
     for action in response.updates:
         if action.observation_id not in valid_observation_ids:
-            raise _InvalidConsolidationReferences("update target not recalled for this batch")
+            _drop("update_target_not_recalled_for_batch", action.source_fact_ids)
         elif not action.source_fact_ids:
             _drop("update_without_sources", action.source_fact_ids)
         elif not set(action.source_fact_ids).issubset(valid_fact_ids):
             _drop("update_cites_fact_outside_batch", action.source_fact_ids)
         elif not any(action.observation_id in topology.get(fact_id, set()) for fact_id in action.source_fact_ids):
-            raise _InvalidConsolidationReferences("update target not recalled for its sources")
+            _drop("update_target_not_recalled_for_sources", action.source_fact_ids)
         else:
             updates.append(action)
             kept_sources.update(str(fid) for fid in action.source_fact_ids)
