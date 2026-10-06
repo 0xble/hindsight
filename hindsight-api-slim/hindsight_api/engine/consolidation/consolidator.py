@@ -1059,7 +1059,7 @@ async def _resolve_original_source_texts(
 
     store = get_memories()
     source_id_list = list(source_ids)
-    if _memory_store_handles_tables(bank_id):
+    if store.store_owned_for(bank_id):
         source_memories = await store.get_memories(
             conn=None,
             fq_table=fq_table,
@@ -1085,7 +1085,7 @@ async def _resolve_original_source_texts(
 
     ordered_ids = list(refs_by_id)
     refs = [refs_by_id[source_id] for source_id in ordered_ids]
-    if _memory_store_handles_tables(bank_id):
+    if store.store_owned_for(bank_id):
         try:
             chunk_texts = await store.get_chunk_texts(bank_id=bank_id, refs=refs)
         except NotImplementedError:

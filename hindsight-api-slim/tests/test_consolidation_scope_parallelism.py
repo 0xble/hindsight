@@ -27,8 +27,9 @@ import re
 import time
 import uuid
 from collections import defaultdict
-from contextlib import nullcontext
-from unittest.mock import MagicMock, patch
+from contextlib import asynccontextmanager, nullcontext
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -37,12 +38,54 @@ from hindsight_api.engine.consolidation.consolidator import (
     _ConsolidationBatchResponse,
     _CreateAction,
     _effective_lane_parallelism,
+    _resolve_original_source_texts,
     _UpdateAction,
     run_consolidation_job,
 )
 from hindsight_api.engine.memory_engine import MemoryEngine
 from hindsight_api.engine.providers.mock_llm import MockLLM
 from hindsight_api.engine.response_models import MemoryFact, RecallResult
+
+# ---------------------------------------------------------------------------
+# Regression tests for database-dialect routing
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_oracle_sql_store_source_read_uses_connection():
+    """Oracle dialect routing must not turn a SQL-backed store read connectionless."""
+    from hindsight_api.engine.consolidation import consolidator as mod
+
+    bank_id = "oracle-bank"
+    source_id = str(uuid.uuid4())
+    chunk_id = f"{bank_id}_document_0"
+    conn = MagicMock()
+    conn.fetch = AsyncMock(return_value=[{"chunk_id": chunk_id, "chunk_text": "Original source"}])
+
+    async def get_memories(*, conn, **kwargs):
+        assert conn is not None
+        return [SimpleNamespace(unit_id=source_id, chunk_id=chunk_id)]
+
+    store = SimpleNamespace(
+        store_owned_for=lambda _: False,
+        get_memories=get_memories,
+        get_chunk_texts=MagicMock(side_effect=AssertionError("SQL-backed store must read chunks through SQL")),
+    )
+
+    @asynccontextmanager
+    async def acquire(_pool):
+        yield conn
+
+    with (
+        patch.object(mod, "get_memories", return_value=store),
+        patch.object(mod, "get_config", return_value=SimpleNamespace(database_backend="oracle")),
+        patch.object(mod, "acquire_with_retry", new=acquire),
+    ):
+        result = await _resolve_original_source_texts(MagicMock(), bank_id, {source_id})
+
+    assert result == {source_id: "Original source"}
+    assert conn.fetch.call_count == 1
+
 
 # ---------------------------------------------------------------------------
 # Fixtures + helpers
