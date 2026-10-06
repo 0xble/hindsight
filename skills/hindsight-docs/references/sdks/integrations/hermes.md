@@ -257,6 +257,7 @@ Config file: `~/.hermes/hindsight/config.json`
 | `retain_context` | `conversation between Hermes Agent and the User` | Context label for retained memories |
 | `retain_tags` | — | Default tags applied to retained memories; merged with per-call tool tags |
 | `retain_source` | — | Opt-in `metadata.source` attached to retained memories (identifies the storing client, e.g. `hermes`). Empty by default — no attribution tag ships unless you set it. |
+| `retain_strategy` | — | Named retain strategy sent with every stored item (`HINDSIGHT_RETAIN_STRATEGY`). The bank must define it under `retain_strategies`; an unknown name is ignored by the server. Empty lets the bank decide. |
 | `retain_indicator` | `true` | Show a `👁️ Hindsight — saving to memory…` status line when a turn is saved. Turn off for customer-facing agents. |
 | `retain_user_prefix` | `User` | Label used before user turns in auto-retained transcripts |
 | `retain_assistant_prefix` | `Assistant` | Label used before assistant turns in auto-retained transcripts |
