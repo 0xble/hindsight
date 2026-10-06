@@ -463,7 +463,7 @@ class Hindsight:
         self,
         bank_id: str,
         content: str | list[ContentBlock],
-        timestamp: datetime | None = None,
+        timestamp: datetime | str | None = None,
         context: str | None = None,
         document_id: str | None = None,
         metadata: dict[str, str] | None = None,
@@ -483,7 +483,7 @@ class Hindsight:
                 content blocks so an image sits inline where it actually appears —
                 see :data:`ContentBlock`. The block form needs a vision-capable
                 retain LLM server-side.
-            timestamp: Optional event timestamp
+            timestamp: Optional event timestamp (datetime, ISO string, or "unset" for timeless content)
             context: Optional context description
             document_id: Optional document ID for grouping
             metadata: Optional user-defined metadata
@@ -1230,7 +1230,7 @@ class Hindsight:
         self,
         bank_id: str,
         content: str | list[ContentBlock],
-        timestamp: datetime | None = None,
+        timestamp: datetime | str | None = None,
         context: str | None = None,
         document_id: str | None = None,
         metadata: dict[str, str] | None = None,
@@ -1250,7 +1250,7 @@ class Hindsight:
                 content blocks so an image sits inline where it actually appears —
                 see :data:`ContentBlock`. The block form needs a vision-capable
                 retain LLM server-side.
-            timestamp: Optional event timestamp
+            timestamp: Optional event timestamp (datetime, ISO string, or "unset" for timeless content)
             context: Optional context description
             document_id: Optional document ID for grouping
             metadata: Optional user-defined metadata
