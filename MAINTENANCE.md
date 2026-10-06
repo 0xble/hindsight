@@ -30,7 +30,7 @@ runs; these extend this sole enrollment and scheduling unit:
 - [Fork CI governance](maintenance/ci.md): HINDSIGHT-003.
 - [Generated-language integrity](maintenance/language-integrity.md): HINDSIGHT-005 and HINDSIGHT-008.
 - [Bounded consolidation schema correction](maintenance/schema-correction.md): consolidation-only divergence.
-- [SQL-store routing on Oracle](maintenance/store-routing.md): HINDSIGHT-010.
+- [SQL-store routing on Oracle](maintenance/store-routing.md): HINDSIGHT-011.
 - [Supported-detail preservation](maintenance/detail-loss.md): every run, together with bounded schema correction and generated-language integrity.
 - [Codex injection budget](maintenance/codex-injection-budget.md): every run, preserve the complete-context cap and offline tokenizer recovery.
 - [Original file preservation](maintenance/file-preservation.md): preserve bank-scoped policy, fail-closed worker reads and template roundtrips when adopting file/config changes.
