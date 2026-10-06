@@ -4,7 +4,7 @@ Memory Engine - Core implementation of the memory system.
 This package contains all the implementation details of the memory engine:
 - MemoryEngine: Main class for memory operations
 - Utility modules: embedding_utils, link_utils, bank_utils
-- Supporting modules: embeddings, cross_encoder, entity_resolver, etc.
+- Supporting modules: embeddings, cross_encoder, entity_resolver, memories (the memories store), etc.
 
 Public exports resolve on access. Importing a parser in a spawned OCR process
 must not initialize the application, provider configuration or local ML stack.

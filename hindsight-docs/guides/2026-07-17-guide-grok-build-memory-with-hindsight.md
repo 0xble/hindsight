@@ -164,4 +164,4 @@ Run `grok plugin list` to confirm `hindsight-memory` is installed, and `grok ins
 - Follow the [quickstart guide](https://hindsight.vectorize.io/docs/quickstart)
 - Review [Hindsight's recall API](https://hindsight.vectorize.io/docs/api/recall)
 - Review [Hindsight's retain API](https://hindsight.vectorize.io/docs/api/retain)
-- Read the [Grok Build integration docs](https://hindsight.vectorize.io/docs/integrations/grok-build)
+- Read the [Grok Build integration docs](https://hindsight.vectorize.io/sdks/integrations/coding-agents)

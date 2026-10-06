@@ -41,7 +41,7 @@ from ...curation_batch import (
 )
 from ...curation_guard import try_lock_curation_bank
 from ...db.base import DatabaseConnection
-from ...schema import fq_table
+from ...schema import fq_store_table as fq_table
 from . import writes
 
 _TABLES = (

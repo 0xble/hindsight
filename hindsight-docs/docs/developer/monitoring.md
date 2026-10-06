@@ -111,9 +111,8 @@ only on deployments with few banks or tenants. The backlog gauges always carry `
 
 | Metric | Type | Labels | Description |
 |--------|------|--------|-------------|
-| `hindsight.operation.duration` | Histogram | operation, bank_id, source, budget, max_tokens, success | Duration of operations in seconds |
-| `hindsight.operation.total` | Counter | operation, bank_id, source, budget, max_tokens, success | Total number of operations executed |
-| `hindsight.language_integrity.total` | Counter | stage, mode, outcome | Source-language guard checks, abstentions, retries, accepted mismatches, strict rejections, and detector errors |
+| `hindsight.operation.duration` | Histogram | operation, bank_id, source, budget, max_tokens, success, memories_backend | Duration of operations in seconds |
+| `hindsight.operation.total` | Counter | operation, bank_id, source, budget, max_tokens, success, memories_backend | Total number of operations executed |
 
 **Labels:**
 - `operation`: Operation type (`retain`, `recall`, `reflect`, plus async worker task types such as `consolidation`)
@@ -122,6 +121,10 @@ only on deployments with few banks or tenants. The backlog gauges always carry `
 - `budget`: Budget level if specified (`low`, `mid`, `high`)
 - `max_tokens`: Max tokens if specified
 - `success`: Whether the operation succeeded (`true`, `false`)
+- `memories_backend`: The store serving the bank, when the memories extension names one
+  (`MemoriesExtension.backend_name_for`). Absent by default, so existing series are unchanged; a
+  deployment whose banks live in different stores uses it to compare their latency without
+  turning on `tenant`. Recall phase metrics recorded inside the operation carry it too.
 
 The `source` label allows distinguishing between:
 - `api`: Direct API calls from clients
@@ -323,59 +326,6 @@ hindsight_db_pool_size - hindsight_db_pool_idle
 ```promql
 rate(hindsight_process_cpu_seconds{type="user"}[1m])
 ```
-
-## Recovery and Queue Alerts
-
-The backlog gauges are disabled by default because they run periodic per-schema count
-queries. Enable `HINDSIGHT_API_METRICS_BACKLOG_ENABLED=true` when operators need
-queue visibility. These PromQL examples are intentionally bank-agnostic because the
-standard gauge set does not include `bank_id`.
-
-Dashboard queries for work in progress and consolidation backlog. Nonzero values
-are normal during healthy processing and are not stuck-work alerts. To detect a
-stall, combine sustained backlog with evidence that completions have stopped,
-using a window appropriate to the deployment's expected processing time.
-
-```promql
-hindsight_async_operations{status=~"pending|processing"} > 0
-hindsight_consolidation_backlog > 0
-```
-
-Alert on failed async operations and failed consolidation:
-
-```promql
-hindsight_async_operations{status="failed"} > 0
-hindsight_consolidation_failed > 0
-```
-
-Alert on worker completion failures and failed LLM calls:
-
-```promql
-sum(rate(hindsight_operation_total{source="worker",success="false"}[15m])) > 0
-sum(rate(hindsight_llm_calls_total{success="false"}[15m])) > 0
-```
-
-Alert when consolidation or refresh latency threatens queue capacity:
-
-```promql
-histogram_quantile(
-  0.95,
-  sum by (le) (rate(hindsight_llm_duration_seconds_bucket{scope="consolidation"}[15m]))
-) > 120
-
-histogram_quantile(
-  0.95,
-  sum by (le) (rate(hindsight_operation_duration_seconds_bucket{
-    operation="refresh_mental_model"
-  }[15m]))
-) > 300
-```
-
-Use `/health/live` for process liveness and `/health/ready` for database readiness.
-Do not restart a worker solely because the backlog is nonzero. A backlog is expected
-while work is flowing. Combine it with a rising `processing` age, failed-operation
-count, stalled `seconds_since_last_poll`, or exhausted worker capacity before taking
-recovery action.
 
 ---
 

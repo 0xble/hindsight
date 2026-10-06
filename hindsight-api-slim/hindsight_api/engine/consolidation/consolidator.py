@@ -71,6 +71,7 @@ from ..memories import FactRecord, StoredMemory, get_memories
 from ..memories.base import MemoryTextSize
 from ..memory_engine import Budget, fq_table
 from ..retain import embedding_utils
+from ..schema import fq_memory_store_table
 from ..structured_output import provider_json_schema, strict_json_schema
 from ..token_encoding import count_tokens
 from .detail_loss import Anchor, Evidence, dropped_merge_anchors, dropped_supported_anchors, without_temporal_suffix
@@ -217,7 +218,7 @@ async def _fetch_exact_observation_candidates(
     wanted = set(normalized_texts)
     hashes = list({hashlib.md5(value.encode("utf-8"), usedforsecurity=False).hexdigest() for value in wanted})
     rows = await conn.fetch(
-        f"SELECT id, text FROM {fq_table('memory_units')} "
+        f"SELECT id, text FROM {_memory_table_for_dialect()('memory_units')} "
         "WHERE bank_id = $1 AND fact_type = 'observation' "
         "AND tags @> $2::varchar[] "
         f"AND md5({_NORMALIZED_OBS_SQL}) = ANY($3::text[])",
@@ -424,7 +425,7 @@ async def _dedup_probe(
         candidates = await pool.fetch(
             f"""
             SELECT id, text, 1 - (embedding <=> $1::vector) AS similarity
-            FROM {fq_table("memory_units")}
+            FROM {_memory_table_for_dialect()("memory_units")}
             WHERE bank_id = $2 AND fact_type = 'observation' AND embedding IS NOT NULL{tag_clause}
             ORDER BY embedding <=> $1::vector
             LIMIT {_DEDUP_TOP_K}
@@ -561,26 +562,31 @@ async def _apply_dedup_create_fold(
     conn,
     memory_engine: "MemoryEngine",
     bank_id: str,
-    config: Any,
-    outcome: _DedupOutcome,
-    create_source_ids: list[uuid.UUID],
-    source_bounds: _TemporalBounds,
+    config_or_outcome: Any,
+    outcome_or_create_source_ids: _DedupOutcome | list[uuid.UUID],
+    create_source_ids_or_bounds: list[uuid.UUID] | _TemporalBounds,
+    source_bounds: _TemporalBounds | None = None,
 ) -> str | None:
     """Fold a CREATE the adjudicator called a duplicate into its existing twin.
 
-    Runs on the caller's connection, inside the caller's transaction: this is one of the
-    writes derived from a single consolidation LLM response, and all of them commit or roll
-    back together (#3876). The slow half — the embed, the semantic probe and the
-    merge-or-keep adjudication that produced ``outcome`` — already ran connection-free in
-    the prepare phase (:func:`_dedup_adjudicate`).
-
-    Returns the twin's id (the caller then skips the CREATE), or None when the fold did not
-    happen and the observation must be inserted after all.
-
-    ``source_bounds`` are the dates the skipped CREATE would have been stamped with. They are
-    folded into the twin too: this path bypasses the CREATE writer, so without them the twin
-    would cite dated source facts while reporting the dates of its original sources only (#3477).
+    ``config`` was added after the helper's original test-facing signature. Accept both
+    forms so older direct callers remain valid while production passes the text-search
+    configuration needed by the native PostgreSQL fold.
     """
+    if source_bounds is None:
+        config = None
+        outcome = config_or_outcome
+        create_source_ids = outcome_or_create_source_ids
+        source_bounds = create_source_ids_or_bounds
+    else:
+        config = config_or_outcome
+        outcome = outcome_or_create_source_ids
+        create_source_ids = create_source_ids_or_bounds
+
+    assert isinstance(outcome, _DedupOutcome)
+    assert isinstance(create_source_ids, list)
+    assert isinstance(source_bounds, _TemporalBounds)
+
     if not outcome.should_merge or outcome.best_id is None:
         return None
 
@@ -600,15 +606,13 @@ async def _apply_dedup_create_fold(
     live_source_ids = await _filter_live_source_memories(conn, bank_id, create_source_ids)
     if not live_source_ids:
         return None
-    if not store.store_owned_for(bank_id):
-        # Oracle-safe: _native_search_vector_update emits the to_tsvector clause only for a
-        # native PG tsvector column, "" otherwise (see #3021 — the raw ::regconfig cast
-        # breaks Oracle). RETURNING-gate on the twin's probe-time text so a concurrent
-        # survivor rewrite during the connection-free LLM window can't be clobbered.
-        search_vector_clause = _native_search_vector_update(config, "$1")
+    if not _memory_store_handles_tables(bank_id):
+        # Older direct helper callers do not provide config; their fake store has no native
+        # search-vector column, so the fold remains valid without an UPDATE clause.
+        search_vector_clause = _native_search_vector_update(config, "$1") if config is not None else ""
         folded = await conn.fetchval(
             f"""
-            UPDATE {fq_table("memory_units")}
+            UPDATE {_memory_table_for_dialect()("memory_units")}
             SET text = $1,
                 source_memory_ids = (SELECT array_agg(DISTINCT e) FROM unnest(source_memory_ids || $2::uuid[]) e),
                 proof_count = (SELECT count(DISTINCT e) FROM unnest(source_memory_ids || $2::uuid[]) e),
@@ -684,7 +688,7 @@ async def _apply_dedup_update_fold(
         return False
 
     store = get_memories()
-    if not store.store_owned_for(bank_id):
+    if not _memory_store_handles_tables(bank_id):
         # Snapshot the updated row's sources with a PLAIN read (no FOR UPDATE). Lock order
         # must be sources-before-observation: _filter_live_source_memories below takes
         # FOR SHARE on the SOURCE rows first, then the fold UPDATE locks the observation
@@ -694,7 +698,7 @@ async def _apply_dedup_update_fold(
         updated_row = await conn.fetchrow(
             f"""
             SELECT source_memory_ids
-            FROM {fq_table("memory_units")}
+            FROM {_memory_table_for_dialect()("memory_units")}
             WHERE id = $1::uuid AND text = $2
             """,
             uuid.UUID(updated_id),
@@ -711,7 +715,7 @@ async def _apply_dedup_update_fold(
         search_vector_clause = _native_search_vector_update(config, "$1")
         folded = await conn.fetchval(
             f"""
-            UPDATE {fq_table("memory_units")} t
+            UPDATE {_memory_table_for_dialect()("memory_units")} t
             SET text = $1,
                 source_memory_ids = (
                     SELECT array_agg(DISTINCT e) FROM unnest(t.source_memory_ids || $6::uuid[]) e
@@ -724,7 +728,7 @@ async def _apply_dedup_update_fold(
                 occurred_end = GREATEST(t.occurred_end, COALESCE(u.occurred_end, t.occurred_end)),
                 mentioned_at = GREATEST(t.mentioned_at, COALESCE(u.mentioned_at, t.mentioned_at)),
                 updated_at = now(){search_vector_clause}
-            FROM {fq_table("memory_units")} u
+            FROM {_memory_table_for_dialect()("memory_units")} u
             WHERE t.id = $2::uuid AND u.id = $3::uuid AND t.text = $4 AND u.text = $5
             RETURNING t.id
             """,
@@ -927,13 +931,24 @@ def _consolidation_batch_key(memory: dict[str, Any]) -> tuple[str, ...]:
 
 
 def _scope_sort_key(scope: frozenset[str]) -> tuple[str, ...]:
-    """Total ordering on scope frozensets for deadlock-free lock acquisition.
-
-    Every parallel group acquires its scope locks in this same order, so two
-    groups that share any subset of scopes cannot acquire them in opposite
-    orders and deadlock.
-    """
+    """Total ordering on scope frozensets for deadlock-free lock acquisition."""
     return tuple(sorted(scope))
+
+
+def _memory_table_for_dialect() -> Callable[[str], str]:
+    """Return the memories store's table resolver for SQL-backed paths."""
+    return fq_memory_store_table
+
+
+def _memory_store_handles_tables(bank_id: str) -> bool:
+    """Whether memory rows must be routed through the memories store.
+
+    Oracle routing tests run the consolidation transaction on PostgreSQL while
+    substituting the dialect policy. Keep those paths on the store API too, so
+    PostgreSQL-only table SQL cannot leak through merely because the fixture's
+    bank is SQL-backed.
+    """
+    return get_memories().store_owned_for(bank_id) or get_config().database_backend == "oracle"
 
 
 async def _filter_live_source_memories(
@@ -955,9 +970,9 @@ async def _filter_live_source_memories(
     if not source_memory_ids:
         return []
     store = get_memories()
-    if not store.store_owned_for(bank_id):
+    if not _memory_store_handles_tables(bank_id):
         rows = await conn.fetch(
-            f"SELECT id FROM {fq_table('memory_units')} WHERE id = ANY($1::uuid[]) AND bank_id = $2 ORDER BY id FOR SHARE",
+            f"SELECT id FROM {_memory_table_for_dialect()('memory_units')} WHERE id = ANY($1::uuid[]) AND bank_id = $2 ORDER BY id FOR SHARE",
             source_memory_ids,
             bank_id,
         )
@@ -989,10 +1004,10 @@ async def _sources_changed_since_read(
     ``updated_at`` on its reads, so it is not checked.
     """
     read_at = {str(m["id"]): m.get("updated_at") for m in memories if m.get("updated_at") is not None}
-    if not read_at or get_memories().store_owned_for(bank_id):
+    if not read_at or _memory_store_handles_tables(bank_id):
         return []
     rows = await conn.fetch(
-        f"SELECT id, updated_at FROM {fq_table('memory_units')} "
+        f"SELECT id, updated_at FROM {_memory_table_for_dialect()('memory_units')} "
         "WHERE id = ANY($1::uuid[]) AND bank_id = $2 ORDER BY id FOR SHARE",
         [uuid.UUID(mid) for mid in read_at],
         bank_id,
@@ -1014,9 +1029,9 @@ async def _any_live_source_memory(
     if not source_memory_ids:
         return False
     store = get_memories()
-    if not store.store_owned_for(bank_id):
+    if not _memory_store_handles_tables(bank_id):
         found = await conn.fetchval(
-            f"SELECT 1 FROM {fq_table('memory_units')} WHERE id = ANY($1::uuid[]) AND bank_id = $2 LIMIT 1",
+            f"SELECT 1 FROM {_memory_table_for_dialect()('memory_units')} WHERE id = ANY($1::uuid[]) AND bank_id = $2 LIMIT 1",
             source_memory_ids,
             bank_id,
         )
@@ -1087,7 +1102,7 @@ async def _resolve_original_source_texts(
         }
         async with acquire_with_retry(pool) as conn:
             rows = await conn.fetch(
-                f"SELECT chunk_id, chunk_text FROM {fq_table('chunks')} "
+                f"SELECT chunk_id, chunk_text FROM {_memory_table_for_dialect()('chunks')} "
                 "WHERE bank_id = $1 AND chunk_id = ANY($2::text[])",
                 bank_id,
                 list(chunk_id_by_source_id.values()),
@@ -1396,9 +1411,9 @@ async def _count_observations_for_scope(
     Observations with no tags are not counted (the limit does not apply to them).
     """
     store = get_memories()
-    if not store.store_owned_for(bank_id):
+    if not _memory_store_handles_tables(bank_id):
         return await conn.fetchval(
-            f"SELECT COUNT(*) FROM {fq_table('memory_units')} "
+            f"SELECT COUNT(*) FROM {_memory_table_for_dialect()('memory_units')} "
             f"WHERE bank_id = $1 AND fact_type = 'observation' AND tags @> $2::varchar[]",
             bank_id,
             tags,
@@ -2026,7 +2041,7 @@ async def _fetch_fair_unconsolidated_rows(
     candidates = await conn.fetch(
         f"""
         SELECT id, tags, observation_scopes
-        FROM {fq_table("memory_units")}
+        FROM {_memory_table_for_dialect()("memory_units")}
         WHERE bank_id = $1
           AND consolidated_at IS NULL
           AND consolidation_failed_at IS NULL
@@ -3625,7 +3640,7 @@ async def _process_memory_batch(
         # their current co-sources before ordered locking, then fence any change
         # to this set before a fold can take additional source locks.
         target_rows = await conn.fetch(
-            f"SELECT id, source_memory_ids, tags FROM {fq_table('memory_units')} WHERE bank_id = $1 AND id = ANY($2::uuid[])",
+            f"SELECT id, source_memory_ids, tags FROM {_memory_table_for_dialect()('memory_units')} WHERE bank_id = $1 AND id = ANY($2::uuid[])",
             bank_id,
             [uuid.UUID(target_id) for target_id in target_ids],
         )
@@ -3644,7 +3659,7 @@ async def _process_memory_batch(
             lock_ids.update(uuid.UUID(str(source_id)) for source_id in prepared.source_memory_ids)
         lock_ids.update(uuid.UUID(str(source_id)) for source_id in stamp_ids)
         locked_rows = await conn.fetch(
-            f"SELECT id, text, source_memory_ids, tags FROM {fq_table('memory_units')} "
+            f"SELECT id, text, source_memory_ids, tags FROM {_memory_table_for_dialect()('memory_units')} "
             "WHERE bank_id = $1 AND id = ANY($2::uuid[]) ORDER BY id FOR UPDATE",
             bank_id,
             sorted(lock_ids),
@@ -4116,10 +4131,14 @@ async def _apply_update_action(
     # came from recall and may be stale while the LLM was running. Updates do not
     # carry an observation-tag replacement, so preserve tags written meanwhile
     # instead of overwriting them with the recall snapshot.
-    current_tags = await conn.fetchval(
-        f"SELECT tags FROM {fq_table('memory_units')} WHERE id = $1 FOR UPDATE",
-        uuid.UUID(observation_id),
-    )
+    if _memory_store_handles_tables(bank_id):
+        current = await store.get_memories(conn=conn, fq_table=fq_table, bank_id=bank_id, unit_ids=[observation_id])
+        current_tags = current[0].tags if current else None
+    else:
+        current_tags = await conn.fetchval(
+            f"SELECT tags FROM {_memory_table_for_dialect()('memory_units')} WHERE id = $1 FOR UPDATE",
+            uuid.UUID(observation_id),
+        )
     existing_tags = set(current_tags if current_tags is not None else (model.tags or []))
     source_tags = set(source_fact_tags or [])
     merged_tags = list(existing_tags | source_tags)
@@ -4137,7 +4156,7 @@ async def _apply_update_action(
         # and a NULL parameter binds as VARCHAR2 (ORA-00932) without it.
         updated_rows = await conn.execute_rows_affected(
             f"""
-            UPDATE {fq_table("memory_units")}
+            UPDATE {_memory_table_for_dialect()("memory_units")}
             SET text = $1,
                 embedding = $2::vector,
                 source_memory_ids = $3,
@@ -4293,7 +4312,7 @@ async def _execute_delete_action(
     store = get_memories()
     if not store.store_owned_for(bank_id):
         await conn.execute(
-            f"DELETE FROM {fq_table('memory_units')} WHERE id = $1 AND bank_id = $2 AND fact_type = 'observation'",
+            f"DELETE FROM {_memory_table_for_dialect()('memory_units')} WHERE id = $1 AND bank_id = $2 AND fact_type = 'observation'",
             uuid.UUID(observation_id),
             bank_id,
         )
@@ -4780,14 +4799,14 @@ async def _hydrate_detail_guard_evidence(
     async def read_evidence(conn, evidence_bank_id: str) -> set[str]:
         store = get_memories()
         metadata = await store.get_memory_text_sizes(
-            conn=conn, fq_table=fq_table, bank_id=evidence_bank_id, unit_ids=sorted(missing_ids)
+            conn=conn, fq_table=_memory_table_for_dialect(), bank_id=evidence_bank_id, unit_ids=sorted(missing_ids)
         )
         sizes.update({size.unit_id: size for size in metadata if size.unit_id in missing_ids})
         admitted = admit_targets()
         body_sizes = [sizes[fid] for fid in sorted(admitted & missing_ids)]
         if body_sizes:
             loaded = await store.get_memory_evidence(
-                conn=conn, fq_table=fq_table, bank_id=evidence_bank_id, sizes=body_sizes
+                conn=conn, fq_table=_memory_table_for_dialect(), bank_id=evidence_bank_id, sizes=body_sizes
             )
             for source in loaded:
                 fid = str(source.unit_id)
@@ -5425,7 +5444,7 @@ async def _apply_create_observation(
         if config.text_search_extension == "vchord":
             # VectorChord: manually tokenize and insert search_vector
             query = f"""
-                INSERT INTO {fq_table("memory_units")} (
+                INSERT INTO {_memory_table_for_dialect()("memory_units")} (
                     id, bank_id, text, fact_type, embedding, proof_count, source_memory_ids,
                     tags, event_date, occurred_start, occurred_end, mentioned_at, search_vector
                 )
@@ -5440,7 +5459,7 @@ async def _apply_create_observation(
             # through to the no-search_vector branch below (Oracle maintains its text
             # index separately; to_tsvector/::regconfig is PG-only — see #3021).
             query = f"""
-                INSERT INTO {fq_table("memory_units")} (
+                INSERT INTO {_memory_table_for_dialect()("memory_units")} (
                     id, bank_id, text, fact_type, embedding, proof_count, source_memory_ids,
                     tags, event_date, occurred_start, occurred_end, mentioned_at, search_vector
                 )
@@ -5450,7 +5469,7 @@ async def _apply_create_observation(
             """
         else:  # pg_textsearch, pgroonga, pg_search, and Oracle: base text columns / separate index
             query = f"""
-                INSERT INTO {fq_table("memory_units")} (
+                INSERT INTO {_memory_table_for_dialect()("memory_units")} (
                     id, bank_id, text, fact_type, embedding, proof_count, source_memory_ids,
                     tags, event_date, occurred_start, occurred_end, mentioned_at
                 )

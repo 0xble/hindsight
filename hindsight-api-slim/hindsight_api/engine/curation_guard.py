@@ -13,6 +13,7 @@ from typing import Any, Literal
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from .db import DatabaseConnection
+from .schema import STORE_TABLES, fq_memory_store_table
 
 
 class CurationConflictError(ValueError):
@@ -123,7 +124,8 @@ async def lock_curation_tables(conn: DatabaseConnection, fq_table: Callable[[str
     ):
         # SHARE ROW EXCLUSIVE permits this transaction's curation while blocking
         # competing DML. NOWAIT avoids pinning a pool connection behind a worker.
-        await conn.execute(f"LOCK TABLE {fq_table(table)} IN SHARE ROW EXCLUSIVE MODE NOWAIT")
+        table_resolver = fq_memory_store_table if table in STORE_TABLES else fq_table
+        await conn.execute(f"LOCK TABLE {table_resolver(table)} IN SHARE ROW EXCLUSIVE MODE NOWAIT")
 
 
 async def verify_curation_guard(
@@ -154,7 +156,7 @@ async def verify_curation_guard(
     if active:
         raise CurationConflictError("Consolidation has an active operation.")
     dependent = await conn.fetchval(
-        f"SELECT EXISTS (SELECT 1 FROM {fq_table('memory_units')} WHERE bank_id = $1 "
+        f"SELECT EXISTS (SELECT 1 FROM {fq_memory_store_table('memory_units')} WHERE bank_id = $1 "
         "AND fact_type = 'observation' AND source_memory_ids && $2::uuid[])",
         bank_id,
         [uuid.UUID(snapshot.id)],
@@ -163,7 +165,7 @@ async def verify_curation_guard(
         raise CurationConflictError("Memory has dependent observations, curation would delete derived state.")
     source = await conn.fetchrow(
         f"SELECT d.content_hash, d.updated_at, d.original_text, c.chunk_text "
-        f"FROM {fq_table('documents')} d JOIN {fq_table('chunks')} c "
+        f"FROM {fq_memory_store_table('documents')} d JOIN {fq_memory_store_table('chunks')} c "
         "ON c.document_id = d.id AND c.bank_id = d.bank_id "
         "WHERE d.id = $1 AND d.bank_id = $2 AND c.chunk_id = $3 "
         "AND octet_length(d.original_text) <= 1048576 AND octet_length(c.chunk_text) <= 1048576",
