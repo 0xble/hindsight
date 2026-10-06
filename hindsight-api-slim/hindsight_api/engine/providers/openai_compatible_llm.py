@@ -32,7 +32,8 @@ from typing import Any, Callable, Literal
 from urllib.parse import parse_qs, urlparse, urlunparse
 
 import aiohttp
-from openai import APIConnectionError, APIStatusError, AsyncOpenAI, LengthFinishReasonError
+import httpx  # noqa: TID251 -- request metadata for the SDK timeout exception only
+from openai import APIConnectionError, APIStatusError, APITimeoutError, AsyncOpenAI, LengthFinishReasonError
 
 from hindsight_api.config import get_config
 from hindsight_api.engine.aiohttp_session import LoopLocalSession, UpstreamHTTPError, raise_for_status
@@ -1147,6 +1148,23 @@ class OpenAICompatibleLLM(LLMInterface):
         if self.provider == "minimax":
             extra_body.setdefault("thinking", {"type": "disabled"})
 
+    async def _create_completion(self, call_params: dict[str, Any]) -> Any:
+        """Bound each SDK request, including body reads, without changing retries.
+
+        SDK timeouts are per phase: non-streaming keepalive whitespace resets
+        the read timer indefinitely (upstream #4784). The total deadline starts
+        after attempt admission and raises the same type as an SDK read timeout.
+        """
+        deadline = asyncio.timeout(self.timeout)
+        try:
+            async with deadline:
+                return await self._client.chat.completions.create(**call_params)
+        except TimeoutError as exc:
+            if not deadline.expired():
+                raise
+            request = httpx.Request("POST", str(self._client.base_url.join("chat/completions")))
+            raise APITimeoutError(request=request) from exc
+
     async def call(
         self,
         messages: list[dict[str, str]],
@@ -1313,12 +1331,7 @@ class OpenAICompatibleLLM(LLMInterface):
                 if response_format is not None:
                     async with attempt_context() if attempt_context is not None else nullcontext():
                         set_stage(f"llm.{self.provider}.{scope}.attempt={attempt + 1}/{max_retries + 1}")
-                        # Wall-clock cap: the SDK's timeout is per phase and its read timeout restarts
-                        # on every byte, so an upstream trickling keep-alive whitespace never trips it
-                        # and the call pins its worker slot forever (#4763).
-                        response = await asyncio.wait_for(
-                            self._client.chat.completions.create(**call_params), timeout=self.timeout
-                        )
+                        response = await self._create_completion(call_params)
                     # Stash usage before parse/validate, which may raise locally
                     # even though the provider charged for these tokens (#2387).
                     stash_response_usage(_usage_from_openai_response(response))
@@ -1398,9 +1411,7 @@ class OpenAICompatibleLLM(LLMInterface):
                 else:
                     async with attempt_context() if attempt_context is not None else nullcontext():
                         set_stage(f"llm.{self.provider}.{scope}.attempt={attempt + 1}/{max_retries + 1}")
-                        response = await asyncio.wait_for(
-                            self._client.chat.completions.create(**call_params), timeout=self.timeout
-                        )
+                        response = await self._create_completion(call_params)
                     stash_response_usage(_usage_from_openai_response(response))
                     result, first_choice = _content_or_error(
                         response,
@@ -1731,9 +1742,7 @@ class OpenAICompatibleLLM(LLMInterface):
             try:
                 async with attempt_context() if attempt_context is not None else nullcontext():
                     set_stage(f"llm.{self.provider}.tools.attempt={attempt + 1}/{attempts_allowed}")
-                    response = await asyncio.wait_for(
-                        self._client.chat.completions.create(**call_params), timeout=self.timeout
-                    )
+                    response = await self._create_completion(call_params)
                     stash_response_usage(_usage_from_openai_response(response))
 
                 message = response.choices[0].message
