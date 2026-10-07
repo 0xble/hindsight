@@ -2678,6 +2678,11 @@ async def _streaming_retain_batch(
 
     # Shared mutable state for the producer to report skipped chunks and usage
     producer_error: list[BaseException] = []
+    # Content + context tokens of the chunks the producer actually sent to extraction, for the
+    # processed-content-tokens signal. Only filled in recovery mode, which is the only mode where
+    # chunks are skipped and so the only one where the number means anything. See the return at
+    # the end of this function.
+    extracted_content_tokens: list[int] = [0]
     # Set to True by _run_mini_batch_db_work when a concurrent request takes
     # over the document (content_hash mismatch). The consumer checks this and
     # stops processing further batches.
@@ -2786,6 +2791,13 @@ async def _streaming_retain_batch(
                     all_pre_chunks[i] = ""
                     skipped_total += 1
                     continue
+                if is_recovery:
+                    # Counted the way the delta path counts (`_count_delta_content_tokens`): the
+                    # chunk's text plus the context it is extracted with. Skipped outside recovery
+                    # so a first retain does not tokenize the whole body again for a number the
+                    # return below throws away.
+                    source = contents[chunk_to_content[i]] if contents else _default_content
+                    extracted_content_tokens[0] += count_tokens(chunk_text) + count_tokens(source.context or "")
                 tasks.append(asyncio.create_task(_extract_one(i, chunk_text)))
 
             if skipped_total > 0:
@@ -3589,10 +3601,25 @@ async def _streaming_retain_batch(
     # Map all unit_ids back to the original content items.
     # For streaming mode with a single document, all units belong to content 0.
     result_unit_ids = [all_unit_ids] + [[] for _ in contents[1:]]
-    # The streaming path doesn't compute per-chunk content-hash dedup in
-    # a way that lets us report a partial-processed tokens count — signal
-    # ``None`` so callers bill against the full submitted payload.
-    return RetainBatchResult(result_unit_ids, total_usage, None)
+    # processed_content_tokens: in recovery mode the producer classified every chunk against the
+    # hashes already committed for this content_hash, so what it sent to extraction is a real
+    # measurement — report it, the same quantity the delta path reports.
+    #
+    # Returning None here unconditionally made every re-retain of an oversized document report
+    # "no dedup signal" even though nothing was re-extracted. An oversized item is split into
+    # sub-batches; only the first may take the delta path, and the later ones land here, find their
+    # chunks committed and skip them. One None is contagious across sub-batches
+    # (`merge_processed_content_tokens`), so a caller that charges by this field charged the whole
+    # document again for every re-retain, however little of it had changed.
+    #
+    # The condition is `is_recovery`, not "some chunk was skipped": a sub-batch whose chunks all
+    # differ from the committed ones (the appended tail of a grown document) did extract all of
+    # them, and saying so is accurate, where one None would re-inflate the whole retain to the
+    # full submission. Outside recovery there is no per-chunk dedup at all, so None still means
+    # "bill the submitted payload", as before — that also covers every path that never reaches
+    # the producer.
+    processed_content_tokens: int | None = extracted_content_tokens[0] if is_recovery else None
+    return RetainBatchResult(result_unit_ids, total_usage, processed_content_tokens)
 
 
 # ---------------------------------------------------------------------------
