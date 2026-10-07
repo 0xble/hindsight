@@ -124,7 +124,6 @@ from ...config import ENV_XAI_OAUTH_REFRESH_SKEW_SECONDS as ENV_REFRESH_SKEW_SEC
 from ...config import ENV_XAI_OAUTH_REFRESH_TIMEOUT_SECONDS as ENV_REFRESH_TIMEOUT_SECONDS
 from ...config import ENV_XAI_OAUTH_SCOPE as ENV_SCOPE
 from ...config import ENV_XAI_OAUTH_TOKEN_PATH as ENV_TOKEN_PATH
-from ...config import get_config
 
 # ---------------------------------------------------------------------------
 # Vendor constants
