@@ -1,19 +1,24 @@
 """Regression coverage for consolidation language authority from original chunks."""
 
+import uuid
+from dataclasses import replace
 from types import SimpleNamespace
 from typing import Any, cast
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, patch
 
 import pytest
 from pydantic import ValidationError
 
+from hindsight_api.config import _get_raw_config
 from hindsight_api.engine.chunk_ids import build_chunk_id
 from hindsight_api.engine.consolidation import consolidator
 from hindsight_api.engine.consolidation.consolidator import _consolidate_batch_with_llm, _resolve_original_source_texts
 from hindsight_api.engine.db import DatabaseBackend
 from hindsight_api.engine.language_integrity import LanguageCheckResult
 from hindsight_api.engine.memories.base import StoredMemory
-from hindsight_api.engine.response_models import LLMCallResult, MemoryFact, TokenUsage
+from hindsight_api.engine.response_models import LLMCallResult, MemoryFact, RecallResult, TokenUsage
+from tests.test_consolidation_schema_correction import install, provider  # noqa: F401
+from tests.test_consolidation_scope_parallelism import _insert_memory
 
 
 @pytest.fixture
@@ -264,6 +269,102 @@ async def test_untargeted_update_drops_with_sibling_create_and_leaves_sources_pe
     assert not result.updates
     assert result.pending_fact_ids == {"B"}
     assert llm.call.await_count == 1
+
+
+@pytest.mark.asyncio
+async def test_db_apply_keeps_valid_create_and_pending_source_for_dropped_update(
+    memory, request_context, provider
+) -> None:
+    """A mixed reply commits the valid CREATE while an untargeted UPDATE stays retryable."""
+    bank = "mixed-reference-" + uuid.uuid4().hex[:8]
+    tags = ["mixed"]
+    source_a = source_b = None
+    try:
+        await memory.ensure_bank_profile(bank, request_context=request_context)
+        async with memory._pool.acquire() as conn:
+            source_a = await _insert_memory(conn, bank, "Fact A", tags, "shared")
+            source_b = await _insert_memory(conn, bank, "Fact B", tags, "shared")
+            recalled_id = uuid.uuid4()
+            await conn.execute(
+                """
+                INSERT INTO memory_units (id, bank_id, text, fact_type, tags, source_memory_ids, created_at)
+                VALUES ($1, $2, $3, 'observation', $4, $5, now())
+                """,
+                recalled_id,
+                bank,
+                "Existing observation",
+                tags,
+                [source_a],
+            )
+            facts = [
+                dict(await conn.fetchrow("SELECT * FROM memory_units WHERE id=$1", source_id))
+                for source_id in (source_a, source_b)
+            ]
+
+        recalls = [
+            RecallResult(
+                results=[
+                    MemoryFact(
+                        id=str(recalled_id),
+                        text="Existing observation",
+                        fact_type="observation",
+                        tags=tags,
+                        source_fact_ids=[str(source_a)],
+                    )
+                ]
+            ),
+            RecallResult(results=[]),
+        ]
+        untargeted_id = str(uuid.uuid4())
+        stub = install(
+            provider,
+            [
+                {
+                    "creates": [{"text": "Durable create", "source_fact_ids": [str(source_a)]}],
+                    "updates": [
+                        {
+                            "text": "Discarded update",
+                            "observation_id": untargeted_id,
+                            "source_fact_ids": [str(source_b)],
+                        }
+                    ],
+                    "deletes": [],
+                }
+            ],
+        )
+        config = replace(_get_raw_config(), llm_language_integrity="off", consolidation_dedup_threshold=1.0)
+        with patch.object(consolidator, "_find_related_observations", side_effect=recalls):
+            results, deleted_count, failed = await consolidator._process_memory_batch(
+                pool=memory._backend,
+                memory_engine=memory,
+                llm_config=provider,
+                bank_id=bank,
+                memories=facts,
+                request_context=request_context,
+                config=config,
+                obs_tags_override=tags,
+                mark_consolidated_ids=[source_a, source_b],
+            )
+
+        assert not failed
+        assert deleted_count == 0
+        assert stub.requests
+        assert results == [{"action": "created"}, {"action": "skipped", "reason": "invalid_references_pending"}]
+        async with memory._pool.acquire() as conn:
+            rows = await conn.fetch(
+                "SELECT text, source_memory_ids FROM memory_units WHERE bank_id=$1 AND fact_type='observation'",
+                bank,
+            )
+            stamps = await conn.fetch(
+                "SELECT id, consolidated_at FROM memory_units WHERE id = ANY($1::uuid[])",
+                [source_a, source_b],
+            )
+        assert ("Durable create", [source_a]) in [(row["text"], row["source_memory_ids"]) for row in rows]
+        stamped = {row["id"]: row["consolidated_at"] for row in stamps}
+        assert stamped[source_a] is not None
+        assert stamped[source_b] is None
+    finally:
+        await memory.delete_bank(bank, request_context=request_context)
 
 
 def test_filter_reports_each_rule_and_keeps_valid_actions() -> None:
