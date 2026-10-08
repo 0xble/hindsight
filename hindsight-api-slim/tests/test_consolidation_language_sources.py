@@ -1,18 +1,24 @@
 """Regression coverage for consolidation language authority from original chunks."""
 
+import uuid
+from dataclasses import replace
 from types import SimpleNamespace
 from typing import Any, cast
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, patch
 
 import pytest
+from pydantic import ValidationError
 
+from hindsight_api.config import _get_raw_config
 from hindsight_api.engine.chunk_ids import build_chunk_id
 from hindsight_api.engine.consolidation import consolidator
 from hindsight_api.engine.consolidation.consolidator import _consolidate_batch_with_llm, _resolve_original_source_texts
 from hindsight_api.engine.db import DatabaseBackend
 from hindsight_api.engine.language_integrity import LanguageCheckResult
 from hindsight_api.engine.memories.base import StoredMemory
-from hindsight_api.engine.response_models import LLMCallResult, MemoryFact, TokenUsage
+from hindsight_api.engine.response_models import LLMCallResult, MemoryFact, RecallResult, TokenUsage
+from tests.test_consolidation_schema_correction import install, provider  # noqa: F401
+from tests.test_consolidation_scope_parallelism import _insert_memory
 
 
 @pytest.fixture
@@ -223,6 +229,144 @@ async def test_fact_cited_only_by_dropped_actions_remains_pending(
     assert llm.call.await_count == 1
 
 
+@pytest.mark.asyncio
+async def test_untargeted_update_drops_with_sibling_create_and_leaves_sources_pending(
+    monkeypatch: pytest.MonkeyPatch, config: SimpleNamespace
+) -> None:
+    """An untargeted UPDATE is retried as pending while an independently valid sibling survives."""
+    llm = AsyncMock()
+    llm._provider_impl = None
+    llm.call.return_value = LLMCallResult(
+        content=SimpleNamespace(
+            creates=[SimpleNamespace(text="valid sibling", source_fact_ids=["A"])],
+            updates=[SimpleNamespace(text="untargeted", observation_id="Z", source_fact_ids=["B"])],
+            deletes=[],
+        ),
+        usage=TokenUsage(),
+    )
+
+    async def prepare(*_args: object, **_kwargs: object) -> object:
+        return object()
+
+    async def evaluate(_context: object, generated, **_kwargs: object) -> LanguageCheckResult:
+        assert [item.text for item in generated] == ["valid sibling"]
+        return LanguageCheckResult(mismatches=(), checked=1, abstained=0)
+
+    monkeypatch.setattr(consolidator, "prepare_context_safely", prepare)
+    monkeypatch.setattr(consolidator, "evaluate_language_integrity_safely", evaluate)
+
+    result = await _consolidate_batch_with_llm(
+        llm_config=llm,
+        memories=[{"id": "A", "text": "fact A"}, {"id": "B", "text": "fact B"}],
+        union_observations=[],
+        union_source_facts={},
+        original_source_text_by_id={"A": "original A", "B": "original B"},
+        config=config,
+    )
+
+    assert not result.failed
+    assert [action.text for action in result.creates] == ["valid sibling"]
+    assert not result.updates
+    assert result.pending_fact_ids == {"B"}
+    assert llm.call.await_count == 1
+
+
+@pytest.mark.asyncio
+async def test_db_apply_keeps_valid_create_and_pending_source_for_dropped_update(
+    memory, request_context, provider
+) -> None:
+    """A mixed reply commits the valid CREATE while an untargeted UPDATE stays retryable."""
+    bank = "mixed-reference-" + uuid.uuid4().hex[:8]
+    tags = ["mixed"]
+    source_a = source_b = None
+    try:
+        await memory.ensure_bank_profile(bank, request_context=request_context)
+        async with memory._pool.acquire() as conn:
+            source_a = await _insert_memory(conn, bank, "Fact A", tags, "shared")
+            source_b = await _insert_memory(conn, bank, "Fact B", tags, "shared")
+            recalled_id = uuid.uuid4()
+            await conn.execute(
+                """
+                INSERT INTO memory_units (id, bank_id, text, fact_type, tags, source_memory_ids, created_at)
+                VALUES ($1, $2, $3, 'observation', $4, $5, now())
+                """,
+                recalled_id,
+                bank,
+                "Existing observation",
+                tags,
+                [source_a],
+            )
+            facts = [
+                dict(await conn.fetchrow("SELECT * FROM memory_units WHERE id=$1", source_id))
+                for source_id in (source_a, source_b)
+            ]
+
+        recalls = [
+            RecallResult(
+                results=[
+                    MemoryFact(
+                        id=str(recalled_id),
+                        text="Existing observation",
+                        fact_type="observation",
+                        tags=tags,
+                        source_fact_ids=[str(source_a)],
+                    )
+                ]
+            ),
+            RecallResult(results=[]),
+        ]
+        untargeted_id = str(uuid.uuid4())
+        stub = install(
+            provider,
+            [
+                {
+                    "creates": [{"text": "Durable create", "source_fact_ids": [str(source_a)]}],
+                    "updates": [
+                        {
+                            "text": "Discarded update",
+                            "observation_id": untargeted_id,
+                            "source_fact_ids": [str(source_b)],
+                        }
+                    ],
+                    "deletes": [],
+                }
+            ],
+        )
+        config = replace(_get_raw_config(), llm_language_integrity="off", consolidation_dedup_threshold=1.0)
+        with patch.object(consolidator, "_find_related_observations", side_effect=recalls):
+            results, deleted_count, failed = await consolidator._process_memory_batch(
+                pool=memory._backend,
+                memory_engine=memory,
+                llm_config=provider,
+                bank_id=bank,
+                memories=facts,
+                request_context=request_context,
+                config=config,
+                obs_tags_override=tags,
+                mark_consolidated_ids=[source_a, source_b],
+            )
+
+        assert not failed
+        assert deleted_count == 0
+        assert stub.requests
+        assert results == [{"action": "created"}, {"action": "skipped", "reason": "invalid_references_pending"}]
+        async with memory._pool.acquire() as conn:
+            rows = await conn.fetch(
+                "SELECT text, source_memory_ids FROM memory_units WHERE bank_id=$1 AND fact_type='observation'",
+                bank,
+            )
+            stamps = await conn.fetch(
+                "SELECT id, consolidated_at FROM memory_units WHERE id = ANY($1::uuid[])",
+                [source_a, source_b],
+            )
+        assert ("Durable create", [source_a]) in [(row["text"], row["source_memory_ids"]) for row in rows]
+        stamped = {row["id"]: row["consolidated_at"] for row in stamps}
+        assert stamped[source_a] is not None
+        assert stamped[source_b] is None
+    finally:
+        await memory.delete_bank(bank, request_context=request_context)
+
+
 def test_filter_reports_each_rule_and_keeps_valid_actions() -> None:
     response = consolidator._ConsolidationBatchResponse.model_construct(
         creates=[
@@ -233,6 +377,8 @@ def test_filter_reports_each_rule_and_keeps_valid_actions() -> None:
             SimpleNamespace(text="ok", observation_id="O", source_fact_ids=["B"]),
             SimpleNamespace(text="no source", observation_id="O", source_fact_ids=[]),
             SimpleNamespace(text="outside", observation_id="O", source_fact_ids=["B", "X"]),
+            SimpleNamespace(text="unknown target", observation_id="Z", source_fact_ids=["A"]),
+            SimpleNamespace(text="wrong topology", observation_id="O", source_fact_ids=["A"]),
         ],
         deletes=[SimpleNamespace(observation_id="O")],
     )
@@ -251,6 +397,8 @@ def test_filter_reports_each_rule_and_keeps_valid_actions() -> None:
         "create_cites_fact_outside_batch": 1,
         "update_without_sources": 1,
         "update_cites_fact_outside_batch": 1,
+        "update_target_not_recalled_for_batch": 1,
+        "update_target_not_recalled_for_sources": 1,
     }
     assert result.pending_fact_ids == set()
     assert result.unsafe_delete
@@ -290,32 +438,93 @@ def test_filter_rejects_unknown_only_sources_amid_valid_siblings() -> None:
     assert result.must_reject
 
 
-def test_invalid_update_and_delete_targets_reject_whole_reply() -> None:
+def test_untargeted_updates_are_dropped_but_delete_targets_still_reject() -> None:
     observation = MemoryFact(id="O", text="old", fact_type="observation", source_fact_ids=[])
-    for response in (
+    dropped_for_batch = consolidator._filter_unpersistable_references(
         consolidator._ConsolidationBatchResponse.model_construct(
             creates=[SimpleNamespace(text="valid", source_fact_ids=["A"])],
             updates=[SimpleNamespace(text="unsafe", observation_id="Z", source_fact_ids=["B"])],
             deletes=[],
         ),
+        memories=[{"id": "A"}, {"id": "B"}],
+        union_observations=[observation],
+        per_fact_observation_ids={"A": {"O"}, "B": set()},
+    )
+    assert dropped_for_batch.dropped == {"update_target_not_recalled_for_batch": 1}
+    assert [action.text for action in dropped_for_batch.response.creates] == ["valid"]
+    assert dropped_for_batch.pending_fact_ids == {"B"}
+    assert not dropped_for_batch.must_reject
+
+    dropped_for_sources = consolidator._filter_unpersistable_references(
         consolidator._ConsolidationBatchResponse.model_construct(
-            creates=[SimpleNamespace(text="valid", source_fact_ids=["A"])],
-            updates=[SimpleNamespace(text="unsafe", observation_id="O", source_fact_ids=["B"])],
+            creates=[SimpleNamespace(text="valid", source_fact_ids=["B"])],
+            updates=[SimpleNamespace(text="unsafe", observation_id="O", source_fact_ids=["A"])],
             deletes=[],
         ),
-        consolidator._ConsolidationBatchResponse.model_construct(
-            creates=[SimpleNamespace(text="valid", source_fact_ids=["A"])],
-            updates=[],
-            deletes=[SimpleNamespace(observation_id="Z")],
+        memories=[{"id": "A"}, {"id": "B"}],
+        union_observations=[observation],
+        per_fact_observation_ids={"A": set(), "B": {"O"}},
+    )
+    assert dropped_for_sources.dropped == {"update_target_not_recalled_for_sources": 1}
+    assert [action.text for action in dropped_for_sources.response.creates] == ["valid"]
+    assert dropped_for_sources.pending_fact_ids == {"A"}
+    assert not dropped_for_sources.must_reject
+
+    with pytest.raises(consolidator._InvalidConsolidationReferences):
+        consolidator._filter_unpersistable_references(
+            consolidator._ConsolidationBatchResponse.model_construct(
+                creates=[SimpleNamespace(text="valid", source_fact_ids=["A"])],
+                updates=[],
+                deletes=[SimpleNamespace(observation_id="Z")],
+            ),
+            memories=[{"id": "A"}, {"id": "B"}],
+            union_observations=[observation],
+            per_fact_observation_ids={"A": {"O"}, "B": set()},
+        )
+
+
+@pytest.mark.asyncio
+async def test_filtered_update_after_schema_correction_still_rejects_whole_reply(
+    config: SimpleNamespace,
+) -> None:
+    """Correction-used replies stay fail-closed if reference filtering is still needed."""
+    try:
+        consolidator._ConsolidationBatchResponse.model_validate({"updates": [{}]})
+    except ValidationError as exc:
+        schema_error = exc
+    else:  # pragma: no cover - the malformed fixture must fail schema validation
+        raise AssertionError("expected a schema validation error")
+
+    llm = SimpleNamespace(
+        _provider_impl=None,
+        call=AsyncMock(
+            side_effect=[
+                schema_error,
+                LLMCallResult(
+                    content=SimpleNamespace(
+                        creates=[SimpleNamespace(text="valid sibling", source_fact_ids=["A"])],
+                        updates=[SimpleNamespace(text="untargeted", observation_id="Z", source_fact_ids=["B"])],
+                        deletes=[],
+                    ),
+                    usage=TokenUsage(),
+                ),
+            ]
         ),
-    ):
-        with pytest.raises(consolidator._InvalidConsolidationReferences):
-            consolidator._filter_unpersistable_references(
-                response,
-                memories=[{"id": "A"}, {"id": "B"}],
-                union_observations=[observation],
-                per_fact_observation_ids={"A": {"O"}, "B": set()},
-            )
+    )
+
+    result = await _consolidate_batch_with_llm(
+        llm_config=llm,
+        memories=[{"id": "A", "text": "fact A"}, {"id": "B", "text": "fact B"}],
+        union_observations=[MemoryFact(id="O", text="observation", fact_type="observation", source_fact_ids=[])],
+        union_source_facts={},
+        original_source_text_by_id={"A": "original A", "B": "original B"},
+        config=config,
+    )
+
+    assert result.failed
+    assert not result.creates
+    assert result.pending_fact_ids == set()
+    assert llm.call.await_count == 2
 
 
 def test_filter_keeps_deletes_when_nothing_was_dropped() -> None:
@@ -340,7 +549,11 @@ def test_filter_keeps_deletes_when_nothing_was_dropped() -> None:
 async def test_update_must_be_recalled_for_one_of_its_cited_sources_before_language_check(
     monkeypatch: pytest.MonkeyPatch, config: SimpleNamespace
 ) -> None:
-    """Union membership cannot replace the per-cited-source recall topology."""
+    """A dropped UPDATE may not leave a sibling DELETE able to erase knowledge.
+
+    The update is individually droppable, but ``unsafe_delete`` keeps this mixed
+    reply on the hard-reject path before language evaluation.
+    """
     llm = AsyncMock()
     llm._provider_impl = None
     llm.call.return_value = LLMCallResult(
