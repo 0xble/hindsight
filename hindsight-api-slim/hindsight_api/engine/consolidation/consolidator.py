@@ -70,6 +70,7 @@ from ..llm_wrapper import sanitize_llm_output
 from ..memories import FactRecord, StoredMemory, get_memories
 from ..memories.base import MemoryTextSize
 from ..memory_engine import Budget, fq_table
+from ..prompt_utils import truncate_context_for_prompt
 from ..retain import embedding_utils
 from ..schema import fq_memory_store_table
 from ..structured_output import provider_json_schema, strict_json_schema
@@ -4461,7 +4462,7 @@ def _build_observations_for_llm(
                 continue
             sf_data: dict[str, Any] = {"text": sf.text}
             if sf.context:
-                sf_data["context"] = sf.context
+                sf_data["context"] = truncate_context_for_prompt(sf.context)
             if sf.occurred_start:
                 sf_data["occurred_start"] = sf.occurred_start
             if sf.occurred_end:

@@ -11464,6 +11464,18 @@ class MemoryEngine(MemoryEngineInterface):
             await conn.execute("SET SESSION CHARACTERISTICS AS TRANSACTION READ WRITE")
             async with conn.transaction():
                 try:
+                    # Match delete_document's bank-before-data order. Otherwise a
+                    # bank delete could hold its documents while waiting for the
+                    # bank row held by a concurrent document delete. This bank row
+                    # is also the first lock in clear_observations and every
+                    # document mutation; acquire it before the curation advisory
+                    # lock so bank cleanup has one lock order across all writers.
+                    bank_row = await conn.fetchrow(
+                        f"SELECT bank_id FROM {fq_table('banks')} WHERE bank_id = $1 FOR NO KEY UPDATE",
+                        bank_id,
+                    )
+                    bank_present = bank_row is not None
+
                     # Serialize bank deletion with raw curation before checking
                     # capsules, so a curation cannot insert a capsule between the
                     # check below and the cascade. This is a bank-keyed PostgreSQL
@@ -11473,18 +11485,10 @@ class MemoryEngine(MemoryEngineInterface):
                     # store interface, which store-owned and duck-typed stores do not
                     # implement.
                     _curation_sql = importlib.import_module(".memories.pg.curation_batch", package=__package__)
-
-                    if self._database_backend_type == "postgresql":
+                    if getattr(self._backend, "backend_type", "postgresql") == "postgresql":
                         await _curation_sql.lock(conn, bank_id)
                         await _curation_sql.assert_deletable(conn, bank_id)
-                    # Match delete_document's bank-before-data order. Otherwise a
-                    # bank delete could hold its documents while waiting for the
-                    # bank row held by a concurrent document delete.
-                    bank_row = await conn.fetchrow(
-                        f"SELECT bank_id FROM {fq_table('banks')} WHERE bank_id = $1 FOR NO KEY UPDATE",
-                        bank_id,
-                    )
-                    bank_present = bank_row is not None
+
                     from .memories import get_memories as _get_memories_for_delete
                     from .memories.base import BankContentCounts, TypedMemoryScope
 

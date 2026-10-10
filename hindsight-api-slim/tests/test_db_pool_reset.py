@@ -87,8 +87,14 @@ class TestPoolWiring:
 _API_ROOT = Path(__file__).resolve().parents[1] / "hindsight_api"
 
 # migrations.py holds a grandfathered advisory lock (tracked for removal, see
-# CLAUDE.md); it runs on its own connection, not a pooled one.
-_ADVISORY_LOCK_ALLOWED = {_API_ROOT / "migrations.py"}
+# CLAUDE.md); it runs on its own connection, not a pooled one. Guarded raw
+# curation also uses a bank-keyed transaction-scoped advisory lock by design
+# (maintenance/raw-curation-v2.md), and is explicitly bounded to its curation
+# transaction rather than leaked through the pool.
+_ADVISORY_LOCK_ALLOWED = {
+    _API_ROOT / "migrations.py",
+    _API_ROOT / "engine" / "curation_guard.py",
+}
 
 # The pool's own session GUCs (this is the state the reset used to wipe and the
 # per-acquire setup used to re-send) plus extension bootstrap, which runs on a
@@ -180,7 +186,8 @@ class TestResetInvariants:
 
     def test_no_advisory_locks_outside_migrations(self):
         # `pg_advisory_unlock_all()` in the reset query only matters if a pooled
-        # connection can hold one. Advisory locks are banned project-wide anyway.
+        # connection can hold one. Advisory locks are restricted to migrations and
+        # the documented transaction-scoped raw-curation guard.
         assert _offenders(_ADVISORY, _ADVISORY_LOCK_ALLOWED) == []
 
     def test_no_session_scoped_set_outside_the_pool_setup(self):
