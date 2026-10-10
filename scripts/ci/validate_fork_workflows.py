@@ -773,22 +773,50 @@ def step_policy_errors(scope: str, step: Any) -> list[str]:
     )
 
 
+MERGIFY_ALTERNATE_CONFIGS = (
+    ".mergify.yaml",
+    ".mergify/config.yml",
+    ".mergify/config.yaml",
+    ".github/mergify.yml",
+    ".github/mergify.yaml",
+)
+
+
 def mergify_policy_errors(root: Path) -> list[str]:
     """Pin the trusted merge-queue audience and checks in candidate config."""
+    # Mergify reads the first of several config locations. Only .mergify.yml is
+    # validated, so every other location is forbidden rather than left unchecked.
+    errors: list[str] = [
+        f"{name}: Mergify configuration must live in .mergify.yml"
+        for name in MERGIFY_ALTERNATE_CONFIGS
+        if (root / name).exists() or (root / name).is_symlink()
+    ]
     path = root / ".mergify.yml"
-    if not path.exists():
-        return []
+    if not path.exists() and not path.is_symlink():
+        return errors
     if path.is_symlink():
-        return [".mergify.yml: symbolic link is forbidden"]
+        return errors + [".mergify.yml: symbolic link is forbidden"]
     try:
         config = yaml.safe_load(path.read_text(encoding="utf-8"))
     except (OSError, yaml.YAMLError) as exc:
-        return [f".mergify.yml: invalid YAML: {exc}"]
+        return errors + [f".mergify.yml: invalid YAML: {exc}"]
     if not isinstance(config, dict):
-        return [".mergify.yml: configuration must be a mapping"]
+        return errors + [".mergify.yml: configuration must be a mapping"]
 
-    errors: list[str] = []
     required = set(REQUIRED_MERGIFY_CONDITIONS)
+
+    if "extends" in config:
+        errors.append(".mergify.yml: extends is forbidden; the pinned policy must be self-contained")
+    rules = config.get("pull_request_rules") or []
+    if not isinstance(rules, list):
+        errors.append(".mergify.yml: pull_request_rules must be a list")
+    else:
+        for index, rule in enumerate(rules):
+            actions = rule.get("actions") if isinstance(rule, dict) else None
+            if not isinstance(actions, dict) or {"queue", "merge"} & set(actions):
+                errors.append(
+                    f".mergify.yml: pull_request_rules[{index}] must not queue or merge; use queue_rules"
+                )
 
     def check_conditions(scope: str, value: Any) -> None:
         if not isinstance(value, list) or not all(isinstance(condition, str) for condition in value):

@@ -339,6 +339,57 @@ class ForkWorkflowPolicyTests(unittest.TestCase):
                         errors,
                     )
 
+    def test_mergify_config_cannot_bypass_the_pinned_file(self) -> None:
+        root = self.make_root()
+        required = list(POLICY.REQUIRED_MERGIFY_CONDITIONS)
+        pinned = {
+            "queue_rules": [{"name": "default", "queue_conditions": required, "merge_conditions": required}],
+            "merge_protections_settings": {"auto_merge_conditions": required},
+        }
+        open_config = yaml.safe_dump(
+            {
+                "queue_rules": [{"name": "default", "queue_conditions": ["base = main"]}],
+                "merge_protections_settings": {"auto_merge_conditions": True},
+            }
+        )
+        for name in POLICY.MERGIFY_ALTERNATE_CONFIGS:
+            with self.subTest(location=name):
+                path = root / name
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text(open_config, encoding="utf-8")
+                errors = POLICY.validate(root)
+                self.assertTrue(any(error.startswith(f"{name}:") for error in errors), errors)
+                path.unlink()
+
+        path = root / ".mergify.yml"
+        for extra, expected in (
+            ({"extends": "other/repo"}, "extends is forbidden"),
+            (
+                {"pull_request_rules": [{"name": "x", "conditions": ["base = main"], "actions": {"queue": {}}}]},
+                "pull_request_rules[0] must not queue or merge",
+            ),
+            (
+                {"pull_request_rules": [{"name": "x", "conditions": ["base = main"], "actions": {"merge": {}}}]},
+                "pull_request_rules[0] must not queue or merge",
+            ),
+        ):
+            with self.subTest(extra=list(extra)):
+                path.write_text(yaml.safe_dump({**pinned, **extra}, sort_keys=False), encoding="utf-8")
+                errors = POLICY.validate(root)
+                self.assertTrue(any(expected in error for error in errors), errors)
+
+        path.write_text(
+            yaml.safe_dump(
+                {
+                    **pinned,
+                    "pull_request_rules": [{"name": "label", "conditions": ["base = main"], "actions": {"label": {"add": ["ci"]}}}],
+                },
+                sort_keys=False,
+            ),
+            encoding="utf-8",
+        )
+        self.assertEqual(POLICY.validate(root), [])
+
     def test_repository_workflows_pass_policy(self) -> None:
         repo_root = SCRIPT.parents[2]
         self.assertEqual(len(list((repo_root / ".github" / "workflows").glob("*.yml"))), 6)
