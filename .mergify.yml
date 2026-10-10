@@ -1,10 +1,10 @@
 # Merge queue for main.
 #
-# A ready PR joins automatically after its ordinary exact-head gate passes.
-# Mergify folds up to five queued PRs onto current main as a draft batch PR,
-# the full gate runs on that exact batch head, and main fast-forwards to the
-# tested commit. Branch protection keeps "require up to date" and
-# `qualification` required.
+# A ready PR joins automatically only from the owner's branch in this public
+# fork. Mergify folds up to five queued PRs onto current main as a draft batch
+# PR, the full gate runs on that exact batch head, and main fast-forwards to the
+# tested commit. The owner/head-repository restriction prevents an outside fork
+# PR from being auto-queued or auto-merged without review.
 queue_rules:
   - name: default
     batch_size: 5
@@ -17,10 +17,16 @@ queue_rules:
       - check-success = qualification
       # Preserve the fork's trusted default-branch policy before every merge.
       - check-success = policy
+      - author = 0xble
+      - head-repo-full-name = 0xble/hindsight
     merge_conditions:
+      - base = main
+      - -draft
       - check-success = qualification
       # Preserve the fork's trusted default-branch policy before every merge.
       - check-success = policy
+      - author = 0xble
+      - head-repo-full-name = 0xble/hindsight
 
 merge_queue:
   # Fast-forward requires serial checking of one batch at a time.
@@ -32,3 +38,5 @@ merge_protections_settings:
     - -draft
     - check-success = qualification
     - check-success = policy
+    - author = 0xble
+    - head-repo-full-name = 0xble/hindsight

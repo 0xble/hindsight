@@ -301,6 +301,44 @@ class ForkWorkflowPolicyTests(unittest.TestCase):
             )
             self.assertEqual(completed.returncode == 0, result == "success")
 
+    def test_mergify_conditions_are_pinned_for_queue_merge_and_auto_merge(self) -> None:
+        root = self.make_root()
+        required = list(POLICY.REQUIRED_MERGIFY_CONDITIONS)
+        config = {
+            "queue_rules": [
+                {
+                    "name": "default",
+                    "queue_conditions": required,
+                    "merge_conditions": required,
+                }
+            ],
+            "merge_protections_settings": {"auto_merge_conditions": required},
+        }
+        path = root / ".mergify.yml"
+        path.write_text(yaml.safe_dump(config, sort_keys=False), encoding="utf-8")
+        self.assertEqual(POLICY.validate(root), [])
+
+        for scope in (
+            "queue_rules[0].queue_conditions",
+            "queue_rules[0].merge_conditions",
+            "merge_protections_settings.auto_merge_conditions",
+        ):
+            for condition in required:
+                with self.subTest(scope=scope, condition=condition):
+                    candidate = yaml.safe_load(yaml.safe_dump(config, sort_keys=False))
+                    if scope.endswith("queue_conditions"):
+                        candidate["queue_rules"][0]["queue_conditions"].remove(condition)
+                    elif scope.endswith("merge_conditions"):
+                        candidate["queue_rules"][0]["merge_conditions"].remove(condition)
+                    else:
+                        candidate["merge_protections_settings"]["auto_merge_conditions"].remove(condition)
+                    path.write_text(yaml.safe_dump(candidate, sort_keys=False), encoding="utf-8")
+                    errors = POLICY.validate(root)
+                    self.assertTrue(
+                        any(scope in error and condition in error for error in errors),
+                        errors,
+                    )
+
     def test_repository_workflows_pass_policy(self) -> None:
         repo_root = SCRIPT.parents[2]
         self.assertEqual(len(list((repo_root / ".github" / "workflows").glob("*.yml"))), 6)

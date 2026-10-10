@@ -53,7 +53,16 @@ intentional fork infrastructure policy, not upstream deployment ownership.
   ready-for-review PR event set for a subsequent draft-until-ready queue rollout.
   The compatibility policy must land before that workflow change so the trusted
   default-branch validator can approve it; no push trigger or path filter is added.
-  Mergify's queue folds up to five ready PRs into a draft batch and fast-forwards
+  Mergify's `.mergify.yml` queue is source-controlled merge policy for this
+  public fork. Its admission, merge, and auto-merge condition sets all require
+  `base = main`, `-draft`, both `qualification` and trusted `policy`,
+  `author = 0xble`, and `head-repo-full-name = 0xble/hindsight`. The latter two
+  conditions restrict automatic queueing and fast-forwarding to the owner's
+  branches; outside contributors still need explicit human review and a
+  separately authorized merge path. `check-success = policy` is a bare
+  check-name match, so this owner/head-repository restriction removes the
+  outside-PR path rather than pretending the check name identifies its publisher.
+  The queue folds up to five eligible PRs into a draft batch and fast-forwards
   `main` only after that exact batch head passes both `qualification` and the
   trusted `policy` check. Ordinary drafts skip the full gate and fail
   qualification; only draft PRs authored by `mergify[bot]` with a
