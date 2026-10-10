@@ -102,6 +102,8 @@ intentional fork infrastructure policy, not upstream deployment ownership.
   `qualification` job (labelling alone does not start a run: the trusted policy
   validator pins the gate trigger exactly). The guard depends on at least one
   completed nightly run; between nightly runs, merges rely on the exact-SHA gate.
+  After a repair merges, dispatch `gh workflow run nightly.yml --ref main` so the
+  guard sees a fresh result instead of waiting for the next scheduled run.
   The trusted `Fork Workflow Policy` `policy` check must still succeed for the
   exact PR head SHA before every merge. A manual merge could omit that check: this
   is an accepted residual risk of the qualification-only protection boundary, not
