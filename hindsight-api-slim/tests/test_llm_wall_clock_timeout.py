@@ -73,30 +73,35 @@ def _tools(llm: LLMInterface) -> Awaitable[object]:
     return llm.call_with_tools(messages=MESSAGES, tools=TOOLS, max_retries=0)
 
 
+# The OpenAI-compatible SDK path reports its deadline as the SDK's own
+# APITimeoutError (caused by the wall-clock TimeoutError) so existing SDK retry
+# and classification keep working; see test_openai_total_deadline.py. The other
+# providers surface the wall-clock TimeoutError directly.
 CASES = {
-    "openai-call": (_openai, _call),
-    "openai-call-structured": (_openai, _structured),
-    "openai-tools": (_openai, _tools),
-    "ollama-native": (_ollama, _structured),
-    "openai-responses": (_responses, _call),
-    "anthropic-call": (_anthropic, _call),
-    "anthropic-tools": (_anthropic, _tools),
+    "openai-call": (_openai, _call, APITimeoutError),
+    "openai-call-structured": (_openai, _structured, APITimeoutError),
+    "openai-tools": (_openai, _tools, APITimeoutError),
+    "ollama-native": (_ollama, _structured, TimeoutError),
+    "openai-responses": (_responses, _call, TimeoutError),
+    "anthropic-call": (_anthropic, _call, TimeoutError),
+    "anthropic-tools": (_anthropic, _tools, TimeoutError),
 }
 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("case", CASES)
 async def test_trickling_upstream_times_out_on_the_wall_clock(case: str):
-    make_llm, invoke = CASES[case]
+    make_llm, invoke, expected = CASES[case]
     async with stub_server(trickle) as base_url:
         llm = make_llm(base_url)
         start = time.monotonic()
         try:
             # The outer wait_for is only the test's own safety net: before the fix
             # the call never returned, and it is what fails the test then.
-            with pytest.raises(APITimeoutError) as raised:
+            with pytest.raises(expected) as raised:
                 await asyncio.wait_for(invoke(llm), timeout=10)
-            assert isinstance(raised.value.__cause__, TimeoutError)
+            if expected is APITimeoutError:
+                assert isinstance(raised.value.__cause__, TimeoutError)
             assert time.monotonic() - start < 5, "the outer safety net fired, not the provider's own deadline"
         finally:
             await llm.cleanup()
