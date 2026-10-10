@@ -15,8 +15,12 @@ queue_rules:
       - base = main
       - -draft
       - check-success = qualification
+      # Preserve the fork's trusted default-branch policy before every merge.
+      - check-success = policy
     merge_conditions:
       - check-success = qualification
+      # Preserve the fork's trusted default-branch policy before every merge.
+      - check-success = policy
 
 merge_queue:
   # Fast-forward requires serial checking of one batch at a time.
@@ -27,3 +31,4 @@ merge_protections_settings:
     - base = main
     - -draft
     - check-success = qualification
+    - check-success = policy

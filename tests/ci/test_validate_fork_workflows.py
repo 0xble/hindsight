@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ast
 import importlib.util
 import os
 import shlex
@@ -250,6 +251,55 @@ class ForkWorkflowPolicyTests(unittest.TestCase):
         )
         errors = POLICY.validate(root)
         self.assertTrue(any("nightly.yml: trigger configuration" in error for error in errors))
+
+    def test_mergify_batch_drafts_and_qualification_fail_closed(self) -> None:
+        root = SCRIPT.parents[2]
+        gate = POLICY.load_workflow(root / ".github/workflows/gate.yml")
+        condition = gate["jobs"]["gate"]["if"].removeprefix("${{").removesuffix("}}").strip()
+
+        def evaluate(node: ast.AST) -> bool:
+            if isinstance(node, ast.Constant) and isinstance(node.value, bool):
+                return node.value
+            if isinstance(node, ast.BoolOp):
+                values = [evaluate(value) for value in node.values]
+                if isinstance(node.op, ast.And):
+                    return all(values)
+                if isinstance(node.op, ast.Or):
+                    return any(values)
+            raise AssertionError(f"unexpected condition node: {ast.dump(node)}")
+
+        for draft, author, branch, runs in (
+            (True, "contributor", "feature/example", False),
+            (True, "contributor", "mergify/merge-queue/1", False),
+            (True, "mergify[bot]", "feature/example", False),
+            (True, "mergify[bot]", "mergify/merge-queue/1", True),
+            (False, "contributor", "feature/example", True),
+        ):
+            with self.subTest(draft=draft, author=author, branch=branch):
+                expression = condition
+                for atom, value in (
+                    ("!github.event.pull_request.draft", not draft),
+                    ("github.event.pull_request.user.login == 'mergify[bot]'", author == "mergify[bot]"),
+                    ("startsWith(github.event.pull_request.head.ref, 'mergify/merge-queue/')", branch.startswith("mergify/merge-queue/")),
+                ):
+                    self.assertIn(atom, expression)
+                    expression = expression.replace(atom, str(value))
+                parsed = ast.parse(expression.replace("||", " or ").replace("&&", " and "), mode="eval")
+                self.assertEqual(evaluate(parsed.body), runs)
+
+        qualification = gate["jobs"]["qualification"]
+        self.assertEqual(qualification["if"], "always()")
+        self.assertEqual(qualification["needs"], ["gate"])
+        self.assertEqual(qualification["steps"][0]["env"]["GATE_RESULT"], "${{ needs.gate.result }}")
+        command = qualification["steps"][0]["run"]
+        for result in ("success", "failure", "cancelled", "skipped"):
+            completed = subprocess.run(
+                ["bash", "-c", command],
+                env=dict(os.environ, GATE_RESULT=result, DRAFT_PR="true"),
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(completed.returncode == 0, result == "success")
 
     def test_repository_workflows_pass_policy(self) -> None:
         repo_root = SCRIPT.parents[2]

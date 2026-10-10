@@ -53,6 +53,12 @@ intentional fork infrastructure policy, not upstream deployment ownership.
   ready-for-review PR event set for a subsequent draft-until-ready queue rollout.
   The compatibility policy must land before that workflow change so the trusted
   default-branch validator can approve it; no push trigger or path filter is added.
+  Mergify's queue folds up to five ready PRs into a draft batch and fast-forwards
+  `main` only after that exact batch head passes both `qualification` and the
+  trusted `policy` check. Ordinary drafts skip the full gate and fail
+  qualification; only draft PRs authored by `mergify[bot]` with a
+  `mergify/merge-queue/` head branch run it. Preserve that conjunction, exact-head
+  checkout, six-workflow inventory, and the capability boundary below.
   The patch-regression gate includes refresh-outcome and bank-template
   roundtrip tests alongside the other active service-hardening suites. The lane
   benchmark's deterministic bounded-concurrency cases are non-slow, so the gate's
