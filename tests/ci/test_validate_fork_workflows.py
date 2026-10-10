@@ -37,7 +37,12 @@ class ForkWorkflowPolicyTests(unittest.TestCase):
                     "on:\n  push:\n    branches: [main]\n  pull_request:\n    branches: [main]\n  workflow_dispatch:\n"
                 )
             elif name == "gate.yml":
-                trigger = "on:\n  pull_request:\n    branches: [main]\n"
+                trigger = (
+                    "on:\n"
+                    "  pull_request:\n"
+                    "    branches: [main]\n"
+                    "    types: [opened, synchronize, reopened, labeled, unlabeled]\n"
+                )
             elif name == "nightly.yml":
                 trigger = "on:\n  schedule:\n    - cron: '53 6 * * *'\n  workflow_dispatch:\n"
             else:
@@ -193,6 +198,19 @@ class ForkWorkflowPolicyTests(unittest.TestCase):
         workflow = root / ".github" / "workflows" / "gate.yml"
         workflow.write_text(
             workflow.read_text(encoding="utf-8").replace("branches: [main]", "branches: [main, develop]", 1),
+            encoding="utf-8",
+        )
+        errors = POLICY.validate(root)
+        self.assertTrue(any("gate.yml: trigger configuration" in error for error in errors))
+
+    def test_gate_label_trigger_is_required(self) -> None:
+        root = self.make_root()
+        workflow = root / ".github" / "workflows" / "gate.yml"
+        workflow.write_text(
+            workflow.read_text(encoding="utf-8").replace(
+                "types: [opened, synchronize, reopened, labeled, unlabeled]",
+                "types: [opened, synchronize, reopened]",
+            ),
             encoding="utf-8",
         )
         errors = POLICY.validate(root)

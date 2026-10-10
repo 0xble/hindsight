@@ -6,6 +6,7 @@ on:
     types: [opened, synchronize, reopened, ready_for_review]
 
 permissions:
+  actions: read
   contents: read
 
 concurrency:
@@ -48,18 +49,57 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 2
     steps:
-      - name: Require gate success
+      - name: Require gate and nightly health
         env:
           GATE_RESULT: ${{ needs.gate.result }}
           DRAFT_PR: ${{ github.event.pull_request.draft }}
+          NIGHTLY_REPAIR: ${{ contains(github.event.pull_request.labels.*.name, 'nightly-repair') }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
           if [ "$GATE_RESULT" = success ]; then
-            exit 0
-          fi
-          if [ "$DRAFT_PR" = "true" ] && [ "$GATE_RESULT" = skipped ]; then
+            :
+          elif [ "$DRAFT_PR" = "true" ] && [ "$GATE_RESULT" = skipped ]; then
             echo 'draft: gate not run' >&2
+            exit 1
           else
             echo 'gate not qualified' >&2
+            exit 1
           fi
-          exit 1
+
+          if [ "$NIGHTLY_REPAIR" = "true" ]; then
+            echo 'nightly guard bypassed for the nightly-repair label'
+            exit 0
+          fi
+
+          nightly_json="$RUNNER_TEMP/nightly-guard.json"
+          nightly_error="$RUNNER_TEMP/nightly-guard.error"
+          nightly_fields="$RUNNER_TEMP/nightly-guard.fields"
+          if ! gh api 'repos/0xble/hindsight/actions/workflows/nightly.yml/runs?branch=main&status=completed&per_page=1' >"$nightly_json" 2>"$nightly_error"; then
+            echo 'nightly guard API query failed:' >&2
+            cat "$nightly_error" >&2
+            exit 1
+          fi
+
+          if ! jq -r 'if (.workflow_runs | type) != "array" then error("workflow_runs is not an array") elif (.workflow_runs | length) == 0 then "NO_RUN" elif .workflow_runs[0].head_branch != "main" then error("latest run is not for main") elif (.workflow_runs[0].conclusion | type) != "string" then error("latest run has no conclusion") elif (.workflow_runs[0].html_url | type) != "string" then error("latest run has no URL") else [.workflow_runs[0].conclusion, .workflow_runs[0].html_url] | @tsv end' "$nightly_json" >"$nightly_fields" 2>"$nightly_error"; then
+            echo 'nightly guard response parsing failed:' >&2
+            cat "$nightly_error" >&2
+            exit 1
+          fi
+
+          if [ ! -s "$nightly_fields" ]; then
+            echo 'nightly guard response was empty' >&2
+            exit 1
+          fi
+          IFS=$'\t' read -r nightly_conclusion nightly_url <"$nightly_fields"
+          if [ "$nightly_conclusion" = NO_RUN ]; then
+            echo 'nightly guard inactive: no completed main nightly run found'
+          elif [ "$nightly_conclusion" = success ]; then
+            echo "latest completed main nightly is green: $nightly_url"
+          elif [ "$nightly_conclusion" = failure ] || [ "$nightly_conclusion" = cancelled ] || [ "$nightly_conclusion" = timed_out ] || [ "$nightly_conclusion" = action_required ] || [ "$nightly_conclusion" = stale ]; then
+            echo "latest completed main nightly is red ($nightly_conclusion): $nightly_url" >&2
+            exit 1
+          else
+            echo "nightly guard found unexpected conclusion '$nightly_conclusion': $nightly_url" >&2
+            exit 1
+          fi

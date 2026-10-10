@@ -35,7 +35,12 @@ EXPECTED_FORK_CI_TRIGGER = {
 }
 # Repository CI contract: the exact-SHA gate runs only for PRs into main, and the
 # nightly only on its fixed schedule or by hand. Neither may widen its trigger.
-EXPECTED_GATE_TRIGGER = {"pull_request": {"branches": ["main"]}}
+EXPECTED_GATE_TRIGGER = {
+    "pull_request": {
+        "branches": ["main"],
+        "types": ["opened", "synchronize", "reopened", "labeled", "unlabeled"],
+    }
+}
 # Keep the existing trigger valid while the default-branch trusted policy lands.
 # A later queue rollout may opt into this exact draft-until-ready event set; no
 # push, dispatch, path filters, other branches, or additional PR types are allowed.
