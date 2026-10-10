@@ -179,7 +179,11 @@ validation and preserves the reason value through serialization.
   OCR-enabled PDF conversions, including text-only classification/extraction,
   remain process-isolated with CPU, scratch-write and sampled RSS protection. The document
   deadline is 120 seconds. Individual requests have a 30-second elapsed-time
-  deadline around an async SDK call, with SDK retries disabled. Deadline expiry
+  deadline around an async SDK call, with SDK retries disabled. The request
+  deadline starts after client construction and after the SDK's lazy
+  `client.chat` resource import, which takes hundreds of milliseconds in a cold
+  worker and much longer on a loaded host; that local setup stays under the
+  document deadline only. Deadline expiry
   cancels the HTTP read and closes its connection, including slow-trickle
   responses that do not trigger an inactivity timeout. The independent document
   watchdog still covers native work and process startup. Parent polling every

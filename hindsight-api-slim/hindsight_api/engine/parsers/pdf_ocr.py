@@ -91,6 +91,11 @@ class _DeadlineOcrClient:
                 timeout=self.request_seconds,
                 max_retries=0,
             ) as client:
+                # `client.chat` is a lazy property whose first access in each
+                # fresh worker synchronously imports hundreds of SDK resource
+                # and type modules. Resolve it here so a slow host cannot spend
+                # the request ceiling before any byte reaches the provider.
+                completions = client.chat.completions
                 remaining = min(self.request_seconds, self.document_deadline - time.monotonic())
                 if remaining <= 0:
                     raise TimeoutError("PDF OCR request deadline exceeded")
@@ -98,7 +103,7 @@ class _DeadlineOcrClient:
                 # aborts the async read even for a slow-trickle response; the
                 # enclosing client closes its loop-owned connection on exit.
                 async with asyncio.timeout(remaining):
-                    return await client.chat.completions.create(model=model, messages=messages)
+                    return await completions.create(model=model, messages=messages)
 
         # Called only by synchronous ImageConverter in the isolated PDF worker.
         response = asyncio.run(request())
