@@ -298,10 +298,12 @@ class CodexLLM(LLMInterface):
         return {
             "Authorization": f"Bearer {self.access_token}",
             "Content-Type": "application/json",
-            # Matches the Codex CLI. The backend attributes usage to the
-            # workspace from this header; the older OpenAI-Account-ID name
-            # can be rejected with usage_limit_reached while the account
-            # still has quota.
+            # Must be "ChatGPT-Account-ID" — the name the official Codex CLI
+            # sends (codex-rs/model-provider/src/bearer_auth_provider.rs). We
+            # sent "OpenAI-Account-ID" until #4951, where the backend answered
+            # 429 usage_limit_reached for credentials the CLI used fine on the
+            # same account, model and route; renaming the header alone fixed
+            # it, so the backend evidently ignores the other spelling.
             "ChatGPT-Account-ID": self.account_id,
             "User-Agent": _CODEX_USER_AGENT,
             "Origin": "https://chatgpt.com",

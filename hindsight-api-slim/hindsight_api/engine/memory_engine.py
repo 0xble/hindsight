@@ -384,6 +384,11 @@ _VALIDATE_SQL_SCHEMAS = True
 _CONSOLIDATION_RETRY_BACKOFF_BASE_SECONDS = 5
 _CONSOLIDATION_RETRY_BACKOFF_MAX_SECONDS = 1800  # 30 min cap
 
+# How long a killed or failed chunked retain waits for its in-flight sub-batches to
+# honour cancel (#5372). A cancelled sub-batch rolls its transaction back promptly;
+# the bound only matters for one stuck in code that ignores cancellation.
+_SUBBATCH_CANCEL_SETTLE_SECONDS = 30
+
 # Upper bound on the per-bank LLM connectivity probe so a hung provider can't wedge
 # the request. The probe is a deliberate, non-polled action (POST .../health/llm).
 _LLM_PROBE_TIMEOUT_SECONDS = 10.0
@@ -606,7 +611,7 @@ def validate_sql_schema(sql: str) -> None:
                         )
 
 
-from .cross_encoder import CrossEncoderModel
+from .cross_encoder import RANK_SCORE_PROVIDERS, CrossEncoderModel
 from .embeddings import Embeddings, create_embeddings_from_env
 from .interface import BankConfigState, BankTemplateImportWrite, MemoryEngineInterface
 
@@ -688,6 +693,7 @@ from .reflect.tools import (
     tool_search_mental_models,
     tool_search_observations,
 )
+from .remote_retry import is_transient_remote_error
 from .response_models import (
     VALID_RECALL_FACT_TYPES,
     ConsolidationStrategiesPreview,
@@ -1706,10 +1712,8 @@ from .storage import bank_storage_prefix
 def _truncate_query_to_token_limit(query: str, max_query_tokens: int, log_prefix: str = "") -> str:
     """Bound a recall query to ``max_query_tokens`` tokens (``0`` disables the cap).
 
-    Truncation, not rejection: this runs on the path every *internal* caller takes
-    (consolidation, reflect tools, MCP tools, the context extension), and those must
-    degrade to a shorter query rather than fail. The REST handler keeps its own HTTP
-    400 for client-supplied queries.
+    Truncation, not rejection: every caller (REST, consolidation, reflect tools, MCP
+    tools, the context extension) degrades to a shorter query rather than failing.
     """
     # A token is never shorter than one character, so a query of at most
     # `max_query_tokens` characters cannot exceed the cap — skip tokenizing it.
@@ -2696,7 +2700,7 @@ class MemoryEngine(MemoryEngineInterface):
         self._db_acquire_timeout = db_acquire_timeout if db_acquire_timeout is not None else config.db_acquire_timeout
         self._db_statement_timeout = config.db_statement_timeout
         self._db_max_parallel_workers_per_gather = config.db_max_parallel_workers_per_gather
-        self._entity_trgm_similarity_threshold = config.entity_trgm_similarity_threshold
+        self._entity_trgm_probe_threshold = config.entity_trgm_probe_threshold
         self._entity_merge_min_similarity = config.entity_merge_min_similarity
         self._run_migrations = run_migrations
         self._retain_entity_lookup = config.retain_entity_lookup
@@ -4586,9 +4590,11 @@ class MemoryEngine(MemoryEngineInterface):
             # row except the prose error_message (#3274).
             await self._write_refresh_failure_metadata(task_dict.get("operation_id"), e)
             raise
-        except OperationCancelledError:
-            # Not a failed refresh: the caller went away. It records no outcome and
-            # no history, exactly like the deferral above.
+        except (OperationCancelledError, ProviderRateLimitResetError):
+            # Not a failed refresh: the caller went away, or the provider said when its
+            # quota reopens and the worker parks the operation until then. Neither
+            # records an outcome or history, exactly like the deferral above — and
+            # neither may pause automatic refresh (#5394).
             raise
         except Exception as e:
             # Anything else that escaped the refresh — a provider error the reflect
@@ -4613,6 +4619,9 @@ class MemoryEngine(MemoryEngineInterface):
                 outcome="refresh_failed_error",
                 failure_reason="unexpected_error",
                 error_message=f"{type(e).__name__}: {e}",
+                # A provider that is down or rate-limited will answer later; only a
+                # failure that would repeat on the same prompt pauses (#5394).
+                pause_automatic=not is_transient_remote_error(e),
             )
             raise
         if refreshed is None:
@@ -5837,8 +5846,11 @@ class MemoryEngine(MemoryEngineInterface):
             client, …) once at startup. The default Postgres store treats this as
             a no-op; a store that owns an external service builds its client here
             so the first request does not race an uninitialized handle."""
-            from .memories import get_memories
+            from .memories import get_memories, set_bank_gone_check
 
+            # A store that owns its storage asks this after a call found no storage for a bank, so
+            # a request let through by a stale existence cache answers 404 rather than failing.
+            set_bank_gone_check(self._raise_if_bank_deleted)
             await get_memories().initialize()
 
         async def verify_llm():
@@ -5997,7 +6009,7 @@ class MemoryEngine(MemoryEngineInterface):
 
         stmt_timeout_s = self._db_statement_timeout
         max_parallel_gather = self._db_max_parallel_workers_per_gather
-        trgm_similarity_threshold = self._entity_trgm_similarity_threshold
+        trgm_similarity_threshold = self._entity_trgm_probe_threshold
         text_search_extension = get_config().text_search_extension
 
         # Per-connection initialization callback (PostgreSQL-specific for now)
@@ -6337,11 +6349,16 @@ class MemoryEngine(MemoryEngineInterface):
         # Shutdown task backend
         await self._task_backend.shutdown()
 
+        # The work that just finished schedules its audit rows as background
+        # tasks; let them land before the pool they write through is closed below.
+        await self._audit_logger.drain()
+
         # Release the memories store's own resources (client/pool). No-op for the
         # default Postgres store; symmetric with init_memories() at startup.
         try:
-            from .memories import get_memories
+            from .memories import get_memories, set_bank_gone_check
 
+            set_bank_gone_check(None)
             await get_memories().shutdown()
         except Exception as e:
             logger.warning(f"Error shutting down memories store: {e}")
@@ -7097,6 +7114,7 @@ class MemoryEngine(MemoryEngineInterface):
         # and the global config refuses the access rather than let a per-bank override be silently
         # ignored.
         from .memories import get_memories as _get_memories_session
+        from .memories.base import StoreWriteConflict
 
         _store = _get_memories_session()
         retain_session = None
@@ -7399,6 +7417,30 @@ class MemoryEngine(MemoryEngineInterface):
                             raise r
                         collected.append(r)
             finally:
+                # Stop every sub-batch still in flight before anything else (#5372). This loop is
+                # left early in two ways the cooperative check above never sees: the worker's
+                # wall-clock kill (RETAIN_WALL_TIMEOUT) cancels us mid-`asyncio.wait`, and a sibling
+                # raising at `t.result()` exits with the others still running. Before this, those
+                # tasks kept extracting and committed facts minutes after the operation was marked
+                # failed — and after the per-document lock that `failed` releases, so a queued
+                # successor ran alongside them on the same document.
+                leftover = [t for t in pending if not t.done()]
+                for t in leftover:
+                    t.cancel()
+                if leftover:
+                    # ponytail: bounded so a sub-batch that swallows its cancel cannot wedge the kill;
+                    # one that outlives this is logged, not awaited.
+                    settled, stuck = await asyncio.wait(leftover, timeout=_SUBBATCH_CANCEL_SETTLE_SECONDS)
+                    # Retrieve what a slice raised while unwinding, so asyncio does not log
+                    # "Task exception was never retrieved"; the error that ended the loop wins.
+                    for t in settled:
+                        if not t.cancelled():
+                            t.exception()
+                    if stuck:
+                        logger.warning(
+                            f"[BATCH_RETAIN] bank={bank_id} {len(stuck)} sub-batch(es) still running "
+                            f"{_SUBBATCH_CANCEL_SETTLE_SECONDS}s after cancel"
+                        )
                 # In a `finally` so a failed sub-batch still writes what its siblings accumulated.
                 # Otherwise the last slices since the previous doubling are lost, and for a document
                 # that never reached a flush that is the whole body — leaving memories with no
@@ -7446,29 +7488,69 @@ class MemoryEngine(MemoryEngineInterface):
             # The commit is inside the same `try`, so a commit that fails aborts too: it releases
             # whatever the session still buffers instead of leaving it to the garbage collector.
             # This is the shape `transfer/importer.py` already uses around its session.
-            try:
-                sub_batch_outcome = await self._retain_batch_async_internal(
-                    bank_id=bank_id,
-                    contents=contents,
-                    request_context=request_context,
-                    document_id=document_id,
-                    is_first_batch=True,
-                    fact_type_override=fact_type_override,
-                    document_tags=document_tags,
-                    operation_id=operation_id,
-                    strategy=strategy,
-                    language_integrity_mode=language_integrity_mode,
-                    outbox_callback=outbox_callback,
-                    outbox_callback_factory=outbox_callback_factory,
-                    retain_session=retain_session,
-                )
-                if retain_session is not None:
-                    async with _retain_timing_mod.timed("store.commit"):
-                        await retain_session.commit()
-            except BaseException:
-                if retain_session is not None:
-                    await retain_session.abort()
-                raise
+            #
+            # An append's session write is a compare-and-set on the document it read, and it can
+            # lose that race at commit — after `_retain_batch_with_append_retry`, which only sees
+            # the pipeline, has returned. Losing it is the same event that retry handles (the
+            # document moved under the append), so it gets the same answer: redo the append on the
+            # newer document, in a fresh session, from a pristine copy of the submission (the
+            # pipeline consumes its input).
+            redo_from = (
+                copy.deepcopy(contents)
+                if retain_session is not None and any(item.get("update_mode") == "append" for item in contents)
+                else None
+            )
+            for attempt in range(1, self._APPEND_CONFLICT_ATTEMPTS + 1):
+                try:
+                    sub_batch_outcome = await self._retain_batch_async_internal(
+                        bank_id=bank_id,
+                        contents=contents,
+                        request_context=request_context,
+                        document_id=document_id,
+                        is_first_batch=True,
+                        fact_type_override=fact_type_override,
+                        document_tags=document_tags,
+                        operation_id=operation_id,
+                        strategy=strategy,
+                        language_integrity_mode=language_integrity_mode,
+                        outbox_callback=outbox_callback,
+                        outbox_callback_factory=outbox_callback_factory,
+                        retain_session=retain_session,
+                    )
+                    if retain_session is not None:
+                        async with _retain_timing_mod.timed("store.commit"):
+                            await retain_session.commit()
+                    break
+                except StoreWriteConflict:
+                    if retain_session is not None:
+                        await retain_session.abort()
+                    if redo_from is None or attempt == self._APPEND_CONFLICT_ATTEMPTS:
+                        if redo_from is not None:
+                            # Say which turn is being dropped. Silence here reads as an ordinary
+                            # store error, and the operation-level retry that follows re-runs the
+                            # whole submission for a reason nothing recorded.
+                            #
+                            # The document id rides on the content item, same as in
+                            # `_retain_batch_with_append_retry`; the parameter is often None.
+                            doc_label = document_id or next(
+                                (item.get("document_id") for item in redo_from if item.get("document_id")), None
+                            )
+                            logger.warning(
+                                f"Append session for bank {bank_id} document {doc_label} lost its race "
+                                f"{attempt} times; failing so the operation is retried"
+                            )
+                        raise
+                    logger.info(f"Append session for bank {bank_id} lost its race (attempt {attempt}) — redoing")
+                    await asyncio.sleep(random.uniform(0.05, 0.25) * attempt)
+                    contents = copy.deepcopy(redo_from)
+                    # The lost attempt did not complete, so its outbox events must not be
+                    # delivered; the redo records its own.
+                    pending_outbox_callbacks.clear()
+                    retain_session = await _store.begin_retain(bank_id=bank_id, config=_session_config)
+                except BaseException:
+                    if retain_session is not None:
+                        await retain_session.abort()
+                    raise
             result = sub_batch_outcome.memory_ids
             total_usage = sub_batch_outcome.usage
             total_processed_content_tokens = sub_batch_outcome.processed_content_tokens
@@ -8684,6 +8766,16 @@ class MemoryEngine(MemoryEngineInterface):
         parse_archive(archive_bytes)
 
         await self._authenticate_tenant(request_context)
+        # Gate every import, not just one that creates the bank: _ensure_bank_exists only
+        # runs validate_create_bank for a missing bank, so an import into an existing bank
+        # used to reach no validator hook at all (#5137).
+        if self._operation_validator:
+            from hindsight_api.extensions import BankWriteContext, BankWriteOperation
+
+            ctx = BankWriteContext(
+                bank_id=bank_id, operation=BankWriteOperation.IMPORT_DOCUMENTS, request_context=request_context
+            )
+            await self._validate_operation(self._operation_validator.validate_bank_write(ctx))
         await self._refuse_bank_wide_if_scoped(bank_id, request_context, "import documents")
         await self._get_backend()
         # Ensure the bank (and its per-bank vector indexes) exist before inserts.
@@ -8942,15 +9034,15 @@ class MemoryEngine(MemoryEngineInterface):
         # here protects every sink that the query flows into.
         query = sanitize_text(query) or ""
 
-        # Bound the query length at the engine ingress. The REST handler rejects an
-        # over-long query with HTTP 400 (PR #298), but that check only guards the one
-        # public entry point: consolidation, the reflect tools, the MCP tools and the
-        # context extension all call this method directly. Consolidation recalls with
-        # the *whole fact text* as the query, so a degenerate extraction (58k words,
-        # 4 distinct) became a 54k-term OR tsquery whose evaluation blew Postgres'
-        # stack depth (SQLSTATE 54001) and wedged the bank's consolidation for a week
-        # (issue #3134). Truncating here keeps every internal caller working on a
-        # bounded query instead of failing.
+        # Bound the query length at the engine ingress, for every caller (REST,
+        # consolidation, reflect tools, MCP tools, context extension). Consolidation
+        # recalls with the *whole fact text* as the query, so a degenerate extraction
+        # (58k words, 4 distinct) became a 54k-term OR tsquery whose evaluation blew
+        # Postgres' stack depth (SQLSTATE 54001) and wedged the bank's consolidation for
+        # a week (issue #3134). The REST handler used to reject an over-cap query with
+        # HTTP 400 instead (PR #298); that was dropped because clients cut queries by
+        # characters, and code packs enough tokens per character that a 2000-character
+        # prompt from the coding-agents plugin failed recall outright.
         query = _truncate_query_to_token_limit(
             query,
             get_config().recall_max_query_tokens,
@@ -8975,6 +9067,22 @@ class MemoryEngine(MemoryEngineInterface):
                 f"Invalid fact type(s): {', '.join(sorted(invalid_types))}. "
                 f"Must be one of: {', '.join(sorted(VALID_RECALL_FACT_TYPES))}",
                 status_code=422,
+            )
+
+        if (
+            min_scores is not None
+            and min_scores.reranker is not None
+            and reranking == "cross_encoder"
+            and self._cross_encoder_reranker.cross_encoder.primary_provider_name in RANK_SCORE_PROVIDERS
+        ):
+            from hindsight_api.extensions.operation_validator import OperationValidationError
+
+            provider = self._cross_encoder_reranker.cross_encoder.primary_provider_name
+            raise OperationValidationError(
+                f"min_scores.reranker is not supported with the '{provider}' reranker: its scores are rank "
+                "positions within each result set, so a floor would keep a fixed share of results regardless "
+                "of relevance. Use min_scores.final, or a pointwise reranker.",
+                status_code=400,
             )
 
         # Validate operation if validator is configured
@@ -10066,6 +10174,13 @@ class MemoryEngine(MemoryEngineInterface):
             # (a clearly-relevant match can score ~0.001 while its *ranking* is right).
             min_reranker = min_scores.reranker if min_scores else None
             min_final = min_scores.final if min_scores else None
+            if min_reranker is not None and served_provider in RANK_SCORE_PROVIDERS:
+                # Recall entry rejects this floor when the primary scores by rank; getting
+                # here means the chain failed over to such a member. Its scores are rank
+                # positions, so the floor would only keep a fixed share of the pool (#4901).
+                # Skipped rather than rejected: the caller did nothing wrong, the primary failed.
+                log_buffer.append(f"  [4.9] min_scores.reranker ignored: '{served_provider}' scores by rank")
+                min_reranker = None
             if (min_reranker is not None or min_final is not None) and scored_results:
                 before_min_score = len(scored_results)
                 scored_results = [
@@ -10525,10 +10640,13 @@ class MemoryEngine(MemoryEngineInterface):
             # Convert results to MemoryFact objects
             # Build per-result scores (final/reranker/semantic/text) keyed by id.
             # reranker is None when the configured reranker is a passthrough (rrf /
-            # interleave modes, or the RRFPassthroughCrossEncoder), since its
+            # interleave modes, or the RRFPassthroughCrossEncoder) or scores by rank
+            # position (RANK_SCORE_PROVIDERS, #4901), since its
             # cross_encoder_score_normalized is then a rank-derived placeholder, not a
             # true relevance score.
-            reranker_passthrough = (reranking != "cross_encoder") or served_provider == "rrf"
+            reranker_passthrough = (
+                (reranking != "cross_encoder") or served_provider == "rrf" or served_provider in RANK_SCORE_PROVIDERS
+            )
             scores_by_id: dict[str, RecallScores] = {
                 sr.id: RecallScores(
                     final=sr.weight,
@@ -18275,7 +18393,6 @@ class MemoryEngine(MemoryEngineInterface):
                 document_tokens = count_prompt_tokens(current_content)
                 user_prompt = build_structured_delta_prompt(
                     current_document_json=current_doc.model_dump_json(),
-                    candidate_markdown=reflect_result.text,
                     supporting_facts=supporting_facts,
                     source_query=source_query,
                     max_output_tokens=delta_max_tokens,
@@ -19280,6 +19397,7 @@ class MemoryEngine(MemoryEngineInterface):
         outcome: "RefreshOperationOutcome",
         failure_reason: "RefreshFailureReason",
         error_message: str,
+        pause_automatic: bool = True,
     ) -> None:
         """Record a refusal to write: stamp the model, and add a row to its history.
 
@@ -19292,6 +19410,10 @@ class MemoryEngine(MemoryEngineInterface):
         leaves ``last_refreshed_at`` behind, so the model still looks stale and the
         scheduler used to queue the same doomed refresh every tick, paying the LLM
         each time (#4532). See ``_automatic_refresh_paused``.
+
+        ``pause_automatic=False`` writes the history row but not the stamp: a
+        transient provider failure (429, 5xx, timeout) is not the same doomed prompt,
+        and pausing on it froze pages for days after a rate limit had lifted (#5394).
 
         Best-effort by design — the refresh has already failed and is about to
         raise; losing either write must not also swallow that exception, and the
@@ -19312,12 +19434,13 @@ class MemoryEngine(MemoryEngineInterface):
                 # Stamp first, on its own statement: it is the one that stops the
                 # automatic triggers, so it must land even if the audit row below
                 # (optional, and capped) cannot be written.
-                await conn.execute(
-                    f"UPDATE {fq_table('mental_models')} SET last_refresh_failed_at = now() "
-                    "WHERE bank_id = $1 AND id = $2",
-                    bank_id,
-                    mental_model_id,
-                )
+                if pause_automatic:
+                    await conn.execute(
+                        f"UPDATE {fq_table('mental_models')} SET last_refresh_failed_at = now() "
+                        "WHERE bank_id = $1 AND id = $2",
+                        bank_id,
+                        mental_model_id,
+                    )
                 if config.enable_mental_model_history:
                     await self._insert_mental_model_history_row(
                         conn,
@@ -20142,9 +20265,10 @@ class MemoryEngine(MemoryEngineInterface):
                 # config (see migrations), so its stats are read with 'english' too.
                 from .search.bm25_term_selection import build_bm25_query_text
 
+                backend_type = getattr(conn, "backend_type", "postgresql")
                 bm25_text = await build_bm25_query_text(
                     conn,
-                    create_sql_dialect(getattr(conn, "backend_type", "postgresql")),
+                    create_sql_dialect(backend_type),
                     tokens=tokens,
                     query_text=query,
                     table="mental_models",
@@ -20160,6 +20284,7 @@ class MemoryEngine(MemoryEngineInterface):
                         pg_search_function_schema=pg_search_function_schema,
                         pg_search_tokenizer=cfg.text_search_extension_pg_search_tokenizer,
                         max_query_terms=cfg.bm25_max_query_terms,
+                        backend_type=backend_type,
                     )
                     # Vector arm (ANN over mm.embedding) + BM25 arm, each ranked
                     # independently, then RRF-fused (k=60) in SQL.
@@ -20207,6 +20332,7 @@ class MemoryEngine(MemoryEngineInterface):
                         pg_search_function_schema=pg_search_function_schema,
                         pg_search_tokenizer=cfg.text_search_extension_pg_search_tokenizer,
                         max_query_terms=cfg.bm25_max_query_terms,
+                        backend_type=backend_type,
                     )
                     # Ranked, not raw: each backend's BM25 operator returns its own scale
                     # (ts_rank_cd, a negated distance, paradedb.score), and those have
@@ -23673,6 +23799,9 @@ class MemoryEngine(MemoryEngineInterface):
         and fails the same way, forever, on the caller's LLM bill (#4532). It stays
         paused until a refresh succeeds, which only an explicit one can do now: that
         moves ``last_refreshed_at`` past ``last_refresh_failed_at``.
+
+        A temporary provider failure (rate limit, 5xx, quota reset) never sets
+        ``last_refresh_failed_at``, so it does not pause anything (#5394).
         """
         backend = await self._get_backend()
         async with acquire_with_retry(backend) as conn:

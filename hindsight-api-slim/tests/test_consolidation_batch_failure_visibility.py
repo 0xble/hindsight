@@ -295,3 +295,65 @@ async def test_facts_bisection_cannot_rescue_are_counted_in_both_places(memory: 
     finally:
         memory._consolidation_llm_config = original_llm
         await memory.delete_bank(bank_id, request_context=request_context)
+
+
+@pytest.mark.asyncio
+@pytest.mark.memory_backend_incompatible
+async def test_action_citing_no_batch_fact_is_counted_not_silent(memory: MemoryEngine, request_context):
+    """#5273: a create whose source_fact_ids are all miscopied (truncated UUID, an
+    observation id) cannot be applied, but it must be reported, not folded into
+    ``no_durable_knowledge`` like a fact the model chose to skip."""
+    bank_id = f"test-5273-{uuid.uuid4().hex[:8]}"
+    await memory.ensure_bank_profile(bank_id=bank_id, request_context=request_context)
+    original_llm = memory._consolidation_llm_config
+    try:
+        source_ids = []
+        async with memory._pool.acquire() as conn:
+            for text in ("Erin likes tea", "Erin bikes daily"):
+                source_ids.append(await _insert_memory(conn, bank_id, text, ["user:erin"]))
+        good_id, bad_id = map(str, source_ids)
+        batches_seen = []
+
+        def callback(messages, scope):
+            if scope != "consolidation":
+                return _ConsolidationBatchResponse()
+            prompt = "\n".join(m.get("content", "") for m in messages if m.get("role") == "user")
+            fact_ids = re.findall(r"\[([0-9a-f-]{36})\]", prompt)
+            batches_seen.append(set(fact_ids))
+            if len(fact_ids) == 1:
+                # The fork rejects the unsafe whole reply and bisects. A fresh
+                # singleton reply rescues the good fact; the other is declined.
+                return _ConsolidationBatchResponse(
+                    creates=[_CreateAction(text="Erin likes tea", source_fact_ids=[good_id])]
+                    if fact_ids == [good_id]
+                    else []
+                )
+            assert set(fact_ids) == {good_id, bad_id}
+            return _ConsolidationBatchResponse(
+                creates=[
+                    _CreateAction(text="Erin likes tea", source_fact_ids=[good_id]),
+                    _CreateAction(text="Erin bikes", source_fact_ids=[bad_id[:8] + "-…", str(uuid.uuid4())]),
+                ]
+            )
+
+        _install_llm(memory, callback)
+        with (
+            _override_config(memory, consolidation_llm_batch_size=2, consolidation_llm_parallelism=1),
+            patch.object(memory, "submit_async_consolidation"),
+        ):
+            result = await run_consolidation_job(memory_engine=memory, bank_id=bank_id, request_context=request_context)
+
+        assert result["observations_created"] == 1
+        assert result["unresolved_actions"] == 1
+        assert result["llm_batch_failures"] == 1
+        assert batches_seen[0] == {good_id, bad_id}
+        assert {frozenset(batch) for batch in batches_seen[1:]} == {frozenset([good_id]), frozenset([bad_id])}
+        async with memory._pool.acquire() as conn:
+            rows = await conn.fetch(
+                "SELECT source_memory_ids FROM memory_units WHERE bank_id=$1 AND fact_type='observation'", bank_id
+            )
+        assert len(rows) == 1
+        assert rows[0]["source_memory_ids"] == [source_ids[0]]
+    finally:
+        memory._consolidation_llm_config = original_llm
+        await memory.delete_bank(bank_id, request_context=request_context)

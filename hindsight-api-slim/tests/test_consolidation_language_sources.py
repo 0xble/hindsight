@@ -485,35 +485,27 @@ def test_untargeted_updates_are_dropped_but_delete_targets_still_reject() -> Non
 
 @pytest.mark.asyncio
 async def test_filtered_update_after_schema_correction_still_rejects_whole_reply(
-    config: SimpleNamespace,
+    config: SimpleNamespace, provider
 ) -> None:
-    """Correction-used replies stay fail-closed if reference filtering is still needed."""
-    try:
-        consolidator._ConsolidationBatchResponse.model_validate({"updates": [{}]})
-    except ValidationError as exc:
-        schema_error = exc
-    else:  # pragma: no cover - the malformed fixture must fail schema validation
-        raise AssertionError("expected a schema validation error")
+    """Correction-used replies stay fail-closed if reference filtering is still needed.
 
-    llm = SimpleNamespace(
-        _provider_impl=None,
-        call=AsyncMock(
-            side_effect=[
-                schema_error,
-                LLMCallResult(
-                    content=SimpleNamespace(
-                        creates=[SimpleNamespace(text="valid sibling", source_fact_ids=["A"])],
-                        updates=[SimpleNamespace(text="untargeted", observation_id="Z", source_fact_ids=["B"])],
-                        deletes=[],
-                    ),
-                    usage=TokenUsage(),
-                ),
-            ]
-        ),
+    Exercise the audited provider boundary with the actual released constrained
+    response model, not a ValidationError from the obsolete unconstrained model.
+    """
+    stub = install(
+        provider,
+        [
+            {"updates": [{}]},
+            {
+                "creates": [{"text": "valid sibling", "source_fact_ids": ["A"]}],
+                "updates": [{"text": "untargeted", "observation_id": "Z", "source_fact_ids": ["B"]}],
+                "deletes": [],
+            },
+        ],
     )
 
     result = await _consolidate_batch_with_llm(
-        llm_config=llm,
+        llm_config=provider,
         memories=[{"id": "A", "text": "fact A"}, {"id": "B", "text": "fact B"}],
         union_observations=[MemoryFact(id="O", text="observation", fact_type="observation", source_fact_ids=[])],
         union_source_facts={},
@@ -523,8 +515,11 @@ async def test_filtered_update_after_schema_correction_still_rejects_whole_reply
 
     assert result.failed
     assert not result.creates
+    assert not result.updates
+    assert not result.deletes
     assert result.pending_fact_ids == set()
-    assert llm.call.await_count == 2
+    assert len(stub.requests) == 2
+    assert stub.requests[0]["messages"] != stub.requests[1]["messages"]
 
 
 def test_filter_keeps_deletes_when_nothing_was_dropped() -> None:

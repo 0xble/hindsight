@@ -57,7 +57,7 @@ from ..language_integrity import (
     should_check,
 )
 from ..llm_attempt_limit import CompletionAttemptLimitError, single_completion
-from ..llm_interface import OutputTooLongError, ProviderRateLimitResetError
+from ..llm_interface import OutputTooLongError, PromptCachePrefix, ProviderRateLimitResetError
 from ..llm_trace import (
     current_trace_context,
     record_created_memory_ids,
@@ -121,6 +121,13 @@ async def _retry_deadlocked_apply(action: Callable[[], Awaitable[None]]) -> None
             await asyncio.sleep(delay)
         finally:
             reset_trace_context(token)
+
+
+#: How many of one response's actions are prepared at once (see `_process_memory_batch`). Bounds the
+#: embedder calls and, with semantic dedup on, the nearest-observation probes (each takes a pooled
+#: connection) and their LLM verdicts one response puts in flight. The liveness preflight is one read
+#: for the whole response, done before any action is prepared.
+_PREPARE_CONCURRENCY = 8
 
 
 async def _gather_or_cancel(coros: list[Any]) -> list[Any]:
@@ -1016,31 +1023,22 @@ async def _sources_changed_since_read(
     return [str(r["id"]) for r in rows if r["updated_at"] != read_at[str(r["id"])]]
 
 
-async def _any_live_source_memory(
-    conn: "DatabaseConnection",
-    bank_id: str,
-    source_memory_ids: list[uuid.UUID],
-) -> bool:
-    """Cheap, non-locking existence check used as a preflight before embedding.
+async def _live_source_ids(pool: DatabaseBackend, bank_id: str, unit_ids: list[Any]) -> set[str]:
+    """Which of ``unit_ids`` still exist, as strings — the preflight before embedding.
 
-    Lets the create/update executors skip the (slow) embedder when every source
-    memory is already gone, restoring the pre-refactor short-circuit. The
-    authoritative, FOR SHARE liveness check still runs inside the write transaction.
+    One read for a whole set, so a response's actions are checked together rather than one read
+    each. It only decides whether the (slow) embed is worth spending: the authoritative,
+    FOR SHARE liveness check still runs inside the write transaction. Outside a transaction the
+    share lock this reads with ends with the statement, so nothing is held.
     """
-    if not source_memory_ids:
-        return False
-    store = get_memories()
-    if not _memory_store_handles_tables(bank_id):
-        found = await conn.fetchval(
-            f"SELECT 1 FROM {_memory_table_for_dialect()('memory_units')} WHERE id = ANY($1::uuid[]) AND bank_id = $2 LIMIT 1",
-            source_memory_ids,
-            bank_id,
-        )
-        return found is not None
-    present = await store.get_memories(
-        conn=conn, fq_table=fq_table, bank_id=bank_id, unit_ids=[str(mid) for mid in source_memory_ids]
-    )
-    return bool(present)
+    if not unit_ids:
+        return set()
+    async with acquire_with_retry(pool) as conn:
+        # Reuse the fork's ordered/dialect-aware liveness boundary. The upstream
+        # SQL store helper takes unordered share locks, which would reintroduce
+        # the retain/consolidation deadlock before the retried apply phase.
+        live = await _filter_live_source_memories(conn, bank_id, unit_ids)
+    return {str(u) for u in live}
 
 
 async def _resolve_original_source_texts(
@@ -1725,6 +1723,7 @@ def _config_for_scope(config: Any, fact_tags: list[str]) -> Any:
 def _build_response_model(
     max_creates: int | None = None,
     *,
+    fact_ids: list[str] | None = None,
     supports_max_items: bool = True,
 ) -> type[_ConsolidationBatchResponse]:
     """Build a response model, optionally constraining creates via JSON schema.
@@ -1733,16 +1732,33 @@ def _build_response_model(
     Schema ``maxItems`` keyword emitted by Pydantic's list ``max_length``. Operators
     can disable the schema hint for those backends; the prompt capacity note and
     post-response truncation still enforce the observation cap.
+
+    ``fact_ids`` pins ``source_fact_ids`` to the batch's fact ids (``enum``, plus
+    ``minItems: 1`` where array-length keywords are accepted). Small models miscopy
+    UUIDs — truncating them or pasting an observation id — and an action citing no
+    batch fact is discarded, so a grammar-constrained provider must not be able to
+    emit one (#5273). Schema only: validation stays ``list[str]``, so a provider that
+    ignores the hint cannot fail the batch.
     """
-    if not supports_max_items or max_creates is None or max_creates < 0:
+    cap = max(max_creates, 0) if supports_max_items and max_creates is not None and max_creates >= 0 else None
+    if cap is None and not fact_ids:
         return _ConsolidationBatchResponse
 
-    from pydantic import Field as PydanticField
+    ids_schema: dict[str, Any] = {}
+    if fact_ids:
+        ids_schema["items"] = {"type": "string", "enum": list(fact_ids)}
+        if supports_max_items:
+            ids_schema["minItems"] = 1
 
-    clamped = max(max_creates, 0)
+    class _Create(_CreateAction):
+        source_fact_ids: list[str] = Field(json_schema_extra=ids_schema)
+
+    class _Update(_UpdateAction):
+        source_fact_ids: list[str] = Field(json_schema_extra=ids_schema)
 
     class _ConstrainedConsolidationBatchResponse(_ConsolidationBatchResponse):
-        creates: list[_CreateAction] = PydanticField(default=[], max_length=clamped)
+        creates: list[_Create] = Field(default=[], max_length=cap)
+        updates: list[_Update] = []
 
     return _ConstrainedConsolidationBatchResponse
 
@@ -1760,6 +1776,7 @@ class ConsolidationPerfLog:
         self.total_obs_in_context: int = 0
         self.total_prompt_chars: int = 0
         self.llm_batch_failures: int = 0
+        self.unresolved_actions: int = 0
 
     def log(self, message: str) -> None:
         """Add a log line."""
@@ -1805,6 +1822,7 @@ class ConsolidationPerfLog:
         self.total_obs_in_context += other.total_obs_in_context
         self.total_prompt_chars += other.total_prompt_chars
         self.llm_batch_failures += other.llm_batch_failures
+        self.unresolved_actions += other.unresolved_actions
 
     def flush(self) -> None:
         """Flush all log lines to the logger."""
@@ -1814,6 +1832,24 @@ class ConsolidationPerfLog:
 
         log_output = header + "\n" + "\n".join(self.lines) + "\n" + footer
         logger.info(log_output)
+
+
+def _log_unresolved_action(kind: str, source_fact_ids: list[str], text: str, perf: ConsolidationPerfLog | None) -> None:
+    """Report a create/update the model wrote but whose ``source_fact_ids`` match no batch fact.
+
+    The action cannot be applied — there is no fact to attach it to — but it is not the
+    model declining the facts either, so it must not vanish into ``no_durable_knowledge``
+    (#5273). The schema's ``enum`` prevents this on grammar-constrained providers; this is
+    what is left for the ones that ignore it.
+    """
+    logger.warning(
+        "[CONSOLIDATION] discarded observation %s: none of its source_fact_ids %s is a fact in this batch; text=%r",
+        kind.upper(),
+        source_fact_ids,
+        text[:200],
+    )
+    if perf:
+        perf.unresolved_actions += 1
 
 
 def _as_dt(v: "datetime | str | None") -> "datetime | None":
@@ -2344,6 +2380,9 @@ async def _run_consolidation_job(
         # a run that discarded every response it got (#4151, #4152). One batch call can
         # contribute several attempts, so this is not bounded by the batch count.
         "llm_batch_failures": 0,
+        # Creates/updates the model wrote whose source_fact_ids matched no fact in their
+        # batch, so they were discarded unapplied (#5273).
+        "unresolved_actions": 0,
     }
 
     # Track all unique tags from consolidated memories for mental model refresh filtering
@@ -3094,6 +3133,12 @@ async def _run_consolidation_job(
             f"reflected in failed_consolidation; see hindsight.consolidation.batch_failures for the "
             f"per-class breakdown."
         )
+    stats["unresolved_actions"] = perf.unresolved_actions
+    if perf.unresolved_actions:
+        perf.log(
+            f"[6] WARNING: {perf.unresolved_actions} observation create/update action(s) cited no fact id from "
+            f"their batch and were discarded; rejected replies may be rescued by batch bisection."
+        )
 
     # Trigger mental-model refreshes once, when the chain has fully drained. On a
     # round-limited round we skip and carry the affected tags forward (above); the
@@ -3398,6 +3443,7 @@ async def _process_memory_batch(
         schema_correction_budget=schema_correction_budget,
         detail_guard_pool=pool,
         detail_guard_bank_id=bank_id,
+        perf=perf,
     )
     if perf:
         perf.record_timing("llm", time.time() - t0)
@@ -3456,33 +3502,49 @@ async def _process_memory_batch(
         prepared_deletes.append(delete.observation_id)
 
     # --- Prepare: updates -----------------------------------------------------
-    prepared_updates: list[_PreparedUpdate] = []
-    for update in llm_result.updates:
+    # Each action is prepared on its own: a liveness preflight, an embedding and, with semantic
+    # dedup on, a nearest-observation probe and possibly a focused LLM verdict. None of it depends
+    # on another action's preparation — the probes read the state the batch started from, which is
+    # also why two near-twin CREATEs in one response can both land (see below) — so the actions are
+    # prepared concurrently. Done one after another, a response with many actions paid every
+    # round trip and every dedup verdict in sequence. Order is preserved: the lists below keep the
+    # response's order, which the apply step relies on.
+    prepare_slots = asyncio.Semaphore(_PREPARE_CONCURRENCY)
+
+    # Every action's sources are facts of this batch, so ONE liveness read answers the preflight
+    # for all of them, instead of one read per action.
+    live_before_prepare = await _live_source_ids(pool, bank_id, [m["id"] for m in memories])
+
+    async def _bounded(coro: Any) -> Any:
+        async with prepare_slots:
+            return await coro
+
+    async def _prepare_update(update: _UpdateAction) -> _PreparedUpdate | None:
         source_mems = [mem_by_id[fid] for fid in update.source_fact_ids if fid in mem_by_id]
         if not source_mems:
-            continue
+            _log_unresolved_action("update", update.source_fact_ids, update.text, perf)
+            return None
         # Security: the observation must have been recalled for at least one of the source facts
         if not any(update.observation_id in per_fact_obs_ids.get(str(m["id"]), set()) for m in source_mems):
             logger.debug(
                 f"Batch consolidation: rejected update — observation {update.observation_id} "
                 f"not in any source fact's recall"
             )
-            continue
+            return None
         model = next((m for m in union_observations if str(m.id) == update.observation_id), None)
         if model is None:
             logger.debug(f"Update skipped: observation {update.observation_id} not found in recall results")
-            continue
+            return None
         agg = _aggregate_source_fields(source_mems, tags=fact_tags)
         source_memory_ids = [m["id"] for m in source_mems]
-        # Preflight (non-locking, short-lived conn): if every source memory is already gone,
-        # skip BEFORE the slow embed. The write itself re-checks liveness under FOR SHARE.
-        async with acquire_with_retry(pool) as conn:
-            if not await _any_live_source_memory(conn, bank_id, source_memory_ids):
-                logger.debug(
-                    f"Update skipped: all {len(source_memory_ids)} source memories for observation "
-                    f"{update.observation_id} were deleted before embedding"
-                )
-                continue
+        # Preflight: if every source memory is already gone, skip BEFORE the slow embed. The write
+        # itself re-checks liveness under FOR SHARE.
+        if not any(str(mid) in live_before_prepare for mid in source_memory_ids):
+            logger.debug(
+                f"Update skipped: all {len(source_memory_ids)} source memories for observation "
+                f"{update.observation_id} were deleted before embedding"
+            )
+            return None
         embedding_str = await _embed_observation_text(memory_engine, update.text, perf)
         prepared = _PreparedUpdate(
             update=update,
@@ -3510,7 +3572,11 @@ async def _process_memory_batch(
                 anchor_source_ids=[str(source_id) for source_id in source_memory_ids],
                 detail_loss_budget=schema_correction_budget,
             )
-        prepared_updates.append(prepared)
+        return prepared
+
+    prepared_updates: list[_PreparedUpdate] = [
+        p for p in await _gather_or_cancel([_bounded(_prepare_update(u)) for u in llm_result.updates]) if p is not None
+    ]
 
     # --- Prepare: creates -----------------------------------------------------
     # Deterministic dedup guard: map the observations the LLM was SHOWN by their
@@ -3524,11 +3590,11 @@ async def _process_memory_batch(
     updates_by_text = {_norm_obs_text(p.update.text): p for p in prepared_updates if p.update.text}
     update_texts = set(updates_by_text)
 
-    prepared_creates: list[_PreparedCreate] = []
-    for create in llm_result.creates:
+    async def _prepare_create(create: _CreateAction) -> _PreparedCreate | None:
         source_mems = [mem_by_id[fid] for fid in create.source_fact_ids if fid in mem_by_id]
         if not source_mems:
-            continue
+            _log_unresolved_action("create", create.source_fact_ids, create.text, perf)
+            return None
         agg = _aggregate_source_fields(source_mems, tags=fact_tags)
         create_source_ids = [m["id"] for m in source_mems]
 
@@ -3545,14 +3611,15 @@ async def _process_memory_batch(
             else _duplicate_create_target(create.text, shown_obs_by_text, update_texts)
         )
         if duplicate_of is not None:
-            logger.debug("[CONSOLIDATION] preparing source-only CREATE fold into %s", duplicate_of)
+            logger.debug(
+                "[CONSOLIDATION] preparing source-only CREATE fold into %s; llm_reason=%r",
+                duplicate_of,
+                create.reason or "(none given)",
+            )
 
-        async with acquire_with_retry(pool) as conn:
-            if not await _any_live_source_memory(conn, bank_id, create_source_ids):
-                logger.debug(
-                    f"Create skipped: all {len(create_source_ids)} source memories were deleted before embedding"
-                )
-                continue
+        if not any(str(mid) in live_before_prepare for mid in create_source_ids):
+            logger.debug(f"Create skipped: all {len(create_source_ids)} source memories were deleted before embedding")
+            return None
         embedding_str = await _embed_observation_text(memory_engine, create.text, perf)
         prepared_create = _PreparedCreate(
             text=create.text,
@@ -3606,7 +3673,11 @@ async def _process_memory_batch(
             # in a new observation instead of overwriting or claiming that twin.
             # Semantic store folds retain their existing separate contract.
             prepared_create.dedup = None
-        prepared_creates.append(prepared_create)
+        return prepared_create
+
+    prepared_creates: list[_PreparedCreate] = [
+        p for p in await _gather_or_cancel([_bounded(_prepare_create(c)) for c in llm_result.creates]) if p is not None
+    ]
 
     # --- Apply: one transaction for everything this LLM response decided ------
     deleted_count = 0
@@ -3717,264 +3788,294 @@ async def _process_memory_batch(
             create_dedups = [replace(create.dedup) if create.dedup is not None else None for create in prepared_creates]
             same_response_folds: set[int] = set()
             folded_targets: set[str] = set()
-            async with AsyncExitStack() as lock_stack:
-                for lock in apply_locks or []:
-                    await lock_stack.enter_async_context(lock)
-                async with acquire_with_retry(pool) as conn:
-                    async with conn.transaction():
-                        # Stale action validation is only part of the opt-in lane path.
-                        # The default path must remain byte-for-byte equivalent in behavior,
-                        # and store-owned banks are explicitly kept on that path below.
-                        if apply_turn is not None:
-                            await _validate_current_action_references(conn)
-                        changed_ids = await _sources_changed_since_read(conn, bank_id, memories)
-                        if changed_ids:
-                            # Adopt upstream's source-edit fence inside the fork's
-                            # retried transaction. No actions or stamps may survive
-                            # a reply prepared from source facts that have changed.
-                            logger.info(
-                                "[CONSOLIDATION] bank=%s discarding batch of %s: %s source fact(s) edited since read",
-                                bank_id,
-                                len(memories),
-                                len(changed_ids),
-                            )
-                            return
-                        for observation_id in prepared_deletes:
-                            await _execute_delete_action(conn=conn, bank_id=bank_id, observation_id=observation_id)
-                            deleted_count += 1
-
-                        for prepared in prepared_updates:
-                            if prepared.update.observation_id in folded_targets:
-                                # An earlier UPDATE folded sources into this row
-                                # in the same response. Preserve that provenance
-                                # instead of overwriting it with the recall snapshot.
-                                current = await get_memories().get_memories(
-                                    conn=conn,
-                                    fq_table=fq_table,
-                                    bank_id=bank_id,
-                                    unit_ids=[prepared.update.observation_id],
-                                )
-                                if current:
-                                    prepared = replace(
-                                        prepared,
-                                        model=prepared.model.model_copy(
-                                            update={
-                                                "text": current[0].text,
-                                                "tags": current[0].tags,
-                                                "source_fact_ids": current[0].source_memory_ids,
-                                            }
-                                        ),
-                                    )
-                            updated_emb_str = await _apply_update_action(
-                                conn=conn,
-                                memory_engine=memory_engine,
-                                bank_id=bank_id,
-                                prepared=prepared,
-                                perf=None,  # account once after commit, not per rolled-back attempt
-                            )
-                            if updated_emb_str is None:
-                                # Skipped inside the write (sources or the observation vanished).
-                                continue
-                            for m in prepared.source_mems:
-                                per_memory_updated.add(str(m["id"]))
-                            survivor_id = prepared.update.observation_id
-                            survivor_text = prepared.update.text
-                            if prepared.dedup is not None:
-                                folded = await _apply_dedup_update_fold(
-                                    conn,
-                                    memory_engine,
-                                    bank_id,
-                                    config,
-                                    prepared.dedup,
-                                    prepared.update.observation_id,
-                                    prepared.update.text,
-                                )
-                                if folded:
-                                    assert prepared.dedup.best_id is not None
-                                    survivor_id = prepared.dedup.best_id
-                                    survivor_text = prepared.dedup.merged_text
-                                    folded_targets.add(survivor_id)
-                            # Follow the actual survivor only AFTER a successful
-                            # fold, including subsequent UPDATEs of that survivor.
-                            # Semantic CREATE verdicts keep their synthesized text.
-                            for index, create in enumerate(prepared_creates):
-                                dedup = create_dedups[index]
-                                if (
-                                    create.source_only_fold
-                                    and dedup is not None
-                                    and dedup.best_id == prepared.update.observation_id
-                                ):
-                                    create_dedups[index] = replace(
-                                        dedup, best_id=survivor_id, best_text=survivor_text, merged_text=survivor_text
-                                    )
-                                    same_response_folds.add(index)
-
-                        apply_remaining_slots: int | None = None
-                        if apply_turn is not None and max_obs >= 0 and fact_tags:
-                            current_count = (
-                                await _count_observations_for_scope(conn, bank_id, fact_tags) if max_obs > 0 else 0
-                            )
-                            apply_remaining_slots = max(max_obs - current_count, 0)
-                            if apply_remaining_slots == 0:
+            # A deadlock retry gets a fresh store batch, just as it gets a fresh
+            # SQL transaction; never reuse writes/prefetch state from an aborted attempt.
+            write_batch = await get_memories().begin_write_batch(bank_id=bank_id)
+            try:
+                async with AsyncExitStack() as lock_stack:
+                    for lock in apply_locks or []:
+                        await lock_stack.enter_async_context(lock)
+                    async with acquire_with_retry(pool) as conn:
+                        async with conn.transaction():
+                            # Stale action validation is only part of the opt-in lane path.
+                            # The default path must remain byte-for-byte equivalent in behavior,
+                            # and store-owned banks are explicitly kept on that path below.
+                            if apply_turn is not None:
+                                await _validate_current_action_references(conn)
+                            changed_ids = await _sources_changed_since_read(conn, bank_id, memories)
+                            if changed_ids:
+                                # Adopt upstream's source-edit fence inside the fork's
+                                # retried transaction. No actions or stamps may survive
+                                # a reply prepared from source facts that have changed.
                                 logger.info(
-                                    "[CONSOLIDATION] bank=%s scope=%s at observation limit during apply (%s); skipping CREATEs",
+                                    "[CONSOLIDATION] bank=%s discarding batch of %s: %s source fact(s) edited since read",
                                     bank_id,
-                                    fact_tags,
-                                    max_obs,
+                                    len(memories),
+                                    len(changed_ids),
                                 )
+                                await write_batch.commit()
+                                return
+                            # Prefetch store-owned reads as one batch; SQL-backed stores treat this as a no-op.
+                            await write_batch.prefetch(
+                                list(
+                                    dict.fromkeys(
+                                        [str(mid) for p in prepared_updates for mid in p.source_memory_ids]
+                                        + [p.update.observation_id for p in prepared_updates]
+                                        + [str(mid) for p in prepared_creates for mid in p.source_memory_ids]
+                                    )
+                                )
+                            )
 
-                        # Probe only prepared normalized CREATE texts before inserting any
-                        # response rows. The indexed SQL expression preserves the old
-                        # whitespace-normalized, case-sensitive semantics while avoiding a
-                        # materialization of every observation in a shared scope.
-                        exact_by_scope: dict[tuple[str, ...], dict[str, Any]] = {}
-                        if apply_turn is not None and exact_fold_enabled:
-                            normalized_by_scope: dict[tuple[str, ...], list[str]] = {}
-                            for prepared_create in prepared_creates:
-                                if prepared_create.preserve_separate:
-                                    continue
-                                scope = tuple(sorted(prepared_create.source_fact_tags or []))
-                                normalized_by_scope.setdefault(scope, []).append(_norm_obs_text(prepared_create.text))
-                            for scope, normalized_texts in normalized_by_scope.items():
-                                rows = await _fetch_exact_observation_candidates(
-                                    conn,
-                                    bank_id,
-                                    scope,
-                                    list(dict.fromkeys(normalized_texts)),
-                                )
-                                exact_by_scope[scope] = {_norm_obs_text(row["text"]): row for row in rows}
-                        apply_dedups = []
-                        for index, (prepared_create, prepared_dedup) in enumerate(zip(prepared_creates, create_dedups)):
-                            scope = tuple(sorted(prepared_create.source_fact_tags or []))
-                            if not prepared_create.preserve_separate and _norm_obs_text(
-                                prepared_create.text
-                            ) in exact_by_scope.get(scope, {}):
-                                apply_dedups.append(None)
-                                continue
-                            apply_dedup = prepared_dedup
-                            if apply_turn is not None and dedup_enabled and not prepared_create.preserve_separate:
-                                current_dedup = await _dedup_probe(
-                                    conn,
-                                    memory_engine,
-                                    bank_id,
-                                    config,
-                                    prepared_create.text,
-                                    prepared_create.embedding_str,
-                                    prepared_create.source_fact_tags,
-                                    None,
-                                )
-                                if current_dedup.best_id is not None:
-                                    if index not in same_response_folds and (
-                                        apply_dedup is None or apply_dedup.best_id != current_dedup.best_id
-                                    ):
-                                        # Only a predecessor's new semantic twin needs
-                                        # off-connection LLM adjudication on fresh recall.
-                                        raise _StaleConsolidationReference(
-                                            "new semantic CREATE twin before serialized apply"
+                            for observation_id in prepared_deletes:
+                                await _execute_delete_action(conn=conn, bank_id=bank_id, observation_id=observation_id)
+                                deleted_count += 1
+
+                            for prepared in prepared_updates:
+                                if prepared.update.observation_id in folded_targets:
+                                    # An earlier UPDATE folded sources into this row
+                                    # in the same response. Preserve that provenance
+                                    # instead of overwriting it with the recall snapshot.
+                                    current = await get_memories().get_memories(
+                                        conn=conn,
+                                        fq_table=fq_table,
+                                        bank_id=bank_id,
+                                        unit_ids=[prepared.update.observation_id],
+                                    )
+                                    if current:
+                                        prepared = replace(
+                                            prepared,
+                                            model=prepared.model.model_copy(
+                                                update={
+                                                    "text": current[0].text,
+                                                    "tags": current[0].tags,
+                                                    "source_fact_ids": current[0].source_memory_ids,
+                                                }
+                                            ),
                                         )
-                            apply_dedups.append(apply_dedup)
-
-                        for prepared_create, apply_dedup in zip(prepared_creates, apply_dedups):
-                            scope = tuple(sorted(prepared_create.source_fact_tags or []))
-                            exact_row = (
-                                None
-                                if prepared_create.preserve_separate
-                                else exact_by_scope.get(scope, {}).get(_norm_obs_text(prepared_create.text))
-                            )
-                            if exact_row is not None:
-                                exact_fold = _DedupOutcome(
-                                    best_id=str(exact_row["id"]),
-                                    merged_text=exact_row["text"],
-                                    should_merge=True,
-                                    best_text=exact_row["text"],
-                                )
-                                merged_into = await _apply_dedup_create_fold(
-                                    conn,
-                                    memory_engine,
-                                    bank_id,
-                                    config,
-                                    exact_fold,
-                                    prepared_create.source_memory_ids,
-                                    _TemporalBounds.of(prepared_create.agg),
-                                )
-                                if merged_into is not None:
-                                    logger.info("[CONSOLIDATION] folded exact duplicate CREATE during serialized apply")
-                                    for m in prepared_create.source_mems:
-                                        per_memory_created.add(str(m["id"]))
-                                    continue
-                                # A veto or missed CAS did not attach these sources.
-                                # Fall through to semantic folding or insertion.
-                            if apply_dedup is not None:
-                                merged_into = await _apply_dedup_create_fold(
-                                    conn,
-                                    memory_engine,
-                                    bank_id,
-                                    config,
-                                    apply_dedup,
-                                    prepared_create.source_memory_ids,
-                                    _TemporalBounds.of(prepared_create.agg),
-                                )
-                                if merged_into is not None:
-                                    logger.info(
-                                        "[CONSOLIDATION] dedup-merged observation CREATE into %s (cosine>=%.2f)",
-                                        merged_into[:8],
-                                        config.consolidation_dedup_threshold,
-                                    )
-                                    for m in prepared_create.source_mems:
-                                        per_memory_created.add(str(m["id"]))
-                                    continue
-
-                            # A no-loss fallback is a safety exception to the soft
-                            # scope cap; dropping it would stamp away the new fact.
-                            if (
-                                apply_remaining_slots is not None
-                                and apply_remaining_slots <= 0
-                                and not prepared_create.preserve_separate
-                            ):
-                                if remaining_observation_slots:
-                                    raise _StaleConsolidationReference(
-                                        "observation capacity changed before serialized apply"
-                                    )
-                                continue
-                            action = await _apply_create_action(
-                                conn=conn,
-                                memory_engine=memory_engine,
-                                bank_id=bank_id,
-                                prepared=prepared_create,
-                                perf=None,  # account once after commit, not per rolled-back attempt
-                            )
-                            # Count a memory as created only when an observation was actually written (the
-                            # source-liveness recheck inside the write can skip it).
-                            if action == "created":
-                                if apply_remaining_slots is not None:
-                                    apply_remaining_slots -= 1
-                                for m in prepared_create.source_mems:
-                                    per_memory_created.add(str(m["id"]))
-
-                        # The facts this response consumed are marked consolidated in the SAME transaction
-                        # as the observations that now carry them. Stamping them separately is what let a
-                        # half-applied batch orphan its sources forever: the pending-consolidation predicate
-                        # excludes a stamped fact, so nothing would ever rebuild what the batch failed to
-                        # write (#3876).
-                        if stamp_ids:
-                            # A filtered response may have an action discarded at preparation
-                            # or write time. Stamp only facts with a durable observation, not
-                            # merely facts whose citation appeared in the LLM response.
-                            durable_ids = per_memory_created | per_memory_updated
-                            safe_stamp_ids = (
-                                [mid for mid in stamp_ids if str(mid) in durable_ids]
-                                if llm_result.filtered_references
-                                else stamp_ids
-                            )
-                            if safe_stamp_ids:
-                                await get_memories().mark_consolidated(
+                                updated_emb_str = await _apply_update_action(
                                     conn=conn,
-                                    fq_table=fq_table,
+                                    memory_engine=memory_engine,
                                     bank_id=bank_id,
-                                    unit_ids=[str(mem_id) for mem_id in safe_stamp_ids],
-                                    when=datetime.now(timezone.utc),
-                                    failed=False,
+                                    prepared=prepared,
+                                    perf=None,  # account once after commit, not per rolled-back attempt
                                 )
+                                if updated_emb_str is None:
+                                    # Skipped inside the write (sources or the observation vanished).
+                                    continue
+                                for m in prepared.source_mems:
+                                    per_memory_updated.add(str(m["id"]))
+                                survivor_id = prepared.update.observation_id
+                                survivor_text = prepared.update.text
+                                if prepared.dedup is not None:
+                                    folded = await _apply_dedup_update_fold(
+                                        conn,
+                                        memory_engine,
+                                        bank_id,
+                                        config,
+                                        prepared.dedup,
+                                        prepared.update.observation_id,
+                                        prepared.update.text,
+                                    )
+                                    if folded:
+                                        assert prepared.dedup.best_id is not None
+                                        survivor_id = prepared.dedup.best_id
+                                        survivor_text = prepared.dedup.merged_text
+                                        folded_targets.add(survivor_id)
+                                # Follow the actual survivor only AFTER a successful
+                                # fold, including subsequent UPDATEs of that survivor.
+                                # Semantic CREATE verdicts keep their synthesized text.
+                                for index, create in enumerate(prepared_creates):
+                                    dedup = create_dedups[index]
+                                    if (
+                                        create.source_only_fold
+                                        and dedup is not None
+                                        and dedup.best_id == prepared.update.observation_id
+                                    ):
+                                        create_dedups[index] = replace(
+                                            dedup,
+                                            best_id=survivor_id,
+                                            best_text=survivor_text,
+                                            merged_text=survivor_text,
+                                        )
+                                        same_response_folds.add(index)
+
+                            apply_remaining_slots: int | None = None
+                            if apply_turn is not None and max_obs >= 0 and fact_tags:
+                                current_count = (
+                                    await _count_observations_for_scope(conn, bank_id, fact_tags) if max_obs > 0 else 0
+                                )
+                                apply_remaining_slots = max(max_obs - current_count, 0)
+                                if apply_remaining_slots == 0:
+                                    logger.info(
+                                        "[CONSOLIDATION] bank=%s scope=%s at observation limit during apply (%s); skipping CREATEs",
+                                        bank_id,
+                                        fact_tags,
+                                        max_obs,
+                                    )
+
+                            # Probe only prepared normalized CREATE texts before inserting any
+                            # response rows. The indexed SQL expression preserves the old
+                            # whitespace-normalized, case-sensitive semantics while avoiding a
+                            # materialization of every observation in a shared scope.
+                            exact_by_scope: dict[tuple[str, ...], dict[str, Any]] = {}
+                            if apply_turn is not None and exact_fold_enabled:
+                                normalized_by_scope: dict[tuple[str, ...], list[str]] = {}
+                                for prepared_create in prepared_creates:
+                                    if prepared_create.preserve_separate:
+                                        continue
+                                    scope = tuple(sorted(prepared_create.source_fact_tags or []))
+                                    normalized_by_scope.setdefault(scope, []).append(
+                                        _norm_obs_text(prepared_create.text)
+                                    )
+                                for scope, normalized_texts in normalized_by_scope.items():
+                                    rows = await _fetch_exact_observation_candidates(
+                                        conn,
+                                        bank_id,
+                                        scope,
+                                        list(dict.fromkeys(normalized_texts)),
+                                    )
+                                    exact_by_scope[scope] = {_norm_obs_text(row["text"]): row for row in rows}
+                            apply_dedups = []
+                            for index, (prepared_create, prepared_dedup) in enumerate(
+                                zip(prepared_creates, create_dedups)
+                            ):
+                                scope = tuple(sorted(prepared_create.source_fact_tags or []))
+                                if not prepared_create.preserve_separate and _norm_obs_text(
+                                    prepared_create.text
+                                ) in exact_by_scope.get(scope, {}):
+                                    apply_dedups.append(None)
+                                    continue
+                                apply_dedup = prepared_dedup
+                                if apply_turn is not None and dedup_enabled and not prepared_create.preserve_separate:
+                                    current_dedup = await _dedup_probe(
+                                        conn,
+                                        memory_engine,
+                                        bank_id,
+                                        config,
+                                        prepared_create.text,
+                                        prepared_create.embedding_str,
+                                        prepared_create.source_fact_tags,
+                                        None,
+                                    )
+                                    if current_dedup.best_id is not None:
+                                        if index not in same_response_folds and (
+                                            apply_dedup is None or apply_dedup.best_id != current_dedup.best_id
+                                        ):
+                                            # Only a predecessor's new semantic twin needs
+                                            # off-connection LLM adjudication on fresh recall.
+                                            raise _StaleConsolidationReference(
+                                                "new semantic CREATE twin before serialized apply"
+                                            )
+                                apply_dedups.append(apply_dedup)
+
+                            for prepared_create, apply_dedup in zip(prepared_creates, apply_dedups):
+                                scope = tuple(sorted(prepared_create.source_fact_tags or []))
+                                exact_row = (
+                                    None
+                                    if prepared_create.preserve_separate
+                                    else exact_by_scope.get(scope, {}).get(_norm_obs_text(prepared_create.text))
+                                )
+                                if exact_row is not None:
+                                    exact_fold = _DedupOutcome(
+                                        best_id=str(exact_row["id"]),
+                                        merged_text=exact_row["text"],
+                                        should_merge=True,
+                                        best_text=exact_row["text"],
+                                    )
+                                    merged_into = await _apply_dedup_create_fold(
+                                        conn,
+                                        memory_engine,
+                                        bank_id,
+                                        config,
+                                        exact_fold,
+                                        prepared_create.source_memory_ids,
+                                        _TemporalBounds.of(prepared_create.agg),
+                                    )
+                                    if merged_into is not None:
+                                        logger.info(
+                                            "[CONSOLIDATION] folded exact duplicate CREATE during serialized apply"
+                                        )
+                                        for m in prepared_create.source_mems:
+                                            per_memory_created.add(str(m["id"]))
+                                        continue
+                                    # A veto or missed CAS did not attach these sources.
+                                    # Fall through to semantic folding or insertion.
+                                if apply_dedup is not None:
+                                    merged_into = await _apply_dedup_create_fold(
+                                        conn,
+                                        memory_engine,
+                                        bank_id,
+                                        config,
+                                        apply_dedup,
+                                        prepared_create.source_memory_ids,
+                                        _TemporalBounds.of(prepared_create.agg),
+                                    )
+                                    if merged_into is not None:
+                                        logger.info(
+                                            "[CONSOLIDATION] dedup-merged observation CREATE into %s (cosine>=%.2f)",
+                                            merged_into[:8],
+                                            config.consolidation_dedup_threshold,
+                                        )
+                                        for m in prepared_create.source_mems:
+                                            per_memory_created.add(str(m["id"]))
+                                        continue
+
+                                # A no-loss fallback is a safety exception to the soft
+                                # scope cap; dropping it would stamp away the new fact.
+                                if (
+                                    apply_remaining_slots is not None
+                                    and apply_remaining_slots <= 0
+                                    and not prepared_create.preserve_separate
+                                ):
+                                    if remaining_observation_slots:
+                                        raise _StaleConsolidationReference(
+                                            "observation capacity changed before serialized apply"
+                                        )
+                                    continue
+                                action = await _apply_create_action(
+                                    conn=conn,
+                                    memory_engine=memory_engine,
+                                    bank_id=bank_id,
+                                    prepared=prepared_create,
+                                    perf=None,  # account once after commit, not per rolled-back attempt
+                                )
+                                # Count a memory as created only when an observation was actually written (the
+                                # source-liveness recheck inside the write can skip it).
+                                if action == "created":
+                                    if apply_remaining_slots is not None:
+                                        apply_remaining_slots -= 1
+                                    for m in prepared_create.source_mems:
+                                        per_memory_created.add(str(m["id"]))
+
+                            # The facts this response consumed are marked consolidated in the SAME transaction
+                            # as the observations that now carry them. Stamping them separately is what let a
+                            # half-applied batch orphan its sources forever: the pending-consolidation predicate
+                            # excludes a stamped fact, so nothing would ever rebuild what the batch failed to
+                            # write (#3876).
+                            if stamp_ids:
+                                # A filtered response may have an action discarded at preparation
+                                # or write time. Stamp only facts with a durable observation, not
+                                # merely facts whose citation appeared in the LLM response.
+                                durable_ids = per_memory_created | per_memory_updated
+                                safe_stamp_ids = (
+                                    [mid for mid in stamp_ids if str(mid) in durable_ids]
+                                    if llm_result.filtered_references
+                                    else stamp_ids
+                                )
+                                if safe_stamp_ids:
+                                    await get_memories().mark_consolidated(
+                                        conn=conn,
+                                        fq_table=fq_table,
+                                        bank_id=bank_id,
+                                        unit_ids=[str(mem_id) for mem_id in safe_stamp_ids],
+                                        when=datetime.now(timezone.utc),
+                                        failed=False,
+                                    )
+
+                            await write_batch.commit()
+            except BaseException:
+                await write_batch.abort()
+                raise
 
         write_started = time.time()
         if apply_turn is not None:
@@ -4122,9 +4223,19 @@ async def _apply_update_action(
         return None
     live_ids = live_source_memory_ids
 
+    # Recall predates the LLM/embedding work, so the snapshot's tags may be stale (#4831):
+    # merging them would drop tags added since and bring back tags removed since. Merge
+    # into the observation's current tags, held until the caller commits.
+    current_tags = await store.lock_observation_tags(
+        conn=conn, fq_table=fq_table, bank_id=bank_id, observation_id=observation_id
+    )
+    if current_tags is None:
+        logger.debug(f"Update skipped: observation {observation_id} no longer exists")
+        return None
+
     history_entry = _ObservationHistorySnapshot(
         previous_text=model.text,
-        previous_tags=list(model.tags or []),
+        previous_tags=current_tags,
         previous_occurred_start=model.occurred_start,
         previous_occurred_end=model.occurred_end,
         previous_mentioned_at=model.mentioned_at,
@@ -4135,19 +4246,8 @@ async def _apply_update_action(
     merged = dict.fromkeys(str(s) for s in [*(model.source_fact_ids or []), *live_ids])
     source_ids = [uuid.UUID(s) for s in merged]
 
-    # Read the target's current tags inside the write transaction. The prepared model
-    # came from recall and may be stale while the LLM was running. Updates do not
-    # carry an observation-tag replacement, so preserve tags written meanwhile
-    # instead of overwriting them with the recall snapshot.
-    if _memory_store_handles_tables(bank_id):
-        current = await store.get_memories(conn=conn, fq_table=fq_table, bank_id=bank_id, unit_ids=[observation_id])
-        current_tags = current[0].tags if current else None
-    else:
-        current_tags = await conn.fetchval(
-            f"SELECT tags FROM {_memory_table_for_dialect()('memory_units')} WHERE id = $1 FOR UPDATE",
-            uuid.UUID(observation_id),
-        )
-    existing_tags = set(current_tags if current_tags is not None else (model.tags or []))
+    # SECURITY: Merge source fact's tags into existing observation tags so all contributors can see it
+    existing_tags = set(current_tags)
     source_tags = set(source_fact_tags or [])
     merged_tags = list(existing_tags | source_tags)
 
@@ -4989,6 +5089,7 @@ async def _consolidate_batch_with_llm(
     schema_correction_budget: _SchemaCorrectionBudget | None = None,
     detail_guard_pool: DatabaseBackend | None = None,
     detail_guard_bank_id: str | None = None,
+    perf: ConsolidationPerfLog | None = None,
 ) -> _BatchLLMResult:
     """Single LLM call for a batch of facts against a pooled set of observations."""
     if config is None:
@@ -5083,24 +5184,12 @@ async def _consolidate_batch_with_llm(
             failed=True,
         )
 
-    # Opt into context caching of the stable system prefix when the provider
-    # supports it (gemini/vertexai with the flag on). response_schema is NOT
-    # passed to the fingerprint: it varies per batch (max_creates) but is not
-    # part of the cached prefix, so keying on it would needlessly bust the cache.
-    cached_prefix_name: str | None = None
-    provider_impl = getattr(llm_config, "_provider_impl", None)
-    if provider_impl is not None and provider_impl.supports_prompt_caching():
-        try:
-            cached_prefix_name = await provider_impl.get_or_create_cached_prefix(
-                system_instruction=system_prompt,
-            )
-        except Exception:
-            logger.exception("Consolidation cache prefix lookup failed; falling back to uncached call")
-            cached_prefix_name = None
+    prompt_cache = PromptCachePrefix(system_instruction=system_prompt)
 
-    # Use a constrained response model when observation limit is active
+    # Constrain the schema: the observation cap on creates, and source_fact_ids to this batch's ids
     response_model = _build_response_model(
         max_creates=remaining_observation_slots,
+        fact_ids=[str(m["id"]) for m in memories],
         supports_max_items=config.llm_supports_max_items,
     )
 
@@ -5158,6 +5247,7 @@ async def _consolidate_batch_with_llm(
                 # structured output -- which narrows the raw-JSON failure mode behind #2668 --
                 # without forcing strict schema on operations whose model can't satisfy it.
                 "strict_schema": config.llm_strict_schema_consolidation,
+                "prompt_cache": prompt_cache,
             }
             # Only request an explicit output budget when configured. Left unset by default the key is
             # omitted, so each provider keeps its implicit default (backwards compatible). Operators on
@@ -5167,8 +5257,6 @@ async def _consolidate_batch_with_llm(
                 call_kwargs["max_completion_tokens"] = config.consolidation_max_completion_tokens
             if inner_max_retries is not None:
                 call_kwargs["max_retries"] = inner_max_retries
-            if cached_prefix_name is not None:
-                call_kwargs["cached_prefix"] = cached_prefix_name
             try:
                 batch_call = await llm_config.call(**call_kwargs)
             except ValidationError as schema_exc:
@@ -5215,6 +5303,14 @@ async def _consolidate_batch_with_llm(
                         correction_started = correction.started
                         attempts_made += int(correction_started)
             response: _ConsolidationBatchResponse = batch_call.content
+            # The fork rejects malformed references before action preparation.
+            # Keep released #5273 visibility at that earlier boundary: otherwise
+            # rejected actions never reach the preparation counter and disappear.
+            batch_fact_ids = {str(memory["id"]) for memory in memories}
+            for kind, actions in (("create", response.creates), ("update", response.updates)):
+                for action in actions:
+                    if not batch_fact_ids.intersection(action.source_fact_ids):
+                        _log_unresolved_action(kind, action.source_fact_ids, action.text, perf)
             # Validate before deduplication, truncation, language checks, or
             # preparation, so every action that reaches them cites exactly the
             # sources that will be persisted.
@@ -5450,7 +5546,9 @@ async def _apply_create_observation(
     if not live_source_memory_ids:
         logger.debug(f"Create skipped: all {len(source_memory_ids)} source memories were deleted concurrently")
         return {"action": "skipped", "reason": "sources_deleted"}
-    source_memory_ids = live_source_memory_ids
+    # Each source once: the store stores len() of this list as proof_count. It used to
+    # write a literal 1, so a multi-source observation was undercounted until updated (#4955).
+    source_memory_ids = list(dict.fromkeys(live_source_memory_ids))
 
     t0 = time.time()
     if not store.store_owned_for(bank_id):
@@ -5465,7 +5563,7 @@ async def _apply_create_observation(
                     id, bank_id, text, fact_type, embedding, proof_count, source_memory_ids,
                     tags, event_date, occurred_start, occurred_end, mentioned_at, search_vector
                 )
-                VALUES ($1, $2, $3, 'observation', $4::vector, 1, $5, $6, $7, $8, $9, $10,
+                VALUES ($1, $2, $3, 'observation', $4::vector, $11, $5, $6, $7, $8, $9, $10,
                         tokenize($3, 'llmlingua2')::bm25_catalog.bm25vector)
                 RETURNING id
             """
@@ -5480,7 +5578,7 @@ async def _apply_create_observation(
                     id, bank_id, text, fact_type, embedding, proof_count, source_memory_ids,
                     tags, event_date, occurred_start, occurred_end, mentioned_at, search_vector
                 )
-                VALUES ($1, $2, $3, 'observation', $4::vector, 1, $5, $6, $7, $8, $9, $10,
+                VALUES ($1, $2, $3, 'observation', $4::vector, $11, $5, $6, $7, $8, $9, $10,
                         to_tsvector('{config.text_search_extension_native_language}'::regconfig, COALESCE($3, '')))
                 RETURNING id
             """
@@ -5490,7 +5588,7 @@ async def _apply_create_observation(
                     id, bank_id, text, fact_type, embedding, proof_count, source_memory_ids,
                     tags, event_date, occurred_start, occurred_end, mentioned_at
                 )
-                VALUES ($1, $2, $3, 'observation', $4::vector, 1, $5, $6, $7, $8, $9, $10)
+                VALUES ($1, $2, $3, 'observation', $4::vector, $11, $5, $6, $7, $8, $9, $10)
                 RETURNING id
             """
 
@@ -5506,6 +5604,7 @@ async def _apply_create_observation(
             obs_occurred_start,
             obs_occurred_end,
             obs_mentioned_at,
+            len(source_memory_ids),
         )
         created_id = row["id"]
 
@@ -5530,7 +5629,7 @@ async def _apply_create_observation(
                 embedding=cast("list[float] | str", embedding_str),
                 fact_type="observation",
                 tags=list(obs_tags),
-                proof_count=1,
+                proof_count=len(source_memory_ids),
                 source_memory_ids=[str(s) for s in source_memory_ids],
                 event_date=obs_event_date,
                 occurred_start=obs_occurred_start,

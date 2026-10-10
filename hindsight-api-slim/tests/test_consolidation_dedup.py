@@ -32,6 +32,7 @@ from hindsight_api.engine.consolidation.consolidator import (
 )
 from hindsight_api.engine.db_utils import acquire_with_retry
 from hindsight_api.engine.memories import RecallArms
+from hindsight_api.engine.memories.base import WriteBatch
 from hindsight_api.engine.response_models import LLMCallResult, TokenUsage
 from hindsight_api.engine.search.types import RetrievalResult
 
@@ -279,7 +280,10 @@ def _ctx(threshold: float = 0.97):
 def _patch_probe(results):
     # Dedup's candidate probe now goes through the memories store's unified recall method (dense
     # arm only), so stub the store rather than the old routing wrapper.
-    store = types.SimpleNamespace(recall_unified=AsyncMock(return_value={"observation": RecallArms(semantic=results)}))
+    store = types.SimpleNamespace(
+        recall_unified=AsyncMock(return_value={"observation": RecallArms(semantic=results)}),
+        begin_write_batch=AsyncMock(side_effect=lambda **_kwargs: WriteBatch()),
+    )
     return patch("hindsight_api.engine.memories.get_memories", lambda: store)
 
 
@@ -355,7 +359,8 @@ async def test_process_batch_unchanged_currency_merge_has_one_request(shape: str
         ),
         patch.object(C, "_effective_scope_limit", return_value=-1),
         patch.object(C, "_dedup_active", return_value=True),
-        patch.object(C, "_any_live_source_memory", new=AsyncMock(return_value=True)),
+        patch.object(C, "_live_source_ids", new=AsyncMock(return_value={source_id})),
+        patch.object(C, "_sources_changed_since_read", new=AsyncMock(return_value=[])),
         patch.object(C, "_embed_observation_text", new=AsyncMock(return_value="[0.1, 0.2, 0.3]")),
         patch.object(C, "_apply_create_action", new=AsyncMock(side_effect=AssertionError("valid merge must fold"))),
         _patch_probe([_obs(text, 0.99)]),
@@ -812,7 +817,7 @@ async def _run_create_batch(create_action_result: str, deadlock_first: bool = Fa
         patch.object(C, "_effective_scope_limit", return_value=-1),
         patch.object(C, "_config_for_scope", side_effect=lambda config, _tags: config),
         patch.object(C, "_dedup_active", return_value=True),
-        patch.object(C, "_any_live_source_memory", new=AsyncMock(return_value=True)),
+        patch.object(C, "_live_source_ids", new=AsyncMock(side_effect=lambda _pool, _bank, ids: {str(i) for i in ids})),
         patch.object(C, "_embed_observation_text", new=AsyncMock(return_value="[0.1, 0.2, 0.3]")),
         # No twin above threshold: the adjudicator's no-merge verdict is what makes the
         # batch fall through to the CREATE.

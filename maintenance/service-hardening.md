@@ -46,6 +46,20 @@ in the root contract.
   check and bounded whole-transaction retry of the apply step on deadlock),
   `engine/retain/fact_storage.py` (document-wide metadata update locks rows in
   `ORDER BY id` first), and `tests/test_consolidation_deadlock_order.py`
+- **v0.10.3 adoption:** Preserve the ordered/dialect-aware liveness filter while
+  adopting released CREATE proof counts: count each distinct surviving source
+  once in both SQL-backed inline INSERTs and store-owned observation records.
+  The fork's inline SQL must not retain a literal 1 when the released store path
+  uses source cardinality. `tests/test_observation_invalidation.py` exercises the
+  real PostgreSQL write; `tests/test_consolidation_create_proof_count.py` covers
+  native/vchord/other SQL bindings and store-owned records without a server.
+  Released #5273 unresolved-action visibility runs at the fork's earlier
+  reference-validation boundary, before unsafe whole-reply rejection; bisection
+  can rescue a valid sibling without silently losing the discarded-action count.
+  `tests/test_consolidation_batch_failure_visibility.py` retains the released
+  created/unresolved assertions and additionally pins fail-fast/bisection and
+  persisted source provenance. Embedding/tag fixtures model released exact-ID
+  preflight and complete configuration, not the old boolean/stub interfaces.
 - **Behavior:** Consolidation's source-liveness check and retain's document-wide
   tag/scope update acquire `memory_units` row locks in the same order, so they no
   longer deadlock. The apply transaction retries a residual PostgreSQL deadlock and

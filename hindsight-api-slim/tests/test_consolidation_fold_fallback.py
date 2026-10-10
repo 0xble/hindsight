@@ -46,13 +46,22 @@ async def test_exact_create_cas_miss_after_prior_create_fold_keeps_sources(memor
         merge = c._DedupOutcome(
             best_id=str(twin), best_text="Original twin", merged_text="Merged twin", should_merge=True
         )
+
+        async def adjudicate_by_text(*args, **_kwargs):
+            # Released preparation is concurrent: bind the verdict to its action,
+            # not whichever embedder finishes first. The real folds/CAS still run.
+            if args[5] == "Semantic twin":
+                return merge
+            assert args[5] == "Original twin"
+            return c._DedupOutcome(None, "", False)
+
         ready = asyncio.Event()
         ready.set()
         with (
             patch.object(
                 c, "_find_related_observations", AsyncMock(return_value=RecallResult.model_construct(results=[]))
             ),
-            patch.object(c, "_dedup_adjudicate", AsyncMock(side_effect=[merge, c._DedupOutcome(None, "", False)])),
+            patch.object(c, "_dedup_adjudicate", AsyncMock(side_effect=adjudicate_by_text)) as adjudicate,
             patch.object(c, "_dedup_probe", AsyncMock(return_value=merge)),
         ):
             results, _, failed = await c._process_memory_batch(
@@ -68,6 +77,8 @@ async def test_exact_create_cas_miss_after_prior_create_fold_keeps_sources(memor
                 apply_turn=(ready, asyncio.Event()),
             )
         assert not failed
+        assert adjudicate.await_count == 2
+        assert {call.args[5] for call in adjudicate.await_args_list} == {"Semantic twin", "Original twin"}
         async with memory._pool.acquire() as conn:
             rows = await conn.fetch(
                 "SELECT text,source_memory_ids FROM memory_units WHERE bank_id=$1 AND fact_type='observation'", bank

@@ -385,7 +385,11 @@ def pg0_db_url(db_url, tmp_path_factory, worker_id) -> Iterator[str]:
                     pg0 = EmbeddedPostgres(
                         name=pg0_instance_name,
                         port=pg0_instance_port,
-                        config={"max_connections": "300"},
+                        config={
+                            "max_connections": "300",
+                            "log_lock_waits": "on",
+                            "deadlock_timeout": "1s",
+                        },
                     )
                     loop = asyncio.new_event_loop()
                     try:
@@ -423,18 +427,34 @@ def _cleanup_stale_test_data(db_url: str) -> None:
     (3 per bank × thousands of test banks = tens of thousands of indexes).
     This eventually causes 'out of shared memory' errors because PostgreSQL
     tracks all indexes in shared lock tables.
+
+    Every statement here is best-effort — it only removes residue from EARLIER
+    runs, so skipping any of it costs nothing this run. What it must never do is
+    wait: ``DROP INDEX`` and ``TRUNCATE`` take AccessExclusiveLock on tables the
+    other seven xdist workers are using, and a lock request that queues puts every
+    later reader behind it, up to pytest-timeout's 300s. ``lock_timeout`` makes
+    such a request fail in 2s instead, and the per-statement ``except``es below turn
+    that into a skip. Without it one unlucky overlap fails a dozen unrelated tests
+    at once.
     """
     import asyncpg
 
     async def _do_cleanup():
         conn = await asyncpg.connect(db_url)
         try:
+            await conn.execute("SET lock_timeout = '2s'")
             idx_rows = await conn.fetch(
                 "SELECT indexname FROM pg_indexes WHERE schemaname = 'public' AND indexname LIKE 'idx_mu_emb_%'"
             )
-            if idx_rows:
-                for row in idx_rows:
+            for row in idx_rows:
+                try:
                     await conn.execute(f'DROP INDEX IF EXISTS public."{row["indexname"]}"')
+                except Exception:
+                    # Same bargain as the truncates below: a drop that cannot get the
+                    # lock within `lock_timeout` is residue left for the next run, not a
+                    # reason to fail this one. Unguarded it would raise out of a
+                    # session-scoped fixture and error every test on this worker.
+                    pass
 
             # Truncate test data in dependency order
             for table in [

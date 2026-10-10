@@ -34,7 +34,7 @@ class _FakeMemoryEngine:
 class _WriteForbiddenConn:
     """Backend connection allowing only the pre-embed liveness probe.
 
-    The preflight (``_any_live_source_memory``) runs ``fetchval``; the write path
+    The preflight (``_live_source_ids``) runs a read; the write path
     (``transaction``/``fetchrow``/``execute``/``executemany``) must never be reached,
     because the zero-length embedding is rejected first.
     """
@@ -42,8 +42,11 @@ class _WriteForbiddenConn:
     async def fetchval(self, *args, **kwargs):
         return 1  # a live source exists -> proceed to embedding
 
-    async def fetch(self, *args, **kwargs):
-        return [{"id": 1}]
+    async def fetch(self, _query, source_ids, bank_id):
+        # Released preparation asks for exact live IDs, not a boolean sentinel.
+        assert bank_id == "test-bank"
+        assert source_ids
+        return [{"id": source_id} for source_id in source_ids]
 
     def transaction(self):
         raise AssertionError("write transaction entered before the zero-length embedding was rejected")
@@ -61,12 +64,15 @@ class _WriteForbiddenConn:
 class _NoLiveConn:
     """Backend connection whose liveness probe reports no live source.
 
-    Correct code short-circuits at the preflight (``fetchval`` -> None) and never embeds
-    or writes; every write method fails hard as a backstop.
+    Correct code short-circuits at the preflight (no live row) and never embeds or writes;
+    every write method fails hard as a backstop.
     """
 
     async def fetchval(self, *args, **kwargs):
         return None  # no live source -> skip before embedding
+
+    async def fetch(self, *args, **kwargs):
+        return []  # no live source -> skip before embedding
 
     def transaction(self):
         raise AssertionError("write transaction entered after all sources were dead")

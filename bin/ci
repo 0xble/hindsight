@@ -164,6 +164,10 @@ PATCH_REGRESSIONS=(
   tests/test_language_prevention_review.py
   tests/test_language_code_spans.py
   tests/test_consolidation_language_sources.py
+  tests/test_consolidation_create_proof_count.py
+  tests/test_consolidation_embedding_validation.py
+  tests/test_consolidation_current_tags.py
+  tests/test_consolidation_batch_failure_visibility.py
   tests/test_consolidation_batch_atomicity.py
   tests/test_observation_invalidation.py
   tests/test_alembic_dag.py
