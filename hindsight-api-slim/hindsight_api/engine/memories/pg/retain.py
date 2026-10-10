@@ -297,71 +297,59 @@ async def relabel_document_memories(
 
     # Read the scoping the survivors carry BEFORE overwriting it — the cascade below has to
     # know which units actually moved, and after the UPDATE that is no longer answerable.
+    # Locked in id order, the same order consolidation's source-row guard takes, so the
+    # grouped UPDATEs below cannot acquire tuple locks opposite to it.
     prior = await conn.fetch(
         f"""
-        SELECT id, fact_type, tags, observation_scopes
+        SELECT id, fact_type, tags, metadata, observation_scopes
         FROM {fq_table("memory_units")}
         WHERE bank_id = $1 AND document_id = $2
+        ORDER BY id FOR UPDATE
         """,
         bank_id,
         document_id,
     )
-    new_tags_by_id = {row["id"]: final_tags(row["tags"]) for row in prior}
-    # The comparison is against what the unit ends with.
-    rescoped_ids = [
-        row["id"]
-        for row in prior
-        if row["fact_type"] in ("experience", "world")
-        and (
-            set(row["tags"] or []) != set(new_tags_by_id[row["id"]])
-            or _normalize_scopes(row["observation_scopes"]) != _normalize_scopes(observation_scopes)
-        )
-    ]
-
-    result = await conn.execute(
-        f"""
-        UPDATE {fq_table("memory_units")}
-        SET tags = $3, metadata = $4, observation_scopes = $5, updated_at = NOW()
-        WHERE bank_id = $1 AND document_id = $2
-        """,
-        bank_id,
-        document_id,
-        tags or [],
-        json.dumps(drop_null_values(metadata)),
-        json.dumps(observation_scopes) if observation_scopes is not None else None,
-    )
-
-    # Restore each survivor's label projection over the blanket write above. Done as a
-    # follow-up rather than folded into that statement so a row inserted concurrently
-    # still gets the document tags and metadata exactly as before — this pass only
-    # touches ids that were read, and a document carrying no label tags issues nothing.
-    # Grouped by the FINAL array `final_tags` computed rather than by the projection
-    # alone, so the value written here is the one it already deduped — a unit whose
-    # label tag is also a document tag must not come back carrying it twice.
-    by_final: dict[tuple[str, ...], list] = {}
+    desired_metadata = drop_null_values(metadata)
+    desired_scopes = _normalize_scopes(observation_scopes)
+    changed_by_final: dict[tuple[str, ...], list] = {}
+    rescoped_ids: list = []
     for row in prior:
-        final = new_tags_by_id[row["id"]]
-        if final != list(tags or []):
-            by_final.setdefault(tuple(final), []).append(row["id"])
-    for final, ids in by_final.items():
-        await conn.execute(
+        existing_tags = list(row["tags"] or [])
+        final = final_tags(existing_tags)
+        if row["fact_type"] in ("experience", "world") and (
+            set(existing_tags) != set(final) or _normalize_scopes(row["observation_scopes"]) != desired_scopes
+        ):
+            rescoped_ids.append(row["id"])
+        if (
+            existing_tags != final
+            or _normalize_scopes(row["metadata"]) != desired_metadata
+            or _normalize_scopes(row["observation_scopes"]) != desired_scopes
+        ):
+            changed_by_final.setdefault(tuple(final), []).append(row["id"])
+
+    # Group by final tags so label projections survive, while updating only rows whose
+    # effective metadata, tags, or scopes changed. In particular, identical-metadata
+    # re-retains issue no UPDATE and therefore preserve each unit's updated_at.
+    updated_count = 0
+    for final, ids in changed_by_final.items():
+        result = await conn.execute(
             f"""
             UPDATE {fq_table("memory_units")}
-            SET tags = $3, updated_at = NOW()
-            WHERE bank_id = $1 AND document_id = $2 AND id = ANY($4::uuid[])
+            SET tags = $3, metadata = $4, observation_scopes = $5, updated_at = NOW()
+            WHERE bank_id = $1 AND document_id = $2 AND id = ANY($6::uuid[])
             """,
             bank_id,
             document_id,
             list(final),
+            json.dumps(desired_metadata),
+            json.dumps(observation_scopes) if observation_scopes is not None else None,
             ids,
         )
-
-    # result is a status string like "UPDATE 5"
-    try:
-        updated = int(result.split()[-1])
-    except (ValueError, IndexError):
-        updated = 0
-    return RelabelResult(updated=updated, rescoped_unit_ids=[str(uid) for uid in rescoped_ids])
+        try:
+            updated_count += int(result.split()[-1])
+        except (ValueError, IndexError):
+            pass
+    return RelabelResult(updated=updated_count, rescoped_unit_ids=[str(uid) for uid in rescoped_ids])
 
 
 async def memory_ids_for_chunks(

@@ -29,6 +29,7 @@ from hindsight_api.config import _get_raw_config
 from hindsight_api.engine.memories import FactRecord, get_memories
 from hindsight_api.engine.memory_engine import MemoryEngine, _renamed_scopes, fq_table
 from hindsight_api.engine.retain.fact_storage import update_memory_units_metadata_and_tags
+from hindsight_api.engine.schema import fq_store_table
 
 # Two chunk-sized blocks (chunk size is 3000 chars). Keeping BLOCK_A byte-identical
 # across a re-ingest is what keeps the second retain on the delta path: chunking is
@@ -341,32 +342,36 @@ async def test_label_projection_noop_does_not_rewrite_units(memory: MemoryEngine
     try:
         await _retain(memory, bank_id, document_id, _DOCUMENT_V1, [_KEPT_HOTEL], request_context)
         pool = await memory._get_pool()
+        store = get_memories()
         async with pool.acquire() as conn:
             async with conn.transaction():
-                row = await conn.fetchrow(
-                    f"""
-                    SELECT id, updated_at
-                    FROM {fq_table("memory_units")}
-                    WHERE bank_id = $1 AND document_id = $2
-                    ORDER BY id
-                    LIMIT 1
-                    """,
-                    bank_id,
-                    document_id,
+                page = await store.scan_memories(
+                    conn=conn,
+                    fq_table=fq_table,
+                    bank_id=bank_id,
+                    document_id=document_id,
+                    limit=1,
                 )
-                assert row is not None
+                assert page.memories
+                unit_id = page.memories[0].unit_id
                 await conn.execute(
                     f"""
-                    UPDATE {fq_table("memory_units")}
+                    UPDATE {fq_store_table("memory_units")}
                     SET tags = $2
                     WHERE id = $1
                     """,
-                    row["id"],
+                    unit_id,
                     ["hotel-1234", "entity:person"],
                 )
-                before = await conn.fetchrow(
-                    f"SELECT tags, updated_at FROM {fq_table('memory_units')} WHERE id = $1", row["id"]
+                before_page = await store.scan_memories(
+                    conn=conn,
+                    fq_table=fq_table,
+                    bank_id=bank_id,
+                    document_id=document_id,
+                    limit=1,
                 )
+                assert before_page.memories
+                before = before_page.memories[0]
                 await update_memory_units_metadata_and_tags(
                     conn,
                     bank_id,
@@ -375,12 +380,18 @@ async def test_label_projection_noop_does_not_rewrite_units(memory: MemoryEngine
                     {},
                     label_tag_keys={"entity"},
                 )
-                after = await conn.fetchrow(
-                    f"SELECT tags, updated_at FROM {fq_table('memory_units')} WHERE id = $1", row["id"]
+                after_page = await store.scan_memories(
+                    conn=conn,
+                    fq_table=fq_table,
+                    bank_id=bank_id,
+                    document_id=document_id,
+                    limit=1,
                 )
+                assert after_page.memories
+                after = after_page.memories[0]
 
-        assert after["tags"] == before["tags"]
-        assert after["updated_at"] == before["updated_at"]
+        assert after.tags == before.tags
+        assert after.updated_at == before.updated_at
     finally:
         await memory.delete_bank(bank_id, request_context=request_context)
 
