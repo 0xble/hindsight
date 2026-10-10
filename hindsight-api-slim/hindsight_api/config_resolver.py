@@ -255,6 +255,7 @@ class ConfigResolver:
         *,
         cached: bool = True,
         fail_closed: bool = False,
+        allow_missing_bank: bool = False,
     ) -> HindsightConfig:
         """
         Resolve full HindsightConfig for a bank with hierarchical overrides applied.
@@ -273,6 +274,9 @@ class ConfigResolver:
             fail_closed: Require a fresh bank row and successful tenant/bank reads.
                 Destructive consumers must not substitute defaults when policy is unavailable.
                 Existing callers retain best-effort resolution by default.
+            allow_missing_bank: Permit a strict resolution to use global/tenant defaults when
+                the bank row does not exist yet. Read failures for an existing bank remain
+                fail-closed; this is for read-only previews and pre-create checks only.
 
         Returns:
             Complete HindsightConfig with hierarchical overrides applied
@@ -280,7 +284,12 @@ class ConfigResolver:
         overrides = await self._resolve_tenant_overrides(f"bank {bank_id}", context, fail_closed=fail_closed)
 
         # Load bank config overrides
-        bank_overrides = await self._load_bank_config(bank_id, cached=cached, fail_closed=fail_closed)
+        bank_overrides = await self._load_bank_config(
+            bank_id,
+            cached=cached,
+            fail_closed=fail_closed,
+            allow_missing_bank=allow_missing_bank,
+        )
         if bank_overrides:
             overrides.update(bank_overrides)
             logger.debug(f"Applied bank config overrides for bank {bank_id}: {list(bank_overrides.keys())}")
@@ -416,7 +425,12 @@ class ConfigResolver:
         return dict(zip(bank_ids, permission_filtered, strict=True))
 
     async def _load_bank_config(
-        self, bank_id: str, *, cached: bool = True, fail_closed: bool = False
+        self,
+        bank_id: str,
+        *,
+        cached: bool = True,
+        fail_closed: bool = False,
+        allow_missing_bank: bool = False,
     ) -> dict[str, Any]:
         """
         Load bank config overrides from banks.config JSONB column.
@@ -429,6 +443,10 @@ class ConfigResolver:
                 for anything that answers a reader about the bank's own config: the cache is per
                 PROCESS, so a write served by one pod is invisible to the others until their entry
                 expires. Read-your-writes on a config edit is not a race a user should have to lose.
+            fail_closed: Raise when an existing bank's config cannot be read or validated instead
+                of silently using global defaults.
+            allow_missing_bank: In strict mode, use defaults when the bank row is absent. This
+                does not suppress read or validation errors for an existing bank.
 
         Returns:
             Dict of config overrides (only configurable fields, normalized keys)
@@ -463,10 +481,11 @@ class ConfigResolver:
                 # empty dict keeps that behaviour, but it must NOT be cached as if it were an
                 # answer -- bank_info_cache drops empty values for exactly this reason.
                 return {}
-            if row is None and fail_closed:
+            if row is None and fail_closed and not allow_missing_bank:
                 raise ConfigUnavailableError(f"Cannot load bank config for {bank_id}: bank does not exist")
             # An existing bank with empty/null config explicitly inherits defaults.
-            # A missing or failed read must never be mistaken for that in strict mode.
+            # A failed read must never be mistaken for that in strict mode; a missing row
+            # is allowed only for explicitly read-only/pre-create callers.
             return {"config": row["config"]} if row and row["config"] else {}
 
         row = (

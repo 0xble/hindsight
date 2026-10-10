@@ -228,6 +228,28 @@ async def test_ordinary_resolver_still_uses_existing_fallback(failure):
 
 
 @pytest.mark.asyncio
+async def test_strict_pre_create_resolution_uses_defaults_only_for_missing_bank():
+    from hindsight_api.config import _get_raw_config
+    from hindsight_api.config_resolver import ConfigResolver
+
+    resolver = ConfigResolver(backend=_ConfigReadBackend(failure="missing"))
+    resolved = await resolver.resolve_full_config(
+        _task()["bank_id"], cached=False, fail_closed=True, allow_missing_bank=True
+    )
+    assert resolved.file_delete_after_retain is _get_raw_config().file_delete_after_retain
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failure", ["acquire", "query"])
+async def test_strict_pre_create_resolution_still_fails_closed_on_read_errors(failure):
+    from hindsight_api.config_resolver import ConfigResolver, ConfigUnavailableError
+
+    resolver = ConfigResolver(backend=_ConfigReadBackend(failure=failure))
+    with pytest.raises(ConfigUnavailableError):
+        await resolver.resolve_full_config(_task()["bank_id"], cached=False, fail_closed=True, allow_missing_bank=True)
+
+
+@pytest.mark.asyncio
 async def test_real_tenant_resolution_failure_preserves_original(conversion_engine):
     from hindsight_api.config_resolver import ConfigResolver, ConfigUnavailableError
 
