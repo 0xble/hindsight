@@ -125,11 +125,16 @@ async def test_recall_reads_its_config_through_the_cache(memory: MemoryEngine, r
     reads = 0
     original = resolver._load_bank_config
 
-    async def _counting(bank, *, cached=True):
+    async def _counting(bank, *, cached=True, fail_closed=False, allow_missing_bank=False):
         nonlocal reads
         if not cached:
             reads += 1
-        return await original(bank, cached=cached)
+        return await original(
+            bank,
+            cached=cached,
+            fail_closed=fail_closed,
+            allow_missing_bank=allow_missing_bank,
+        )
 
     resolver._load_bank_config = _counting
     try:

@@ -3436,7 +3436,12 @@ class MemoryEngine(MemoryEngineInterface):
             for item in contents:
                 item_strategy = item.get("strategy") or strategy
                 if item_strategy not in label_tags_by_strategy:
-                    config = await self._resolve_retain_config(bank_id, request_context, item_strategy)
+                    config = await self._resolve_retain_config(
+                        bank_id,
+                        request_context,
+                        item_strategy,
+                        allow_missing_bank=True,
+                    )
                     label_tags_by_strategy[item_strategy] = label_tag_candidates(config.entity_labels)
                 item_tags = sorted({*(item.get("tags") or []), *(document_tags or [])})
                 self._refuse_unwritable(item_tags, write_scope, "memories")
@@ -6990,6 +6995,7 @@ class MemoryEngine(MemoryEngineInterface):
         strategy: str | None,
         *,
         language_integrity_mode: str | None = None,
+        allow_missing_bank: bool = False,
     ) -> HindsightConfig:
         """Resolve the config a retain runs under, strategy overrides applied.
 
@@ -7010,7 +7016,11 @@ class MemoryEngine(MemoryEngineInterface):
         # its current explicit/default strategy) fresh at this operation boundary.
         if language_integrity_mode is None:
             policy_config = await self._config_resolver.resolve_full_config(
-                bank_id, request_context, cached=False, fail_closed=True
+                bank_id,
+                request_context,
+                cached=False,
+                fail_closed=True,
+                allow_missing_bank=allow_missing_bank,
             )
             policy_strategy = strategy or policy_config.retain_default_strategy
             if policy_strategy:
@@ -13389,7 +13399,12 @@ class MemoryEngine(MemoryEngineInterface):
         # named, the bank's retain_default_strategy — lands the way it will in a real
         # retain. Resolving the config directly skipped strategies entirely, which
         # quietly extracted under settings retain would not have used.
-        resolved_config = await self._resolve_retain_config(bank_id, request_context, strategy)
+        resolved_config = await self._resolve_retain_config(
+            bank_id,
+            request_context,
+            strategy,
+            allow_missing_bank=True,
+        )
         if self._llm_config.provider == "none":
             resolved_config.retain_extraction_mode = "chunks"
 

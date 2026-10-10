@@ -2208,7 +2208,11 @@ async def run_consolidation_job(
     # A remote policy edit must take effect on the next job even with a warm worker
     # cache. Only the correctness gate opts out of the ordinary config's TTL.
     policy_config = await memory_engine._config_resolver.resolve_full_config(
-        bank_id, request_context, cached=False, fail_closed=True
+        bank_id,
+        request_context,
+        cached=False,
+        fail_closed=True,
+        allow_missing_bank=True,
     )
     config = replace(config, llm_language_integrity=policy_config.llm_language_integrity)
 
