@@ -94,17 +94,18 @@ intentional fork infrastructure policy, not upstream deployment ownership.
   candidate actions, scripts, manifests, or hooks. `qualification` is the sole
   branch-protection required check. The gate's qualification also queries the
   latest completed `Repository nightly` run on `main` with the read-only Actions
-  token and fails closed when that run is red or the query cannot be verified. A
-  PR carrying the `nightly-repair` label is the deliberate escape hatch so a
-  repair can merge; only users with write access can apply that label. This is
-  an accepted residual of the qualification-only protection boundary. The guard
-  depends on at least one completed nightly run; between nightly runs, merges
-  rely on the normal exact-SHA gate. The gate re-runs for `labeled` and
-  `unlabeled` pull-request events. The trusted `Fork Workflow Policy` `policy`
-  check must still succeed for the exact PR head SHA before every merge. A manual
-  merge could omit that check: this is an accepted residual risk of the
-  qualification-only protection boundary, not a claim that branch protection
-  independently enforces the trusted policy.
+  token and fails closed when that run is red or either API query cannot be
+  verified. A PR carrying the `nightly-repair` label is the deliberate escape
+  hatch so a nightly repair can merge; only users with write access can apply
+  that label. This is an accepted residual of the qualification-only protection
+  boundary. Labels are read live from the API, so after labelling, rerun the
+  `qualification` job (labelling alone does not start a run: the trusted policy
+  validator pins the gate trigger exactly). The guard depends on at least one
+  completed nightly run; between nightly runs, merges rely on the exact-SHA gate.
+  The trusted `Fork Workflow Policy` `policy` check must still succeed for the
+  exact PR head SHA before every merge. A manual merge could omit that check: this
+  is an accepted residual risk of the qualification-only protection boundary, not
+  a claim that branch protection independently enforces the trusted policy.
 - **Upstream issue:** None for the fork publisher-policy bypasses after checked 2026-10-01.
 - **Upstream PR:** None for the fork publisher-policy bypasses after checked 2026-10-01.
 - **Regression:** `uv run --directory hindsight-api-slim --frozen python ../tests/ci/test_validate_fork_workflows.py && uv run --directory hindsight-api-slim --frozen python ../scripts/ci/validate_fork_workflows.py`

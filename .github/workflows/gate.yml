@@ -8,6 +8,7 @@ on:
 permissions:
   actions: read
   contents: read
+  pull-requests: read
 
 concurrency:
   group: gate-${{ github.event.pull_request.number }}
@@ -53,7 +54,7 @@ jobs:
         env:
           GATE_RESULT: ${{ needs.gate.result }}
           DRAFT_PR: ${{ github.event.pull_request.draft }}
-          NIGHTLY_REPAIR: ${{ contains(github.event.pull_request.labels.*.name, 'nightly-repair') }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
@@ -67,14 +68,32 @@ jobs:
             exit 1
           fi
 
-          if [ "$NIGHTLY_REPAIR" = "true" ]; then
-            echo 'nightly guard bypassed for the nightly-repair label'
-            exit 0
-          fi
-
+          # Read labels live, not from the event payload, so rerunning this job
+          # after adding the nightly-repair label sees the current label set.
+          pr_json="$RUNNER_TEMP/nightly-guard-pr.json"
+          pr_label="$RUNNER_TEMP/nightly-guard-label"
           nightly_json="$RUNNER_TEMP/nightly-guard.json"
           nightly_error="$RUNNER_TEMP/nightly-guard.error"
           nightly_fields="$RUNNER_TEMP/nightly-guard.fields"
+          if ! gh api "repos/0xble/hindsight/pulls/$PR_NUMBER" >"$pr_json" 2>"$nightly_error"; then
+            echo 'nightly guard PR label query failed:' >&2
+            cat "$nightly_error" >&2
+            exit 1
+          fi
+          if ! jq -r 'if (.labels | type) != "array" then error("labels is not an array") else (any(.labels[]; .name == "nightly-repair") | tostring) end' "$pr_json" >"$pr_label" 2>"$nightly_error"; then
+            echo 'nightly guard PR label parsing failed:' >&2
+            cat "$nightly_error" >&2
+            exit 1
+          fi
+          read -r nightly_repair <"$pr_label"
+          if [ "$nightly_repair" = true ]; then
+            echo 'nightly guard bypassed for the nightly-repair label'
+            exit 0
+          elif [ "$nightly_repair" != false ]; then
+            echo "nightly guard PR label check returned unexpected value '$nightly_repair'" >&2
+            exit 1
+          fi
+
           if ! gh api 'repos/0xble/hindsight/actions/workflows/nightly.yml/runs?branch=main&status=completed&per_page=1' >"$nightly_json" 2>"$nightly_error"; then
             echo 'nightly guard API query failed:' >&2
             cat "$nightly_error" >&2
