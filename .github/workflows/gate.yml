@@ -3,6 +3,7 @@ name: Repository gate
 on:
   pull_request:
     branches: [main]
+    types: [opened, synchronize, reopened, ready_for_review]
 
 permissions:
   contents: read
@@ -13,6 +14,14 @@ concurrency:
 
 jobs:
   gate:
+    # Mergify opens each merge-queue batch as a draft PR from a
+    # mergify/merge-queue/ branch. The batch head is the exact commit main
+    # fast-forwards to, so it must run the complete gate. Other drafts stay
+    # skipped and fail qualification.
+    if: >-
+      ${{ !github.event.pull_request.draft ||
+      (github.event.pull_request.user.login == 'mergify[bot]' &&
+      startsWith(github.event.pull_request.head.ref, 'mergify/merge-queue/')) }}
     runs-on: ubuntu-latest
     timeout-minutes: 25
     steps:

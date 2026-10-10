@@ -1,0 +1,29 @@
+# Merge queue for main.
+#
+# A ready PR joins automatically after its ordinary exact-head gate passes.
+# Mergify folds up to five queued PRs onto current main as a draft batch PR,
+# the full gate runs on that exact batch head, and main fast-forwards to the
+# tested commit. Branch protection keeps "require up to date" and
+# `qualification` required.
+queue_rules:
+  - name: default
+    batch_size: 5
+    batch_max_wait_time: 1 min
+    merge_method: fast-forward
+    branch_protection_injection_mode: merge
+    queue_conditions:
+      - base = main
+      - -draft
+      - check-success = qualification
+    merge_conditions:
+      - check-success = qualification
+
+merge_queue:
+  # Fast-forward requires serial checking of one batch at a time.
+  max_parallel_checks: 1
+
+merge_protections_settings:
+  auto_merge_conditions:
+    - base = main
+    - -draft
+    - check-success = qualification
