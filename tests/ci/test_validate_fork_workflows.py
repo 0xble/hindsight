@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ast
 import importlib.util
 import os
 import shlex
@@ -250,6 +251,144 @@ class ForkWorkflowPolicyTests(unittest.TestCase):
         )
         errors = POLICY.validate(root)
         self.assertTrue(any("nightly.yml: trigger configuration" in error for error in errors))
+
+    def test_mergify_batch_drafts_and_qualification_fail_closed(self) -> None:
+        root = SCRIPT.parents[2]
+        gate = POLICY.load_workflow(root / ".github/workflows/gate.yml")
+        condition = gate["jobs"]["gate"]["if"].removeprefix("${{").removesuffix("}}").strip()
+
+        def evaluate(node: ast.AST) -> bool:
+            if isinstance(node, ast.Constant) and isinstance(node.value, bool):
+                return node.value
+            if isinstance(node, ast.BoolOp):
+                values = [evaluate(value) for value in node.values]
+                if isinstance(node.op, ast.And):
+                    return all(values)
+                if isinstance(node.op, ast.Or):
+                    return any(values)
+            raise AssertionError(f"unexpected condition node: {ast.dump(node)}")
+
+        for draft, author, branch, runs in (
+            (True, "contributor", "feature/example", False),
+            (True, "contributor", "mergify/merge-queue/1", False),
+            (True, "mergify[bot]", "feature/example", False),
+            (True, "mergify[bot]", "mergify/merge-queue/1", True),
+            (False, "contributor", "feature/example", True),
+        ):
+            with self.subTest(draft=draft, author=author, branch=branch):
+                expression = condition
+                for atom, value in (
+                    ("!github.event.pull_request.draft", not draft),
+                    ("github.event.pull_request.user.login == 'mergify[bot]'", author == "mergify[bot]"),
+                    ("startsWith(github.event.pull_request.head.ref, 'mergify/merge-queue/')", branch.startswith("mergify/merge-queue/")),
+                ):
+                    self.assertIn(atom, expression)
+                    expression = expression.replace(atom, str(value))
+                parsed = ast.parse(expression.replace("||", " or ").replace("&&", " and "), mode="eval")
+                self.assertEqual(evaluate(parsed.body), runs)
+
+        qualification = gate["jobs"]["qualification"]
+        self.assertEqual(qualification["if"], "always()")
+        self.assertEqual(qualification["needs"], ["gate"])
+        self.assertEqual(qualification["steps"][0]["env"]["GATE_RESULT"], "${{ needs.gate.result }}")
+        command = qualification["steps"][0]["run"]
+        for result in ("success", "failure", "cancelled", "skipped"):
+            completed = subprocess.run(
+                ["bash", "-c", command],
+                env=dict(os.environ, GATE_RESULT=result, DRAFT_PR="true"),
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(completed.returncode == 0, result == "success")
+
+    def test_mergify_conditions_are_pinned_for_queue_merge_and_auto_merge(self) -> None:
+        root = self.make_root()
+        required = list(POLICY.REQUIRED_MERGIFY_CONDITIONS)
+        config = {
+            "queue_rules": [
+                {
+                    "name": "default",
+                    "queue_conditions": required,
+                    "merge_conditions": required,
+                }
+            ],
+            "merge_protections_settings": {"auto_merge_conditions": required},
+        }
+        path = root / ".mergify.yml"
+        path.write_text(yaml.safe_dump(config, sort_keys=False), encoding="utf-8")
+        self.assertEqual(POLICY.validate(root), [])
+
+        for scope in (
+            "queue_rules[0].queue_conditions",
+            "queue_rules[0].merge_conditions",
+            "merge_protections_settings.auto_merge_conditions",
+        ):
+            for condition in required:
+                with self.subTest(scope=scope, condition=condition):
+                    candidate = yaml.safe_load(yaml.safe_dump(config, sort_keys=False))
+                    if scope.endswith("queue_conditions"):
+                        candidate["queue_rules"][0]["queue_conditions"].remove(condition)
+                    elif scope.endswith("merge_conditions"):
+                        candidate["queue_rules"][0]["merge_conditions"].remove(condition)
+                    else:
+                        candidate["merge_protections_settings"]["auto_merge_conditions"].remove(condition)
+                    path.write_text(yaml.safe_dump(candidate, sort_keys=False), encoding="utf-8")
+                    errors = POLICY.validate(root)
+                    self.assertTrue(
+                        any(scope in error and condition in error for error in errors),
+                        errors,
+                    )
+
+    def test_mergify_config_cannot_bypass_the_pinned_file(self) -> None:
+        root = self.make_root()
+        required = list(POLICY.REQUIRED_MERGIFY_CONDITIONS)
+        pinned = {
+            "queue_rules": [{"name": "default", "queue_conditions": required, "merge_conditions": required}],
+            "merge_protections_settings": {"auto_merge_conditions": required},
+        }
+        open_config = yaml.safe_dump(
+            {
+                "queue_rules": [{"name": "default", "queue_conditions": ["base = main"]}],
+                "merge_protections_settings": {"auto_merge_conditions": True},
+            }
+        )
+        for name in POLICY.MERGIFY_ALTERNATE_CONFIGS:
+            with self.subTest(location=name):
+                path = root / name
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text(open_config, encoding="utf-8")
+                errors = POLICY.validate(root)
+                self.assertTrue(any(error.startswith(f"{name}:") for error in errors), errors)
+                path.unlink()
+
+        path = root / ".mergify.yml"
+        for extra, expected in (
+            ({"extends": "other/repo"}, "extends is forbidden"),
+            (
+                {"pull_request_rules": [{"name": "x", "conditions": ["base = main"], "actions": {"queue": {}}}]},
+                "pull_request_rules[0] must not queue or merge",
+            ),
+            (
+                {"pull_request_rules": [{"name": "x", "conditions": ["base = main"], "actions": {"merge": {}}}]},
+                "pull_request_rules[0] must not queue or merge",
+            ),
+        ):
+            with self.subTest(extra=list(extra)):
+                path.write_text(yaml.safe_dump({**pinned, **extra}, sort_keys=False), encoding="utf-8")
+                errors = POLICY.validate(root)
+                self.assertTrue(any(expected in error for error in errors), errors)
+
+        path.write_text(
+            yaml.safe_dump(
+                {
+                    **pinned,
+                    "pull_request_rules": [{"name": "label", "conditions": ["base = main"], "actions": {"label": {"add": ["ci"]}}}],
+                },
+                sort_keys=False,
+            ),
+            encoding="utf-8",
+        )
+        self.assertEqual(POLICY.validate(root), [])
 
     def test_repository_workflows_pass_policy(self) -> None:
         repo_root = SCRIPT.parents[2]
