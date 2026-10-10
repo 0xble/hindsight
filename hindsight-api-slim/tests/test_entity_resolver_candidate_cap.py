@@ -114,56 +114,110 @@ async def test_capping_keeps_the_exact_match():
     assert resolved[0].canonical_name == "Acme Corporation"
 
 
+_WIDE_BATCH_MENTIONS = 20
+_WIDE_BATCH_CANDIDATES = 2000
+
+
+async def _longest_run_scored_without_a_turn(stall_on_first_score: float = 0.0) -> tuple[int, int]:
+    """Score a wide batch beside a concurrent task; return (longest un-yielded run, total scored).
+
+    Responsiveness is measured in event-loop turns, not seconds. A ticker task takes a
+    turn every time the loop gets control back; every candidate the scoring loop scores
+    is counted against the ticker's latest turn. The longest run of candidates scored with
+    no turn in between is how long the loop was held — in units of work, so a pause from
+    outside the loop (a GC sweep over a large test-worker heap, the runner descheduling an
+    oversubscribed xdist worker) cannot inflate it, and a fast machine cannot hide a loop
+    that never yields.
+
+    ``stall_on_first_score`` blocks the thread for that long inside the first scored
+    candidate, standing in for such an outside pause.
+    """
+    resolver = _make_resolver(max_candidates=_WIDE_BATCH_CANDIDATES)
+    candidates = _candidates(_WIDE_BATCH_CANDIDATES)
+    entities_data = [{"text": f"Acme Corporation {i}", "nearby_entities": []} for i in range(_WIDE_BATCH_MENTIONS)]
+    all_candidates = {e["text"]: candidates for e in entities_data}
+
+    turns = 0
+    stop = False
+
+    async def ticker() -> None:
+        nonlocal turns
+        while not stop:
+            turns += 1
+            await asyncio.sleep(0)
+
+    # The scoring loop calls this exactly once per candidate it scores (the label skip
+    # is the only thing ahead of it, and this batch has no labels).
+    real_similarity = entity_resolver_module.trigram_set_similarity
+    last_turn_seen = -1
+    run = longest = scored = 0
+
+    def counting_similarity(a: set[str], b: set[str]) -> float:
+        nonlocal last_turn_seen, run, longest, scored
+        if stall_on_first_score and scored == 0:
+            time.sleep(stall_on_first_score)
+        scored += 1
+        if turns != last_turn_seen:
+            last_turn_seen = turns
+            run = 0
+        run += 1
+        longest = max(longest, run)
+        return real_similarity(a, b)
+
+    tick_task = asyncio.create_task(ticker())
+    await asyncio.sleep(0)  # let the ticker start before scoring does
+    with patch.object(entity_resolver_module, "trigram_set_similarity", counting_similarity):
+        await resolver._resolve_from_candidates(
+            _make_conn(), "bank-1", entities_data, datetime.now(UTC), all_candidates, {}, None, None
+        )
+    stop = True
+    await tick_task
+    return longest, scored
+
+
 @pytest.mark.asyncio
 async def test_scoring_loop_keeps_the_event_loop_responsive():
     """A wide resolution batch must not starve other tasks (e.g. the /health handler).
 
-    Asserts on scheduling, not wall time: a concurrent ticker has to keep running
-    while scoring is in flight, and no single stall may approach the whole batch.
+    20 mentions x 2000 candidates is 40k synchronous scorings; without the periodic
+    yield (GH-3211) the concurrent task gets no turn until the whole batch is done.
+
+    This used to assert on wall-clock gaps between ticks, which measured the machine
+    rather than the loop both ways: on a loaded CI runner one 1.4s pause outside the loop
+    failed a correctly yielding batch, and locally a loop that never yields finished in
+    ~35ms, under the 0.5s floor, and passed.
     """
-    resolver = _make_resolver(max_candidates=2000)
-    candidates = _candidates(2000)
-    entities_data = [{"text": f"Acme Corporation {i}", "nearby_entities": []} for i in range(20)]
-    all_candidates = {e["text"]: candidates for e in entities_data}
-    conn = _make_conn()
+    longest, scored = await _longest_run_scored_without_a_turn()
 
-    # First call in a process lazily imports heavy optional deps; warm that up so
-    # it isn't charged to the measured batch.
-    await resolver._resolve_from_candidates(
-        conn, "bank-1", [{"text": "warm up", "nearby_entities": []}], None, {"warm up": []}, {}, None, None
+    assert scored == _WIDE_BATCH_MENTIONS * _WIDE_BATCH_CANDIDATES
+    assert longest <= entity_resolver_module._SCORING_YIELD_EVERY, (
+        f"scored {longest} candidates without handing the event loop back "
+        f"(yield interval is {entity_resolver_module._SCORING_YIELD_EVERY})"
     )
 
-    stop = False
-    gaps: list[float] = []
 
-    async def ticker() -> None:
-        last = time.perf_counter()
-        while not stop:
-            await asyncio.sleep(0.005)
-            now = time.perf_counter()
-            gaps.append(now - last)
-            last = now
+@pytest.mark.asyncio
+async def test_responsiveness_check_catches_a_loop_that_never_yields(monkeypatch):
+    """The check has teeth: with the yield effectively disabled, the whole batch is one run."""
+    monkeypatch.setattr(entity_resolver_module, "_SCORING_YIELD_EVERY", 10**9)
 
-    tick_task = asyncio.create_task(ticker())
-    await asyncio.sleep(0.01)
+    longest, scored = await _longest_run_scored_without_a_turn()
 
-    started = time.perf_counter()
-    await resolver._resolve_from_candidates(
-        conn, "bank-1", entities_data, datetime.now(UTC), all_candidates, {}, None, None
-    )
-    elapsed = time.perf_counter() - started
+    assert longest == scored == _WIDE_BATCH_MENTIONS * _WIDE_BATCH_CANDIDATES
 
-    stop = True
-    await tick_task
 
-    during = gaps[1:]
-    assert during, "ticker never ran"
-    # Generous bounds: this asserts the loop is handed back periodically, not that
-    # the machine is fast. Before the fix the ticker got zero turns for the whole
-    # batch and the single stall equalled `elapsed`.
-    assert max(during) < max(elapsed / 2, 0.5), (
-        f"event loop blocked for {max(during):.3f}s during a {elapsed:.3f}s scoring batch"
-    )
+@pytest.mark.asyncio
+async def test_responsiveness_check_is_not_failed_by_a_pause_outside_the_loop():
+    """A long thread-wide stall mid-batch (the nightly failure's shape) does not count as holding the loop.
+
+    The nightly that failed the wall-clock version saw ticks every ~5-12ms except one
+    1.388s gap, in a 1.692s batch that takes ~40ms here: the process was paused, the
+    loop was not starved. Injected here as a 0.6s block, past the old 0.5s bound.
+    """
+    longest, scored = await _longest_run_scored_without_a_turn(stall_on_first_score=0.6)
+
+    assert scored == _WIDE_BATCH_MENTIONS * _WIDE_BATCH_CANDIDATES
+    assert longest <= entity_resolver_module._SCORING_YIELD_EVERY
 
 
 @pytest.mark.asyncio
