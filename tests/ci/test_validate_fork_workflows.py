@@ -197,6 +197,40 @@ class ForkWorkflowPolicyTests(unittest.TestCase):
         errors = POLICY.validate(root)
         self.assertTrue(any("gate.yml: trigger configuration" in error for error in errors))
 
+    def test_queue_gate_review_ready_types_are_allowed(self) -> None:
+        root = self.make_root()
+        path = root / ".github/workflows/gate.yml"
+        workflow = POLICY.load_workflow(path)
+        workflow["on"] = POLICY.QUEUE_GATE_TRIGGER
+        path.write_text(yaml.safe_dump(workflow, sort_keys=False), encoding="utf-8")
+        self.assertEqual(POLICY.validate(root), [])
+
+    def test_queue_gate_types_cannot_be_broadened_or_filtered(self) -> None:
+        for change in ("extra-type", "missing-ready", "paths", "other-branch"):
+            with self.subTest(change=change):
+                root = self.make_root()
+                path = root / ".github/workflows/gate.yml"
+                workflow = POLICY.load_workflow(path)
+                workflow["on"] = {
+                    "pull_request": {
+                        "branches": ["main"],
+                        "types": ["opened", "synchronize", "reopened", "ready_for_review"],
+                    }
+                }
+                trigger = workflow["on"]["pull_request"]
+                if change == "extra-type":
+                    trigger["types"].append("labeled")
+                elif change == "missing-ready":
+                    trigger["types"].remove("ready_for_review")
+                elif change == "paths":
+                    trigger["paths"] = ["docs/**"]
+                else:
+                    trigger["branches"].append("develop")
+                path.write_text(yaml.safe_dump(workflow, sort_keys=False), encoding="utf-8")
+                self.assertTrue(
+                    any("gate.yml: trigger configuration" in error for error in POLICY.validate(root))
+                )
+
     def test_gate_push_trigger_fails(self) -> None:
         root = self.make_root()
         workflow = root / ".github" / "workflows" / "gate.yml"

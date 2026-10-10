@@ -36,6 +36,15 @@ EXPECTED_FORK_CI_TRIGGER = {
 # Repository CI contract: the exact-SHA gate runs only for PRs into main, and the
 # nightly only on its fixed schedule or by hand. Neither may widen its trigger.
 EXPECTED_GATE_TRIGGER = {"pull_request": {"branches": ["main"]}}
+# Keep the existing trigger valid while the default-branch trusted policy lands.
+# A later queue rollout may opt into this exact draft-until-ready event set; no
+# push, dispatch, path filters, other branches, or additional PR types are allowed.
+QUEUE_GATE_TRIGGER = {
+    "pull_request": {
+        "branches": ["main"],
+        "types": ["opened", "synchronize", "reopened", "ready_for_review"],
+    }
+}
 EXPECTED_NIGHTLY_TRIGGER = {"schedule": [{"cron": "53 6 * * *"}], "workflow_dispatch": None}
 FORBIDDEN_WORKFLOWS = {
     "deploy-docs.yml",
@@ -840,7 +849,7 @@ def validate(root: Path) -> list[str]:
             )
         if name == "fork-ci.yml" and workflow.get("on") != EXPECTED_FORK_CI_TRIGGER:
             errors.append(f"{name}: trigger configuration must exactly target main and allow manual dispatch")
-        if name == "gate.yml" and workflow.get("on") != EXPECTED_GATE_TRIGGER:
+        if name == "gate.yml" and workflow.get("on") not in (EXPECTED_GATE_TRIGGER, QUEUE_GATE_TRIGGER):
             errors.append(f"{name}: trigger configuration must exactly target pull requests into main")
         if name == "nightly.yml" and workflow.get("on") != EXPECTED_NIGHTLY_TRIGGER:
             errors.append(f"{name}: trigger configuration must be exactly the reviewed schedule and manual dispatch")

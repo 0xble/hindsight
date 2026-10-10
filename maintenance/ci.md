@@ -48,7 +48,11 @@ intentional fork infrastructure policy, not upstream deployment ownership.
   on the exact PR head and its `qualification` job is the only required status
   check on `main`; `nightly.yml` runs `./bin/ci nightly` (the full offline suite)
   on a fixed daily schedule; `.githooks/pre-push` runs the bypassable
-  `./bin/ci preflight`. The validator pins both trigger sets exactly.
+  `./bin/ci preflight`. The validator pins both trigger sets exactly, permitting
+  only the legacy PR trigger or the explicit opened/synchronize/reopened/
+  ready-for-review PR event set for a subsequent draft-until-ready queue rollout.
+  The compatibility policy must land before that workflow change so the trusted
+  default-branch validator can approve it; no push trigger or path filter is added.
   The patch-regression gate includes refresh-outcome and bank-template
   roundtrip tests alongside the other active service-hardening suites. The lane
   benchmark's deterministic bounded-concurrency cases are non-slow, so the gate's
