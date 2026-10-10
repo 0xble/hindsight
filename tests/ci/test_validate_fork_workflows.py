@@ -228,9 +228,7 @@ class ForkWorkflowPolicyTests(unittest.TestCase):
                 else:
                     trigger["branches"].append("develop")
                 path.write_text(yaml.safe_dump(workflow, sort_keys=False), encoding="utf-8")
-                self.assertTrue(
-                    any("gate.yml: trigger configuration" in error for error in POLICY.validate(root))
-                )
+                self.assertTrue(any("gate.yml: trigger configuration" in error for error in POLICY.validate(root)))
 
     def test_gate_push_trigger_fails(self) -> None:
         root = self.make_root()
@@ -280,7 +278,10 @@ class ForkWorkflowPolicyTests(unittest.TestCase):
                 for atom, value in (
                     ("!github.event.pull_request.draft", not draft),
                     ("github.event.pull_request.user.login == 'mergify[bot]'", author == "mergify[bot]"),
-                    ("startsWith(github.event.pull_request.head.ref, 'mergify/merge-queue/')", branch.startswith("mergify/merge-queue/")),
+                    (
+                        "startsWith(github.event.pull_request.head.ref, 'mergify/merge-queue/')",
+                        branch.startswith("mergify/merge-queue/"),
+                    ),
                 ):
                     self.assertIn(atom, expression)
                     expression = expression.replace(atom, str(value))
@@ -293,13 +294,106 @@ class ForkWorkflowPolicyTests(unittest.TestCase):
         self.assertEqual(qualification["steps"][0]["env"]["GATE_RESULT"], "${{ needs.gate.result }}")
         command = qualification["steps"][0]["run"]
         for result in ("success", "failure", "cancelled", "skipped"):
-            completed = subprocess.run(
-                ["bash", "-c", command],
-                env=dict(os.environ, GATE_RESULT=result, DRAFT_PR="true"),
-                capture_output=True,
-                text=True,
+            completed = self.run_qualification(command, gate_result=result, draft=True)
+            self.assertEqual(completed.returncode == 0, result == "success", completed.stderr)
+
+    def run_qualification(
+        self,
+        command: str,
+        *,
+        gate_result: str = "success",
+        draft: bool = False,
+        labels: str = "[]",
+        nightly: str | None = None,
+        fail: str = "",
+    ) -> subprocess.CompletedProcess[str]:
+        """Run the qualification script with an isolated runner and a stub `gh`.
+
+        The stub answers only the two API reads the guard makes, so the policy
+        suite needs no network or credentials. `fail` names a path fragment
+        whose request exits non-zero, modelling an API outage.
+        """
+        if nightly is None:
+            nightly = (
+                '{"workflow_runs": [{"head_branch": "main", "conclusion": "success",'
+                ' "html_url": "https://example.invalid/run/1"}]}'
             )
-            self.assertEqual(completed.returncode == 0, result == "success")
+        with tempfile.TemporaryDirectory() as scratch:
+            bindir = Path(scratch) / "bin"
+            bindir.mkdir()
+            (Path(scratch) / "pr.json").write_text(f'{{"labels": {labels}}}', encoding="utf-8")
+            (Path(scratch) / "nightly.json").write_text(nightly, encoding="utf-8")
+            stub = bindir / "gh"
+            stub.write_text(
+                "#!/usr/bin/env bash\n"
+                'path="$2"\n'
+                'if [ -n "$STUB_FAIL" ] && [[ "$path" == *"$STUB_FAIL"* ]]; then echo "stub outage" >&2; exit 1; fi\n'
+                'case "$path" in\n'
+                '  */pulls/*) cat "$STUB_ROOT/pr.json" ;;\n'
+                '  */actions/workflows/nightly.yml/runs*) cat "$STUB_ROOT/nightly.json" ;;\n'
+                '  *) echo "unexpected gh call: $*" >&2; exit 2 ;;\n'
+                "esac\n",
+                encoding="utf-8",
+            )
+            stub.chmod(0o755)
+            runner_temp = Path(scratch) / "runner"
+            runner_temp.mkdir()
+            env = {
+                "PATH": f"{bindir}{os.pathsep}{os.environ.get('PATH', '')}",
+                "GATE_RESULT": gate_result,
+                "DRAFT_PR": "true" if draft else "false",
+                "PR_NUMBER": "1",
+                "RUNNER_TEMP": str(runner_temp),
+                "STUB_ROOT": scratch,
+                "STUB_FAIL": fail,
+            }
+            return subprocess.run(["bash", "-c", command], env=env, capture_output=True, text=True)
+
+    def test_qualification_guards_on_latest_main_nightly(self) -> None:
+        gate = POLICY.load_workflow(SCRIPT.parents[2] / ".github/workflows/gate.yml")
+        command = gate["jobs"]["qualification"]["steps"][0]["run"]
+
+        def run(conclusion: str, *, labels: str = "[]", fail: str = "") -> subprocess.CompletedProcess[str]:
+            nightly = (
+                '{"workflow_runs": [{"head_branch": "main", "conclusion": "%s",'
+                ' "html_url": "https://example.invalid/run/1"}]}' % conclusion
+            )
+            return self.run_qualification(command, nightly=nightly, labels=labels, fail=fail)
+
+        self.assertEqual(run("success").returncode, 0)
+        for red in ("failure", "cancelled", "timed_out", "action_required", "stale"):
+            with self.subTest(conclusion=red):
+                completed = run(red)
+                self.assertNotEqual(completed.returncode, 0)
+                self.assertIn("latest completed main nightly is red", completed.stderr)
+        with self.subTest(case="unexpected conclusion"):
+            self.assertNotEqual(run("neutral").returncode, 0)
+        with self.subTest(case="nightly-repair bypasses a red nightly"):
+            completed = run("failure", labels='[{"name": "nightly-repair"}]')
+            self.assertEqual(completed.returncode, 0, completed.stderr)
+            self.assertIn("bypassed", completed.stdout)
+        with self.subTest(case="other labels do not bypass"):
+            self.assertNotEqual(run("failure", labels='[{"name": "bug"}]').returncode, 0)
+        with self.subTest(case="no completed nightly"):
+            completed = self.run_qualification(command, nightly='{"workflow_runs": []}')
+            self.assertEqual(completed.returncode, 0, completed.stderr)
+        for fragment in ("/pulls/", "nightly.yml/runs"):
+            with self.subTest(case=f"API outage on {fragment}"):
+                self.assertNotEqual(run("success", fail=fragment).returncode, 0)
+        for body in (
+            "not json",
+            '{"workflow_runs": {}}',
+            '{"workflow_runs": [{"head_branch": "dev", "conclusion": "success", "html_url": "u"}]}',
+            '{"workflow_runs": [{"head_branch": "main", "conclusion": null, "html_url": "u"}]}',
+        ):
+            with self.subTest(case=f"malformed nightly response {body[:30]}"):
+                self.assertNotEqual(self.run_qualification(command, nightly=body).returncode, 0)
+        with self.subTest(case="malformed PR labels"):
+            self.assertNotEqual(self.run_qualification(command, labels='"x"').returncode, 0)
+        with self.subTest(case="gate failure still fails before any API call"):
+            completed = self.run_qualification(command, gate_result="failure", fail="/")
+            self.assertNotEqual(completed.returncode, 0)
+            self.assertIn("gate not qualified", completed.stderr)
 
     def test_mergify_conditions_are_pinned_for_queue_merge_and_auto_merge(self) -> None:
         root = self.make_root()
@@ -382,7 +476,9 @@ class ForkWorkflowPolicyTests(unittest.TestCase):
             yaml.safe_dump(
                 {
                     **pinned,
-                    "pull_request_rules": [{"name": "label", "conditions": ["base = main"], "actions": {"label": {"add": ["ci"]}}}],
+                    "pull_request_rules": [
+                        {"name": "label", "conditions": ["base = main"], "actions": {"label": {"add": ["ci"]}}}
+                    ],
                 },
                 sort_keys=False,
             ),
