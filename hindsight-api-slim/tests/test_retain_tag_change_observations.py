@@ -372,6 +372,8 @@ async def test_label_projection_noop_does_not_rewrite_units(memory: MemoryEngine
                 )
                 assert before_page.memories
                 before = before_page.memories[0]
+                assert before.unit_id == unit_id
+                assert before.tags == ["hotel-1234", "entity:person"], "Setup: the label projection must be stored"
                 await update_memory_units_metadata_and_tags(
                     conn,
                     bank_id,
@@ -389,6 +391,7 @@ async def test_label_projection_noop_does_not_rewrite_units(memory: MemoryEngine
                 )
                 assert after_page.memories
                 after = after_page.memories[0]
+                assert after.unit_id == unit_id
 
         assert after.tags == before.tags
         assert after.updated_at == before.updated_at
