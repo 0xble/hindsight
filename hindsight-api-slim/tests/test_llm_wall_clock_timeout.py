@@ -14,6 +14,7 @@ from collections.abc import Awaitable
 
 import pytest
 from aiohttp import web
+from openai import APITimeoutError
 from pydantic import BaseModel
 
 from hindsight_api.engine.llm_interface import LLMInterface
@@ -93,8 +94,9 @@ async def test_trickling_upstream_times_out_on_the_wall_clock(case: str):
         try:
             # The outer wait_for is only the test's own safety net: before the fix
             # the call never returned, and it is what fails the test then.
-            with pytest.raises(TimeoutError):
+            with pytest.raises(APITimeoutError) as raised:
                 await asyncio.wait_for(invoke(llm), timeout=10)
+            assert isinstance(raised.value.__cause__, TimeoutError)
             assert time.monotonic() - start < 5, "the outer safety net fired, not the provider's own deadline"
         finally:
             await llm.cleanup()
