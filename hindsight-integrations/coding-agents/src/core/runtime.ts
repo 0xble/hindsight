@@ -32,6 +32,7 @@ import { buildSessionStartContext } from "./session-start";
 import { syncCompanionSkill } from "./skill-sync";
 import { buildHookOutput } from "./hook";
 import { sessionCacheFile, writeSessionCache } from "./session-cache";
+import { stripInjectedMemory } from "./transcript-util";
 
 const HARNESS = "opencode";
 
@@ -162,7 +163,7 @@ export class RuntimeCore {
    */
   async onPrompt(sessionId: string | undefined, prompt: string): Promise<void> {
     if (process.env.HINDSIGHT_DISABLE_HOOKS) return; // anti-recursion (see seedIfCold)
-    if (!sessionId || !prompt.trim()) return;
+    if (!sessionId || !stripInjectedMemory(prompt).trim()) return;
     const turns = (this.turnCount.get(sessionId) ?? 0) + 1;
     this.turnCount.set(sessionId, turns);
 
