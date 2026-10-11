@@ -398,31 +398,32 @@ class ForkWorkflowPolicyTests(unittest.TestCase):
     def test_mergify_conditions_are_pinned_for_queue_merge_and_auto_merge(self) -> None:
         root = self.make_root()
         required = list(POLICY.REQUIRED_MERGIFY_CONDITIONS)
+        admission = [*required, POLICY.REVIEWED_GATED_CONDITION]
         config = {
             "queue_rules": [
                 {
                     "name": "default",
-                    "queue_conditions": required,
+                    "queue_conditions": admission,
                     "merge_conditions": required,
                 }
             ],
-            "merge_protections_settings": {"auto_merge_conditions": required},
+            "merge_protections_settings": {"auto_merge_conditions": admission},
         }
         path = root / ".mergify.yml"
         path.write_text(yaml.safe_dump(config, sort_keys=False), encoding="utf-8")
         self.assertEqual(POLICY.validate(root), [])
 
-        for scope in (
-            "queue_rules[0].queue_conditions",
-            "queue_rules[0].merge_conditions",
-            "merge_protections_settings.auto_merge_conditions",
+        for scope, conditions in (
+            ("queue_rules[0].queue_conditions", admission),
+            ("queue_rules[0].merge_conditions", required),
+            ("merge_protections_settings.auto_merge_conditions", admission),
         ):
-            for condition in required:
+            for condition in conditions:
                 with self.subTest(scope=scope, condition=condition):
                     candidate = yaml.safe_load(yaml.safe_dump(config, sort_keys=False))
-                    if scope.endswith("queue_conditions"):
+                    if scope == "queue_rules[0].queue_conditions":
                         candidate["queue_rules"][0]["queue_conditions"].remove(condition)
-                    elif scope.endswith("merge_conditions"):
+                    elif scope == "queue_rules[0].merge_conditions":
                         candidate["queue_rules"][0]["merge_conditions"].remove(condition)
                     else:
                         candidate["merge_protections_settings"]["auto_merge_conditions"].remove(condition)
@@ -433,12 +434,45 @@ class ForkWorkflowPolicyTests(unittest.TestCase):
                         errors,
                     )
 
+        for scope in (
+            "queue_rules[0].queue_conditions",
+            "merge_protections_settings.auto_merge_conditions",
+        ):
+            with self.subTest(scope=scope, condition=POLICY.REVIEWED_GATED_CONDITION):
+                candidate = yaml.safe_load(yaml.safe_dump(config, sort_keys=False))
+                if scope.endswith("queue_conditions"):
+                    candidate["queue_rules"][0]["queue_conditions"].remove(POLICY.REVIEWED_GATED_CONDITION)
+                else:
+                    candidate["merge_protections_settings"]["auto_merge_conditions"].remove(
+                        POLICY.REVIEWED_GATED_CONDITION
+                    )
+                path.write_text(yaml.safe_dump(candidate, sort_keys=False), encoding="utf-8")
+                errors = POLICY.validate(root)
+                self.assertTrue(
+                    any(scope in error and POLICY.REVIEWED_GATED_CONDITION in error for error in errors),
+                    errors,
+                )
+
+        candidate = yaml.safe_load(yaml.safe_dump(config, sort_keys=False))
+        candidate["queue_rules"][0]["merge_conditions"].append(POLICY.REVIEWED_GATED_CONDITION)
+        path.write_text(yaml.safe_dump(candidate, sort_keys=False), encoding="utf-8")
+        errors = POLICY.validate(root)
+        self.assertTrue(
+            any(
+                "queue_rules[0].merge_conditions" in error
+                and POLICY.REVIEWED_GATED_CONDITION in error
+                for error in errors
+            ),
+            errors,
+        )
+
     def test_mergify_config_cannot_bypass_the_pinned_file(self) -> None:
         root = self.make_root()
         required = list(POLICY.REQUIRED_MERGIFY_CONDITIONS)
+        admission = [*required, POLICY.REVIEWED_GATED_CONDITION]
         pinned = {
-            "queue_rules": [{"name": "default", "queue_conditions": required, "merge_conditions": required}],
-            "merge_protections_settings": {"auto_merge_conditions": required},
+            "queue_rules": [{"name": "default", "queue_conditions": admission, "merge_conditions": required}],
+            "merge_protections_settings": {"auto_merge_conditions": admission},
         }
         open_config = yaml.safe_dump(
             {

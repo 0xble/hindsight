@@ -1,6 +1,7 @@
-# Merge queue for main.
+# A ready PR is admitted only once its exact head carries `landing/reviewed-gated`.
+# The lander posts it after an approving exact-head review and the local exact-SHA gate.
 #
-# A ready PR joins automatically only from the owner's branch in this public
+# Admission also requires the owner's branch in this public
 # fork. Mergify folds up to five queued PRs onto current main as a draft batch
 # PR, the full gate runs on that exact batch head, and main fast-forwards to the
 # tested commit. The owner/head-repository restriction prevents an outside fork
@@ -14,6 +15,7 @@ queue_rules:
     queue_conditions:
       - base = main
       - -draft
+      - check-success = landing/reviewed-gated
       - check-success = qualification
       # Preserve the fork's trusted default-branch policy before every merge.
       - check-success = policy
@@ -36,6 +38,7 @@ merge_protections_settings:
   auto_merge_conditions:
     - base = main
     - -draft
+    - check-success = landing/reviewed-gated
     - check-success = qualification
     - check-success = policy
     - author = 0xble
