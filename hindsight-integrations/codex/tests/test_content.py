@@ -59,6 +59,14 @@ class TestStripMemoryTags:
         raw = "<example>literal text</example><hook_prompting>literal hook example</hook_prompting>"
         assert strip_memory_tags(raw) == raw
 
+    @pytest.mark.parametrize("raw", [
+        "<system-reminder-foo>literal example</system-reminder>",
+        '<task-notification-x id="example">literal example</task-notification>',
+        "<hindsight_memory:example>literal example</hindsight_memory>",
+    ])
+    def test_preserves_unknown_tag_suffixes_even_with_known_close(self, raw):
+        assert strip_memory_tags(raw) == raw
+
 
 class TestSyntheticCodexUserMessage:
     def test_detects_agents_startup_instructions(self):

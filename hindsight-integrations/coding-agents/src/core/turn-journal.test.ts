@@ -32,6 +32,31 @@ describe("journalPath", () => {
 });
 
 describe("appendJournalTurn", () => {
+  it.each(["system-reminder", "task-notification", "hindsight_memory"])(
+    "keeps unknown %s suffixes in the retained journal",
+    (tag) => {
+      const content = `<${tag}-example>literal example</${tag}> actual question`;
+      appendJournalTurn(file, { role: "user", content });
+      expect(readJournalTranscript(file)).toEqual([
+        expect.objectContaining({ role: "user", content }),
+      ]);
+    }
+  );
+
+  it("drops a transport-only journal turn and keeps the real surrounding text", () => {
+    appendJournalTurn(file, {
+      role: "user",
+      content: "<task-notification>transport</task-notification>",
+    });
+    appendJournalTurn(file, {
+      role: "user",
+      content: '<system-reminder id="fixture">setup</system-reminder>actual question',
+    });
+    expect(readJournalTranscript(file)).toEqual([
+      expect.objectContaining({ role: "user", content: "actual question" }),
+    ]);
+  });
+
   it("builds the conversation in order across separate hook processes", () => {
     appendJournalTurn(file, { role: "user", content: "we use zod for validation" });
     appendJournalTurn(file, { role: "assistant", content: "noted" });

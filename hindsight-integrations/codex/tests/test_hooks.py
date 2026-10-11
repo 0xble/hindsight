@@ -364,6 +364,37 @@ class TestRecallHook:
 
 
 class TestRetainHook:
+    @pytest.mark.parametrize("include_tool_calls", [False, True])
+    def test_retained_output_filters_transport_but_preserves_unknown_literals(self, monkeypatch, tmp_path, include_tool_calls):
+        tags = ["hook_prompt", "task-notification", "system-reminder", "hindsight_memory",
+                "hindsight_bank", "user_feedback", "hindsight_knowledge", "hindsight_knowledge_refresh"]
+        injected = "".join(f'<{tag} id="fixture">injected-{tag}</{tag}>' for tag in tags)
+        literal = "<system-reminder-example>literal example</system-reminder>"
+        transcript = make_transcript_file(tmp_path, [
+            {"role": "user", "content": '<task-notification>transport-only turn</task-notification>'},
+            {"role": "user", "content": injected + "actual question " + literal},
+            {"role": "assistant", "content": "actual answer"},
+        ])
+        requests = []
+
+        def capture(req, timeout=None):
+            if "/memories" in req.full_url and "/recall" not in req.full_url:
+                requests.append(json.loads(req.data))
+            return FakeHTTPResponse({"status": "accepted"})
+
+        _run_hook("retain", make_hook_input(transcript_path=transcript), monkeypatch, tmp_path,
+                  urlopen_side_effect=capture, user_config={"retainToolCalls": include_tool_calls})
+        assert len(requests) == 1
+        content = requests[0]["items"][0]["content"]
+        assert "transport-only turn" not in content
+        assert "injected-" not in content
+        assert literal in content
+        assert "actual question" in content and "actual answer" in content
+        if include_tool_calls:
+            assert [message["role"] for message in json.loads(content)] == ["user", "assistant"]
+        else:
+            assert content.count("[role: user]") == 1
+
     def test_posts_transcript_to_hindsight(self, monkeypatch, tmp_path):
         messages = [{"role": "user", "content": "hello"}, {"role": "assistant", "content": "world"}]
         transcript = make_transcript_file(tmp_path, messages)

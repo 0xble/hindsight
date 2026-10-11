@@ -55,7 +55,7 @@ def _validate_source_timestamp(value: object) -> Optional[str]:
 _MEMORY_TAG_RE = re.compile(
     r"<(hook_prompt|task-notification|system-reminder|hindsight_memory|hindsight_memories|"
     r"hindsight_bank|relevant_memories|user_feedback|hindsight_knowledge|hindsight_knowledge_refresh)"
-    r"\b[\s\S]*?</\1>"
+    r"(?=[\s>])[\s\S]*?</\1>"
 )
 
 
