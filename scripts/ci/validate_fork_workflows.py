@@ -53,6 +53,7 @@ REQUIRED_MERGIFY_CONDITIONS = (
     "author = 0xble",
     "head-repo-full-name = 0xble/hindsight",
 )
+REVIEWED_GATED_CONDITION = "check-success = landing/reviewed-gated"
 EXPECTED_NIGHTLY_TRIGGER = {"schedule": [{"cron": "53 6 * * *"}], "workflow_dispatch": None}
 FORBIDDEN_WORKFLOWS = {
     "deploy-docs.yml",
@@ -818,13 +819,24 @@ def mergify_policy_errors(root: Path) -> list[str]:
                     f".mergify.yml: pull_request_rules[{index}] must not queue or merge; use queue_rules"
                 )
 
-    def check_conditions(scope: str, value: Any) -> None:
+    def check_conditions(
+        scope: str,
+        value: Any,
+        *,
+        require_reviewed_gated: bool = False,
+        forbid_reviewed_gated: bool = False,
+    ) -> None:
         if not isinstance(value, list) or not all(isinstance(condition, str) for condition in value):
             errors.append(f".mergify.yml: {scope} must be a list of condition strings")
             return
-        missing = sorted(required - set(value))
+        conditions = set(value)
+        missing: list[str] = sorted(required - conditions)
+        if require_reviewed_gated and REVIEWED_GATED_CONDITION not in conditions:
+            missing.append(REVIEWED_GATED_CONDITION)
         if missing:
             errors.append(f".mergify.yml: {scope} is missing required conditions: {', '.join(missing)}")
+        if forbid_reviewed_gated and REVIEWED_GATED_CONDITION in conditions:
+            errors.append(f".mergify.yml: {scope} must not include {REVIEWED_GATED_CONDITION}")
 
     queue_rules = config.get("queue_rules")
     if not isinstance(queue_rules, list) or not queue_rules:
@@ -834,14 +846,26 @@ def mergify_policy_errors(root: Path) -> list[str]:
             if not isinstance(rule, dict):
                 errors.append(f".mergify.yml: queue_rules[{index}] must be a mapping")
                 continue
-            check_conditions(f"queue_rules[{index}].queue_conditions", rule.get("queue_conditions"))
-            check_conditions(f"queue_rules[{index}].merge_conditions", rule.get("merge_conditions"))
+            check_conditions(
+                f"queue_rules[{index}].queue_conditions",
+                rule.get("queue_conditions"),
+                require_reviewed_gated=True,
+            )
+            check_conditions(
+                f"queue_rules[{index}].merge_conditions",
+                rule.get("merge_conditions"),
+                forbid_reviewed_gated=True,
+            )
 
     protections = config.get("merge_protections_settings")
     if not isinstance(protections, dict):
         errors.append(".mergify.yml: merge_protections_settings must be a mapping")
     else:
-        check_conditions("merge_protections_settings.auto_merge_conditions", protections.get("auto_merge_conditions"))
+        check_conditions(
+            "merge_protections_settings.auto_merge_conditions",
+            protections.get("auto_merge_conditions"),
+            require_reviewed_gated=True,
+        )
     return errors
 
 
