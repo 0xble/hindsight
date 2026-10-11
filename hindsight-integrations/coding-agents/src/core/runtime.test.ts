@@ -1,10 +1,11 @@
-import { existsSync, mkdtempSync, readFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { resolveConfig } from "./config";
 import type { HindsightClient } from "./hindsight";
 import { RuntimeCore } from "./runtime";
+import { sessionCacheFile } from "./session-cache";
 
 // The real ensureDaemon shells out (uvx/cargo probes) and spawns a detached process; only WHERE it
 // is called from is under test here — the deciding itself is covered in daemon.test.ts.
@@ -15,6 +16,37 @@ vi.mock("./daemon", async (importOriginal) => ({
 }));
 
 describe("RuntimeCore", () => {
+  it("keeps synthetic prompts from consuming a plugin session's first-turn roster", async () => {
+    const root = mkdtempSync(join(tmpdir(), "hs-rt-synthetic-"));
+    const sessionId = root.split(/[\\/]/).pop()!;
+    const cacheFile = sessionCacheFile("opencode", sessionId);
+    const client = {
+      listPages: vi.fn(async () => ({ items: [{ id: "p1", name: "Project decisions" }] })),
+      reflect: vi.fn(async () => "A past decision."),
+    } as unknown as HindsightClient;
+    const runtime = new RuntimeCore(client, "bank-1", resolveConfig({ pageRefreshEveryTurns: 10 }));
+    vi.stubEnv("HINDSIGHT_DIAG_FILE", join(root, "diag.jsonl"));
+    vi.stubEnv("HINDSIGHT_LOG_FILE", join(root, "plugin.log"));
+    try {
+      await runtime.onPrompt(sessionId, "<system-reminder>transport only</system-reminder>");
+      expect(runtime.getInjection(sessionId)).toBeFalsy();
+      expect(client.listPages).not.toHaveBeenCalled();
+      expect(client.reflect).not.toHaveBeenCalled();
+      expect(existsSync(cacheFile)).toBe(false);
+
+      await runtime.onPrompt(sessionId, "What did we decide?");
+      const injection = runtime.getInjection(sessionId) ?? "";
+      expect(injection).toContain("1 knowledge page covers");
+      expect(injection).not.toContain("No knowledge pages yet");
+      expect(injection).toContain("A past decision.");
+      expect(JSON.parse(readFileSync(cacheFile, "utf8")).turns).toBe(1);
+    } finally {
+      vi.unstubAllEnvs();
+      rmSync(cacheFile, { force: true });
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it("uses the shared prompt lifecycle and consumes the new-bank reflect deferral once", async () => {
     const client = {
       listDocumentIds: vi.fn(async () => new Set(["git:existing"])),

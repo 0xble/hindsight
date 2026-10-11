@@ -48,6 +48,7 @@ import {
   type SessionCache,
 } from "./session-cache";
 import { appendJournalTurn, journalPath } from "./turn-journal";
+import { stripInjectedMemory } from "./transcript-util";
 
 export interface HookEventFields {
   prompt?: string;
@@ -202,9 +203,14 @@ export async function buildHookOutput(args: {
   client: HookClient;
   cacheFile: string;
 }): Promise<HookOutput> {
-  const { harness, prompt, cfg, client, cacheFile } = args;
+  const { harness, cfg, client, cacheFile } = args;
+  const prompt = stripInjectedMemory(args.prompt).trim();
 
   const cached = readSessionCache(cacheFile);
+  // Hook transport is not a user goal. Keep the first real prompt eligible for memory, including
+  // its retry budget and any SessionStart deferral; a synthetic turn must not advance the cache.
+  // This also covers persistent-plugin callers, which reach this function without runHook.
+  if (!prompt) return { pages: cached.pages?.list ?? [] };
   const turns = (cached.turns ?? 0) + 1;
 
   // ── auto-inject: once per session, on the first prompt ────────────────────────
@@ -287,7 +293,7 @@ export async function buildHookOutput(args: {
       // coin flip, not an edge case (#4607).
       reflectAnswer = resolveInjection(undefined, reflectAttempts);
       reflectFailed = true;
-      log.warn(harness, "reflect failed — session runs without memory", {
+      log.warn(harness, "reflect failed", {
         error: describeError(e),
       });
       diag(harness, "reflect_failed", {
@@ -402,9 +408,9 @@ export async function runHook(
   if (spec.accept && !spec.accept(ev)) return;
   const { prompt: rawPrompt, cwd: rawCwd, sessionId } = spec.parse(ev);
   if (spec.requireCwd && !rawCwd) return;
-  const cwd = rawCwd || process.cwd();
-  const prompt = (rawPrompt || "").trim();
+  const prompt = stripInjectedMemory(rawPrompt || "").trim();
   if (!prompt) return;
+  const cwd = rawCwd || process.cwd();
 
   let cfg = loadConfig({ harness: spec.harness });
   setLogLevel(cfg.logLevel);

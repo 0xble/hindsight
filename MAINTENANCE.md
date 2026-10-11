@@ -35,6 +35,7 @@ runs; these extend this sole enrollment and scheduling unit:
 - [Codex injection budget](maintenance/codex-injection-budget.md): every run, preserve the complete-context cap and offline tokenizer recovery.
 - [Original file preservation](maintenance/file-preservation.md): preserve bank-scoped policy, fail-closed worker reads and template roundtrips when adopting file/config changes.
 - [Codex session attribution](maintenance/codex-session-attribution.md): when adopting Codex retain/config changes, preserve explicit strategy scope and source-status safeguards.
+- [Coding Hook Prompts](maintenance/coding-hook-prompts.md): when adopting coding-agents prompt injection or transcript filtering, preserve synthetic-turn deferral and accurate fallback diagnostics.
 - [Bounded raw curation](maintenance/raw-curation-v2.md): preserve durable capsules, indexed pins, conditional recovery and deferred maintenance.
 - [Guarded raw curation](maintenance/raw-curation.md): optional atomic PATCH preconditions.
 
