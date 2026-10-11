@@ -84,6 +84,49 @@ class TestRecallHook:
             lambda: TokenBudget(lambda text: len(text.encode("utf-8")), "utf8-byte-upper-bound"),
         )
 
+    @pytest.mark.parametrize("prompt", [
+        '<task-notification id="task-1">transport-only</task-notification>',
+        '<hook_prompt>hook stdout</hook_prompt>\n<system-reminder>setup</system-reminder>',
+        '<hindsight_memories>injected-only</hindsight_memories>',
+    ])
+    def test_synthetic_prompt_skips_recall_and_state(self, monkeypatch, tmp_path, prompt):
+        def unexpected_request(*args, **kwargs):
+            pytest.fail("Synthetic prompts must not reach the API")
+
+        output = _run_hook(
+            "recall", make_hook_input(prompt=prompt), monkeypatch, tmp_path,
+            urlopen_side_effect=unexpected_request,
+            user_config={"bankMission": "Fixture mission must not be written"},
+        )
+        assert output == ""
+        assert not (tmp_path / ".hindsight/codex/state").exists()
+
+    def test_real_prompt_and_history_exclude_injected_wrappers(self, monkeypatch, tmp_path):
+        prompt = '<task-notification id="task-1">transport-only</task-notification>\nWhy were retries bounded?\n<hindsight_memories>injected-only</hindsight_memories>'
+        transcript = make_transcript_file(tmp_path, [
+            {"role": "user", "content": '<hook_prompt>hook stdout</hook_prompt>'},
+            {"role": "user", "content": '<system-reminder>setup</system-reminder>\nEarlier real question'},
+            {"role": "assistant", "content": "Earlier answer"},
+        ])
+        queries = []
+
+        def capture_request(req, **kwargs):
+            queries.append(json.loads(req.data)["query"])
+            return FakeHTTPResponse({"results": [make_memory("Fixture memory")]})
+
+        output = _run_hook(
+            "recall", make_hook_input(prompt=prompt, transcript_path=transcript), monkeypatch, tmp_path,
+            urlopen_side_effect=capture_request,
+            user_config={"recallContextTurns": 3},
+        )
+        assert "Fixture memory" in json.loads(output)["hookSpecificOutput"]["additionalContext"]
+        assert len(queries) == 1
+        assert "Earlier real question" in queries[0]
+        assert "Earlier answer" in queries[0]
+        assert queries[0].endswith("Why were retries bounded?")
+        for injected in ["transport-only", "injected-only", "hook stdout", "setup"]:
+            assert injected not in queries[0]
+
     def test_outputs_additional_context_when_memories_found(self, monkeypatch, tmp_path):
         memory = make_memory("Paris is the capital of France", "world")
         response = FakeHTTPResponse({"results": [memory]})

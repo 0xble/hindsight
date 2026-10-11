@@ -12,6 +12,19 @@ reflect serialization and does not replace this hook boundary. No equivalent
 Codex patch was found during the 2026-10-01 upstream preflight. Fork publication follows the protected gate route and is separate from installed
 runtime adoption.
 
+At fork base `be6bddb66ed4d3a9676f82b96a7422e683dae1f3`, the active Python
+prompt hook submitted raw injected-memory and transport wrappers as recall
+queries. Its existing content filter now mirrors the coding-agents structural
+tag rule for both automatic queries and retained text. Wholly synthetic prompts
+stop before bank mission, API or state work. Real surrounding text and prior
+human context remain queryable. This consumer recalls each prompt, with no
+automatic reflection or bounded session-injection retry budget to consume.
+The hook and content regressions prove synthetic admission, clean multi-turn
+queries and preservation of unknown literal tags. Keep this boundary when
+adopting source through `hindsight-docs/static/get-codex`. That installer also
+rewrites host wiring, so a runtime-only repair must preserve the existing hooks,
+configuration and authentication rather than rerun its broad installation.
+
 - **Coupled surfaces:** `recall.py`, `recall_launcher.py`,
   `lib/recall_context.py`, `lib/token_budget.py`, hook template and
   `hindsight-docs/static/get-codex`. Preserve whole-fact packing and accurate

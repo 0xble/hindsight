@@ -52,16 +52,20 @@ def _validate_source_timestamp(value: object) -> Optional[str]:
 # Memory tag stripping (anti-feedback-loop)
 # ---------------------------------------------------------------------------
 
+_MEMORY_TAG_RE = re.compile(
+    r"<(hook_prompt|task-notification|system-reminder|hindsight_memory|hindsight_memories|"
+    r"hindsight_bank|relevant_memories|user_feedback|hindsight_knowledge|hindsight_knowledge_refresh)"
+    r"\b[\s\S]*?</\1>"
+)
+
 
 def strip_memory_tags(content: str) -> str:
-    """Remove <hindsight_memories> and <relevant_memories> blocks.
+    """Remove injected memory and host transport blocks, keeping surrounding text.
 
-    Prevents retain feedback loop — these were injected during recall and
-    should not be re-stored.
+    Mirrors coding-agents' structural filter for recall queries and retained
+    transcripts. A wholly synthetic message becomes empty rather than a user turn.
     """
-    content = re.sub(r"<hindsight_memories>[\s\S]*?</hindsight_memories>", "", content)
-    content = re.sub(r"<relevant_memories>[\s\S]*?</relevant_memories>", "", content)
-    return content
+    return _MEMORY_TAG_RE.sub("", content)
 
 
 def is_synthetic_codex_user_message(content: str) -> bool:
