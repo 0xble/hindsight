@@ -84,6 +84,49 @@ class TestRecallHook:
             lambda: TokenBudget(lambda text: len(text.encode("utf-8")), "utf8-byte-upper-bound"),
         )
 
+    @pytest.mark.parametrize("prompt", [
+        '<task-notification id="task-1">transport-only</task-notification>',
+        '<hook_prompt>hook stdout</hook_prompt>\n<system-reminder>setup</system-reminder>',
+        '<hindsight_memories>injected-only</hindsight_memories>',
+    ])
+    def test_synthetic_prompt_skips_recall_and_state(self, monkeypatch, tmp_path, prompt):
+        def unexpected_request(*args, **kwargs):
+            pytest.fail("Synthetic prompts must not reach the API")
+
+        output = _run_hook(
+            "recall", make_hook_input(prompt=prompt), monkeypatch, tmp_path,
+            urlopen_side_effect=unexpected_request,
+            user_config={"bankMission": "Fixture mission must not be written"},
+        )
+        assert output == ""
+        assert not (tmp_path / ".hindsight/codex/state").exists()
+
+    def test_real_prompt_and_history_exclude_injected_wrappers(self, monkeypatch, tmp_path):
+        prompt = '<task-notification id="task-1">transport-only</task-notification>\nWhy were retries bounded?\n<hindsight_memories>injected-only</hindsight_memories>'
+        transcript = make_transcript_file(tmp_path, [
+            {"role": "user", "content": '<hook_prompt>hook stdout</hook_prompt>'},
+            {"role": "user", "content": '<system-reminder>setup</system-reminder>\nEarlier real question'},
+            {"role": "assistant", "content": "Earlier answer"},
+        ])
+        queries = []
+
+        def capture_request(req, **kwargs):
+            queries.append(json.loads(req.data)["query"])
+            return FakeHTTPResponse({"results": [make_memory("Fixture memory")]})
+
+        output = _run_hook(
+            "recall", make_hook_input(prompt=prompt, transcript_path=transcript), monkeypatch, tmp_path,
+            urlopen_side_effect=capture_request,
+            user_config={"recallContextTurns": 3},
+        )
+        assert "Fixture memory" in json.loads(output)["hookSpecificOutput"]["additionalContext"]
+        assert len(queries) == 1
+        assert "Earlier real question" in queries[0]
+        assert "Earlier answer" in queries[0]
+        assert queries[0].endswith("Why were retries bounded?")
+        for injected in ["transport-only", "injected-only", "hook stdout", "setup"]:
+            assert injected not in queries[0]
+
     def test_outputs_additional_context_when_memories_found(self, monkeypatch, tmp_path):
         memory = make_memory("Paris is the capital of France", "world")
         response = FakeHTTPResponse({"results": [memory]})
@@ -321,6 +364,37 @@ class TestRecallHook:
 
 
 class TestRetainHook:
+    @pytest.mark.parametrize("include_tool_calls", [False, True])
+    def test_retained_output_filters_transport_but_preserves_unknown_literals(self, monkeypatch, tmp_path, include_tool_calls):
+        tags = ["hook_prompt", "task-notification", "system-reminder", "hindsight_memory",
+                "hindsight_bank", "user_feedback", "hindsight_knowledge", "hindsight_knowledge_refresh"]
+        injected = "".join(f'<{tag} id="fixture">injected-{tag}</{tag}>' for tag in tags)
+        literal = "<system-reminder-example>literal example</system-reminder>"
+        transcript = make_transcript_file(tmp_path, [
+            {"role": "user", "content": '<task-notification>transport-only turn</task-notification>'},
+            {"role": "user", "content": injected + "actual question " + literal},
+            {"role": "assistant", "content": "actual answer"},
+        ])
+        requests = []
+
+        def capture(req, timeout=None):
+            if "/memories" in req.full_url and "/recall" not in req.full_url:
+                requests.append(json.loads(req.data))
+            return FakeHTTPResponse({"status": "accepted"})
+
+        _run_hook("retain", make_hook_input(transcript_path=transcript), monkeypatch, tmp_path,
+                  urlopen_side_effect=capture, user_config={"retainToolCalls": include_tool_calls})
+        assert len(requests) == 1
+        content = requests[0]["items"][0]["content"]
+        assert "transport-only turn" not in content
+        assert "injected-" not in content
+        assert literal in content
+        assert "actual question" in content and "actual answer" in content
+        if include_tool_calls:
+            assert [message["role"] for message in json.loads(content)] == ["user", "assistant"]
+        else:
+            assert content.count("[role: user]") == 1
+
     def test_posts_transcript_to_hindsight(self, monkeypatch, tmp_path):
         messages = [{"role": "user", "content": "hello"}, {"role": "assistant", "content": "world"}]
         transcript = make_transcript_file(tmp_path, messages)

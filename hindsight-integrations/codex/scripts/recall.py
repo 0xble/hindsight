@@ -33,6 +33,7 @@ from lib.content import (
     format_current_time,
     format_memories,
     read_transcript,
+    strip_memory_tags,
     truncate_recall_query,
 )
 from lib.daemon import get_api_url
@@ -100,7 +101,7 @@ def main():
     debug_log(config, f"Hook input keys: {list(hook_input.keys())}")
 
     # Extract user query — accept both "prompt" and "user_prompt" defensively
-    prompt = (hook_input.get("prompt") or hook_input.get("user_prompt") or "").strip()
+    prompt = strip_memory_tags(hook_input.get("prompt") or hook_input.get("user_prompt") or "").strip()
     if not prompt or len(prompt) < 5:
         debug_log(config, "Prompt too short for recall, skipping")
         return

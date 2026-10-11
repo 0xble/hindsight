@@ -61,6 +61,19 @@ const reminder = "<system-reminder>injected guidance</system-reminder>";
 const prompt = "Why did we choose bounded retries?";
 
 describe("automatic memory injection excludes synthetic hook prompts", () => {
+  it("keeps unknown tag suffixes in the real automatic query", async () => {
+    const client = makeClient();
+    const literal = '<task-notification-example id="fixture">literal example</task-notification>';
+    await buildHookOutput({
+      harness: "claude-code",
+      prompt: literal,
+      cfg: resolveConfig({}),
+      client,
+      cacheFile,
+    });
+    expect(client.reflect).toHaveBeenCalledWith(buildReflectQuery(literal), expect.any(Object));
+  });
+
   it.each(["reflect", "pages", "recall", "none"] as const)(
     "%s leaves wholly synthetic and empty prompts unresolved without network work",
     async (autoInject) => {

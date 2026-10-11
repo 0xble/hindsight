@@ -51,6 +51,22 @@ class TestStripMemoryTags:
         raw = "<hindsight_memories>\n- mem1\n- mem2\n</hindsight_memories>"
         assert strip_memory_tags(raw).strip() == ""
 
+    def test_strips_attributed_transport_and_page_blocks_but_keeps_human_text(self):
+        raw = 'before<task-notification id="task-1">\ntransport\n</task-notification>middle<hindsight_knowledge_refresh>page refresh</hindsight_knowledge_refresh>after'
+        assert strip_memory_tags(raw) == "beforemiddleafter"
+
+    def test_preserves_unknown_tags_and_similarly_named_tags(self):
+        raw = "<example>literal text</example><hook_prompting>literal hook example</hook_prompting>"
+        assert strip_memory_tags(raw) == raw
+
+    @pytest.mark.parametrize("raw", [
+        "<system-reminder-foo>literal example</system-reminder>",
+        '<task-notification-x id="example">literal example</task-notification>',
+        "<hindsight_memory:example>literal example</hindsight_memory>",
+    ])
+    def test_preserves_unknown_tag_suffixes_even_with_known_close(self, raw):
+        assert strip_memory_tags(raw) == raw
+
 
 class TestSyntheticCodexUserMessage:
     def test_detects_agents_startup_instructions(self):
