@@ -144,4 +144,41 @@ The fork-only normalized-observation index revision `e6f7a8b9c0d1` was introduce
 - **Retire when:** A released upstream implementation adopted by the fork passes these regressions while preserving timeout classification and retry semantics. Do not duplicate the deadline if that implementation is reconciled.
 - **Rollback:** Revert this scoped provider change and tests; no data rollback or runtime activation is part of source rollback.
 
+## Worker Nonterminal-Write Recovery Qualification
+
+- **Disposition:** Fork-only integration repair at upstream release `v0.10.3`
+  (`eb6df499d35300e5b2f3f029b2e6adda04ed90f8`). The fork's retry/defer
+  reconciliation stopped after five failed reclaim attempts, leaving a live
+  worker's forgotten row `processing`. Reuse `_write_terminal` for reclaim:
+  bounded backoff for the existing 300-second deadline, then `_exit_process`
+  for same-worker startup recovery. Remove the separate short retry ceiling.
+- **Contracts:** Keep pending/retry-count reconciliation and cooperative
+  cancellation fences; never convert retry or deferral into terminal failure
+  or record a terminal metric. Keep operation-targeted reclamation and stop
+  after a returned exit boundary rather than continuing to later rows.
+- **Upstream guidance:** Read `AGENTS.md`, `CLAUDE.md`, `CONTRIBUTING.md` and
+  code-review guidance at the frozen release; the independent proposal preceded
+  the upstream tracker search.
+  Adopted [#5380](https://github.com/vectorize-io/hindsight/pull/5380), resolving
+  [#5377](https://github.com/vectorize-io/hindsight/issues/5377), supplies the
+  deadline/exit primitive; retain it rather than adding another retry engine.
+  This integration bug does not require a new upstream issue or PR.
+- **Regression:** `tests/test_worker.py::TestTaskReleaseOnStop`, especially
+  `test_retry_defer_reclaim_outage_cannot_strand_live_worker`. Both retry and
+  defer paths use real disposable PostgreSQL claims. A sixth-attempt recovery
+  passes the old ceiling; permanent outage patches `_exit_process` and proves
+  same-worker recovery returns the claim to pending with retry count preserved.
+  No test kills its interpreter. Keep the existing transient and terminal-write,
+  shutdown, parent-status and cancellation regressions.
+- **Qualification evidence:** All four outage cases fail on the `aa7d9724f`
+  worker path and pass in the current 190-test focused API run. The tests use a
+  named disposable pg0 on free port 5598 and no skips or expected failures.
+  The deadline exit can stop an embedded API too, as upstream specifies;
+  restart recovery requires the same worker ID (replacement identities retain
+  the existing decommission-worker recovery contract). Final exact-candidate
+  nightly qualification and any runtime adoption remain parent-owned.
+- **Retire/rollback:** Reconcile with upstream nonterminal-write adoption only
+  when these fork retry/cancellation contracts still pass. Rollback is source
+  only, never a database status reset or runtime restart.
+
 Run the API-local regression commands from `hindsight-api-slim`.

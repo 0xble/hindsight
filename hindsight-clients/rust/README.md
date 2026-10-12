@@ -76,10 +76,18 @@ The generation happens automatically when you run `cargo build`, so the client a
 
 ### Build Process
 
-1. `build.rs` reads the OpenAPI spec from `../../openapi.json`
+1. `build.rs` reads `../../hindsight-docs/static/openapi.json`
 2. Converts OpenAPI 3.1 → 3.0 (for progenitor compatibility)
-3. Generates Rust client code using progenitor
-4. Code is included in the library via `include!()` macro
+3. Disambiguates colliding inline enum titles by schema/property path, without
+   changing wire values or names of shared enums with identical values
+4. Generates Rust client code using progenitor
+5. Code is included in the library via `include!()` macro
+
+Operation statuses and raw-curation receipt statuses must remain distinct, as
+must mental-model refresh failure reasons and OCR failure reasons. The source
+repair belongs in `build.rs`, not in disposable generated output. Regression
+coverage is in `tests/operation_enum_collisions.rs`; nullable curation fields
+remain covered by `tests/curation_fields.rs`.
 
 ## API Methods
 
@@ -141,7 +149,10 @@ The OpenAPI spec is automatically converted and the client is generated during b
 ### Testing
 
 ```bash
-cargo test
+# Offline serde, client-error and compile-only documentation regressions
+cargo test --locked -- --skip test_memory_lifecycle
+# Full suite additionally requires a separately authorized API at localhost:8888
+cargo test --locked
 ```
 
 ### Releasing

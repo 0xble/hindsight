@@ -45,7 +45,8 @@ remain compatible for callers.
 - **Status:** Active
 - **Commits:** `1fe5fce`, `f405858`, `fd7fca5`
 - **Surfaces:** API operation-detail models/status persistence, checked-in OpenAPI
-  contracts, generated Python/TypeScript/Go clients, and `scripts/generate-clients.sh`
+  contracts, generated Python/TypeScript/Go/Rust clients, `hindsight-clients/rust/build.rs`,
+  and `scripts/generate-clients.sh`
 - **Behavior:** Failed `file_convert_retain` operations expose a stable, discriminated
   `low_quality_ocr` detail with the OCR quality reason, so callers can settle
   deterministic evidence exclusions without parsing error prose. Retries clear
@@ -62,6 +63,8 @@ remain compatible for callers.
   and mismatched shapes are rejected, and parents retain absent/explicit-null
   semantics. Reapplying the patch must be byte-idempotent and changed generator
   boundaries must fail without rewriting the target.
+- **Rust inline-enum qualification (v0.10.3):** `hindsight-clients/rust/build.rs` detects normalized enum titles reused with different wire values and scopes only colliding inline enums by schema/property path before Progenitor generation. This prevents receipt `applied|reverted` from aliasing operation status `pending` and prevents OCR reasons from replacing refresh reason `delta_not_applied`. Keep shared identical enums and referenced component names compatible; preserve canonical OpenAPI and wire values. This is a generator-source repair, not a checked-in output patch. `tests/operation_enum_collisions.rs` roundtrips all operation/receipt states and refresh/OCR failure reasons. Run `cargo test --manifest-path hindsight-clients/rust/Cargo.toml` from the repository root with `HINDSIGHT_API_URL` pointing at a disposable API: the lifecycle test creates, retains and recalls a real bank and is not an offline unit test. Use the existing system-test API/provider-stub harness and a separately named pg0 test instance; never a live service. The full suite includes existing nullable curation and readable-409 regressions, plus the corrected compile-only `list_banks` documentation example. Upstream tracker searches after the independent proposal found no matching enum-collision issue; retain as a fork client integration repair with no new publication.
+- **Rust qualification evidence:** Both enum regressions fail against the `aa7d9724f` generator (`pending` is mistaken for receipt status; refresh reasons are mistaken for OCR reasons). The full baseline suite also fails its lifecycle test without an API. On the repaired source, all eight Rust tests pass, including that lifecycle against the existing real disposable system-test API and named pg0 on port 5599, with provider stubs only. No test is filtered or ignored. No canonical OpenAPI, generated checked-in artifact, dependency or wire contract changed.
 - **Empty-detail wire contract:** `engine/memory_engine.py::_operation_details`
   returns a validated, discriminated model dump or `None`, never `{}` or `""`;
   both list/get operation readers use that projection. `api/http.py` response

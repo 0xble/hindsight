@@ -12,7 +12,7 @@
 //!     let client = Client::new("http://localhost:8888");
 //!
 //!     // List memory banks
-//!     let banks = client.list_banks(None).await?;
+//!     let banks = client.list_banks(None, None, None, None).await?;
 //!     println!("Found {} banks", banks.into_inner().banks.len());
 //!
 //!     Ok(())

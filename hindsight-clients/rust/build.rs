@@ -25,7 +25,10 @@ fn filter_multipart_endpoints(spec: &mut serde_json::Value) {
                         if let Some(content) = request_body.get("content") {
                             if let Some(content_obj) = content.as_object() {
                                 if content_obj.contains_key("multipart/form-data") {
-                                    eprintln!("Filtering out endpoint with multipart/form-data: {}", path_name);
+                                    eprintln!(
+                                        "Filtering out endpoint with multipart/form-data: {}",
+                                        path_name
+                                    );
                                     paths_to_remove.push(path_name.clone());
                                     break;
                                 }
@@ -61,7 +64,10 @@ fn filter_bodyless_error_responses(spec: &mut serde_json::Value) {
             continue;
         };
         for (_method, operation) in operations.iter_mut() {
-            let Some(responses) = operation.get_mut("responses").and_then(|v| v.as_object_mut()) else {
+            let Some(responses) = operation
+                .get_mut("responses")
+                .and_then(|v| v.as_object_mut())
+            else {
                 continue;
             };
             responses.retain(|status, response| {
@@ -89,7 +95,10 @@ fn filter_unsupported_typed_error_responses(spec: &mut serde_json::Value) {
             continue;
         };
         for (_method, operation) in operations.iter_mut() {
-            let Some(responses) = operation.get_mut("responses").and_then(|v| v.as_object_mut()) else {
+            let Some(responses) = operation
+                .get_mut("responses")
+                .and_then(|v| v.as_object_mut())
+            else {
                 continue;
             };
             responses.retain(|status, response| {
@@ -156,6 +165,110 @@ fn collapse_string_anyof_unions(value: &mut serde_json::Value) {
     }
 }
 
+/// Disambiguate inline enum titles reused for different wire values. FastAPI
+/// labels such as "Status" and "Failure Reason" are not unique type names, but
+/// typify treats them as such. Keep shared enums with identical values (e.g.
+/// TagsMatch) and referenced component names compatible; scope only collisions.
+fn scope_inline_enum_titles(spec: &mut serde_json::Value) {
+    use std::collections::{BTreeMap, BTreeSet};
+
+    fn title_key(title: &str) -> String {
+        title
+            .chars()
+            .filter(|c| c.is_ascii_alphanumeric())
+            .map(|c| c.to_ascii_lowercase())
+            .collect()
+    }
+    fn collect(value: &serde_json::Value, titles: &mut BTreeMap<String, BTreeSet<String>>) {
+        match value {
+            serde_json::Value::Object(obj) => {
+                if let (Some(title), Some(values)) = (
+                    obj.get("title").and_then(|v| v.as_str()),
+                    obj.get("enum").and_then(|v| v.as_array()),
+                ) {
+                    // Enum order is not part of its wire contract.
+                    let mut variants: Vec<_> = values.iter().map(|v| v.to_string()).collect();
+                    variants.sort();
+                    titles
+                        .entry(title_key(title))
+                        .or_default()
+                        .insert(serde_json::to_string(&variants).expect("enum values serialize"));
+                }
+                for child in obj.values() {
+                    collect(child, titles);
+                }
+            }
+            serde_json::Value::Array(items) => {
+                for item in items {
+                    collect(item, titles);
+                }
+            }
+            _ => {}
+        }
+    }
+    fn scope(
+        schema: &mut serde_json::Value,
+        path: &str,
+        inline: bool,
+        collisions: &BTreeSet<String>,
+    ) {
+        let Some(obj) = schema.as_object_mut() else {
+            return;
+        };
+        if inline
+            && obj.contains_key("enum")
+            && obj
+                .get("title")
+                .and_then(|v| v.as_str())
+                .is_some_and(|title| collisions.contains(&title_key(title)))
+        {
+            obj.insert("title".to_string(), serde_json::json!(path));
+        }
+        if let Some(properties) = obj
+            .get_mut("properties")
+            .and_then(|value| value.as_object_mut())
+        {
+            for (property, schema) in properties {
+                scope(schema, &format!("{path}_{property}"), true, collisions);
+            }
+        }
+        if let Some(items) = obj.get_mut("items") {
+            scope(items, &format!("{path}_item"), true, collisions);
+        }
+        for keyword in ["anyOf", "oneOf", "allOf"] {
+            if let Some(variants) = obj.get_mut(keyword).and_then(|value| value.as_array_mut()) {
+                for (index, variant) in variants.iter_mut().enumerate() {
+                    scope(
+                        variant,
+                        &format!("{path}_{keyword}_{index}"),
+                        true,
+                        collisions,
+                    );
+                }
+            }
+        }
+        if let Some(additional) = obj.get_mut("additionalProperties") {
+            scope(additional, &format!("{path}_value"), true, collisions);
+        }
+    }
+    if let Some(schemas) = spec
+        .pointer_mut("/components/schemas")
+        .and_then(|value| value.as_object_mut())
+    {
+        let mut titles = BTreeMap::new();
+        for schema in schemas.values() {
+            collect(schema, &mut titles);
+        }
+        let collisions = titles
+            .into_iter()
+            .filter_map(|(title, values)| (values.len() > 1).then_some(title))
+            .collect();
+        for (name, schema) in schemas {
+            scope(schema, name, false, &collisions);
+        }
+    }
+}
+
 fn convert_anyof_to_nullable(value: &mut serde_json::Value) {
     match value {
         serde_json::Value::Object(obj) => {
@@ -163,14 +276,22 @@ fn convert_anyof_to_nullable(value: &mut serde_json::Value) {
             // openapiv3 expects a 3.0 scalar type, so normalize the equivalent
             // single-primitive + null form before parsing the converted spec.
             if let Some(types) = obj.get("type").and_then(|v| v.as_array()) {
-                let non_null: Vec<_> = types.iter().filter(|v| v.as_str() != Some("null")).cloned().collect();
-                if types.len() == 2 && non_null.len() == 1 && types.iter().any(|v| v.as_str() == Some("null")) {
+                let non_null: Vec<_> = types
+                    .iter()
+                    .filter(|v| v.as_str() != Some("null"))
+                    .cloned()
+                    .collect();
+                if types.len() == 2
+                    && non_null.len() == 1
+                    && types.iter().any(|v| v.as_str() == Some("null"))
+                {
                     obj.insert("type".to_string(), non_null[0].clone());
                     obj.insert("nullable".to_string(), serde_json::json!(true));
                 }
             }
             // Check if this object has anyOf with null and process it
-            let has_null_in_anyof = obj.get("anyOf")
+            let has_null_in_anyof = obj
+                .get("anyOf")
                 .and_then(|v| v.as_array())
                 .map(|array| {
                     array.iter().any(|v| {
@@ -186,12 +307,16 @@ fn convert_anyof_to_nullable(value: &mut serde_json::Value) {
                 // Clone the anyOf array to avoid borrow issues
                 if let Some(any_of) = obj.get("anyOf").cloned() {
                     if let Some(array) = any_of.as_array() {
-                        let non_null_schemas: Vec<_> = array.iter().filter(|v| {
-                            v.get("type")
-                                .and_then(|t| t.as_str())
-                                .map(|s| s != "null")
-                                .unwrap_or(true)
-                        }).cloned().collect();
+                        let non_null_schemas: Vec<_> = array
+                            .iter()
+                            .filter(|v| {
+                                v.get("type")
+                                    .and_then(|t| t.as_str())
+                                    .map(|s| s != "null")
+                                    .unwrap_or(true)
+                            })
+                            .cloned()
+                            .collect();
 
                         obj.remove("anyOf");
                         if non_null_schemas.len() == 1 {
@@ -244,8 +369,8 @@ fn main() {
         .expect("Failed to read openapi.json. Make sure it exists in the project root.");
 
     // Parse as generic JSON first to convert 3.1 to 3.0
-    let mut spec_json: serde_json::Value = serde_json::from_str(&spec_content)
-        .expect("Failed to parse openapi.json");
+    let mut spec_json: serde_json::Value =
+        serde_json::from_str(&spec_content).expect("Failed to parse openapi.json");
 
     // Convert OpenAPI 3.1.0 to 3.0.3 for progenitor compatibility
     if let Some(version) = spec_json.get("openapi").and_then(|v| v.as_str()) {
@@ -260,6 +385,8 @@ fn main() {
     // null arm. Keeps progenitor from emitting unserializable flatten-of-
     // primitive structs (see collapse_string_anyof_unions docs).
     collapse_string_anyof_unions(&mut spec_json);
+    // Run after nullable normalization, which lifts optional enums to the property.
+    scope_inline_enum_titles(&mut spec_json);
 
     // Filter out multipart/form-data endpoints (progenitor doesn't support them)
     filter_multipart_endpoints(&mut spec_json);
@@ -272,29 +399,30 @@ fn main() {
     filter_unsupported_typed_error_responses(&mut spec_json);
 
     // Now parse as OpenAPI struct
-    let spec: openapiv3::OpenAPI = serde_json::from_value(spec_json)
-        .expect("Failed to parse converted OpenAPI spec");
+    let spec: openapiv3::OpenAPI =
+        serde_json::from_value(spec_json).expect("Failed to parse converted OpenAPI spec");
 
     // Generate the client
     let mut settings = progenitor::GenerationSettings::default();
     // Presence is part of a patch's meaning. Progenitor's Option<T> collapses
     // omitted fields and explicit null, so use the maintained three-state body.
     settings.with_replacement(
-        "CurationFields", "crate::CurationFields",
+        "CurationFields",
+        "crate::CurationFields",
         std::iter::once(progenitor::TypeImpl::Default),
     );
     let mut generator = progenitor::Generator::new(&settings);
 
     // Generate code
-    let tokens = generator.generate_tokens(&spec)
+    let tokens = generator
+        .generate_tokens(&spec)
         .expect("Failed to generate client code from OpenAPI spec");
 
     // Write to the output directory
     let out_dir = PathBuf::from(env::var("OUT_DIR").unwrap());
     let dest_path = out_dir.join("hindsight_client_generated.rs");
 
-    let syntax_tree = syn::parse2(tokens)
-        .expect("Failed to parse generated tokens");
+    let syntax_tree = syn::parse2(tokens).expect("Failed to parse generated tokens");
     let mut formatted = prettyplease::unparse(&syntax_tree);
 
     // Fix progenitor bug with optional header parameters
@@ -302,8 +430,7 @@ fn main() {
     // We need to unwrap the Option first
     formatted = fix_optional_header_params(&formatted);
 
-    fs::write(&dest_path, formatted)
-        .expect("Failed to write generated client code");
+    fs::write(&dest_path, formatted).expect("Failed to write generated client code");
 
     println!("Generated client at: {}", dest_path.display());
 }
@@ -316,9 +443,14 @@ fn fix_optional_header_params(code: &str) -> String {
 
     // Pattern: header_map.append("authorization", value.to_string().try_into()?);
     // Should become: header_map.append("authorization", value.unwrap_or_default().to_string().try_into()?);
-    let re = Regex::new(r#"header_map\.append\("authorization", value\.to_string\(\)\.try_into\(\)\?\)"#)
-        .expect("Invalid regex");
+    let re = Regex::new(
+        r#"header_map\.append\("authorization", value\.to_string\(\)\.try_into\(\)\?\)"#,
+    )
+    .expect("Invalid regex");
 
-    re.replace_all(code, r#"header_map.append("authorization", value.unwrap_or_default().to_string().try_into()?)"#)
-        .to_string()
+    re.replace_all(
+        code,
+        r#"header_map.append("authorization", value.unwrap_or_default().to_string().try_into()?)"#,
+    )
+    .to_string()
 }

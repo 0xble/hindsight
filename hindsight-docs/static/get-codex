@@ -64,7 +64,8 @@ print_banner() {
     echo ""
 }
 
-GITHUB_RAW="https://raw.githubusercontent.com/vectorize-io/hindsight/main/hindsight-integrations/codex"
+# This fork owns the launcher and complete-context budget helpers.
+GITHUB_RAW="https://raw.githubusercontent.com/0xble/hindsight/main/hindsight-integrations/codex"
 INSTALL_DIR="${HOME}/.hindsight/codex"
 SCRIPTS_DIR="${INSTALL_DIR}/scripts"
 CODEX_DIR="${HOME}/.codex"
