@@ -712,6 +712,8 @@ async def test_read_and_write_authorization_guards(memory, seeded):
     from hindsight_api.extensions import ValidationResult
 
     validator = SimpleNamespace(
+        resolve_tag_scope=AsyncMock(return_value=None),
+        resolve_write_tag_scope=AsyncMock(return_value=None),
         validate_bank_read=AsyncMock(return_value=ValidationResult.reject("read denied", status_code=403)),
         validate_bank_write=AsyncMock(return_value=ValidationResult.reject("write denied", status_code=403)),
     )
@@ -746,6 +748,8 @@ async def test_per_memory_validator_guards_batch_apply_and_revert_without_corrup
     before = await snapshot(memory, seeded)
     provider = AsyncMock(return_value=str([0.25] * 384))
     validator = SimpleNamespace(
+        resolve_tag_scope=AsyncMock(return_value=None),
+        resolve_write_tag_scope=AsyncMock(return_value=None),
         validate_bank_write=AsyncMock(return_value=ValidationResult.accept()),
         validate_memory_update=AsyncMock(
             return_value=ValidationResult.reject("memory curation denied", status_code=403)
@@ -820,6 +824,8 @@ async def test_correction_revert_requires_edit_permission_but_invalidation_resto
         )
 
     validator = SimpleNamespace(
+        resolve_tag_scope=AsyncMock(return_value=None),
+        resolve_write_tag_scope=AsyncMock(return_value=None),
         validate_bank_write=AsyncMock(return_value=ValidationResult.accept()),
         validate_memory_update=AsyncMock(side_effect=restore_only),
     )

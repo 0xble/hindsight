@@ -37,11 +37,12 @@ configuration and authentication rather than rerun its broad installation.
   fetch a missing asset. Installer reruns rebuild only the private, unredirected
   tokenizer directory, and launcher startup failure selects current Python
   before recall starts. Never retry an already started hook.
+- **Installer source:** `hindsight-docs/static/get-codex` downloads the complete script set from `0xble/hindsight/main`, not upstream `main`: the launcher and budget helpers are fork-owned and upstream's raw URLs return 404. `tests/test_installer_source.py` locks this source identity and verifies every download path exists in the same integration tree. Keep source publication separate from installing or activating hooks in a user's home.
 - **Regression:** Run the integration suite with `uv run --no-project --with pytest --with tiktoken==0.12.0 pytest hindsight-integrations/codex/tests -q`.
   Set `CODEX_TEST_O200K_ASSET` to the installer-provisioned asset to require the
   exact-tokenizer cases, otherwise they skip. `test_recall_launcher.py` proves
   stale-interpreter recovery through real subprocesses. Also check the installer
-  with `bash -n hindsight-docs/static/get-codex`.
+  with `bash -n hindsight-docs/static/get-codex`. Current qualification passes all 209 integration tests with the pinned local o200k asset and no skips; the installer source regression is red on `aa7d9724f`. Direct raw-source checks confirm all three fork-owned helper URLs return 200 from the fork and 404 from upstream.
 - **Adopt Or Retire:** Replace this unit only when an upstream equivalent passes
   the complete rendering, whole-fact, emitted-count and offline recovery
   regressions. A deliberate migration to another coding-agent integration also

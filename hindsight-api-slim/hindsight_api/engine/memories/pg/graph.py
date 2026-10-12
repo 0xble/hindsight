@@ -677,7 +677,8 @@ async def relink_pass(
                 # Guarded curation and relinking share this bank advisory lock.
                 # Acquire it before claiming or reading victims so a relinker
                 # cannot insert a pre-edit link after a guarded edit commits.
-                if not await try_lock_curation_bank(conn, bank_id):
+                # Curation is PostgreSQL-only; Oracle uses its normal queue locks.
+                if conn.backend_type == "postgresql" and not await try_lock_curation_bank(conn, bank_id):
                     drained = False
                     break
                 unit_ids = await ops.claim_graph_maintenance_batch(
@@ -967,7 +968,8 @@ async def entity_prune_pass(
                     # Guarded curation, relinking, and entity pruning share this
                     # bank advisory lock. Do not claim prune work while a
                     # curation transaction may be changing its entity closure.
-                    if not await try_lock_curation_bank(conn, bank_id):
+                    # Oracle has no curation protocol/advisory-lock counterpart.
+                    if conn.backend_type == "postgresql" and not await try_lock_curation_bank(conn, bank_id):
                         return _PruneBatch(claimed=0, orphan_entities_pruned=0, stale_cooccurrences_pruned=0, busy=True)
                     entity_ids = await ops.claim_entity_maintenance_batch(
                         conn,

@@ -47,7 +47,7 @@ async def lock_live_memory_ids(
     conservative, still correct.)
     """
     rows = await conn.fetch(
-        f"SELECT id FROM {fq_table('memory_units')} WHERE id = ANY($1::uuid[]) AND bank_id = $2 FOR SHARE",
+        f"SELECT id FROM {fq_table('memory_units')} WHERE id = ANY($1::uuid[]) AND bank_id = $2 ORDER BY id FOR SHARE",
         unit_ids,
         bank_id,
     )
@@ -75,7 +75,7 @@ async def memories_changed_since(
 ) -> list[str]:
     """Ids in ``read_at`` whose ``updated_at`` moved since it was read, ``FOR SHARE``-locked."""
     rows = await conn.fetch(
-        f"SELECT id, updated_at FROM {fq_table('memory_units')} WHERE id = ANY($1::uuid[]) AND bank_id = $2 FOR SHARE",
+        f"SELECT id, updated_at FROM {fq_table('memory_units')} WHERE id = ANY($1::uuid[]) AND bank_id = $2 ORDER BY id FOR SHARE",
         [uuid.UUID(mid) for mid in read_at],
         bank_id,
     )

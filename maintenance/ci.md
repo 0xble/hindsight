@@ -72,6 +72,15 @@ intentional fork infrastructure policy, not upstream deployment ownership.
   roundtrip tests alongside the other active service-hardening suites. The lane
   benchmark's deterministic bounded-concurrency cases are non-slow, so the gate's
   offline marker filter executes them; do not register only deselected tests.
+  Qualification repair removes the repeated `test_hierarchical_config.py` entry
+  from `PATCH_REGRESSIONS` and registers `test_graph_maintenance_dialect.py` and
+  `test_curation_batch_authorization.py`. The shared consolidation deadlock suite
+  also covers Oracle/native-store source fences and strict scope counts.
+  Each patch-list entry is unique; Rust client coverage also runs
+  `operation_enum_collisions` beside `curation_fields`. No workflow/action
+  versions, permissions, protections or deployment capabilities change. Mutable
+  action major tags remain inherited generic hardening, not a new policy
+  requirement for this run.
   The Go client selector includes all `TestOperationResponseDetails` cases,
   including direct-null and invalid-discriminator coverage.
   Test sessions and every `bin/ci` profile refuse production port 5436 and

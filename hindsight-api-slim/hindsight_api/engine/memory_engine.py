@@ -12095,6 +12095,9 @@ class MemoryEngine(MemoryEngineInterface):
         from .memories import get_memories
 
         await self._authenticate_tenant(request_context)
+        # The closure, pins and receipt are bank-wide, not a tag-filterable row
+        # protocol. Refuse scoped callers before any store or provider work.
+        await self._refuse_bank_wide_if_scoped(bank_id, request_context, "use batch curation")
         if read and self._operation_validator:
             from hindsight_api.extensions import BankReadContext, BankReadOperation
 
@@ -12262,6 +12265,7 @@ class MemoryEngine(MemoryEngineInterface):
                     )
                 )
             )
+        await self._require_writable(bank_id, request_context)
         await self._validate_curation_batch_changes(bank_id, request.changes, request_context)
         backend = await self._get_backend()
         async with acquire_with_retry(backend) as conn:
@@ -12383,6 +12387,7 @@ class MemoryEngine(MemoryEngineInterface):
                     )
                 )
             )
+        await self._require_writable(bank_id, request_context)
         backend = await self._get_backend()
         try:
             async with acquire_with_retry(backend) as conn:

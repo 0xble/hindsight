@@ -91,6 +91,97 @@ def test_oracle_rewriter_preserves_ordered_lock():
     assert "ORDER BY id FOR UPDATE" in rewritten.query
 
 
+@pytest.mark.parametrize("check", ["liveness", "source_drift"])
+async def test_oracle_sql_store_preserves_source_fences(monkeypatch, check):
+    from datetime import UTC, datetime, timedelta
+    from types import SimpleNamespace
+
+    from hindsight_api.engine.memories.postgres import PostgresMemories
+
+    store = PostgresMemories(config={})
+    monkeypatch.setattr(consolidator, "get_memories", lambda: store)
+    monkeypatch.setattr(consolidator, "get_config", lambda: SimpleNamespace(database_backend="oracle"))
+    assert not store.store_owned_for("bank")
+    source, deleted = uuid4(), uuid4()
+    read_at = datetime(2026, 10, 1, tzinfo=UTC)
+    conn = MagicMock()
+    conn.fetch = AsyncMock(return_value=[{"id": source, "updated_at": read_at + timedelta(seconds=1)}])
+    store.get_memories = AsyncMock(return_value=[MagicMock(unit_id=str(source))])
+    if check == "liveness":
+        assert await consolidator._filter_live_source_memories(conn, "bank", [source, deleted, source]) == [
+            source,
+            source,
+        ]
+    else:
+        changed = await consolidator._sources_changed_since_read(
+            conn, "bank", [{"id": source, "updated_at": read_at}, {"id": deleted, "updated_at": read_at}]
+        )
+        assert changed == [str(source)]
+    store.get_memories.assert_not_awaited()
+    conn.fetch.assert_awaited_once()
+    sql = conn.fetch.await_args.args[0]
+    assert "bank_id = $2 ORDER BY id FOR SHARE" in sql
+    rewritten = _rewrite_pg_to_oracle(sql)
+    assert "ORDER BY id FOR UPDATE" in rewritten.query
+    assert "FOR SHARE" not in rewritten.query
+    assert conn.fetch.await_args.args[2] == "bank"
+
+
+async def test_store_owned_source_liveness_uses_store_lock_boundary(monkeypatch):
+    """An external store may override its lock helper with a native fence."""
+    store = MagicMock()
+    store.store_owned_for.return_value = True
+    source, deleted = uuid4(), uuid4()
+    store.lock_live_memory_ids = AsyncMock(return_value={str(source)})
+    store.get_memories = AsyncMock(side_effect=AssertionError("unlocked read"))
+    monkeypatch.setattr(consolidator, "get_memories", lambda: store)
+    conn = MagicMock()
+    assert await consolidator._filter_live_source_memories(conn, "bank", [source, deleted, source]) == [source, source]
+    store.lock_live_memory_ids.assert_awaited_once_with(
+        conn=conn, fq_table=consolidator.fq_table, bank_id="bank", unit_ids=[source, deleted, source]
+    )
+    store.get_memories.assert_not_awaited()
+    conn.fetch.assert_not_called()
+
+
+@pytest.mark.parametrize("dialect", ["oracle", "external"])
+@pytest.mark.parametrize("tags", [["scope:a"], ["scope:a", "scope:b"], []])
+async def test_store_observation_count_matches_sql_containment(monkeypatch, dialect, tags):
+    from types import SimpleNamespace
+
+    from hindsight_api.engine.search.tags import filter_results_by_tags
+
+    rows = [
+        SimpleNamespace(tags=[]),
+        SimpleNamespace(tags=["scope:a"]),
+        SimpleNamespace(tags=["scope:a", "scope:b"]),
+        SimpleNamespace(tags=["scope:b"]),
+        SimpleNamespace(tags=["scope:a", "scope:b", "extra"]),
+    ]
+    store = MagicMock()
+    store.store_owned_for.return_value = dialect == "external"
+    monkeypatch.setattr(consolidator, "get_memories", lambda: store)
+    monkeypatch.setattr(consolidator, "get_config", lambda: SimpleNamespace(database_backend=dialect))
+
+    async def scan(**kwargs):
+        assert kwargs["conn"] is conn
+        assert kwargs["bank_id"] == "bank"
+        assert kwargs["fact_types"] == ["observation"]
+        matched = filter_results_by_tags(rows, kwargs["tags"], kwargs["tags_match"])
+        # Exercise pagination without relying on a SQL store's scan implementation.
+        offset = int(kwargs["page_token"] or "0")
+        return SimpleNamespace(
+            memories=matched[offset : offset + 2],
+            next_page_token=str(offset + 2) if offset + 2 < len(matched) else "",
+        )
+
+    store.scan_memories = AsyncMock(side_effect=scan)
+    conn = MagicMock()
+    expected = sum(set(tags) <= set(row.tags) for row in rows)
+    assert await consolidator._count_observations_for_scope(conn, "bank", tags) == expected
+    conn.fetchval.assert_not_called()
+
+
 def test_document_update_prelocks_in_same_order():
     # The same connection is passed by the caller inside its retain transaction.
     source = Path(fact_storage.__file__).read_text()

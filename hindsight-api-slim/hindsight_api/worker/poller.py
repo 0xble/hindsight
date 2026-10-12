@@ -133,10 +133,6 @@ def _current_rss_bytes() -> int | None:
 # write the chance to land it, so shutdown does not hand back a row that is
 # about to be marked completed.
 _CANCEL_DRAIN_TIMEOUT = 5.0
-# A failed retry/defer write is reconciled with a few spaced attempts so a database
-# that is still in crash recovery has time to accept connections again.
-_RELEASE_RECONCILE_ATTEMPTS = 5
-_RELEASE_RECONCILE_BACKOFF_S = 2.0
 
 # Startup recovery logs a progress line every this many schemas, so a long walk
 # reads as "recovering" rather than "hung".
@@ -906,9 +902,10 @@ class WorkerPoller:
         _cleanup_task forgets it, and the row stays 'processing' under a live worker
         that never looks at it again: recover_own_tasks only runs at startup. That
         stranded a consolidation round for hours. Mirror the terminal-write rescue
-        (issue #3228): hand the row back through _reclaim_own_processing_tasks,
-        retrying briefly so a database that is still recovering gets time to accept
-        connections.
+        (issues #3228, #5377): hand the row back through
+        _reclaim_own_processing_tasks, using the upstream status-write deadline
+        and exit boundary if the database cannot recover. A live worker must
+        never forget a still-processing row after a short retry ceiling.
         """
         try:
             await write
@@ -918,17 +915,17 @@ class WorkerPoller:
         await self._reclaim_task_with_backoff(task)
 
     async def _reclaim_task_with_backoff(self, task: ClaimedTask) -> None:
-        """Hand every row of a task back for re-claim, tolerating a briefly unavailable database."""
+        """Reclaim every row, or exit at the shared write deadline for startup recovery."""
         for operation_id in task.all_operation_ids:
-            for attempt in range(_RELEASE_RECONCILE_ATTEMPTS):
-                try:
-                    await self._reclaim_own_processing_tasks(task.schema, operation_id=operation_id)
-                    break
-                except Exception:
-                    if attempt + 1 >= _RELEASE_RECONCILE_ATTEMPTS:
-                        logger.exception(f"Could not reconcile task {operation_id}; it stays 'processing'")
-                    else:
-                        await asyncio.sleep(_RELEASE_RECONCILE_BACKOFF_S * (attempt + 1))
+
+            async def reclaim() -> None:
+                await self._reclaim_own_processing_tasks(task.schema, operation_id=operation_id)
+
+            landed = await self._write_terminal(task, "reclaimed", reclaim)
+            if not landed:
+                # _write_terminal invoked the production exit boundary. Do not
+                # process other rows if a test/embedded exit boundary returns.
+                return
 
     async def _mark_completed(self, operation_id: str, schema: str | None):
         """Mark a processing task as completed, then propagate to parent if needed."""

@@ -184,6 +184,7 @@ PATCH_REGRESSIONS=(
   tests/test_response_schema_validation.py
   tests/test_consolidation_schema_correction.py
   tests/test_consolidation_deadlock_order.py
+  tests/test_graph_maintenance_dialect.py
   tests/test_consolidation_scope_parallelism.py
   tests/test_consolidation_fair_selection.py
   tests/test_consolidation_fair_fetch.py
@@ -199,11 +200,11 @@ PATCH_REGRESSIONS=(
   tests/test_consolidation_temporal_merge.py
   tests/test_openrouter_null_content.py
   tests/test_llm_trace.py
-  tests/test_hierarchical_config.py
   tests/test_metrics.py
   tests/test_batch_api.py
   tests/test_migration_shape.py
   tests/test_curation_batch_http.py
+  tests/test_curation_batch_authorization.py
   tests/test_delete_missing_bank_store_owned.py
   tests/test_list_banks_ordered_page.py
   tests/test_memories_extension.py
@@ -226,7 +227,7 @@ build_smoke() {
 client_discriminators() {
   uv run --directory hindsight-clients/python --frozen pytest tests/test_operation_details.py tests/test_curation_fields.py
   (cd hindsight-clients/go && go test -run '^Test(OperationResponseDetails|Curation)' .)
-  cargo test --manifest-path hindsight-clients/rust/Cargo.toml --test curation_fields
+  cargo test --manifest-path hindsight-clients/rust/Cargo.toml --test curation_fields --test operation_enum_collisions
 }
 
 curation_system() {

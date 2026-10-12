@@ -949,12 +949,11 @@ def _memory_table_for_dialect() -> Callable[[str], str]:
 
 
 def _memory_store_handles_tables(bank_id: str) -> bool:
-    """Whether memory rows must be routed through the memories store.
+    """Whether memory-table operations route through the store API.
 
-    Oracle routing tests run the consolidation transaction on PostgreSQL while
-    substituting the dialect policy. Keep those paths on the store API too, so
-    PostgreSQL-only table SQL cannot leak through merely because the fixture's
-    bank is SQL-backed.
+    External stores own their rows; Oracle's SQL store owns its dialect-specific
+    statements. This routing decision is not storage ownership: Oracle source
+    liveness and drift checks still require locks on the caller's SQL connection.
     """
     return get_memories().store_owned_for(bank_id) or get_config().database_backend == "oracle"
 
@@ -986,10 +985,11 @@ async def _filter_live_source_memories(
         )
         live = {str(r["id"]) for r in rows}
     else:
-        present = await store.get_memories(
-            conn=conn, fq_table=fq_table, bank_id=bank_id, unit_ids=[str(mid) for mid in source_memory_ids]
+        # Reuse each store's concurrency boundary on the apply connection:
+        # Oracle takes SQL row locks; external stores own their implementation.
+        live = await store.lock_live_memory_ids(
+            conn=conn, fq_table=fq_table, bank_id=bank_id, unit_ids=source_memory_ids
         )
-        live = {str(m.unit_id) for m in present}
     return [mid for mid in source_memory_ids if str(mid) in live]
 
 
@@ -1011,9 +1011,15 @@ async def _sources_changed_since_read(
     liveness checks handle that. A store that keeps memories outside SQL reports no
     ``updated_at`` on its reads, so it is not checked.
     """
-    read_at = {str(m["id"]): m.get("updated_at") for m in memories if m.get("updated_at") is not None}
-    if not read_at or _memory_store_handles_tables(bank_id):
+    read_at: dict[str, datetime] = {str(m["id"]): m["updated_at"] for m in memories if m.get("updated_at") is not None}
+    if not read_at or get_memories().store_owned_for(bank_id):
         return []
+    if _memory_store_handles_tables(bank_id):
+        # Dialect routing does not imply external storage ownership. SQL-owned
+        # Oracle must compare and lock sources on this same apply connection.
+        return await get_memories().memories_changed_since(
+            conn=conn, fq_table=fq_table, bank_id=bank_id, read_at=read_at
+        )
     rows = await conn.fetch(
         f"SELECT id, updated_at FROM {_memory_table_for_dialect()('memory_units')} "
         "WHERE id = ANY($1::uuid[]) AND bank_id = $2 ORDER BY id FOR SHARE",
@@ -1427,7 +1433,7 @@ async def _count_observations_for_scope(
             bank_id=bank_id,
             fact_types=["observation"],
             tags=tags or None,
-            tags_match="all",
+            tags_match="all_strict",
             limit=500,
             page_token=page_token,
         )

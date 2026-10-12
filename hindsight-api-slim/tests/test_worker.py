@@ -2478,6 +2478,68 @@ class TestTaskReleaseOnStop:
         assert row["retry_count"] == 1
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("kind", ["retry", "defer"])
+    @pytest.mark.parametrize("recovers", [False, True])
+    async def test_retry_defer_reclaim_outage_cannot_strand_live_worker(
+        self, pool, backend, clean_operations, monkeypatch, kind, recovers
+    ):
+        """Survive past the old five-attempt ceiling or exit for restart recovery."""
+        from hindsight_api.worker import WorkerPoller
+        from hindsight_api.worker import poller as poller_module
+        from hindsight_api.worker.exceptions import DeferOperation, RetryTaskAt
+
+        bank_id = f"test-worker-{uuid.uuid4().hex[:8]}"
+        await _ensure_bank(pool, bank_id)
+        op_id = await self._insert_pending(pool, bank_id)
+        later = datetime.now(UTC) + timedelta(minutes=5)
+
+        async def asking_executor(task_dict):
+            if kind == "retry":
+                raise RetryTaskAt(later, "database is starting up")
+            raise DeferOperation(later, "database is starting up")
+
+        poller = WorkerPoller(backend=backend, worker_id="release-worker", executor=asking_executor)
+        task = await self._claim_ours(poller, op_id)
+        broken_write = AsyncMock(side_effect=ConnectionResetError("database unavailable"))
+        monkeypatch.setattr(poller, "_schedule_retry" if kind == "retry" else "_defer_operation", broken_write)
+        real_reclaim = poller._reclaim_own_processing_tasks
+        attempts = 0
+
+        async def unavailable_reclaim(schema, *, operation_id=None):
+            nonlocal attempts
+            attempts += 1
+            if not recovers or attempts <= 5:
+                raise ConnectionResetError("database still unavailable")
+            return await real_reclaim(schema, operation_id=operation_id)
+
+        monkeypatch.setattr(poller, "_reclaim_own_processing_tasks", unavailable_reclaim)
+        exit_process = MagicMock()
+        monkeypatch.setattr(poller, "_exit_process", exit_process)
+        # No real waits or interpreter shutdown; use the existing production exit boundary.
+        monkeypatch.setattr(poller_module.asyncio, "sleep", AsyncMock())
+        if not recovers:
+            monkeypatch.setattr(poller_module, "TERMINAL_WRITE_DEADLINE_S", 0.0)
+        await poller._execute_task_inner(task)
+        broken_write.assert_awaited_once()
+        if recovers:
+            exit_process.assert_not_called()
+            assert attempts == 6
+        else:
+            exit_process.assert_called_once()
+            stranded = await pool.fetchrow(
+                "SELECT status, worker_id FROM async_operations WHERE operation_id = $1", op_id
+            )
+            assert stranded["status"] == "processing" and stranded["worker_id"] == "release-worker"
+            monkeypatch.setattr(poller, "_reclaim_own_processing_tasks", real_reclaim)
+            assert await poller.recover_own_tasks() == 1
+        row = await pool.fetchrow(
+            "SELECT status, worker_id, claimed_at, retry_count FROM async_operations WHERE operation_id = $1", op_id
+        )
+        assert row["status"] == "pending"
+        assert row["worker_id"] is None and row["claimed_at"] is None
+        assert row["retry_count"] == 1
+
+    @pytest.mark.asyncio
     async def test_failed_backpressure_defer_write_releases_operation(self, pool, backend, clean_operations):
         """The store-backpressure branch defers too; a failed defer write there must not strand the row."""
         from hindsight_api.worker import WorkerPoller
@@ -2549,7 +2611,7 @@ class TestTaskReleaseOnStop:
         from hindsight_api.worker import poller as poller_module
         from hindsight_api.worker.exceptions import RetryTaskAt
 
-        monkeypatch.setattr(poller_module, "_RELEASE_RECONCILE_BACKOFF_S", 0.01)
+        monkeypatch.setattr(poller_module.asyncio, "sleep", AsyncMock())
 
         bank_id = f"test-worker-{uuid.uuid4().hex[:8]}"
         await _ensure_bank(pool, bank_id)

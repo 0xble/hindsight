@@ -24,7 +24,7 @@ async def test_create_proof_count_matches_distinct_surviving_sources(route):
     )
     store = SimpleNamespace(
         store_owned_for=lambda _bank: route == "store_owned",
-        get_memories=AsyncMock(return_value=[SimpleNamespace(unit_id=str(source)) for source in survivors]),
+        lock_live_memory_ids=AsyncMock(return_value={str(source) for source in survivors}),
         upsert_observation=AsyncMock(),
     )
     engine = SimpleNamespace(_backend=SimpleNamespace(ops=SimpleNamespace(uses_observation_sources_table=False)))
@@ -54,9 +54,14 @@ async def test_create_proof_count_matches_distinct_surviving_sources(route):
         record = store.upsert_observation.await_args.kwargs["record"]
         assert record.proof_count == 3
         assert record.source_memory_ids == [str(source) for source in survivors]
-        assert store.get_memories.await_args.kwargs["bank_id"] == "synthetic-proof-count"
+        store.lock_live_memory_ids.assert_awaited_once()
+        live_kwargs = store.lock_live_memory_ids.await_args.kwargs
+        assert live_kwargs["conn"] is conn and live_kwargs["bank_id"] == "synthetic-proof-count"
+        assert live_kwargs["unit_ids"] == candidates
+        conn.fetch.assert_not_awaited()
     else:
         store.upsert_observation.assert_not_awaited()
+        store.lock_live_memory_ids.assert_not_awaited()
         query, *parameters = conn.fetchrow.await_args.args
         assert "proof_count" in query and "$11" in query
         assert parameters[4] == survivors
