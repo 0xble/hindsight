@@ -83,6 +83,10 @@ intentional fork infrastructure policy, not upstream deployment ownership.
   requirement for this run.
   The Go client selector includes all `TestOperationResponseDetails` cases,
   including direct-null and invalid-discriminator coverage.
+  The exact-SHA patch-regression list also includes the worker shutdown,
+  in-process signal restoration, and async-retain structural-isolation tests;
+  these prevent a leaked poller from turning a later unrelated test into a
+  worker-process `SystemExit`.
   Test sessions and every `bin/ci` profile refuse production port 5436 and
   protected test port 5556 before native migrations or connections, including
   Unix-domain PostgreSQL socket paths. Preserve `scripts/ci/test_db_guard.py`,

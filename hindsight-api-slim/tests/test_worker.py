@@ -205,6 +205,32 @@ class TestWorkerOperationMetrics:
         return collector
 
     @pytest.mark.asyncio
+    async def test_shutdown_cancels_task_waiting_for_active_slot_registration(self):
+        """Shutdown must cancel a task even while execute_task is still registering it."""
+        from hindsight_api.worker import WorkerPoller
+        from hindsight_api.worker.poller import ClaimedTask
+
+        poller = WorkerPoller(backend=MagicMock(), worker_id="w-test", executor=AsyncMock())
+        poller.release_own_tasks = AsyncMock(return_value=0)
+        await poller._in_flight_lock.acquire()
+        task = ClaimedTask(
+            operation_id="op-1",
+            task_dict={"type": "batch_retain", "operation_type": "batch_retain", "bank_id": "bank-1"},
+            schema=None,
+        )
+        registration = asyncio.create_task(poller.execute_task(task))
+        await asyncio.sleep(0)
+        assert poller._current_tasks
+
+        await poller.shutdown_graceful(timeout=0)
+        assert all(background.cancelled() for background in poller._current_tasks)
+
+        poller._in_flight_lock.release()
+        registration.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await registration
+
+    @pytest.mark.asyncio
     async def test_executor_returning_normally_records_success(self):
         """Success is inferred from the executor returning without raising to the
         poller. This deliberately includes deterministic failures that

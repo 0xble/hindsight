@@ -71,7 +71,28 @@ in the root contract.
 - **Retire when:** Released upstream orders both lock paths or retries consolidation
   deadlocks, and passes this regression.
 
-## Consolidation Adaptation At The Accepted Checkpoint
+## HINDSIGHT-008: Worker shutdown and test-process isolation
+
+- **Status:** Active
+- **Surfaces:** `hindsight_api/worker/poller.py`, `hindsight_api/main.py`,
+  `tests/test_worker.py`, `tests/test_main_module.py`, and
+  `tests/test_async_batch_retain.py`.
+- **Behavior:** A poller tracks every executor task from creation through
+  shutdown, including the registration window, and cancels/drains those tasks
+  before releasing claimed rows. Structural async-retain tests mark their
+  deliberately undispatched child rows terminal so another test's poller cannot
+  claim them after the fixture engine closes. The CLI restores SIGINT/SIGTERM
+  handlers after an in-process `main()` call, preserving the test runner's
+  process handlers. Production terminal-write exhaustion still exits the worker
+  so task recovery happens on restart.
+- **Regression:** `uv run --frozen pytest tests/test_worker.py
+  tests/test_main_module.py tests/test_async_batch_retain.py` with the offline
+  marker filter; the exact-SHA gate registers all three files.
+- **Rollback:** Revert the listed source and test changes together; do not
+  disable the terminal-write exit or add retries/timeouts.
+- **Retire when:** Upstream owns equivalent worker task-drain and in-process
+  signal restoration, and the fork's regression coverage remains green.
+
 
 Upstream source-edit validation ([PR #4893](https://github.com/vectorize-io/hindsight/pull/4893), addressing issue #4831) now runs within the fork's retried apply
 transaction. Source locks keep `ORDER BY id`, and a response computed from edited
