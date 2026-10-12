@@ -1244,6 +1244,8 @@ class WorkerPoller:
         # task's own contextvar scope inside _execute_task_inner so engine
         # code running under that task sees it via stage.set_stage().
         bg_task = asyncio.create_task(self._execute_task_inner(task, holder))
+        self._current_tasks.add(bg_task)
+        bg_task.add_done_callback(self._current_tasks.discard)
 
         # Track this task as active
         async with self._in_flight_lock:
@@ -2083,15 +2085,14 @@ class WorkerPoller:
         start_time = asyncio.get_event_loop().time()
         while asyncio.get_event_loop().time() - start_time < timeout:
             async with self._in_flight_lock:
-                in_flight = self._in_flight_count
-                active_task_objects = [info.bg_task for info in self._active_tasks.values()]
+                active_task_objects = list(self._current_tasks)
 
-            if in_flight == 0:
+            if not active_task_objects:
                 logger.info(f"Worker {self._worker_id} graceful shutdown complete")
                 drained = True
                 break
 
-            logger.info(f"Worker {self._worker_id} waiting for {in_flight} in-flight tasks")
+            logger.info(f"Worker {self._worker_id} waiting for {len(active_task_objects)} in-flight tasks")
 
             # Wait for at least one task to complete
             if active_task_objects:
@@ -2104,11 +2105,10 @@ class WorkerPoller:
 
             # Cancel remaining tasks
             cancelled: list[asyncio.Task] = []
-            async with self._in_flight_lock:
-                for operation_id, info in list(self._active_tasks.items()):
-                    if not info.bg_task.done():
-                        info.bg_task.cancel()
-                        cancelled.append(info.bg_task)
+            for task in list(self._current_tasks):
+                if not task.done():
+                    task.cancel()
+                    cancelled.append(task)
 
             # Let the cancellations land before reconciling. asyncio.CancelledError
             # derives from BaseException, so it escapes every `except Exception` in
