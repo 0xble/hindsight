@@ -64,7 +64,11 @@ describe("buildSessionStartContext", () => {
   });
 
   it("cold git repo + autoSeed on -> seeds + surveys, note in systemMessage (user-visible) + roster in additionalContext (model)", async () => {
-    const client = { listDocumentIds: async () => new Set<string>(), listPages: listPagesOk };
+    const client = {
+      listDocumentIds: async () => new Set<string>(),
+      listPages: listPagesOk,
+      hasDocuments: async () => false,
+    };
     const startSeed = vi.fn();
     const startSurvey = vi.fn().mockResolvedValue(true);
     const out = await buildSessionStartContext({
@@ -159,7 +163,7 @@ describe("buildSessionStartContext", () => {
     expect(out.deferInitialReflect).toBe(false);
   });
 
-  it("an empty but reachable page roster defers first reflect even when git documents already exist", async () => {
+  it("an empty page roster preserves retrieval when git documents already exist", async () => {
     const out = await buildSessionStartContext({
       cwd: "/repo/dir",
       bankId: "bank-1",
@@ -171,7 +175,49 @@ describe("buildSessionStartContext", () => {
       hasGit: () => true,
       startSeed: vi.fn(),
     });
-    expect(out.deferInitialReflect).toBe(true);
+    expect(out.deferInitialReflect).toBe(false);
+  });
+
+  it.each(["recall", "reflect"] as const)(
+    "%s remains eligible without pages when automatic seeding is disabled",
+    async (autoInject) => {
+      const out = await buildSessionStartContext({
+        cwd: "/repo/dir",
+        bankId: "shared-bank",
+        cfg: resolveConfig({ autoSeed: false, autoInject }),
+        client: { listDocumentIds: vi.fn(), listPages: async () => ({ items: [] }) },
+        hasGit: () => false,
+        startSeed: vi.fn(),
+      });
+      expect(out.deferInitialReflect).toBe(false);
+    }
+  );
+
+  it.each([
+    { name: "confirmed empty", hasDocuments: async () => false, deferred: true },
+    { name: "shared bank with documents", hasDocuments: async () => true, deferred: false },
+    { name: "unavailable bank probe", hasDocuments: async () => { throw new Error("offline"); }, deferred: false },
+    { name: "missing bank probe", hasDocuments: undefined, deferred: false },
+  ])("cold git history uses $name bank evidence for retrieval eligibility", async ({ hasDocuments, deferred }) => {
+    const seed = vi.fn();
+    const probe = hasDocuments && vi.fn(async () => {
+      expect(seed).not.toHaveBeenCalled();
+      return hasDocuments();
+    });
+    const out = await buildSessionStartContext({
+      cwd: "/repo/dir",
+      bankId: "shared-bank",
+      cfg: resolveConfig({ codebaseSurvey: false }),
+      client: {
+        listDocumentIds: async () => new Set<string>(),
+        listPages: async () => ({ items: [] }),
+        hasDocuments: probe,
+      },
+      hasGit: () => true,
+      startSeed: seed,
+    });
+    expect(out.deferInitialReflect).toBe(deferred);
+    if (probe) expect(probe).toHaveBeenCalledTimes(1);
   });
 
   // The old "declined state -> no seed" test is gone with the seed-state file itself: the live

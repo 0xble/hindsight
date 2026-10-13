@@ -551,6 +551,20 @@ export class HindsightClient {
     return ids;
   }
 
+  /** A one-row presence check. Missing banks are empty; failed or unreadable responses are unknown. */
+  async hasDocuments(): Promise<boolean> {
+    const r = await this.req("GET", this.bankUrl("/documents?limit=1"));
+    if (r.status === 404) return false;
+    const j = (await r.json()) as { items?: unknown; total?: unknown };
+    // Counts and rows can race concurrent retention. A returned document proves presence.
+    if (Array.isArray(j.items) && j.items.length > 0) return true;
+    if (typeof j.total === "number" && Number.isInteger(j.total) && j.total >= 0)
+      return j.total > 0;
+    if (j.total !== undefined) throw new Error("Document listing has an invalid total");
+    if (Array.isArray(j.items)) return j.items.length > 0;
+    throw new Error("Document listing does not report bank contents");
+  }
+
   /**
    * The tags on one document, or undefined when the bank holds none with that id. Read from the
    * document LISTING narrowed by `q` (a substring match on the id, so the exact id is picked out of

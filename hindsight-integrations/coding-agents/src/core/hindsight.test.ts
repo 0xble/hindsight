@@ -74,6 +74,34 @@ describe("HindsightClient document-list safety", () => {
   });
 });
 
+describe("HindsightClient.hasDocuments", () => {
+  it.each<[number, unknown, boolean]>([
+    [200, { items: [{ id: "conversation" }], total: 25446 }, true],
+    [200, { items: [{ id: "conversation" }], total: 0 }, true],
+    [200, { items: [], total: 1 }, true],
+    [200, { items: [], total: 0 }, false],
+    [200, { items: [{ id: "conversation" }] }, true],
+    [200, { total: 1 }, true],
+    [404, { detail: "Bank not found" }, false],
+  ])("reads one document at status %i", async (status, body, expected) => {
+    const client = new HindsightClient({ apiUrl: "http://x", bank: "shared bank" });
+    const fetchMock = vi.fn(async (_url: string | URL | Request) => jsonResponse(status, body));
+    vi.stubGlobal("fetch", fetchMock);
+    expect(await client.hasDocuments()).toBe(expected);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(String(fetchMock.mock.calls[0][0])).toBe("http://x/v1/default/banks/shared%20bank/documents?limit=1");
+  });
+
+  it.each<[number, unknown]>([[200, {}], [200, { items: [], total: -1 }], [500, { detail: "Unavailable" }]])(
+    "keeps missing or unavailable contents unknown at status %i",
+    async (status, body) => {
+      const client = new HindsightClient({ apiUrl: "http://x", bank: "b" });
+      vi.stubGlobal("fetch", vi.fn(async () => jsonResponse(status, body)));
+      await expect(client.hasDocuments()).rejects.toThrow();
+    }
+  );
+});
+
 describe("HindsightClient.documentTags", () => {
   it("reads one document's tags from the id-filtered listing, not the full document", async () => {
     const client = new HindsightClient({ apiUrl: "http://x", bank: "shared-bank" });
