@@ -12,11 +12,15 @@ The previous reflection warning declared a session memory-less before retrieval 
 
 Known opening tag names must end with whitespace or `>`. Hyphen and colon suffixes remain literal text even if followed by a known closing tag, and unclosed wrappers are conservatively preserved. The automatic query and retained journal use this same exact-name rule.
 
+The shared startup boundary adopts the document-presence correction from upstream [#5510](https://github.com/vectorize-io/hindsight/pull/5510) (`87b3e311d3e8b62e12660703988f75310e59a3ae`). An empty Knowledge Pages roster or missing git history does not prove the bank is empty. Defer automatic injection only after a successful one-document probe confirms emptiness before seeding. Absent, malformed or failed probes leave retrieval eligible. This changes no bank content, credentials, host wiring, model route or API runtime.
+
 ## Update And Verify
 
 The maintained boundary is `hindsight-integrations/coding-agents/src/core/hook.ts`, shared by hook and persistent-plugin callers. `src/core/runtime.ts` excludes synthetic prompts before the plugin host's separate first-turn roster counter advances. `src/core/transcript-util.ts` owns the tag rule. `src/core/hook-synthetic.test.ts` drives the public hook runtime and native Claude lifecycle declaration, proving no network work or session mutation on synthetic prompts, preservation of real surrounding text and unknown suffixes, deferred new-bank prompts, later retry and truthful fallback logging. `src/core/turn-journal.test.ts` proves retained journal output preserves literal suffixes and excludes transport-only turns. `src/core/runtime.test.ts` proves that a plugin's first real prompt receives its live page roster after synthetic prompts. The package's existing `npm test`, `npm run build` and TypeScript check cover the integration.
 
 Publication of server source does not replace the separately staged coding-agents package. Its supported installer `update` refreshes runtime files without rewiring host configurations. Verify both the staged bundle and a new hook process before claiming adoption.
+
+`src/core/session-start.test.ts` and `src/core/hindsight.test.ts` cover document-presence evidence and retrieval eligibility. `src/core/runtime.test.ts` proves that an empty page roster preserves first-prompt retrieval and the existing once-per-session injection. Run these regressions and the full coding-agents package suite when adopting or retiring the startup correction. Installed Claude and Codex host canaries remain separate adoption proof.
 
 ## Adopt Or Retire
 

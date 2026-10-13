@@ -46,6 +46,8 @@ interface SeedContextClient {
   // (gitLogIsCurrent). The minimal test clients omit it and keep the exact-HEAD check.
   documentTags?(documentId: string): Promise<string[] | undefined>;
   listPages(): Promise<unknown>;
+  // Missing or failed presence probes preserve first-prompt retrieval eligibility.
+  hasDocuments?(): Promise<boolean>;
   knowledgePagesSupported?: boolean;
   // Optional: used to write the survey-baseline marker (Option A). HindsightClient has it; the
   // minimal test clients omit it, and the baseline write guards on its presence.
@@ -170,6 +172,7 @@ export async function buildSessionStartContext(args: {
   const t0 = Date.now();
   let cold: boolean | undefined; // undefined = not checked (autoSeed off / non-git / unreachable)
   let gitDocIds: Set<string> | undefined; // the cold-check's doc set, reused by the banner's git note
+  let bankEmpty = false;
   const harness = args.harness ?? "claude-code";
   const hasGit = args.hasGit ?? hasGitHistory;
   const startSeed = args.startSeed ?? startBackgroundSeed;
@@ -230,6 +233,14 @@ export async function buildSessionStartContext(args: {
 
         cold = docIds !== undefined ? docIds.size === 0 : undefined;
         gitDocIds = docIds;
+        // Git history can be absent in a shared bank that already holds conversations.
+        // Probe before the seed writes its first document, and defer only a confirmed empty bank.
+        if (cold === true && client.hasDocuments) {
+          bankEmpty = await client.hasDocuments().then(
+            (has) => !has,
+            () => false
+          );
+        }
         if (docIds !== undefined) {
           // ALWAYS fire the background deepen engine when the server is reachable — it is
           // idempotent (per-bank lock, dedup by document id) and each run does only the missing
@@ -303,13 +314,9 @@ export async function buildSessionStartContext(args: {
     }
   }
 
-  // An actual empty roster, like a cold git-doc result, means this bank has no useful material to
-  // synthesize yet. A failed roster request is NOT evidence of that, so keep the two cases apart.
   let pages: PageRef[] = [];
-  let pageListKnown = false;
   try {
     pages = parsePageList(await client.listPages());
-    pageListKnown = true;
   } catch {
     if (client.knowledgePagesSupported === false) {
       diag(harness, "knowledge_pages_unavailable", { bank: bankId });
@@ -320,7 +327,8 @@ export async function buildSessionStartContext(args: {
     reflectOnNewGoals: cfg.autoInject !== "reflect",
     extra: cfg.toolGuideExtra,
   });
-  const deferInitialReflect = cold === true || (pageListKnown && pages.length === 0);
+  // Knowledge Pages are a separate projection, so an empty roster never proves the bank is empty.
+  const deferInitialReflect = bankEmpty;
 
   // The banner shows on EVERY session — Hindsight's presence is part of the product, not a
   // one-time setup note. Wording tracks the bank state: cold = "learning", else "remembering";
