@@ -264,6 +264,36 @@ def test_slow_trickle_request_deadline_cancels_http_without_retry(tmp_path):
     assert len(calls) == 2, "one successful warmup and one timed request, with no retry"
 
 
+def test_request_deadline_excludes_lazy_sdk_resource_setup(monkeypatch, tmp_path):
+    from dataclasses import replace
+
+    from openai import AsyncOpenAI
+
+    from hindsight_api.engine.parsers.pdf_ocr import PDF_OCR_LIMITS, PdfOcrConfig, _convert_pages
+
+    # AsyncOpenAI resolves `client.chat` lazily, importing hundreds of SDK
+    # resource and type modules in a cold worker. That import is synchronous,
+    # so a slow host spends it uninterruptibly. Model it as a blocking delay
+    # longer than the request bound: it is local setup and must not consume the
+    # provider request's elapsed deadline before anything is sent.
+    resolve_chat = AsyncOpenAI.__dict__["chat"].func
+
+    def slow_chat(client):
+        time.sleep(0.5)
+        return resolve_chat(client)
+
+    monkeypatch.setattr(AsyncOpenAI, "chat", property(slow_chat))
+    source = tmp_path / "source.pdf"
+    source.write_bytes(scanned_pdf())
+    with ocr_server(["Alice completed the review."]) as (url, calls):
+        config = PdfOcrConfig(
+            api_key="synthetic-key", base_url=url, model="existing-ocr-model", prompt=None, default_headers=None
+        )
+        limits = replace(PDF_OCR_LIMITS, request_seconds=0.2)
+        assert _convert_pages(source, config, limits, time.monotonic() + 120).kind == "ok"
+    assert len(calls) == 1
+
+
 @pytest.mark.asyncio
 async def test_provider_failure_is_not_a_partial_success():
     with ocr_server(["Alice completed the review on Monday.", None]) as (url, calls):
