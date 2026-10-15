@@ -9,7 +9,7 @@ remain compatible for callers.
 ## HINDSIGHT-001: OCR evidence admission
 
 - **Status:** Active
-- **Commits:** `2fa19ab`, `83d7ad3`, `8c107c6`, `19357a9`, `b684912`, `60128d9`, `9c624ed4`
+- **Commits:** `2fa19ab`, `83d7ad3`, `8c107c6`, `19357a9`, `b684912`, `60128d9`, `3068ac09`
 - **Surfaces:** `engine/parsers/{__init__,ocr_quality}.py`, `tests/test_ocr_quality.py`
 - **Upstream issue:** https://github.com/vectorize-io/hindsight/issues/3897
 - **Upstream PR:** [#4047](https://github.com/vectorize-io/hindsight/pull/4047),
@@ -121,7 +121,7 @@ remain compatible for callers.
 ## HINDSIGHT-006: Typed no-extractable-text failures
 
 - **Status:** Active
-- **Commits:** `27fcb7b`, `9c624ed4`
+- **Commits:** `27fcb7b`, `3068ac09`
 - **Surfaces:** `engine/parsers/{__init__,base,markitdown,iris,llama_parse,ocr_quality}.py`, `engine/memory_engine.py`,
   `engine/operation_details.py`, checked-in OpenAPI contracts, generated
   Python/TypeScript/Go clients, `tests/{test_no_extractable_text,test_ocr_quality,test_operation_status}.py`,
