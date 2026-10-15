@@ -9,7 +9,7 @@ remain compatible for callers.
 ## HINDSIGHT-001: OCR evidence admission
 
 - **Status:** Active
-- **Commits:** `2fa19ab`, `83d7ad3`, `8c107c6`, `19357a9`, `b684912`, `60128d9`
+- **Commits:** `2fa19ab`, `83d7ad3`, `8c107c6`, `19357a9`, `b684912`, `60128d9`, `3068ac09`
 - **Surfaces:** `engine/parsers/{__init__,ocr_quality}.py`, `tests/test_ocr_quality.py`
 - **Upstream issue:** https://github.com/vectorize-io/hindsight/issues/3897
 - **Upstream PR:** [#4047](https://github.com/vectorize-io/hindsight/pull/4047),
@@ -35,6 +35,7 @@ remain compatible for callers.
   Preserve single-line fenced transcriptions. UI rejection requires distinct
   corroborating cues including a control; a lone label or timestamps alone
   are not sufficient evidence of unusable OCR.
+- **No-text distinction:** An explicit raster-image response such as `No visible text` sets an internal confirmed-no-text flag and may become the typed `no_extractable_text` outcome through parser fallback. Provider refusals remain `low_quality_ocr` with `refusal_or_no_text_response`; symbols-only output, PDFs and other `no_meaningful_text` results remain low-quality OCR. This intentionally narrows the reclassification to confirmed raster-image absence rather than every empty-looking OCR response.
 - **Regression:** `uv run --frozen pytest tests/test_ocr_quality.py`
 - **Rollback:** Revert the listed commits in reverse order and rerun the regression.
 - **Retire when:** A released upstream build provides equivalent admission,
@@ -120,15 +121,17 @@ remain compatible for callers.
 ## HINDSIGHT-006: Typed no-extractable-text failures
 
 - **Status:** Active
-- **Commits:** `27fcb7b`
-- **Surfaces:** `engine/parsers/{__init__,base,markitdown,iris,llama_parse}.py`, `engine/memory_engine.py`,
+- **Commits:** `27fcb7b`, `3068ac09`
+- **Surfaces:** `engine/parsers/{__init__,base,markitdown,iris,llama_parse,ocr_quality}.py`, `engine/memory_engine.py`,
   `engine/operation_details.py`, checked-in OpenAPI contracts, generated
-  Python/TypeScript/Go clients, and `tests/test_no_extractable_text.py`
-- **Behavior:** When every parser in the chain returns empty content, the failed
+  Python/TypeScript/Go clients, `tests/{test_no_extractable_text,test_ocr_quality,test_operation_status}.py`,
+  and `maintenance/ocr.md`
+- **Behavior:** When every parser in the chain returns empty content, or a raster-image OCR parser explicitly confirms that the image contains no text, the failed
   `file_convert_retain` operation exposes `failure_class=no_extractable_text`,
-  `failure_reason=empty_content`, and the ordered `parsers` chain it tried. Mixed
-  chains and transient errors stay unclassified. Callers can settle image-only PDFs
-  without resubmitting them, and re-probe when the parser chain changes.
+  `failure_reason=empty_content`, and the ordered `parsers` chain it tried. Provider
+  refusals and other low-quality OCR remain failures. Mixed chains and transient errors
+  stay unclassified. Callers can settle image-only PDFs without resubmitting them, and
+  re-probe when the parser chain changes.
 - **Adapter integration:** Empty-success `RuntimeError` paths originated upstream
   in Iris `7eafba661e15fa1f6c35f827099b215dc10fbfbe` and LlamaParse
   `91106f30ef8eb2e192664acf33dad986569bd731`, before the released base
@@ -141,7 +144,7 @@ remain compatible for callers.
 - **Upstream issue:** https://github.com/vectorize-io/hindsight/issues/3255 (scanned
   PDFs; the typed failure is fork-only)
 - **Upstream PR:** None. Upstream closed PDF OCR in #3442 pending a better parser.
-- **Regression:** `uv run --frozen pytest tests/test_no_extractable_text.py tests/test_operation_status.py`
+- **Regression:** `uv run --frozen pytest tests/test_no_extractable_text.py tests/test_ocr_quality.py tests/test_operation_status.py`
   `tests/test_iris_parser_stub.py tests/test_llama_parse_parser.py tests/test_parser_empty_output.py`
   and the generated client discriminator tests in `hindsight-clients/{python,go}`.
 - **Rollback:** Revert the listed commit; callers fall back to treating the failure

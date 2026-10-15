@@ -3,7 +3,7 @@
 import pytest
 
 from hindsight_api.engine.memory_engine import _file_convert_failure_metadata
-from hindsight_api.engine.parsers import FileParser, FileParserRegistry, LowQualityOcrError
+from hindsight_api.engine.parsers import FileParser, FileParserRegistry, LowQualityOcrError, NoExtractableContentError
 from hindsight_api.engine.parsers.base import UnsupportedFileTypeError
 from hindsight_api.engine.parsers.ocr_quality import OcrQualityReason, evaluate_ocr_quality
 from tests.test_no_extractable_text import StubParser
@@ -28,30 +28,33 @@ class StaticParser(FileParser):
 @pytest.mark.parametrize(
     ("content", "reason"),
     [
-        ("No visible text", OcrQualityReason.REFUSAL),
-        ("No text visible.", OcrQualityReason.REFUSAL),
-        ("There is no visible text in the image.", OcrQualityReason.REFUSAL),
-        ("# Description: No text is visible in the provided image.", OcrQualityReason.REFUSAL),
-        ("# Description: There is no visible text in the image to transcribe.", OcrQualityReason.REFUSAL),
-        ("# Description: No visible text found in the image.", OcrQualityReason.REFUSAL),
-        ("# Description: This image does not contain any visible text to transcribe.", OcrQualityReason.REFUSAL),
+        ("No visible text", OcrQualityReason.NO_MEANINGFUL_TEXT),
+        ("No text visible.", OcrQualityReason.NO_MEANINGFUL_TEXT),
+        ("There is no visible text in the image.", OcrQualityReason.NO_MEANINGFUL_TEXT),
+        ("# Description: No text is visible in the provided image.", OcrQualityReason.NO_MEANINGFUL_TEXT),
+        ("# Description: There is no visible text in the image to transcribe.", OcrQualityReason.NO_MEANINGFUL_TEXT),
+        ("# Description: No visible text found in the image.", OcrQualityReason.NO_MEANINGFUL_TEXT),
+        (
+            "# Description: This image does not contain any visible text to transcribe.",
+            OcrQualityReason.NO_MEANINGFUL_TEXT,
+        ),
         (
             "# Description: This image does not contain any visible or readable text to transcribe.",
-            OcrQualityReason.REFUSAL,
+            OcrQualityReason.NO_MEANINGFUL_TEXT,
         ),
-        ("# Description: I did not find any visible text in the image.", OcrQualityReason.REFUSAL),
-        ("No visible text is present in the image.", OcrQualityReason.REFUSAL),
-        ("The image contains no visible text to transcribe.", OcrQualityReason.REFUSAL),
-        ("There is no text visible in the provided image.", OcrQualityReason.REFUSAL),
-        ("No text was detected in the provided image.", OcrQualityReason.REFUSAL),
-        ("Based on the image provided, there is no visible text to transcribe.", OcrQualityReason.REFUSAL),
+        ("# Description: I did not find any visible text in the image.", OcrQualityReason.NO_MEANINGFUL_TEXT),
+        ("No visible text is present in the image.", OcrQualityReason.NO_MEANINGFUL_TEXT),
+        ("The image contains no visible text to transcribe.", OcrQualityReason.NO_MEANINGFUL_TEXT),
+        ("There is no text visible in the provided image.", OcrQualityReason.NO_MEANINGFUL_TEXT),
+        ("No text was detected in the provided image.", OcrQualityReason.NO_MEANINGFUL_TEXT),
+        ("Based on the image provided, there is no visible text to transcribe.", OcrQualityReason.NO_MEANINGFUL_TEXT),
         (
             "# Description: The provided image does not contain any readable text to transcribe.",
-            OcrQualityReason.REFUSAL,
+            OcrQualityReason.NO_MEANINGFUL_TEXT,
         ),
-        ("This image does not contain any\nvisible text to transcribe.", OcrQualityReason.REFUSAL),
-        ("# Description: [no text]", OcrQualityReason.REFUSAL),
-        ("# Description: ```markdown\n[No visible text]\n```", OcrQualityReason.REFUSAL),
+        ("This image does not contain any\nvisible text to transcribe.", OcrQualityReason.NO_MEANINGFUL_TEXT),
+        ("# Description: [no text]", OcrQualityReason.NO_MEANINGFUL_TEXT),
+        ("# Description: ```markdown\n[No visible text]\n```", OcrQualityReason.NO_MEANINGFUL_TEXT),
         (
             "# Description: I am sorry, but I cannot fulfill this request because there is no visible text "
             "to transcribe in the image provided.",
@@ -88,6 +91,19 @@ def test_rejects_unusable_ocr(content: str, reason: OcrQualityReason):
 
     assert result.accepted is False
     assert result.reason is reason
+
+
+@pytest.mark.parametrize(
+    ("content", "confirmed"),
+    [
+        ("No visible text", True),
+        ("I am unable to read the image", False),
+        ("---", False),
+        ("No text messages while driving", False),
+    ],
+)
+def test_confirmed_no_text_flag_is_narrow(content: str, confirmed: bool):
+    assert evaluate_ocr_quality(content).confirmed_no_text is confirmed
 
 
 @pytest.mark.parametrize(
@@ -179,9 +195,9 @@ async def test_uncertainty_dominated_image_output_falls_back_to_next_parser():
 
 
 @pytest.mark.asyncio
-async def test_all_low_quality_image_outputs_fail_without_echoing_ocr_body(caplog):
+async def test_all_provider_refusals_remain_failures_without_echoing_ocr_body(caplog):
     registry = FileParserRegistry()
-    registry.register(StaticParser("weak", "No visible text"))
+    registry.register(StaticParser("weak", "I am unable to read the image"))
 
     with pytest.raises(LowQualityOcrError) as exc_info:
         await registry.convert_with_fallback(
@@ -192,9 +208,58 @@ async def test_all_low_quality_image_outputs_fail_without_echoing_ocr_body(caplo
         )
 
     assert exc_info.value.reason is OcrQualityReason.REFUSAL
-    assert "No visible text" not in str(exc_info.value)
-    assert "No visible text" not in caplog.text
+    assert "I am unable to read the image" not in str(exc_info.value)
+    assert "I am unable to read the image" not in caplog.text
     assert OcrQualityReason.REFUSAL.value in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_confirmed_text_free_image_is_typed_as_no_extractable_content():
+    registry = FileParserRegistry()
+    registry.register(StaticParser("ocr", "No visible text"))
+
+    with pytest.raises(NoExtractableContentError) as exc_info:
+        await registry.convert_with_fallback(
+            ["ocr"],
+            b"image bytes",
+            "statement.png",
+            None,
+        )
+
+    wrapped = RuntimeError("file failed")
+    wrapped.__cause__ = exc_info.value
+    assert _file_convert_failure_metadata(wrapped) == {
+        "failure_class": "no_extractable_text",
+        "failure_reason": "empty_content",
+        "parsers": ["ocr"],
+    }
+
+
+@pytest.mark.asyncio
+async def test_symbols_only_image_output_remains_low_quality():
+    registry = FileParserRegistry()
+    registry.register(StaticParser("ocr", "---"))
+
+    with pytest.raises(LowQualityOcrError) as exc_info:
+        await registry.convert_with_fallback(["ocr"], b"image bytes", "statement.png", None)
+
+    assert exc_info.value.reason is OcrQualityReason.NO_MEANINGFUL_TEXT
+    assert exc_info.value.confirmed_no_text is False
+
+
+@pytest.mark.asyncio
+async def test_pdf_no_text_page_remains_low_quality():
+    # The PDF worker transport intentionally omits this raster-only flag, so the
+    # non-image registry path must keep a confirmed no-text PDF as low-quality OCR.
+    quality = evaluate_ocr_quality("No visible text")
+    registry = FileParserRegistry()
+    registry.register(StubParser("pdf", LowQualityOcrError("pdf", "scan.pdf", quality)))
+
+    with pytest.raises(LowQualityOcrError) as exc_info:
+        await registry.convert_with_fallback(["pdf"], b"pdf bytes", "scan.pdf", "application/pdf")
+
+    assert exc_info.value.reason is OcrQualityReason.NO_MEANINGFUL_TEXT
+    assert exc_info.value.confirmed_no_text is True
 
 
 @pytest.mark.asyncio

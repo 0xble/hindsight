@@ -17,7 +17,7 @@ _TIMESTAMP_PATTERN = re.compile(r"(?:[01]?\d|2[0-3]):[0-5]\d(?:\s*[ap]m)?", re.I
 _FENCED_BLOCK_PATTERN = re.compile(
     r"\A```(?:(?P<language>[A-Za-z][A-Za-z0-9_+-]*)?[ \t]*\r?\n)?(?P<body>.*?)```\Z", re.DOTALL
 )
-_REFUSAL_PATTERNS = (
+_NO_TEXT_PATTERNS = (
     re.compile(
         r"(?:based on the image provided )?(?:there is )?no (?:visible |readable |legible )?text"
         r"(?: (?:(?:is|was) (?:visible|present|found|detected)|visible|present|found|detected))?"
@@ -36,6 +36,8 @@ _REFUSAL_PATTERNS = (
         r"i did not find any (?:visible |readable |legible )text"
         r"(?: in (?:the (?:provided )?|this |provided )?image)?"
     ),
+)
+_REFUSAL_PATTERNS = (
     re.compile(
         r"i (?:cannot|can't) fulfill this request because there is no (?:visible |readable |legible )?text"
         r"(?: to transcribe)? in (?:the )?image provided"
@@ -61,6 +63,10 @@ _REFUSALS = {
     "i cannot extract text from this image",
     "i cannot read the image",
     "i cannot read this image",
+    "unable to read the image",
+    "unable to read this image",
+}
+_NO_TEXT_CONFIRMATIONS = {
     "no legible text",
     "no readable text",
     "no text",
@@ -77,8 +83,6 @@ _REFUSALS = {
     "there is no visible text in the image",
     "there is no visible text in the image to transcribe",
     "there is no visible text in this image",
-    "unable to read the image",
-    "unable to read this image",
 }
 _UI_CHROME_LINES = {
     "back",
@@ -132,6 +136,7 @@ class OcrQualityResult:
     accepted: bool
     reason: OcrQualityReason | None
     features: OcrQualityFeatures
+    confirmed_no_text: bool = False
 
 
 class LowQualityOcrError(RuntimeError):
@@ -144,6 +149,7 @@ class LowQualityOcrError(RuntimeError):
         self.filename = filename
         self.reason = result.reason
         self.features = result.features
+        self.confirmed_no_text = result.confirmed_no_text
         super().__init__(f"Parser '{parser_name}' returned low-quality OCR for '{filename}' ({result.reason.value})")
 
 
@@ -197,7 +203,10 @@ def evaluate_ocr_quality(content: str) -> OcrQualityResult:
     # dominant, high-confidence failure signal applies. UI chrome rejects only with
     # corroborating cues and when every nonempty line is a known control or timestamp.
     reason: OcrQualityReason | None = None
-    if _is_refusal(normalized_refusal):
+    confirmed_no_text = _is_no_text_confirmation(normalized_refusal)
+    if confirmed_no_text:
+        reason = OcrQualityReason.NO_MEANINGFUL_TEXT
+    elif _is_refusal(normalized_refusal):
         reason = OcrQualityReason.REFUSAL
     elif (
         uncertainty_character_count
@@ -216,7 +225,12 @@ def evaluate_ocr_quality(content: str) -> OcrQualityResult:
     elif ui_chrome_ratio == 1.0 and has_ui_context:
         reason = OcrQualityReason.UI_CHROME
 
-    return OcrQualityResult(accepted=reason is None, reason=reason, features=features)
+    return OcrQualityResult(
+        accepted=reason is None,
+        reason=reason,
+        features=features,
+        confirmed_no_text=confirmed_no_text,
+    )
 
 
 def _strip_ocr_wrappers(content: str) -> str:
@@ -242,6 +256,15 @@ def _strip_ocr_wrappers(content: str) -> str:
 def _is_ocr_json_payload(payload: object) -> TypeGuard[_OcrJsonPayload]:
     """Validate the known JSON wrapper before treating it as typed OCR."""
     return isinstance(payload, dict) and isinstance(payload.get("text"), str)
+
+
+def _is_no_text_confirmation(normalized_phrase: str) -> bool:
+    """Recognize model-confirmed absence of text without treating refusal language as no content."""
+    if normalized_phrase in _NO_TEXT_CONFIRMATIONS:
+        return True
+    if len(normalized_phrase) > 240:
+        return False
+    return any(pattern.fullmatch(normalized_phrase) for pattern in _NO_TEXT_PATTERNS)
 
 
 def _is_refusal(normalized_phrase: str) -> bool:

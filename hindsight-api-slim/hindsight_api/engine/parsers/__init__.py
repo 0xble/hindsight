@@ -135,6 +135,11 @@ class FileParserRegistry:
                 empty_parsers.append(name)
                 last_error = e
             except LowQualityOcrError as e:
+                if e.confirmed_no_text and is_image_input(filename, content_type):
+                    logger.warning("Parser '%s' confirmed no extractable text for '%s', trying next", name, filename)
+                    empty_parsers.append(name)
+                    last_error = NoExtractableContentError(f"Parser '{name}' found no text in '{filename}'")
+                    continue
                 all_empty = False
                 features = e.features
                 logger.warning(

@@ -109,7 +109,7 @@ async def test_low_quality_ocr_failure_exposes_stable_terminal_details(api_clien
         test_bank_id,
     )
 
-    rejection = evaluate_ocr_quality("No visible text")
+    rejection = evaluate_ocr_quality("I am unable to read the image")
     low_quality = LowQualityOcrError("iris", "photo.heic", rejection)
     wrapped = RuntimeError("Failed to parse file")
     wrapped.__cause__ = low_quality
