@@ -187,6 +187,31 @@ def _build_cooccurrence_index(rows: list[Any], id_to_name: dict[str, str]) -> _C
     return index
 
 
+def _cooccurrence_index_from_aggregates(
+    degree_rows: list[Any], pair_rows: list[Any], id_to_name: dict[str, str]
+) -> _CooccurrenceIndex:
+    """The same index as ``_build_cooccurrence_index``, from server-side aggregates.
+
+    ``degree_rows`` carry ``(id, degree)`` per candidate — the count of its partners across
+    the whole bank — and ``pair_rows`` only the edges whose *both* ends are candidates. That
+    is everything scoring reads: ``by_entity`` only ever holds candidate names, and degree is
+    a plain count because ``entity_cooccurrences`` stores each unordered pair once
+    (``entity_id_1 < entity_id_2``). Fetching every edge that touches a candidate instead
+    ships a hub's whole neighbourhood (tens of thousands of rows on a mature bank) to the
+    event-loop thread on every retain (#5368).
+    """
+    index = _CooccurrenceIndex()
+    degrees = {row["id"]: int(row["degree"]) for row in degree_rows}
+    for row in pair_rows:
+        eid1, eid2 = row["entity_id_1"], row["entity_id_2"]
+        index.by_entity.setdefault(eid1, set()).add(id_to_name[eid2])
+        index.by_entity.setdefault(eid2, set()).add(id_to_name[eid1])
+    for entity_id, name in id_to_name.items():
+        # Same name from two ids can only happen mid-merge; keep the larger degree.
+        index.degree_by_name[name] = max(index.degree_by_name.get(name, 0), degrees.get(entity_id, 0))
+    return index
+
+
 def _cooccurrence_weight(degree: int) -> float:
     """How much one shared co-occurrence partner is worth, damped by how common it is.
 
@@ -902,17 +927,37 @@ class EntityResolver:
             )
             candidate_ids.add(row["id"])
 
-        # Fetch co-occurrences only for the candidate entities (not all bank entities)
+        # Fetch co-occurrence facts only for the candidate entities (not all bank entities):
+        # per-candidate degrees aggregated in SQL, plus candidate-to-candidate edges. A hub's
+        # other partners are counted, never shipped.
         cooccurrence_map: dict[str, set[str]] = {}
         cooccurrence_degrees: dict[str, int] = {}
         if candidate_ids:
             candidate_id_list = list(candidate_ids)
-            cooc_rows = await conn.fetch(
+            cooc_table = fq_table("entity_cooccurrences")
+            degree_rows = await conn.fetch(
+                f"""
+                SELECT id, sum(n)::bigint AS degree FROM (
+                    SELECT ec.entity_id_1 AS id, count(*) AS n
+                    FROM {cooc_table} ec
+                    WHERE ec.entity_id_1 = ANY($1::uuid[])
+                    GROUP BY ec.entity_id_1
+                    UNION ALL
+                    SELECT ec.entity_id_2 AS id, count(*) AS n
+                    FROM {cooc_table} ec
+                    WHERE ec.entity_id_2 = ANY($1::uuid[])
+                    GROUP BY ec.entity_id_2
+                ) per_side
+                GROUP BY id
+                """,
+                candidate_id_list,
+            )
+            pair_rows = await conn.fetch(
                 f"""
                 SELECT ec.entity_id_1, ec.entity_id_2
-                FROM {fq_table("entity_cooccurrences")} ec
+                FROM {cooc_table} ec
                 WHERE ec.entity_id_1 = ANY($1::uuid[])
-                   OR ec.entity_id_2 = ANY($1::uuid[])
+                  AND ec.entity_id_2 = ANY($1::uuid[])
                 """,
                 candidate_id_list,
             )
@@ -922,7 +967,7 @@ class EntityResolver:
                 for cands in all_candidates.values()
                 for row in [{"id": c[0], "canonical_name": c[1]} for c in cands]
             }
-            cooccurrences = _build_cooccurrence_index(cooc_rows, id_to_name)
+            cooccurrences = _cooccurrence_index_from_aggregates(degree_rows, pair_rows, id_to_name)
             cooccurrence_map = cooccurrences.by_entity
             cooccurrence_degrees = cooccurrences.degree_by_name
 
