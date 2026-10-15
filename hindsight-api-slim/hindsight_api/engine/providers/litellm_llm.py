@@ -100,6 +100,32 @@ def _forced_tool_arguments(message: Any) -> str | None:
     return None
 
 
+# LiteLLM backends that authenticate with the ``api_key`` of the call (see
+# LiteLLMLLM.supports_request_overrides).
+_KEYED_LITELLM_BACKENDS = frozenset(
+    {
+        "openai",
+        "text-completion-openai",
+        "azure",
+        "anthropic",
+        "gemini",
+        "openrouter",
+        "litellm_proxy",
+        "groq",
+        "mistral",
+        "deepseek",
+        "together_ai",
+        "fireworks_ai",
+        "xai",
+        "cohere",
+        "cohere_chat",
+        "perplexity",
+        "deepinfra",
+        "hosted_vllm",
+    }
+)
+
+
 class LiteLLMLLM(LLMInterface):
     """
     LLM provider using the LiteLLM SDK for universal model support.
@@ -228,6 +254,18 @@ class LiteLLMLLM(LLMInterface):
         # a per-call copy prevents LiteLLM/downstream from mutating the stored dict.
         if self._default_headers:
             kwargs.setdefault("extra_headers", dict(self._default_headers))
+
+        # Credentials an LLM request extension chose for this call (see
+        # supports_request_overrides). Lazy: importing the extensions package here
+        # would be circular.
+        from hindsight_api.extensions.llm_request import current_llm_request_overrides
+
+        overrides = current_llm_request_overrides()
+        if overrides is not None:
+            if overrides.api_key is not None:
+                kwargs["api_key"] = overrides.api_key
+            if overrides.headers:
+                kwargs["extra_headers"] = {**kwargs.get("extra_headers", {}), **overrides.headers}
 
         # Bedrock service tier: flex (50% cheaper), priority, or reserved
         if self.model.startswith("bedrock/") and self.bedrock_service_tier is not None:
@@ -680,6 +718,19 @@ class LiteLLMLLM(LLMInterface):
     async def cleanup(self) -> None:
         """Clean up resources."""
         pass
+
+    def supports_request_overrides(self) -> bool:
+        # Decided by the backend LiteLLM routes the model to, not by our provider name:
+        # Bedrock, Vertex AI, SageMaker, ... authenticate with cloud credentials and
+        # ignore ``api_key``, which would send the call on the server's account. So an
+        # allowlist of backends known to read it; an unknown backend refuses.
+        if self.provider == "bedrock":
+            return False
+        try:
+            backend = self._litellm.get_llm_provider(self.model, api_base=self.base_url or None)[1]
+        except Exception:
+            return False
+        return backend in _KEYED_LITELLM_BACKENDS
 
     def supports_attempt_scoped_concurrency(self) -> bool:
         return True

@@ -3117,6 +3117,28 @@ class MemoryEngine(MemoryEngineInterface):
             if _set_context is not None:
                 _set_context(self._ext_ctx)
 
+        # The LLM request extension decides the credentials of every LLM call in the
+        # process, so it is installed process-wide rather than handed to each LLM the
+        # engine builds below — a provider that missed the handle would bill the
+        # server's key without anyone noticing.
+        from ..extensions.llm_request import (  # noqa: PLC0415
+            LLMRequestExtension,
+            install_llm_request_extension,
+        )
+
+        self._llm_request_extension = load_extension("LLM_REQUEST", LLMRequestExtension, context=self._ext_ctx)
+        if self._llm_request_extension is not None:
+            if config.retain_batch_enabled:
+                # A batch job is submitted once, on the server's account, for every item
+                # of a retain — there is no per-call request to put a bank's key on.
+                raise RuntimeError(
+                    "Configuration error: HINDSIGHT_API_LLM_REQUEST_EXTENSION is not compatible with "
+                    "HINDSIGHT_API_RETAIN_BATCH_ENABLED=true. Batch retain submits its jobs on the server's "
+                    "own credentials, which the extension exists to replace. Set "
+                    "HINDSIGHT_API_RETAIN_BATCH_ENABLED=false."
+                )
+            install_llm_request_extension(self._llm_request_extension)
+
         loaded = load_extension("MEMORY_DEFENSE", MemoryDefenseExtension, context=self._ext_ctx)
         if loaded is not None:
             self._memory_defense: MemoryDefenseExtension = loaded
@@ -5695,6 +5717,10 @@ class MemoryEngine(MemoryEngineInterface):
         if self._initialized:
             return
 
+        # Before anything can make an LLM call through it.
+        if self._llm_request_extension is not None:
+            await self._llm_request_extension.on_startup()
+
         # Run model loading in thread pool (CPU-bound) in parallel with pg0 startup
         loop = asyncio.get_event_loop()
 
@@ -6245,6 +6271,17 @@ class MemoryEngine(MemoryEngineInterface):
     async def close(self):
         """Close the connection pool and shutdown background workers."""
         logger.info("close() started")
+
+        if self._llm_request_extension is not None:
+            from ..extensions.llm_request import (  # noqa: PLC0415
+                install_llm_request_extension,
+                installed_llm_request_extension,
+            )
+
+            # Only our own: another engine in this process may have installed its own since.
+            if installed_llm_request_extension() is self._llm_request_extension:
+                install_llm_request_extension(None)
+            await self._llm_request_extension.on_shutdown()
 
         # Stop the background maintenance loop (retention sweeps + reconcile)
         if self._maintenance_loop is not None:
