@@ -797,6 +797,10 @@ ENV_DB_ACQUIRE_WARN_THRESHOLD_MS = "HINDSIGHT_API_DB_ACQUIRE_WARN_THRESHOLD_MS"
 # (HINDSIGHT_API_<OP>LLM_<n>_CODEX_HOME) so a chain can span two profiles.
 ENV_LLM_CODEX_HOME = "HINDSIGHT_API_LLM_CODEX_HOME"
 
+# chatgpt provider (Sign in with ChatGPT) credential directory: holds
+# credentials.json and this host's host_id. Server-level only.
+ENV_LLM_CHATGPT_HOME = "HINDSIGHT_API_LLM_CHATGPT_HOME"
+
 # xai-oauth provider. The token store is written by the `login` entrypoint and read on
 # every call; the rest exist so a deployment can point at a different OAuth app.
 ENV_XAI_OAUTH_TOKEN_PATH = "HINDSIGHT_API_XAI_OAUTH_TOKEN_PATH"
@@ -1168,6 +1172,7 @@ PROVIDER_DEFAULT_MODELS = {
     "lmstudio": "local-model",
     "vertexai": "google/gemini-3.1-flash-lite",
     "openai-codex": "gpt-5.6-luna",
+    "chatgpt": "gpt-6-luna",
     "claude-code": "claude-sonnet-4-5-20250929",
     "cursor": "auto",
     "github-copilot": "gpt-5.6-terra",
@@ -1258,6 +1263,9 @@ DEFAULT_LLM_SEND_BANK_AS_USER = False  # Opt-in: tag provider calls with user=<b
 
 # Codex credentials directory (None = CODEX_HOME, else ~/.codex)
 DEFAULT_LLM_CODEX_HOME = None
+
+# chatgpt credentials directory (None = ~/.hindsight/chatgpt)
+DEFAULT_LLM_CHATGPT_HOME = None
 
 # Vertex AI defaults
 DEFAULT_LLM_VERTEXAI_PROJECT_ID = None  # Required for Vertex AI
@@ -3246,6 +3254,10 @@ class HindsightConfig:
     # arbitrary file.
     llm_codex_home: str | None
 
+    # chatgpt credential directory (None = ~/.hindsight/chatgpt). Server-level
+    # only, for the same reason as llm_codex_home.
+    llm_chatgpt_home: str | None
+
     # Vertex AI configuration
     llm_vertexai_project_id: str | None
     llm_vertexai_region: str
@@ -3964,6 +3976,8 @@ class HindsightConfig:
         "reflect_decision_model_base_url",
         "consolidation_decision_model_api_key",
         "consolidation_decision_model_base_url",
+        # chatgpt: points at a directory holding an OAuth grant.
+        "llm_chatgpt_home",
     }
 
     # CONFIGURABLE_FIELDS: Safe behavioral settings that can be customized per-tenant/bank
@@ -4504,6 +4518,7 @@ class HindsightConfig:
             llm_litellmrouter_config=_parse_llm_router_config(ENV_LLM_LITELLMROUTER_CONFIG),
             # Codex (ChatGPT OAuth) credentials directory
             llm_codex_home=os.getenv(ENV_LLM_CODEX_HOME) or DEFAULT_LLM_CODEX_HOME,
+            llm_chatgpt_home=os.getenv(ENV_LLM_CHATGPT_HOME, "").strip() or DEFAULT_LLM_CHATGPT_HOME,
             # Vertex AI
             llm_vertexai_project_id=os.getenv(ENV_LLM_VERTEXAI_PROJECT_ID) or DEFAULT_LLM_VERTEXAI_PROJECT_ID,
             llm_vertexai_region=os.getenv(ENV_LLM_VERTEXAI_REGION, DEFAULT_LLM_VERTEXAI_REGION),
