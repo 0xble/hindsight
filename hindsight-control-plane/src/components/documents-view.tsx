@@ -89,6 +89,7 @@ import { HarnessLogo } from "@/components/ui/harness-logo";
 import { InlineAttachmentText, countMatches } from "@/components/ui/inline-attachment-text";
 import { documentHarness, resolveHarnessLogo } from "@/lib/harness-logo";
 import { pendingUploadsFromOperations, type PendingUpload } from "@/lib/pending-uploads";
+import { editedRetainItem } from "@/lib/edited-retain-item";
 
 const ITEMS_PER_PAGE = 50;
 
@@ -1120,19 +1121,7 @@ export function DocumentsView() {
     const newContent = contentInput;
     if (!newContent.trim()) return;
 
-    const retainParams = selectedDocument.retain_params ?? {};
-    const item: Parameters<typeof client.retain>[0]["items"][number] = {
-      content: newContent,
-      document_id: selectedDocument.id,
-    };
-    if (retainParams.context) item.context = retainParams.context;
-    if (retainParams.event_date) item.timestamp = retainParams.event_date;
-    if (retainParams.metadata && Object.keys(retainParams.metadata).length > 0) {
-      item.metadata = retainParams.metadata;
-    }
-    if (selectedDocument.tags && selectedDocument.tags.length > 0) {
-      item.tags = selectedDocument.tags;
-    }
+    const item = editedRetainItem(newContent, selectedDocument);
 
     setSavingContent(true);
     try {
