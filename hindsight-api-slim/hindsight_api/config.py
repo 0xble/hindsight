@@ -225,6 +225,10 @@ ENV_LLM_TEMPERATURE_VERIFICATION = "HINDSIGHT_API_LLM_TEMPERATURE_VERIFICATION"
 ENV_LLM_TEMPERATURE_RETAIN = "HINDSIGHT_API_LLM_TEMPERATURE_RETAIN"
 ENV_LLM_TEMPERATURE_REFLECT = "HINDSIGHT_API_LLM_TEMPERATURE_REFLECT"
 ENV_LLM_TEMPERATURE_CONSOLIDATION = "HINDSIGHT_API_LLM_TEMPERATURE_CONSOLIDATION"
+# The mental-model refresh's structured edit calls (delta and retraction ops).
+# Unset, it takes the resolved consolidation temperature, which those calls used
+# before it existed; see _resolve_inherited_temperature.
+ENV_LLM_TEMPERATURE_MENTAL_MODEL_REFRESH = "HINDSIGHT_API_LLM_TEMPERATURE_MENTAL_MODEL_REFRESH"
 
 # Multi-LLM strategy. Extra LLMs are configured by index alongside the unindexed
 # primary (e.g. HINDSIGHT_API_LLM_1_PROVIDER, HINDSIGHT_API_LLM_2_PROVIDER, ...),
@@ -249,7 +253,7 @@ ENV_LLM_LITELLMROUTER_CONFIG = "HINDSIGHT_API_LLM_LITELLMROUTER_CONFIG"
 DEFAULT_LLM_TEMPERATURE_VERIFICATION = 0.0  # connection check
 DEFAULT_LLM_TEMPERATURE_RETAIN = 0.1  # fact extraction
 DEFAULT_LLM_TEMPERATURE_REFLECT = 0.9  # reflect "thinking"
-DEFAULT_LLM_TEMPERATURE_CONSOLIDATION = 0.0  # mental-model delta / dedup
+DEFAULT_LLM_TEMPERATURE_CONSOLIDATION = 0.0  # dedup; mental-model delta/retraction unless overridden
 
 # Defaults for service tiers
 DEFAULT_LLM_GROQ_SERVICE_TIER = "auto"  # "on_demand", "flex", or "auto"
@@ -319,6 +323,19 @@ def _resolve_operation_temperature(operation_env: str, default: float) -> float 
         raw = os.getenv(ENV_LLM_TEMPERATURE)
     if raw is None:
         return default
+    return _parse_temperature(raw)
+
+
+def _resolve_inherited_temperature(operation_env: str, inherited: float | None) -> float | None:
+    """Resolve a temperature that inherits another operation's when unset: per-op env -> ``inherited``.
+
+    ``inherited`` is that operation's already-resolved value, so the global env and
+    the omit sentinels reach this one through it, and leaving ``operation_env`` unset
+    changes nothing.
+    """
+    raw = os.getenv(operation_env)
+    if raw is None:
+        return inherited
     return _parse_temperature(raw)
 
 
@@ -3165,6 +3182,7 @@ class HindsightConfig:
     llm_temperature_retain: float | None
     llm_temperature_reflect: float | None
     llm_temperature_consolidation: float | None
+    llm_temperature_mental_model_refresh: float | None
 
     # LiteLLM Router chain (provider-specific; consumed by the "litellmrouter" provider).
     # List of deployment dicts evaluated in order with fallback on transient errors.
@@ -4312,6 +4330,11 @@ class HindsightConfig:
         # Parse per-type worker slot reservations (floors) once.
         worker_slot_reservations = _parse_worker_slot_reservations()
 
+        # Resolved once: the mental-model refresh temperature inherits it when unset.
+        llm_temperature_consolidation = _resolve_operation_temperature(
+            ENV_LLM_TEMPERATURE_CONSOLIDATION, DEFAULT_LLM_TEMPERATURE_CONSOLIDATION
+        )
+
         config = cls(
             # Database
             # `.lower()` returns a plain `str`; the field declares the two backends it accepts,
@@ -4409,8 +4432,9 @@ class HindsightConfig:
             llm_temperature_reflect=_resolve_operation_temperature(
                 ENV_LLM_TEMPERATURE_REFLECT, DEFAULT_LLM_TEMPERATURE_REFLECT
             ),
-            llm_temperature_consolidation=_resolve_operation_temperature(
-                ENV_LLM_TEMPERATURE_CONSOLIDATION, DEFAULT_LLM_TEMPERATURE_CONSOLIDATION
+            llm_temperature_consolidation=llm_temperature_consolidation,
+            llm_temperature_mental_model_refresh=_resolve_inherited_temperature(
+                ENV_LLM_TEMPERATURE_MENTAL_MODEL_REFRESH, llm_temperature_consolidation
             ),
             llm_litellmrouter_config=_parse_llm_router_config(ENV_LLM_LITELLMROUTER_CONFIG),
             # Codex (ChatGPT OAuth) credentials directory
