@@ -2900,6 +2900,8 @@ class Hindsight:
         mental_model_min_refresh_interval_seconds: int | None = None,
         knowledge_page_default_trigger: dict[str, Any] | None = None,
         reflect_default_options: dict[str, Any] | None = None,
+        reflect_use_decision_model: bool | None = None,
+        mental_model_refresh_use_decision_model: bool | None = None,
         enable_text_search: bool | None = None,
         enable_temporal_retrieval: bool | None = None,
         enable_graph_retrieval: bool | None = None,
@@ -2966,6 +2968,8 @@ class Hindsight:
                 mental_model_min_refresh_interval_seconds=mental_model_min_refresh_interval_seconds,
                 knowledge_page_default_trigger=knowledge_page_default_trigger,
                 reflect_default_options=reflect_default_options,
+                reflect_use_decision_model=reflect_use_decision_model,
+                mental_model_refresh_use_decision_model=mental_model_refresh_use_decision_model,
                 enable_text_search=enable_text_search,
                 enable_temporal_retrieval=enable_temporal_retrieval,
                 enable_graph_retrieval=enable_graph_retrieval,
@@ -3029,6 +3033,8 @@ class Hindsight:
         mental_model_min_refresh_interval_seconds: int | None = None,
         knowledge_page_default_trigger: dict[str, Any] | None = None,
         reflect_default_options: dict[str, Any] | None = None,
+        reflect_use_decision_model: bool | None = None,
+        mental_model_refresh_use_decision_model: bool | None = None,
         enable_text_search: bool | None = None,
         enable_temporal_retrieval: bool | None = None,
         enable_graph_retrieval: bool | None = None,
@@ -3104,6 +3110,9 @@ class Hindsight:
                 reflect request (or a mental model's trigger) leaves the option unset:
                 reflect_search_observations_max_tokens and
                 reflect_search_observations_include_entities.
+            reflect_use_decision_model: When the server has a decision model, reflect lets it
+                prune the evidence and decide when to stop (fewer LLM calls). False keeps agent turns.
+            mental_model_refresh_use_decision_model: The same, for knowledge-page refreshes.
             knowledge_page_default_trigger: Trigger fields merged over the built-in default for new
                 knowledge pages, e.g. {"refresh_cron": "0 * * * *"}.
             enable_observations: Toggle automatic observation consolidation after retain().
@@ -3171,6 +3180,8 @@ class Hindsight:
                 "mental_model_min_refresh_interval_seconds": mental_model_min_refresh_interval_seconds,
                 "knowledge_page_default_trigger": knowledge_page_default_trigger,
                 "reflect_default_options": reflect_default_options,
+                "reflect_use_decision_model": reflect_use_decision_model,
+                "mental_model_refresh_use_decision_model": mental_model_refresh_use_decision_model,
                 "enable_text_search": enable_text_search,
                 "enable_temporal_retrieval": enable_temporal_retrieval,
                 "enable_graph_retrieval": enable_graph_retrieval,
