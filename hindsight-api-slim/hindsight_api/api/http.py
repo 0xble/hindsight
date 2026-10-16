@@ -5803,7 +5803,7 @@ def _register_routes(app: FastAPI):
         limit: int = Query(default=1000, ge=0),
         q: str | None = None,
         tags: list[str] | None = Query(None),
-        tags_match: str = "all_strict",
+        tags_match: TagsMatch = "all_strict",
         document_id: str | None = None,
         chunk_id: str | None = None,
         request_context: RequestContext = Depends(get_request_context),
@@ -7840,8 +7840,8 @@ def _register_routes(app: FastAPI):
             ),
         ),
         tags: list[str] | None = Query(None, description="Filter documents by tags"),
-        tags_match: str = Query(
-            "any_strict", description="How to match tags: 'any', 'all', 'any_strict', 'all_strict'"
+        tags_match: TagsMatch = Query(
+            "any_strict", description="How to match tags: 'any', 'all', 'any_strict', 'all_strict', 'exact'"
         ),
         time_field: DocumentTimeField | None = Query(
             default=None,
@@ -7863,7 +7863,7 @@ def _register_routes(app: FastAPI):
             bank_id: Memory Bank ID (from path)
             q: Case-insensitive substring filter on document ID or text (unindexed, for browsing)
             tags: Filter documents by tags
-            tags_match: How to match tags (any, all, any_strict, all_strict)
+            tags_match: How to match tags (any, all, any_strict, all_strict, exact)
             time_field: Time axis to filter and order by (created_at, updated_at)
             start_date: Inclusive lower bound on time_field (ISO-8601)
             end_date: Exclusive upper bound on time_field (ISO-8601)
