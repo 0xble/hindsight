@@ -826,7 +826,7 @@
   "documentsView": {
     "loadingDocuments": "Loading documents...",
     "totalDocuments": "{total} total documents",
-    "searchPlaceholder": "Filter by document ID…",
+    "searchPlaceholder": "Search by document ID or text…",
     "clearSearch": "Clear search",
     "refreshDocuments": "Refresh documents",
     "noDocumentsMatchSearch": "No documents match your search",
@@ -842,6 +842,9 @@
     "colUpdated": "Updated",
     "seeAllInDocument": "Open the document to see all tags and metadata",
     "colSize": "Size",
+    "matchedInText": "Match in text",
+    "contentSearchPlaceholder": "Find in text…",
+    "contentSearchMatches": "{count, plural, one {# match} other {# matches}}",
     "colMemoryUnits": "Memory Units",
     "showingRange": "Showing {from}-{to} of {total}",
     "previousPage": "Previous",

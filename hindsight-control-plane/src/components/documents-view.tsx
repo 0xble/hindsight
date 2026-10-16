@@ -86,7 +86,7 @@ import { TagFilterInput } from "./tag-filter-input";
 import { FacetLegend, MetadataChip, TagChip } from "@/components/ui/facet-chip";
 import { Spinner } from "@/components/ui/spinner";
 import { HarnessLogo } from "@/components/ui/harness-logo";
-import { InlineAttachmentText } from "@/components/ui/inline-attachment-text";
+import { InlineAttachmentText, countMatches } from "@/components/ui/inline-attachment-text";
 import { documentHarness, resolveHarnessLogo } from "@/lib/harness-logo";
 import { pendingUploadsFromOperations, type PendingUpload } from "@/lib/pending-uploads";
 
@@ -774,6 +774,8 @@ export function DocumentsView() {
   const [editingContent, setEditingContent] = useState(false);
   const [contentInput, setContentInput] = useState("");
   const [savingContent, setSavingContent] = useState(false);
+  // Find-in-text for the open document: local only, highlights matches in the content card.
+  const [contentSearch, setContentSearch] = useState("");
 
   // Chunks state
   const [chunks, setChunks] = useState<any[]>([]);
@@ -924,6 +926,8 @@ export function DocumentsView() {
       });
   }, [documents, pendingUploads, searchQuery, selectedTags, hasTimeWindow]);
 
+  const contentMatchCount = countMatches(selectedDocument?.original_text ?? "", contentSearch);
+
   const hasActiveFilters =
     searchQuery.trim().length > 0 || selectedTags.length > 0 || dateRange !== "all";
 
@@ -974,6 +978,8 @@ export function DocumentsView() {
 
     setLoadingDocument(true);
     setSelectedDocument({ id: documentId }); // Set placeholder to show loading
+    // Carry the list search into the dialog so a "Match in text" row opens with the match highlighted.
+    setContentSearch(searchQuery.trim());
     setEditingTags(false);
     setTagInput("");
     setEditingContent(false);
@@ -1726,6 +1732,10 @@ export function DocumentsView() {
                     documents.map((doc) => {
                       const harness = documentHarness(doc.document_metadata, doc.tags);
                       const harnessLogo = resolveHarnessLogo(harness);
+                      // Which fields the search matched; highlights the matching cells.
+                      const matchedFields: string[] = doc.matched_fields ?? [];
+                      const idMatched = matchedFields.includes("id");
+                      const textMatched = matchedFields.includes("original_text");
                       return (
                         <TableRow
                           key={doc.id}
@@ -1735,10 +1745,18 @@ export function DocumentsView() {
                           {/* Identity block: the ID reads first, with when it was
                               last touched underneath. Created-at was dropped —
                               for almost every document it repeated updated-at. */}
-                          <TableCell className="text-card-foreground">
+                          <TableCell
+                            className={`text-card-foreground ${idMatched ? "bg-amber-500/10" : ""}`}
+                          >
                             <div className="min-w-0">
                               <div className="font-mono text-sm truncate" title={doc.id}>
-                                {doc.id}
+                                {idMatched ? (
+                                  <mark className="rounded-sm bg-amber-300/60 px-0.5 text-inherit dark:bg-amber-400/30">
+                                    {doc.id}
+                                  </mark>
+                                ) : (
+                                  doc.id
+                                )}
                               </div>
                               {/* The harness logo trails the timestamp rather
                                   than leading the ID: as a leading mark it only
@@ -1759,6 +1777,11 @@ export function DocumentsView() {
                                   size={14}
                                   titlePrefix={tCommon("harness")}
                                 />
+                                {textMatched && (
+                                  <span className="rounded-full bg-amber-300/60 px-2 py-0.5 text-[11px] font-medium text-foreground dark:bg-amber-400/30">
+                                    {t("matchedInText")}
+                                  </span>
+                                )}
                                 {updatingDocIds.has(doc.id) && (
                                   <span
                                     className="inline-flex items-center gap-1.5 rounded-full bg-muted px-2 py-0.5 text-[11px] font-medium text-muted-foreground"
@@ -1780,7 +1803,10 @@ export function DocumentsView() {
                               harnessShownAsLogo={!!harnessLogo}
                             />
                           </TableCell>
-                          <TableCell className="text-card-foreground text-right tabular-nums whitespace-nowrap font-medium">
+                          <TableCell
+                            className={`text-card-foreground text-right tabular-nums whitespace-nowrap font-medium ${textMatched ? "bg-amber-500/10" : ""}`}
+                            title={textMatched ? t("matchedInText") : undefined}
+                          >
                             {formatBytes(doc.text_length || 0)}
                           </TableCell>
                           <TableCell className="text-right tabular-nums font-semibold text-foreground">
@@ -2212,6 +2238,31 @@ export function DocumentsView() {
                                 {selectedDocument.original_text?.length?.toLocaleString() ?? 0}{" "}
                                 chars
                               </span>
+                              <div className="relative ml-2 w-48">
+                                <Search className="absolute left-2 top-1/2 -translate-y-1/2 h-3 w-3 text-muted-foreground pointer-events-none" />
+                                <Input
+                                  type="text"
+                                  value={contentSearch}
+                                  onChange={(e) => setContentSearch(e.target.value)}
+                                  placeholder={t("contentSearchPlaceholder")}
+                                  className="h-6 pl-6 pr-6 text-xs"
+                                />
+                                {contentSearch && (
+                                  <button
+                                    type="button"
+                                    onClick={() => setContentSearch("")}
+                                    aria-label={t("clearSearch")}
+                                    className="absolute right-1.5 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
+                                  >
+                                    <X className="h-3 w-3" />
+                                  </button>
+                                )}
+                              </div>
+                              {contentMatchCount !== null && (
+                                <span className="whitespace-nowrap text-muted-foreground/70">
+                                  {t("contentSearchMatches", { count: contentMatchCount })}
+                                </span>
+                              )}
                             </div>
                             <Button
                               variant="ghost"
@@ -2227,6 +2278,7 @@ export function DocumentsView() {
                             text={selectedDocument.original_text}
                             bankId={currentBank ?? ""}
                             attachments={selectedDocument.attachments}
+                            highlight={contentSearch}
                             className="p-4 text-[11px] leading-5 text-foreground/80 whitespace-pre-wrap font-mono"
                           />
                         </div>

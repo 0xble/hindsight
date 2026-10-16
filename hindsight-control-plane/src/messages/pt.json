@@ -826,7 +826,7 @@
   "documentsView": {
     "loadingDocuments": "Carregando documentos...",
     "totalDocuments": "{total} documentos no total",
-    "searchPlaceholder": "Filtrar por ID do documento…",
+    "searchPlaceholder": "Pesquisar por ID ou texto do documento…",
     "clearSearch": "Limpar pesquisa",
     "refreshDocuments": "Atualizar documentos",
     "noDocumentsMatchSearch": "Nenhum documento corresponde à sua pesquisa",
@@ -842,6 +842,9 @@
     "colUpdated": "Atualizado",
     "seeAllInDocument": "Abra o documento para ver todas as tags e metadados",
     "colSize": "Tamanho",
+    "matchedInText": "Corresponde no texto",
+    "contentSearchPlaceholder": "Procurar no texto…",
+    "contentSearchMatches": "{count, plural, one {# correspondência} other {# correspondências}}",
     "colMemoryUnits": "Unidades de Memória",
     "showingRange": "Exibindo {from}-{to} de {total}",
     "previousPage": "Anterior",
