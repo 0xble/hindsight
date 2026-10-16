@@ -9669,6 +9669,18 @@
             "title": "Enable Auto Consolidation",
             "description": "Automatically consolidate observations after retain"
           },
+          "consolidation_use_decision_model": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Consolidation Use Decision Model",
+            "description": "When the server has a decision model, consolidation lets it settle restatements, new facets and chatter before the LLM call"
+          },
           "consolidation_max_memories_per_round": {
             "anyOf": [
               {

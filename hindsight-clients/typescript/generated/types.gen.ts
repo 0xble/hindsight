@@ -807,6 +807,12 @@ export type BankTemplateConfig = {
    */
   enable_auto_consolidation?: boolean | null;
   /**
+   * Consolidation Use Decision Model
+   *
+   * When the server has a decision model, consolidation lets it settle restatements, new facets and chatter before the LLM call
+   */
+  consolidation_use_decision_model?: boolean | null;
+  /**
    * Consolidation Max Memories Per Round
    *
    * Max memory units fed into a single consolidation round

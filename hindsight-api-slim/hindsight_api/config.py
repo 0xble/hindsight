@@ -896,6 +896,7 @@ ENV_CONSOLIDATION_SOURCE_FACTS_MAX_TOKENS_PER_OBSERVATION = (
 )
 ENV_CONSOLIDATION_RECALL_BUDGET = "HINDSIGHT_API_CONSOLIDATION_RECALL_BUDGET"
 ENV_CONSOLIDATION_MAX_ATTEMPTS = "HINDSIGHT_API_CONSOLIDATION_MAX_ATTEMPTS"
+ENV_CONSOLIDATION_USE_DECISION_MODEL = "HINDSIGHT_API_CONSOLIDATION_USE_DECISION_MODEL"
 ENV_OBSERVATIONS_MISSION = "HINDSIGHT_API_OBSERVATIONS_MISSION"
 ENV_MAX_OBSERVATIONS_PER_SCOPE = "HINDSIGHT_API_MAX_OBSERVATIONS_PER_SCOPE"
 ENV_OBSERVATION_SCOPE_LIMITS = "HINDSIGHT_API_OBSERVATION_SCOPE_LIMITS"
@@ -1792,6 +1793,9 @@ DEFAULT_ENABLE_DOCUMENT_IMPORT_API = True
 # Observations defaults (consolidated knowledge from facts)
 DEFAULT_ENABLE_OBSERVATIONS = True  # Observations enabled by default
 DEFAULT_ENABLE_AUTO_CONSOLIDATION = True  # Auto-consolidation after retain enabled by default
+# When a decision model is set up for consolidation, it settles restatements, new facets and
+# chatter before the LLM call; only facts that change existing observations reach the LLM.
+DEFAULT_CONSOLIDATION_USE_DECISION_MODEL = True
 DEFAULT_ENABLE_OBSERVATION_HISTORY = True  # Observation history tracking enabled by default
 DEFAULT_ENABLE_MENTAL_MODEL_HISTORY = True  # Mental model history tracking enabled by default
 # Floor on how often an *automatic* mental-model refresh may run: a triggered refresh
@@ -3538,6 +3542,7 @@ class HindsightConfig:
     # Observations settings (consolidated knowledge from facts)
     enable_observations: bool
     enable_auto_consolidation: bool
+    consolidation_use_decision_model: bool
     enable_observation_history: bool
     observation_history_max_entries: int
     enable_mental_model_history: bool
@@ -3939,6 +3944,7 @@ class HindsightConfig:
         # Consolidation settings
         "enable_observations",
         "enable_auto_consolidation",
+        "consolidation_use_decision_model",
         "consolidation_llm_batch_size",
         "consolidation_llm_parallelism",
         "consolidation_max_memories_per_round",
@@ -5166,6 +5172,10 @@ class HindsightConfig:
             enable_observations=os.getenv(ENV_ENABLE_OBSERVATIONS, str(DEFAULT_ENABLE_OBSERVATIONS)).lower() == "true",
             enable_auto_consolidation=os.getenv(
                 ENV_ENABLE_AUTO_CONSOLIDATION, str(DEFAULT_ENABLE_AUTO_CONSOLIDATION)
+            ).lower()
+            == "true",
+            consolidation_use_decision_model=os.getenv(
+                ENV_CONSOLIDATION_USE_DECISION_MODEL, str(DEFAULT_CONSOLIDATION_USE_DECISION_MODEL)
             ).lower()
             == "true",
             enable_observation_history=os.getenv(

@@ -2903,6 +2903,7 @@ class Hindsight:
         observation_scope_limits: list[dict[str, Any]] | None = None,
         consolidation_strategies: list[dict[str, Any]] | None = None,
         enable_auto_consolidation: bool | None = None,
+        consolidation_use_decision_model: bool | None = None,
         consolidation_llm_parallelism: int | None = None,
         consolidation_max_memories_per_round: int | None = None,
         mental_model_min_refresh_interval_seconds: int | None = None,
@@ -2971,6 +2972,7 @@ class Hindsight:
                 observation_scope_limits=observation_scope_limits,
                 consolidation_strategies=consolidation_strategies,
                 enable_auto_consolidation=enable_auto_consolidation,
+                consolidation_use_decision_model=consolidation_use_decision_model,
                 consolidation_llm_parallelism=consolidation_llm_parallelism,
                 consolidation_max_memories_per_round=consolidation_max_memories_per_round,
                 mental_model_min_refresh_interval_seconds=mental_model_min_refresh_interval_seconds,
@@ -3036,6 +3038,7 @@ class Hindsight:
         observation_scope_limits: list[dict[str, Any]] | None = None,
         consolidation_strategies: list[dict[str, Any]] | None = None,
         enable_auto_consolidation: bool | None = None,
+        consolidation_use_decision_model: bool | None = None,
         consolidation_llm_parallelism: int | None = None,
         consolidation_max_memories_per_round: int | None = None,
         mental_model_min_refresh_interval_seconds: int | None = None,
@@ -3111,6 +3114,8 @@ class Hindsight:
             observation_scope_limits: Deprecated; use consolidation_strategies. Per-scope observation caps.
             consolidation_strategies: Per-scope consolidation settings (mission, observation cap).
             enable_auto_consolidation: Consolidate automatically after retain() rather than on demand.
+            consolidation_use_decision_model: When the server has a decision model, let it settle
+                restatements, new facts and chatter before the consolidation LLM call.
             consolidation_llm_parallelism: Concurrent LLM calls during consolidation.
             consolidation_max_memories_per_round: Memories consolidated per round.
             mental_model_min_refresh_interval_seconds: Debounce between mental-model refreshes.
@@ -3183,6 +3188,7 @@ class Hindsight:
                 "observation_scope_limits": observation_scope_limits,
                 "consolidation_strategies": consolidation_strategies,
                 "enable_auto_consolidation": enable_auto_consolidation,
+                "consolidation_use_decision_model": consolidation_use_decision_model,
                 "consolidation_llm_parallelism": consolidation_llm_parallelism,
                 "consolidation_max_memories_per_round": consolidation_max_memories_per_round,
                 "mental_model_min_refresh_interval_seconds": mental_model_min_refresh_interval_seconds,

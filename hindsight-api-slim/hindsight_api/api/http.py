@@ -4088,6 +4088,11 @@ class BankTemplateConfig(BaseModel):
     enable_auto_consolidation: bool | None = Field(
         default=None, description="Automatically consolidate observations after retain"
     )
+    consolidation_use_decision_model: bool | None = Field(
+        default=None,
+        description="When the server has a decision model, consolidation lets it settle restatements, new "
+        "facets and chatter before the LLM call",
+    )
     consolidation_max_memories_per_round: int | None = Field(
         default=None, description="Max memory units fed into a single consolidation round"
     )
