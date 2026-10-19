@@ -1339,6 +1339,8 @@ export class HindsightClient {
       detail?: "metadata" | "content" | "full";
       limit?: number;
       offset?: number;
+      /** Leave out the models that hold knowledge page content (standalone models only). */
+      excludeKnowledgePages?: boolean;
       signal?: AbortSignal;
     }
   ): Promise<MentalModelListResponse> {
@@ -1351,6 +1353,9 @@ export class HindsightClient {
         ...(options?.detail !== undefined ? { detail: options.detail } : {}),
         ...(options?.limit !== undefined ? { limit: options.limit } : {}),
         ...(options?.offset !== undefined ? { offset: options.offset } : {}),
+        ...(options?.excludeKnowledgePages !== undefined
+          ? { exclude_knowledge_pages: options.excludeKnowledgePages }
+          : {}),
       },
       signal: options?.signal,
     });
