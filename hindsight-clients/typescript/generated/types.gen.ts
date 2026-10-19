@@ -7307,6 +7307,8 @@ export type GetGraphData = {
     limit?: number;
     /**
      * Q
+     *
+     * Case-insensitive substring filter on memory text and context. Not indexed: it scans the bank, so it slows as the bank grows. Meant for browsing and inspection, not for high-volume or latency-sensitive workloads — use recall for that.
      */
     q?: string | null;
     /**
@@ -7372,6 +7374,8 @@ export type ListMemoriesData = {
     type?: string | null;
     /**
      * Q
+     *
+     * Case-insensitive substring filter on memory text and context. Not indexed: it scans the bank, so it slows as the bank grows. Meant for browsing and inspection, not for high-volume or latency-sensitive workloads — use recall for that.
      */
     q?: string | null;
     /**
