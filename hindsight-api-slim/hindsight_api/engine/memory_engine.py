@@ -21941,7 +21941,7 @@ class MemoryEngine(MemoryEngineInterface):
         *,
         request_context: "RequestContext",
     ) -> dict[str, Any]:
-        """Re-queue a failed async operation."""
+        """Re-queue a failed or cancelled async operation, or run a deferred one now."""
         await self._authenticate_tenant(request_context)
         from hindsight_api.extensions import OperationValidationError
 
@@ -21976,7 +21976,12 @@ class MemoryEngine(MemoryEngineInterface):
                     updated_at = NOW()
                 WHERE operation_id = $1
                   AND bank_id = $2
-                  AND status IN ('failed', 'cancelled')
+                  AND (
+                      status IN ('failed', 'cancelled')
+                      -- Deferred (e.g. parked until a provider-reported quota
+                      -- reset): retrying runs it now instead of waiting it out.
+                      OR (status = 'pending' AND next_retry_at > NOW())
+                  )
                   AND NOT (operation_type = 'batch_retain' AND task_payload IS NULL)
                 RETURNING operation_id
                 """,
@@ -22019,7 +22024,10 @@ class MemoryEngine(MemoryEngineInterface):
                             updated_at = NOW()
                         WHERE bank_id = $1
                           AND result_metadata::jsonb @> $2::jsonb
-                          AND status IN ('failed', 'cancelled')
+                          AND (
+                              status IN ('failed', 'cancelled')
+                              OR (status = 'pending' AND next_retry_at > NOW())
+                          )
                         """,
                         bank_id,
                         child_filter,
@@ -22063,7 +22071,7 @@ class MemoryEngine(MemoryEngineInterface):
                         409,
                     )
                 raise OperationValidationError(
-                    f"Operation {operation_id} cannot be retried: status is '{row['status']}', expected 'failed' or 'cancelled'",
+                    f"Operation {operation_id} cannot be retried: status is '{row['status']}', expected 'failed', 'cancelled' or deferred",
                     409,
                 )
 
