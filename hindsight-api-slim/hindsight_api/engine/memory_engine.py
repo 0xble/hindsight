@@ -895,7 +895,8 @@ def _build_llm(
     ``prefix`` is ``""`` (global) or ``"retain_"`` / ``"reflect_"`` /
     ``"consolidation_"`` / ``"mental_model_refresh_"``. A per-op slot with no
     indexed members (or no strategy) inherits the chain of ``fallback_prefix``
-    (the global one by default), mirroring how per-op base config falls back.
+    (the global one by default) — and an empty fallback slot inherits the global
+    chain in turn — mirroring how per-op base config falls back.
     Returns ``base`` unchanged when no chain is configured (byte-identical hot
     path).
 
@@ -923,11 +924,14 @@ def _build_llm(
             f"let {operation} use the global strategy, or give it 'failover'/'round-robin'."
         )
 
+    # The fallback slot's *effective* chain, not its raw one: reading only the raw
+    # reflect slot left refresh on the bare primary whenever the chain was declared
+    # globally, so it never failed over (#5724).
     if prefix:
         if not members:
-            members = getattr(config, f"{fallback_prefix}llm_members")
+            members = getattr(config, f"{fallback_prefix}llm_members") or config.llm_members
         if strategy is None:
-            strategy = getattr(config, f"{fallback_prefix}llm_strategy")
+            strategy = getattr(config, f"{fallback_prefix}llm_strategy") or config.llm_strategy
 
     if not strategy or not members:
         return base
