@@ -20,6 +20,7 @@ from collections.abc import Callable, Sequence
 from typing import TYPE_CHECKING, Any
 
 from ....config import get_config
+from ...document_history import note_observations_removed
 from ..base import StoredMemory
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
@@ -275,6 +276,8 @@ async def delete_stale_observations(
     affected_obs = await observations_for_sources(
         conn=conn, ops=ops, fq_table=fq_table, bank_id=bank_id, unit_ids=fact_uuids
     )
+    # The rows go for good below; the change history keeps their ids (#5638).
+    note_observations_removed({obs.unit_id: list(obs.source_memory_ids) for obs in affected_obs}, fact_uuids)
     if not affected_obs:
         return 0
 
@@ -580,7 +583,12 @@ async def apply_edit(
     # Reference the bind parameters, not the columns: PostgreSQL evaluates the
     # UPDATE's RHS before the sibling SET assignments land, so a column reference
     # would see the pre-edit values.
-    sv_expr = pg_search_vector_expr(get_config(), text_col="$3", context_col="$4")
+    # PostgreSQL only: on Oracle search_vector is a CLOB kept by Oracle's own text index, and the
+    # ``::regconfig`` cast would reach it as an unbound ``:REGCONFIG`` placeholder (DPY-4010) — the
+    # same guard as ``_native_search_vector_update`` in pg/consolidation.py (#3021).
+    from ...schema import _is_oracle
+
+    sv_expr = None if _is_oracle() else pg_search_vector_expr(get_config(), text_col="$3", context_col="$4")
     sv_clause = f", search_vector = {sv_expr}" if sv_expr else ""
     # The re-embedded vector rides the edit's own UPDATE. It describes the text being written by
     # this statement, so writing it here is what keeps the two from ever disagreeing — and it
