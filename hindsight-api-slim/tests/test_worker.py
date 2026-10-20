@@ -2506,6 +2506,97 @@ class TestTaskReleaseOnStop:
         assert await poller.recover_own_tasks() == 1
 
 
+class TestTerminalWriteToADroppedSchema:
+    """A task whose schema is dropped while it runs must not take the worker down.
+
+    Deleting a tenant drops its schema, ``async_operations`` included. A task
+    still in flight then fails every terminal write with "relation does not
+    exist", which used to run out ``TERMINAL_WRITE_DEADLINE_S`` and SIGTERM the
+    worker, dropping every other task on it. The row is gone, so there is
+    nothing to mark and nothing for restart recovery to hand back.
+    """
+
+    @staticmethod
+    def _task(schema):
+        from hindsight_api.worker.poller import ClaimedTask
+
+        return ClaimedTask(operation_id=str(uuid.uuid4()), task_dict={}, schema=schema)
+
+    @staticmethod
+    def _poller(backend, exited):
+        from hindsight_api.worker import WorkerPoller
+
+        async def executor(task_dict):
+            return None
+
+        poller = WorkerPoller(backend=backend, worker_id="dropped-schema-worker", executor=executor)
+        poller._exit_process = exited.set
+        return poller
+
+    @pytest.mark.asyncio
+    async def test_a_dropped_schema_drops_the_task_and_keeps_the_worker(self, backend, monkeypatch):
+        import asyncpg
+
+        from hindsight_api.worker import poller as poller_module
+
+        monkeypatch.setattr(poller_module, "TERMINAL_WRITE_DEADLINE_S", 0.0)
+        exited = asyncio.Event()
+        poller = self._poller(backend, exited)
+        gone = f"tenant_gone_{uuid.uuid4().hex[:8]}"
+
+        async def write():
+            raise asyncpg.exceptions.UndefinedTableError(f'relation "{gone}.async_operations" does not exist')
+
+        assert await poller._write_terminal(self._task(gone), "completed", write) is False
+        assert not exited.is_set(), "a dropped schema must not shut the worker down"
+
+    @pytest.mark.asyncio
+    async def test_a_missing_table_elsewhere_still_shuts_down(self, backend, isolated_ops_schema, monkeypatch):
+        """The operations table exists, so the row is still there to be recovered: keep the old path."""
+        import asyncpg
+
+        from hindsight_api.worker import poller as poller_module
+
+        monkeypatch.setattr(poller_module, "TERMINAL_WRITE_DEADLINE_S", 0.0)
+        exited = asyncio.Event()
+        poller = self._poller(backend, exited)
+
+        async def write():
+            raise asyncpg.exceptions.UndefinedTableError('relation "some_other_table" does not exist')
+
+        assert await poller._write_terminal(self._task(isolated_ops_schema), "completed", write) is False
+        assert exited.is_set()
+
+    @pytest.mark.asyncio
+    async def test_an_unreachable_db_still_shuts_down(self, backend, monkeypatch):
+        from hindsight_api.worker import poller as poller_module
+
+        monkeypatch.setattr(poller_module, "TERMINAL_WRITE_DEADLINE_S", 0.0)
+        exited = asyncio.Event()
+        poller = self._poller(backend, exited)
+
+        async def write():
+            raise ConnectionResetError("connection lost")
+
+        assert await poller._write_terminal(self._task(f"tenant_gone_{uuid.uuid4().hex[:8]}"), "failed", write) is False
+        assert exited.is_set()
+
+    def test_missing_relation_is_found_through_wrapping(self):
+        import asyncpg
+
+        from hindsight_api.worker.poller import _is_missing_relation
+
+        try:
+            try:
+                raise asyncpg.exceptions.InvalidSchemaNameError('schema "tenant_x" does not exist')
+            except Exception as inner:
+                raise RuntimeError("mark failed") from inner
+        except RuntimeError as outer:
+            assert _is_missing_relation(outer)
+        assert _is_missing_relation(Exception("ORA-00942: table or view does not exist"))
+        assert not _is_missing_relation(ConnectionResetError("connection lost"))
+
+
 class TestConcurrentWorkers:
     """Tests for concurrent worker task claiming (FOR UPDATE SKIP LOCKED)."""
 
