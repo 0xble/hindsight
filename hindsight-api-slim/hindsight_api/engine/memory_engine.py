@@ -3936,6 +3936,7 @@ class MemoryEngine(MemoryEngineInterface):
             tenant_id=task_dict.get("_tenant_id"),
             api_key_id=task_dict.get("_api_key_id"),
             retry_count=task_dict.get("_retry_count", 0),
+            operation_id=task_dict.get("_operation_id"),
         )
 
         async with self._retrieve_archive(storage_key) as archive:
@@ -4121,6 +4122,7 @@ class MemoryEngine(MemoryEngineInterface):
             tenant_id=task_dict.get("_tenant_id"),
             api_key_id=task_dict.get("_api_key_id"),
             retry_count=task_dict.get("_retry_count", 0),
+            operation_id=task_dict.get("_operation_id"),
         )
 
         async with self._retrieve_archive(storage_key) as archive:
@@ -4210,6 +4212,7 @@ class MemoryEngine(MemoryEngineInterface):
             tenant_id=task_dict.get("_tenant_id"),
             api_key_id=task_dict.get("_api_key_id"),
             retry_count=task_dict.get("_retry_count", 0),
+            operation_id=task_dict.get("_operation_id"),
         )
 
         backend = await self._get_backend()
@@ -4366,6 +4369,7 @@ class MemoryEngine(MemoryEngineInterface):
             tenant_id=task_dict.get("_tenant_id"),
             api_key_id=task_dict.get("_api_key_id"),
             retry_count=task_dict.get("_retry_count", 0),
+            operation_id=task_dict.get("_operation_id"),
         )
         await self.retain_batch_async(
             bank_id=bank_id,
@@ -4500,6 +4504,7 @@ class MemoryEngine(MemoryEngineInterface):
                     tenant_id=task_dict.get("_tenant_id"),
                     api_key_id=task_dict.get("_api_key_id"),
                     retry_count=task_dict.get("_retry_count", 0),
+                    operation_id=task_dict.get("_operation_id"),
                 )
                 await self._operation_validator.on_file_convert_complete(
                     FileConvertResult(
@@ -4654,6 +4659,7 @@ class MemoryEngine(MemoryEngineInterface):
             tenant_id=task_dict.get("_tenant_id"),
             api_key_id=task_dict.get("_api_key_id"),
             retry_count=task_dict.get("_retry_count", 0),
+            operation_id=task_dict.get("_operation_id"),
         )
         result = await run_consolidation_job(
             memory_engine=self,
@@ -4690,6 +4696,7 @@ class MemoryEngine(MemoryEngineInterface):
             tenant_id=task_dict.get("_tenant_id"),
             api_key_id=task_dict.get("_api_key_id"),
             retry_count=task_dict.get("_retry_count", 0),
+            operation_id=task_dict.get("_operation_id"),
         )
         return await run_graph_maintenance_job(
             memory_engine=self,
@@ -4839,6 +4846,7 @@ class MemoryEngine(MemoryEngineInterface):
             tenant_id=task_dict.get("_tenant_id"),
             api_key_id=task_dict.get("_api_key_id"),
             retry_count=task_dict.get("_retry_count", 0),
+            operation_id=task_dict.get("_operation_id"),
         )
 
         # Rate-limit automatic refreshes before any recall or LLM work happens. Parking
