@@ -211,6 +211,7 @@ jobs:
             - 'hindsight-integrations/pydantic-ai/**'
           integrations-hermes:
             - 'hindsight-integrations/hermes/**'
+            - 'scripts/test-hermes-compat.sh'
           integrations-ag2:
             - 'hindsight-integrations/ag2/**'
           integrations-autogen:
@@ -4866,43 +4867,25 @@ jobs:
           fi
         done || true
 
-  # Compatibility gate against hermes-agent's *main* branch.
+  # Compatibility gate: hermes-agent's *main* branch + this branch's Hermes
+  # plugin, installed the way a Hermes user installs it — Hermes' installer,
+  # `hermes plugins install hindsight` from the catalog (patched to point at
+  # this checkout), `hermes update`, then a turn through the MemoryProvider
+  # contract on an embedded daemon. See scripts/test-hermes-compat.sh.
   #
-  # `hermes memory setup` installs `hindsight-all` into Hermes' own venv to run
-  # memory in local_embedded mode, and Hermes exact-pins every direct dependency
-  # (`==X.Y.Z`) as a deliberate supply-chain policy — they will not loosen a pin
-  # for us. So any version range Hindsight declares that excludes one of their
-  # pins makes the two impossible to co-install for every Hermes user on
-  # embedded memory. That was #3251: our `cryptography>=48.0.1` / `pillow>=12.3.0`
-  # against their `==46.0.7` / `==12.2.0`, which left `pip check` permanently
-  # broken. Both sides bump on their own schedule, so this needs a standing gate
-  # rather than a one-off fix; tracking main surfaces the next collision while
-  # it is still cheap to fix on either side.
+  # Only the plugin reaches Hermes users from this repo: its hindsight-client /
+  # hindsight-embed come from PyPI, so core and client changes don't trigger it.
   #
-  # It also exercises the memory provider itself, which moved out of the Hermes
-  # tree into hindsight-integrations/hermes: the script drops Hermes' bundled
-  # copy (bundled wins on a name collision, so leaving it would test their code
-  # instead of ours), installs this checkout's plugin, and round-trips a turn
-  # through the MemoryProvider contract. That makes this the only gate covering
-  # the plugin against a real Hermes, hence the integrations-hermes trigger.
-  #
-  # Deliberately not gated on has_secrets — the resolution, wiring, runtime and
-  # daemon-boot checks need no credentials, so this runs on fork PRs too. Only
-  # the retain/recall round-trips need an LLM; the key below is empty on fork
-  # PRs and the script skips exactly those, reporting that it did.
+  # Deliberately not gated on has_secrets — everything but the retain/recall
+  # round-trip needs no credentials, so this runs on fork PRs too; the key below
+  # is empty there and the script skips exactly that, reporting that it did.
   test-hermes-compat:
     needs: [detect-changes]
     if: >-
       (github.event_name == 'workflow_dispatch' ||
-      needs.detect-changes.outputs.core == 'true' ||
-      needs.detect-changes.outputs.embed == 'true' ||
-      needs.detect-changes.outputs.hindsight-all == 'true' ||
-      needs.detect-changes.outputs.clients-python == 'true' ||
       needs.detect-changes.outputs.integrations-hermes == 'true' ||
       needs.detect-changes.outputs.ci == 'true')
     runs-on: ubuntu-latest
-    # 45 before the provider step was added; it stops the daemon and boots it
-    # again through the plugin's own path, then waits on an LLM extraction.
     timeout-minutes: 60
     permissions:
       contents: read
@@ -4918,13 +4901,14 @@ jobs:
         enable-cache: true
         prune-cache: false
 
-    # hindsight-all pulls the local-ml extra, so the embedded daemon can load
-    # sentence-transformers models. Cache them like the test-embed job does.
+    # The embedded daemon (uvx hindsight-api) loads local sentence-transformers
+    # models. Keyed on the plugin's pyproject: its hindsight-embed range decides
+    # which hindsight-api release runs. Cache them like the test-embed job does.
     - name: Cache HuggingFace models
       uses: actions/cache@v5
       with:
         path: ~/.cache/huggingface
-        key: ${{ runner.os }}-huggingface-hermes-compat-${{ hashFiles('hindsight-api-slim/pyproject.toml') }}
+        key: ${{ runner.os }}-huggingface-hermes-compat-${{ hashFiles('hindsight-integrations/hermes/pyproject.toml') }}
         restore-keys: |
           ${{ runner.os }}-huggingface-hermes-compat-
           ${{ runner.os }}-huggingface-
