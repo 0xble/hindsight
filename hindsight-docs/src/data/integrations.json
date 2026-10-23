@@ -679,6 +679,16 @@
       "category": "tool",
       "link": "https://github.com/Nyrest/notion-to-hindsight-sync",
       "icon": "/img/icons/notion.svg"
+    },
+    {
+      "id": "hindsight-ingestion",
+      "name": "Hindsight Ingestion",
+      "description": "Syncs documents from Notion, SiYuan, S3, WebDAV, Google Drive, OneDrive, email, SQL, the file system and more into Hindsight. Self-hosted with Docker, with incremental and multimodal sync.",
+      "type": "community",
+      "by": "Nyrest",
+      "category": "tool",
+      "link": "https://github.com/Nyrest/hindsight-ingestion",
+      "icon": "/img/icons/hindsight-ingestion.svg"
     }
   ]
 }
