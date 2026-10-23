@@ -640,6 +640,8 @@ def validate_sql_schema(sql: str) -> None:
                         )
 
 
+from ..operation_runs import set_sink as set_operation_sink
+from ..operation_runs import timed as timed_operation_method
 from .bank_templates import apply_default_bank_template_resources, load_default_bank_template_manifest
 from .cross_encoder import RANK_SCORE_PROVIDERS, CrossEncoderModel, TypeSafeCrossEncoder
 from .embeddings import Embeddings, create_embeddings_from_env
@@ -3446,6 +3448,8 @@ class MemoryEngine(MemoryEngineInterface):
         )
         if self._model_call_recorder is not None:
             register_span_recorder(self._model_call_recorder)
+            # Operation runs go to the same extension; every model call names its run.
+            set_operation_sink(self._model_call_extension.record_operation)
 
         # Load memory defense extension; default to the regex extension when the
         # env var is unset.
@@ -6814,6 +6818,8 @@ class MemoryEngine(MemoryEngineInterface):
         return result[0] if result else []
 
     @_bind_bank_id()
+    # Outside timed_retain, so the run is still open when the retain's phases are emitted.
+    @timed_operation_method("retain")
     @_retain_timing_mod.timed_retain
     async def retain_batch_async(
         self,
@@ -9251,6 +9257,7 @@ class MemoryEngine(MemoryEngineInterface):
         )
 
     @_bind_bank_id()
+    @timed_operation_method("recall")
     async def recall_async(
         self,
         bank_id: str,
@@ -15630,6 +15637,7 @@ class MemoryEngine(MemoryEngineInterface):
         return self._reflect_llm_config
 
     @_bind_bank_id()
+    @timed_operation_method("reflect")
     async def reflect_async(
         self,
         bank_id: str,
@@ -18791,6 +18799,7 @@ class MemoryEngine(MemoryEngineInterface):
             outcome="content_written" if final_content.strip() != current_content else "content_unchanged",
         )
 
+    @timed_operation_method("mental_model_refresh")
     async def refresh_mental_model(
         self,
         bank_id: str,
@@ -19031,6 +19040,7 @@ class MemoryEngine(MemoryEngineInterface):
                 request_context=request_context,
             )
 
+    @timed_operation_method("mental_model_dry_run_refresh")
     async def dry_run_refresh_mental_model(
         self,
         bank_id: str,
