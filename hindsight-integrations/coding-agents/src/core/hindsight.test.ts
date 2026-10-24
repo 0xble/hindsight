@@ -89,17 +89,23 @@ describe("HindsightClient.hasDocuments", () => {
     vi.stubGlobal("fetch", fetchMock);
     expect(await client.hasDocuments()).toBe(expected);
     expect(fetchMock).toHaveBeenCalledTimes(1);
-    expect(String(fetchMock.mock.calls[0][0])).toBe("http://x/v1/default/banks/shared%20bank/documents?limit=1");
+    expect(String(fetchMock.mock.calls[0][0])).toBe(
+      "http://x/v1/default/banks/shared%20bank/documents?limit=1"
+    );
   });
 
-  it.each<[number, unknown]>([[200, {}], [200, { items: [], total: -1 }], [500, { detail: "Unavailable" }]])(
-    "keeps missing or unavailable contents unknown at status %i",
-    async (status, body) => {
-      const client = new HindsightClient({ apiUrl: "http://x", bank: "b" });
-      vi.stubGlobal("fetch", vi.fn(async () => jsonResponse(status, body)));
-      await expect(client.hasDocuments()).rejects.toThrow();
-    }
-  );
+  it.each<[number, unknown]>([
+    [200, {}],
+    [200, { items: [], total: -1 }],
+    [500, { detail: "Unavailable" }],
+  ])("keeps missing or unavailable contents unknown at status %i", async (status, body) => {
+    const client = new HindsightClient({ apiUrl: "http://x", bank: "b" });
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => jsonResponse(status, body))
+    );
+    await expect(client.hasDocuments()).rejects.toThrow();
+  });
 });
 
 describe("HindsightClient.documentTags", () => {

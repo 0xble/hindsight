@@ -196,29 +196,40 @@ describe("buildSessionStartContext", () => {
   it.each([
     { name: "confirmed empty", hasDocuments: async () => false, deferred: true },
     { name: "shared bank with documents", hasDocuments: async () => true, deferred: false },
-    { name: "unavailable bank probe", hasDocuments: async () => { throw new Error("offline"); }, deferred: false },
-    { name: "missing bank probe", hasDocuments: undefined, deferred: false },
-  ])("cold git history uses $name bank evidence for retrieval eligibility", async ({ hasDocuments, deferred }) => {
-    const seed = vi.fn();
-    const probe = hasDocuments && vi.fn(async () => {
-      expect(seed).not.toHaveBeenCalled();
-      return hasDocuments();
-    });
-    const out = await buildSessionStartContext({
-      cwd: "/repo/dir",
-      bankId: "shared-bank",
-      cfg: resolveConfig({ codebaseSurvey: false }),
-      client: {
-        listDocumentIds: async () => new Set<string>(),
-        listPages: async () => ({ items: [] }),
-        hasDocuments: probe,
+    {
+      name: "unavailable bank probe",
+      hasDocuments: async () => {
+        throw new Error("offline");
       },
-      hasGit: () => true,
-      startSeed: seed,
-    });
-    expect(out.deferInitialReflect).toBe(deferred);
-    if (probe) expect(probe).toHaveBeenCalledTimes(1);
-  });
+      deferred: false,
+    },
+    { name: "missing bank probe", hasDocuments: undefined, deferred: false },
+  ])(
+    "cold git history uses $name bank evidence for retrieval eligibility",
+    async ({ hasDocuments, deferred }) => {
+      const seed = vi.fn();
+      const probe =
+        hasDocuments &&
+        vi.fn(async () => {
+          expect(seed).not.toHaveBeenCalled();
+          return hasDocuments();
+        });
+      const out = await buildSessionStartContext({
+        cwd: "/repo/dir",
+        bankId: "shared-bank",
+        cfg: resolveConfig({ codebaseSurvey: false }),
+        client: {
+          listDocumentIds: async () => new Set<string>(),
+          listPages: async () => ({ items: [] }),
+          hasDocuments: probe,
+        },
+        hasGit: () => true,
+        startSeed: seed,
+      });
+      expect(out.deferInitialReflect).toBe(deferred);
+      if (probe) expect(probe).toHaveBeenCalledTimes(1);
+    }
+  );
 
   // The old "declined state -> no seed" test is gone with the seed-state file itself: the live
   // bank is the ONLY state now, so there is no client-side declined flag to consult. Opting a

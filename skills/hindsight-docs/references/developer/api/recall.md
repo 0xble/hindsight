@@ -13,6 +13,8 @@ Learn about the four retrieval strategies (semantic, keyword, graph, temporal) a
 > **💡 Prerequisites**
 >
 Make sure you've completed the [Quick Start](./quickstart.md) to install the client and start the server.
+For request-scoped diagnostic no-store, use the [private-read transport](./private-reads.md) rather than changing bank settings.
+
 ## Basic Recall
 
 ### Python

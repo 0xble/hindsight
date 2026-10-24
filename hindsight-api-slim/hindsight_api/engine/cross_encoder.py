@@ -44,6 +44,7 @@ from ..config import (
     DEFAULT_ZEROENTROPY_BASE_URL,
     RerankerMemberConfig,
 )
+from ..private_reads import run_in_executor
 from .aiohttp_session import LoopLocal, LoopLocalSession, UpstreamHTTPError, per_phase_timeout, raise_for_status
 from .bank_attribution import reranker_bank_attribution_headers
 from .local_device import (
@@ -423,8 +424,7 @@ class LocalSTCrossEncoder(CrossEncoderModel):
             raise RuntimeError("Reranker not initialized. Call initialize() first.")
 
         # Use dedicated executor - limited workers naturally limits concurrency
-        loop = asyncio.get_event_loop()
-        return await loop.run_in_executor(
+        return await run_in_executor(
             LocalSTCrossEncoder._executor,
             self._predict_sync,
             pairs,
@@ -1500,8 +1500,7 @@ class FlashRankCrossEncoder(CrossEncoderModel):
             raise RuntimeError("Reranker not initialized. Call initialize() first.")
 
         # Run in thread pool to avoid blocking event loop
-        loop = asyncio.get_event_loop()
-        return await loop.run_in_executor(FlashRankCrossEncoder._executor, self._predict_sync, pairs)
+        return await run_in_executor(FlashRankCrossEncoder._executor, self._predict_sync, pairs)
 
 
 def _truncate_docs_to_tokens(texts: list[str], max_tokens: int) -> list[str]:
@@ -1800,8 +1799,7 @@ class JinaMLXCrossEncoder(CrossEncoderModel):
                 "them yourself: pip install mlx>=0.31.0 mlx-lm>=0.31.1 safetensors>=0.6.2"
             ) from exc
 
-        loop = asyncio.get_event_loop()
-        await loop.run_in_executor(None, self._load_model)
+        await run_in_executor(None, self._load_model)
 
     def _load_model(self) -> None:
         """Download (if needed) and load the MLX reranker. Runs in a thread."""
@@ -1863,8 +1861,7 @@ class JinaMLXCrossEncoder(CrossEncoderModel):
         if self._reranker is None:
             raise RuntimeError("Reranker not initialized. Call initialize() first.")
 
-        loop = asyncio.get_event_loop()
-        return await loop.run_in_executor(None, self._predict_sync, pairs)
+        return await run_in_executor(None, self._predict_sync, pairs)
 
 
 class GoogleCrossEncoder(CrossEncoderModel):
@@ -2108,8 +2105,7 @@ class MultiCrossEncoder(CrossEncoderModel):
         """Initialize one member, off the event loop when it loads a model in-process."""
         member = self._members[index]
         if member.blocking_init:
-            loop = asyncio.get_running_loop()
-            await loop.run_in_executor(None, lambda: asyncio.run(member.initialize()))
+            await run_in_executor(None, lambda: asyncio.run(member.initialize()))
         else:
             await member.initialize()
         self._ready[index] = True

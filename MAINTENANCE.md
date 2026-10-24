@@ -38,6 +38,7 @@ runs; these extend this sole enrollment and scheduling unit:
 - [Coding Hook Prompts](maintenance/coding-hook-prompts.md): when adopting coding-agents prompt injection or transcript filtering, preserve synthetic-turn deferral and accurate fallback diagnostics.
 - [Bounded raw curation](maintenance/raw-curation-v2.md): preserve durable capsules, indexed pins, conditional recovery and deferred maintenance.
 - [Guarded raw curation](maintenance/raw-curation.md): optional atomic PATCH preconditions.
+- [Private Reads](maintenance/private-reads.md): preserve request-scoped no-store reads and normal public diagnostics.
 
 ## Upstream-owned recovery
 

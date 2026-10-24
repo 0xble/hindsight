@@ -58,7 +58,7 @@ def _should_monitor(scope: Scope) -> bool:
     path and is not a retain, hence the method check.
     """
     path = scope.get("path", "")
-    if path.endswith("/memories/recall") or path.endswith("/reflect"):
+    if path.rstrip("/").endswith(("/memories/recall", "/private/recall", "/reflect")):
         return True
     return path.endswith("/memories") and scope.get("method") == "POST"
 

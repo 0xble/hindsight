@@ -530,6 +530,9 @@ def create_llm_provider(
     Returns:
         LLMInterface implementation for the specified provider.
     """
+    from .private_reads import check_private_provider_name
+
+    check_private_provider_name(provider)
     ollama_num_ctx = _validate_ollama_num_ctx(ollama_num_ctx)
 
     from .providers import (
@@ -1201,7 +1204,9 @@ class LLMProvider:
 
         Caching is a soft optimisation: a cache-side error never blocks the call.
         """
-        if not self._provider_impl.supports_prompt_caching():
+        from ..private_reads import is_private_read
+
+        if is_private_read() or not self._provider_impl.supports_prompt_caching():
             return None
         try:
             return await self._provider_impl.get_or_create_cached_prefix(
@@ -1261,6 +1266,9 @@ class LLMProvider:
         # currently inside; the stage_age field then reveals long JSON-schema
         # retry loops (e.g. a small model that can't satisfy strict_schema).
         # No-op outside a worker context.
+        from .private_reads import check_private_llm_config
+
+        check_private_llm_config(self)
         from ..worker.stage import set_stage
 
         structured = "+structured" if response_format is not None else ""
@@ -1447,6 +1455,9 @@ class LLMProvider:
         Returns:
             LLMToolCallResult with content and/or tool_calls.
         """
+        from .private_reads import check_private_llm_config
+
+        check_private_llm_config(self)
         from ..worker.stage import set_stage
 
         # `.queued` until the permits are held — see the structured path above.

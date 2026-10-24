@@ -84,6 +84,13 @@ def get_default_graph_retriever() -> GraphRetriever:
             # links elsewhere walked empty tables and returned nothing, silently.
             raise RuntimeError(f"memories store {store.name!r} supplies no graph retriever")
         _default_graph_retriever = from_store
+    from ...private_reads import is_private_read
+
+    if is_private_read():
+        from ..memories.pg.link_expansion import LinkExpansionRetriever
+        from ..private_reads import require_private_component
+
+        require_private_component(_default_graph_retriever, (LinkExpansionRetriever,))
     return _default_graph_retriever
 
 

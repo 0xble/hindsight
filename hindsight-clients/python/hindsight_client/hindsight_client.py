@@ -129,9 +129,7 @@ def _trigger_input(trigger: dict[str, Any]) -> Any:
 
     model = mental_model_trigger_input.MentalModelTriggerInput
     unnamed_defaults = {
-        name: None
-        for name, field in model.model_fields.items()
-        if name not in trigger and field.default is not None
+        name: None for name, field in model.model_fields.items() if name not in trigger and field.default is not None
     }
     return model(**unnamed_defaults, **trigger)
 
@@ -473,7 +471,9 @@ class Hindsight:
         update_mode: str | None = None,
         retain_async: bool = False,
         operation_id: str | None = None,
-        observation_scopes: Literal["per_tag", "combined", "all_combinations", "shared"] | list[list[str]] | None = None,
+        observation_scopes: Literal["per_tag", "combined", "all_combinations", "shared"]
+        | list[list[str]]
+        | None = None,
         strategy: str | None = None,
     ) -> RetainResponse:
         """
@@ -1248,7 +1248,9 @@ class Hindsight:
         update_mode: str | None = None,
         retain_async: bool = False,
         operation_id: str | None = None,
-        observation_scopes: Literal["per_tag", "combined", "all_combinations", "shared"] | list[list[str]] | None = None,
+        observation_scopes: Literal["per_tag", "combined", "all_combinations", "shared"]
+        | list[list[str]]
+        | None = None,
         strategy: str | None = None,
     ) -> RetainResponse:
         """
@@ -1409,8 +1411,7 @@ class Hindsight:
                 # Fail loud instead of silently dropping a misspelled floor, which
                 # would make the caller believe filtering is active when it is not.
                 raise ValueError(
-                    f"Unknown min_scores keys: {sorted(unknown)}. "
-                    f"Allowed keys: {sorted(allowed_min_scores)}."
+                    f"Unknown min_scores keys: {sorted(unknown)}. Allowed keys: {sorted(allowed_min_scores)}."
                 )
             min_scores_obj = MinScores.from_dict(min_scores)
 
@@ -2867,6 +2868,7 @@ class Hindsight:
         retain_strategies: dict[str, Any] | None = None,
         retain_chunk_batch_size: int | None = None,
         store_document_text: bool | None = None,
+        file_delete_after_retain: bool | None = None,
         # Entity settings
         entity_labels: list[dict[str, Any]] | None = None,
         entities_allow_free_form: bool | None = None,
@@ -2914,6 +2916,7 @@ class Hindsight:
         mcp_enabled_tools: list[str] | None = None,
         # Gemini safety settings
         llm_gemini_safety_settings: list[dict[str, str]] | None = None,
+        llm_language_integrity: Literal["off", "observe", "retry", "reject"] | None = None,
         # Security / audit
         memory_defense: dict[str, Any] | None = None,
         audit_log_enabled: bool | None = None,
@@ -2938,6 +2941,7 @@ class Hindsight:
                 retain_strategies=retain_strategies,
                 retain_chunk_batch_size=retain_chunk_batch_size,
                 store_document_text=store_document_text,
+                file_delete_after_retain=file_delete_after_retain,
                 entity_labels=entity_labels,
                 entities_allow_free_form=entities_allow_free_form,
                 enable_observations=enable_observations,
@@ -2979,6 +2983,7 @@ class Hindsight:
                 disposition_empathy=disposition_empathy,
                 mcp_enabled_tools=mcp_enabled_tools,
                 llm_gemini_safety_settings=llm_gemini_safety_settings,
+                llm_language_integrity=llm_language_integrity,
                 memory_defense=memory_defense,
                 audit_log_enabled=audit_log_enabled,
             )
@@ -3002,6 +3007,7 @@ class Hindsight:
         retain_strategies: dict[str, Any] | None = None,
         retain_chunk_batch_size: int | None = None,
         store_document_text: bool | None = None,
+        file_delete_after_retain: bool | None = None,
         # Entity settings
         entity_labels: list[dict[str, Any]] | None = None,
         entities_allow_free_form: bool | None = None,
@@ -3049,6 +3055,7 @@ class Hindsight:
         mcp_enabled_tools: list[str] | None = None,
         # Gemini safety settings
         llm_gemini_safety_settings: list[dict[str, str]] | None = None,
+        llm_language_integrity: Literal["off", "observe", "retry", "reject"] | None = None,
         # Security / audit
         memory_defense: dict[str, Any] | None = None,
         audit_log_enabled: bool | None = None,
@@ -3077,6 +3084,8 @@ class Hindsight:
             retain_strategies: Named strategy definitions (dict of strategy name to config).
             retain_chunk_batch_size: Number of chunks per sub-batch in chunks extraction mode.
             store_document_text: Persist the original document text alongside extracted facts.
+            file_delete_after_retain: Delete original uploads after retention. False preserves them.
+                None leaves the bank override unchanged.
             entity_labels: Controlled vocabulary for entity labels — a list of label-group
                 dicts, each with a ``key`` and a ``type``: ``"value"``/``"multi-values"`` pick
                 from the group's declared ``values``, while ``"text"``/``"multi-text"`` are
@@ -3133,6 +3142,8 @@ class Hindsight:
             mcp_enabled_tools: List of MCP tool names to enable for this bank.
             llm_gemini_safety_settings: Gemini/VertexAI safety overrides, as a list of
                 ``{"category": ..., "threshold": ...}`` dicts (the shape the provider takes).
+            llm_language_integrity: Source-language guard policy: off, observe, retry, or reject.
+                None leaves the bank override unchanged.
             memory_defense: Memory-defense (prompt-injection / secret redaction) settings.
             audit_log_enabled: Write an audit log entry for each operation on this bank.
 
@@ -3154,6 +3165,7 @@ class Hindsight:
                 "retain_strategies": retain_strategies,
                 "retain_chunk_batch_size": retain_chunk_batch_size,
                 "store_document_text": store_document_text,
+                "file_delete_after_retain": file_delete_after_retain,
                 "entity_labels": entity_labels,
                 "entities_allow_free_form": entities_allow_free_form,
                 "enable_observations": enable_observations,
@@ -3195,6 +3207,7 @@ class Hindsight:
                 "disposition_empathy": disposition_empathy,
                 "mcp_enabled_tools": mcp_enabled_tools,
                 "llm_gemini_safety_settings": llm_gemini_safety_settings,
+                "llm_language_integrity": llm_language_integrity,
                 "memory_defense": memory_defense,
                 "audit_log_enabled": audit_log_enabled,
             }.items()

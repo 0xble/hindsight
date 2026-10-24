@@ -20,6 +20,7 @@ from pydantic import BaseModel, Field
 
 from ..engine.db_utils import acquire_with_retry
 from ..models import RequestContext
+from ..private_reads import is_private_read
 from .background_writes import PendingWrites
 from .schema import fq_table_explicit
 
@@ -156,6 +157,8 @@ class AuditLogger:
         consult the enabled flag: that is per-bank overridable, so a bank may
         turn auditing ON even when the deployment default is off.
         """
+        if is_private_read():
+            return False
         if self._allowed_actions is None:
             return True
         return action in self._allowed_actions
@@ -204,6 +207,8 @@ class AuditLogger:
 
     async def _safe_log(self, entry: AuditEntry) -> None:
         """Write audit entry to DB. Errors are logged, never raised."""
+        if is_private_read():
+            return
         pool = self._pool_getter()
         if pool is None:
             logger.debug("Audit log skipped: pool not available")

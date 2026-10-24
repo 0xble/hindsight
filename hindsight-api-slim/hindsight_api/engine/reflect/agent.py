@@ -2148,7 +2148,23 @@ async def _execute_tool_with_timing(
     enabled_tools: frozenset[str] | None = None,
 ) -> tuple[dict[str, Any], int]:
     """Execute a tool call and return result with timing."""
-    from hindsight_api.tracing import get_tracer
+    from hindsight_api.tracing import get_tracer, is_tracing_enabled
+
+    if not is_tracing_enabled():
+        start = time.time()
+        result = await _execute_tool(
+            tc.name,
+            tc.arguments,
+            search_mental_models_fn,
+            read_mental_models_fn,
+            search_observations_fn,
+            recall_fn,
+            expand_fn,
+            token_limits,
+            ceiling,
+            enabled_tools=enabled_tools,
+        )
+        return result, int((time.time() - start) * 1000)
 
     start_time = time.time()
 

@@ -31,6 +31,7 @@ from typing import Any
 
 from pydantic import BaseModel
 
+from ..private_reads import is_private_read
 from .background_writes import PendingWrites
 from .db_utils import acquire_with_retry
 
@@ -49,7 +50,7 @@ def _llm_requests_persistable() -> bool:
     """
     from .schema import _is_oracle
 
-    return not _is_oracle()
+    return not is_private_read() and not _is_oracle()
 
 
 # ── bank/operation attribution (carried across the async call chain) ──────────
@@ -225,7 +226,7 @@ def current_call_metadata() -> dict[str, Any] | None:
 
 def current_trace_context() -> LLMTraceContext | None:
     """Return the active trace attribution, or None outside a traced context."""
-    return _trace_ctx.get()
+    return None if is_private_read() else _trace_ctx.get()
 
 
 def trace_context_of(llm_config: Any) -> LLMTraceContext | None:
@@ -235,6 +236,8 @@ def trace_context_of(llm_config: Any) -> LLMTraceContext | None:
     or mock substitutes may not, so this degrades gracefully rather than raising
     — tracing is best-effort and must never break an operation.
     """
+    if is_private_read():
+        return None
     getter = getattr(llm_config, "trace_context", None)
     return getter() if callable(getter) else None
 
@@ -246,6 +249,8 @@ def record_created_memory_ids(ids: Iterable[str]) -> None:
     asyncio tasks inherit the same ``LLMTraceContext`` object, so appends from
     parallel consolidation batches land on one shared list.
     """
+    if is_private_read():
+        return
     ctx = _trace_ctx.get()
     if ctx is not None:
         ctx.created_memory_ids.extend(str(i) for i in ids)
@@ -256,6 +261,8 @@ def record_source_memory_ids(ids: Iterable[str]) -> None:
 
     No-op outside a traced operation context.
     """
+    if is_private_read():
+        return
     ctx = _trace_ctx.get()
     if ctx is not None:
         ctx.source_memory_ids.extend(str(i) for i in ids)
@@ -461,6 +468,8 @@ class LLMTraceRecorder:
         shutdown. Writes already in flight need no handling — the pools close
         gracefully, waiting for their connections to be released.
         """
+        if is_private_read():
+            return None
         pool = self._pool_getter()
         if pool is None:
             return None
@@ -474,7 +483,7 @@ class LLMTraceRecorder:
 
     def is_enabled(self, scope: str) -> bool:
         """Whether tracing is active for the given call scope."""
-        if not self._enabled:
+        if is_private_read() or not self._enabled:
             return False
         if not _llm_requests_persistable():
             return False
@@ -566,6 +575,8 @@ class LLMTraceRecorder:
 
     def _record_fire_and_forget(self, record: LLMRequestRecord) -> None:
         """Schedule a trace write as a background task."""
+        if is_private_read():
+            return
         key = record.trace_id
         if self._writes.schedule(self._safe_write(record), key) and key:
             self._mark_rows_written(key)
@@ -675,6 +686,8 @@ class LLMTraceRecorder:
         # The trace-row INSERTs are fire-and-forget; flush *this trace's* writes
         # so the UPDATE patches rows that already exist rather than racing ahead
         # of them (without blocking on unrelated operations' pending writes).
+        if is_private_read():
+            return
         await self._writes.drain(trace_id)
         pool = self._writable()
         if pool is None:

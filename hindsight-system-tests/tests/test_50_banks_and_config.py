@@ -98,7 +98,7 @@ async def test_language_policy_is_bank_local_and_reversible(client, configured_b
     await client.acreate_bank(bank_id=other)
     try:
         baseline = (await client.banks.get_bank_config(other)).config["llm_language_integrity"]
-        await client.banks.update_bank_config(configured_bank, {"updates": {"llm_language_integrity": "reject"}})
+        await client.aupdate_bank_config(configured_bank, llm_language_integrity="reject")
         assert (await client.banks.get_bank_config(configured_bank)).config["llm_language_integrity"] == "reject"
         assert (await client.banks.get_bank_config(other)).config["llm_language_integrity"] == baseline
         with pytest.raises(ApiException) as invalid:
@@ -107,11 +107,21 @@ async def test_language_policy_is_bank_local_and_reversible(client, configured_b
         assert (await client.banks.get_bank_config(configured_bank)).config["llm_language_integrity"] == "reject"
         await client.banks.update_bank_config(configured_bank, {"updates": {"llm_language_integrity": None}})
         assert (await client.banks.get_bank_config(configured_bank)).config["llm_language_integrity"] == baseline
-        await client.banks.update_bank_config(configured_bank, {"updates": {"llm_language_integrity": "off"}})
+        await client.aupdate_bank_config(configured_bank, llm_language_integrity="off")
         await client.banks.reset_bank_config(configured_bank)
         assert (await client.banks.get_bank_config(configured_bank)).config["llm_language_integrity"] == baseline
     finally:
         await client.banks.delete_bank(other)
+
+
+async def test_convenience_updates_preserve_omitted_policy_overrides(client, configured_bank):
+    await client.aupdate_bank_config(configured_bank, file_delete_after_retain=False, llm_language_integrity="reject")
+    await client.aupdate_bank_config(configured_bank, retain_chunk_size=1000)
+
+    config = (await client.banks.get_bank_config(configured_bank)).config
+    assert config["file_delete_after_retain"] is False
+    assert config["llm_language_integrity"] == "reject"
+    assert config["retain_chunk_size"] == 1000
 
 
 async def test_a_bank_that_does_not_exist_is_a_404_not_an_empty_answer(client):
