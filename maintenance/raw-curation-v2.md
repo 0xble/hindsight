@@ -23,7 +23,9 @@ unchanged. Logical bank transfer is not capsule backup.
   must exist. Co-sources and link-only peers are protected by their exact row
   snapshots, not by source-content revisions or source-byte accounting: peer
   documents are never rewritten, and co-sources only have consolidation timestamps
-  reset and restored from their row snapshot. Reject transitive observations and
+  reset and restored from their row snapshot. Apply and revert recapture with the
+  source set recorded in the capsule, so capsules applied before this narrowing
+  (which bound every raw closure row) still revert. Reject transitive observations and
   cross-bank dependencies. Recheck foreign links and
   observations under the same phase-2 apply and revert locks, before mutation.
 - Corrections retain entity associations. Provider work happens outside pooled
