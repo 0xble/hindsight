@@ -459,8 +459,13 @@ async def capture(conn: DatabaseConnection, bank_id: str, scope: ClosureScope) -
     documents: dict[str, int] = {}
     chunks: dict[str, int] = {}
     source_bytes = 0
+    # Only targets are corrected, so only their sources bind the manifest CAS.
+    # Co-sources and link-only peers are never rewritten: their exact row
+    # snapshots restore them, and their (often multi-MiB) transcripts are not
+    # correction input.
+    target_ids = {str(i) for i in scope.targets}
     for row in [*memories.rows, *archives.rows]:
-        if row["fact_type"] not in ("world", "experience"):
+        if row["fact_type"] not in ("world", "experience") or str(row["id"]) not in target_ids:
             continue
         source_key = revision({"document_id": row["document_id"], "chunk_id": row["chunk_id"]})
         source = cached_sources.get(source_key)
