@@ -149,3 +149,54 @@ describe("full bank config surface mapping", () => {
     expect(body.apply_all_directives).toBeUndefined();
   });
 });
+
+describe("bank file retention and generated-language policy mapping", () => {
+  let client: HindsightClient;
+
+  beforeEach(() => {
+    client = new HindsightClient({ baseUrl: "http://localhost:8888" });
+    mockedUpdateConfig.mockReset();
+    mockedUpdateConfig.mockResolvedValue({
+      data: { bank_id: "bank", config: {}, overrides: {} },
+    } as Awaited<ReturnType<typeof sdk.updateBankConfig>>);
+  });
+
+  test.each([false, true])(
+    "updateBankConfig forwards file deletion policy %p",
+    async (deleteAfterRetain) => {
+      const options = { retainChunkSize: 1000, fileDeleteAfterRetain: deleteAfterRetain };
+      await client.updateBankConfig("bank", options);
+
+      expect(mockedUpdateConfig).toHaveBeenCalledTimes(1);
+      expect(mockedUpdateConfig.mock.calls[0][0].body?.updates).toEqual({
+        retain_chunk_size: 1000,
+        file_delete_after_retain: deleteAfterRetain,
+      });
+    }
+  );
+
+  test.each(["off", "observe", "retry", "reject"] as const)(
+    "updateBankConfig forwards generated-language policy %s",
+    async (policy) => {
+      const options = { retainChunkSize: 1000, llmLanguageIntegrity: policy };
+      await client.updateBankConfig("bank", options);
+
+      expect(mockedUpdateConfig).toHaveBeenCalledTimes(1);
+      expect(mockedUpdateConfig.mock.calls[0][0].body?.updates).toEqual({
+        retain_chunk_size: 1000,
+        llm_language_integrity: policy,
+      });
+    }
+  );
+
+  test("updateBankConfig omits explicitly undefined policies", async () => {
+    const options = {
+      retainChunkSize: 1000,
+      fileDeleteAfterRetain: undefined,
+      llmLanguageIntegrity: undefined,
+    };
+    await client.updateBankConfig("bank", options);
+
+    expect(mockedUpdateConfig.mock.calls[0][0].body?.updates).toEqual({ retain_chunk_size: 1000 });
+  });
+});

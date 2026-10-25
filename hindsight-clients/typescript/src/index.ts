@@ -914,6 +914,7 @@ export class HindsightClient {
       /** Max inline attachments one extraction chunk may carry. `retainChunkSize`
        *  budgets text only, so this is what bounds attachments. */
       retainMaxAttachmentsPerChunk?: number;
+      fileDeleteAfterRetain?: boolean;
       /**
        * Controlled vocabulary for entity labels. Each group classifies a fact under a
        * `key`: `"value"`/`"multi-values"` pick from the group's declared `values`, while
@@ -1007,6 +1008,8 @@ export class HindsightClient {
       recallBudgetMax?: number;
       /** MCP tool names enabled for this bank. */
       mcpEnabledTools?: string[];
+      /** Source-language guard for generated output. */
+      llmLanguageIntegrity?: "off" | "observe" | "retry" | "reject";
       /** Gemini/VertexAI safety overrides. */
       llmGeminiSafetySettings?: { category: string; threshold: string }[];
       /** Memory-defense (prompt-injection / secret redaction) settings. */
@@ -1028,6 +1031,8 @@ export class HindsightClient {
       updates.retain_structured_chunk_size = options.retainStructuredChunkSize;
     if (options.retainMaxAttachmentsPerChunk !== undefined)
       updates.retain_max_attachments_per_chunk = options.retainMaxAttachmentsPerChunk;
+    if (options.fileDeleteAfterRetain !== undefined)
+      updates.file_delete_after_retain = options.fileDeleteAfterRetain;
     if (options.entityLabels !== undefined) updates.entity_labels = options.entityLabels;
     if (options.entitiesAllowFreeForm !== undefined)
       updates.entities_allow_free_form = options.entitiesAllowFreeForm;
@@ -1114,6 +1119,8 @@ export class HindsightClient {
     if (options.recallBudgetMin !== undefined) updates.recall_budget_min = options.recallBudgetMin;
     if (options.recallBudgetMax !== undefined) updates.recall_budget_max = options.recallBudgetMax;
     if (options.mcpEnabledTools !== undefined) updates.mcp_enabled_tools = options.mcpEnabledTools;
+    if (options.llmLanguageIntegrity !== undefined)
+      updates.llm_language_integrity = options.llmLanguageIntegrity;
     if (options.llmGeminiSafetySettings !== undefined)
       updates.llm_gemini_safety_settings = options.llmGeminiSafetySettings;
     if (options.memoryDefense !== undefined) updates.memory_defense = options.memoryDefense;
