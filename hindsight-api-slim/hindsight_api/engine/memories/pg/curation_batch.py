@@ -373,7 +373,15 @@ async def assert_same_bank_dependencies(conn: DatabaseConnection, bank_id: str, 
         raise CurationBatchConflict("Cross-bank dependency is outside the recoverable closure")
 
 
-async def capture(conn: DatabaseConnection, bank_id: str, scope: ClosureScope) -> CurationSnapshot:
+async def capture(
+    conn: DatabaseConnection, bank_id: str, scope: ClosureScope, source_ids: Iterable[str | UUID] | None = None
+) -> CurationSnapshot:
+    """Snapshot one closure.
+
+    ``source_ids`` selects the raw rows whose source revisions bind the CAS.
+    New batches bind only their targets. Revert passes the IDs recorded in the
+    capsule, so capsules applied before that narrowing still compare equal.
+    """
     affected = _ids(scope.affected)
     # Discovery is not a lasting admission decision: provider work releases
     # locks. Recheck under phase-2/revert row locks before any cascade or restore.
@@ -463,7 +471,7 @@ async def capture(conn: DatabaseConnection, bank_id: str, scope: ClosureScope) -
     # Co-sources and link-only peers are never rewritten: their exact row
     # snapshots restore them, and their (often multi-MiB) transcripts are not
     # correction input.
-    target_ids = {str(i) for i in scope.targets}
+    target_ids = {str(i) for i in (scope.targets if source_ids is None else source_ids)}
     for row in [*memories.rows, *archives.rows]:
         if row["fact_type"] not in ("world", "experience") or str(row["id"]) not in target_ids:
             continue
@@ -657,7 +665,7 @@ async def apply(
         bank_id,
         sorted(co_sources),
     )
-    after = await capture(conn, bank_id, before.scope)
+    after = await capture(conn, bank_id, before.scope, before.source_revisions)
     receipt = CurationReceipt(
         bank_id=bank_id,
         batch_id=batch_id,
@@ -700,7 +708,8 @@ async def revert(
         raise CurationBatchConflict("Receipt revision changed")
     if capsule.receipt.status == "reverted":
         return capsule.receipt
-    current = await capture(conn, bank_id, capsule.before.scope)
+    # Bind the source set this capsule recorded, which predates any narrowing.
+    current = await capture(conn, bank_id, capsule.before.scope, capsule.after.source_revisions)
     if snapshot_revision(current) != snapshot_revision(capsule.after):
         raise CurationBatchConflict("Committed closure changed; capsule preserved")
     before = capsule.before
@@ -745,7 +754,7 @@ async def revert(
     await _insert_rows(
         conn, "observation_history", before.history, [r for r in before.history.rows if r["id"] not in present_history]
     )
-    restored = await capture(conn, bank_id, before.scope)
+    restored = await capture(conn, bank_id, before.scope, before.source_revisions)
     if snapshot_revision(restored) != snapshot_revision(before):
         raise CurationBatchConflict("Restoration mismatch; transaction rolled back")
     receipt = capsule.receipt.model_copy(

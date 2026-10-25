@@ -282,6 +282,29 @@ async def test_oversize_cosource_document_restores_timestamps(memory, seeded):
     assert snapshot_revision(await snapshot(memory, seeded, before.scope)) == snapshot_revision(before)
 
 
+async def test_capsule_applied_before_target_source_narrowing_reverts(memory, seeded, monkeypatch):
+    """Capsules written while every raw closure row bound a source revision still revert."""
+    original = store.capture
+
+    async def legacy_capture(conn, bank_id, scope, source_ids=None):
+        if source_ids is None:
+            source_ids = [*scope.affected, *scope.peers]
+        return await original(conn, bank_id, scope, source_ids)
+
+    monkeypatch.setattr(store, "capture", legacy_capture)
+    before = await snapshot(memory, seeded)
+    receipt = await apply(memory, seeded, manifest(await preview(memory, seeded)))
+    async with memory._pool.acquire() as conn:
+        capsule = await store.get_capsule(conn, seeded.bank, "fixture")
+    assert capsule is not None
+    assert str(seeded.peer) in capsule.after.source_revisions
+    monkeypatch.setattr(store, "capture", original)
+    reverted = await revert(memory, seeded, receipt)
+    assert reverted.status == "reverted"
+    monkeypatch.setattr(store, "capture", legacy_capture)
+    assert snapshot_revision(await snapshot(memory, seeded, before.scope)) == snapshot_revision(before)
+
+
 @pytest.mark.parametrize("table,column", [("documents", "original_text"), ("chunks", "chunk_text")])
 async def test_oversize_target_source_still_refused(memory, seeded, table, column):
     request = manifest(await preview(memory, seeded))
