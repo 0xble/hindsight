@@ -346,8 +346,14 @@ def main():
     if not is_daemon:
         config.log_config()
 
-    # Register cleanup handlers
+    # Register cleanup handlers. Keep the caller's signal handlers: tests and
+    # embedded callers may invoke main() in-process, and a worker's SIGTERM must
+    # not become a pytest-worker SystemExit after main() returns.
     atexit.register(_cleanup)
+    previous_signal_handlers = {
+        signal.SIGINT: signal.getsignal(signal.SIGINT),
+        signal.SIGTERM: signal.getsignal(signal.SIGTERM),
+    }
     signal.signal(signal.SIGINT, _signal_handler)
     signal.signal(signal.SIGTERM, _signal_handler)
 
@@ -489,7 +495,11 @@ def main():
             text_search_extension=config.text_search_extension,
         )
 
-    uvicorn.run(**uvicorn_config)
+    try:
+        uvicorn.run(**uvicorn_config)
+    finally:
+        for signum, handler in previous_signal_handlers.items():
+            signal.signal(signum, handler)
 
 
 if __name__ == "__main__":

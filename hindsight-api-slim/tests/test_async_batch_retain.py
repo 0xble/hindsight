@@ -1331,8 +1331,11 @@ async def test_oversized_single_item_creates_one_child_not_many(memory, request_
     # async_operations rows that submit_async_retain inserts (those rows are
     # committed before submit_task is invoked), so we don't need the
     # SyncTaskBackend to drive the slow LLM pipeline to completion.
-    async def noop_submit_task(_task_dict):
-        return None
+    async def noop_submit_task(task_dict):
+        await memory._pool.execute(
+            "UPDATE async_operations SET status = 'completed' WHERE operation_id = $1",
+            uuid.UUID(task_dict["operation_id"]),
+        )
 
     monkeypatch.setattr(memory._task_backend, "submit_task", noop_submit_task)
 
@@ -1403,6 +1406,12 @@ async def test_oversized_single_item_creates_one_child_not_many(memory, request_
         "Child must carry the FULL un-chunked content — chunking happens inside the worker, not at submit time"
     )
 
+    pending = await pool.fetchval(
+        "SELECT count(*) FROM async_operations WHERE bank_id = $1 AND status = 'pending' AND task_payload IS NOT NULL",
+        bank_id,
+    )
+    assert pending == 0, "structural test dispatch must not leave a claimable row for a later worker poller"
+
 
 @pytest.mark.asyncio
 async def test_oversized_item_among_small_items_keeps_small_items_packed(memory, request_context, monkeypatch):
@@ -1415,8 +1424,13 @@ async def test_oversized_item_among_small_items_keeps_small_items_packed(memory,
     await _ensure_bank(pool, bank_id)
 
     # Structural assertion on async_operations rows only — skip worker dispatch.
-    async def noop_submit_task(_task_dict):
-        return None
+    # Mark each inserted child completed so this test cannot leave claimable work
+    # for a later poller in the shared test database.
+    async def noop_submit_task(task_dict):
+        await memory._pool.execute(
+            "UPDATE async_operations SET status = 'completed' WHERE operation_id = $1",
+            uuid.UUID(task_dict["operation_id"]),
+        )
 
     monkeypatch.setattr(memory._task_backend, "submit_task", noop_submit_task)
 
@@ -1539,8 +1553,11 @@ async def test_submit_async_batch_retain_creates_missing_bank(memory, request_co
     """First async retain to a new bank lazily creates the bank (async_operations
     has an FK to banks) instead of raising a constraint error."""
 
-    async def noop_submit_task(_task_dict):
-        return None
+    async def noop_submit_task(task_dict):
+        await memory._pool.execute(
+            "UPDATE async_operations SET status = 'completed' WHERE operation_id = $1",
+            uuid.UUID(task_dict["operation_id"]),
+        )
 
     monkeypatch.setattr(memory._task_backend, "submit_task", noop_submit_task)
 
@@ -1772,8 +1789,11 @@ async def test_async_retain_survives_nul_and_surrogate_in_any_field(memory, requ
     await _ensure_bank(pool, bank_id)
 
     # Structural assertion on the committed rows — no need to drive the pipeline.
-    async def noop_submit_task(_task_dict):
-        return None
+    async def noop_submit_task(task_dict):
+        await memory._pool.execute(
+            "UPDATE async_operations SET status = 'completed' WHERE operation_id = $1",
+            uuid.UUID(task_dict["operation_id"]),
+        )
 
     monkeypatch.setattr(memory._task_backend, "submit_task", noop_submit_task)
 
