@@ -18,9 +18,15 @@ unchanged. Logical bank transfer is not capsule backup.
 - Support SQL-owned PostgreSQL memories only. Reject other stores and Oracle.
 - Limit one batch to 50 raw targets, 200 one-hop observations, 500 co-sources or
   graph peers, 2000 entity pins/postings, 4000 incident links/cooccurrences and
-  2000 history rows. Snapshot plus unique document/chunk content is at most 8 MiB.
-  Each source document and chunk is at most 1 MiB. Reject transitive observations,
-  missing provenance and cross-bank dependencies. Recheck foreign links and
+  2000 history rows. Snapshot plus unique target document/chunk content is at most
+  8 MiB. Each target source document and chunk is at most 1 MiB. Target provenance
+  must exist. Co-sources and link-only peers are protected by their exact row
+  snapshots, not by source-content revisions or source-byte accounting: peer
+  documents are never rewritten, and co-sources only have consolidation timestamps
+  reset and restored from their row snapshot. Apply and revert recapture with the
+  source set recorded in the capsule, so capsules applied before this narrowing
+  (which bound every raw closure row) still revert. Reject transitive observations and
+  cross-bank dependencies. Recheck foreign links and
   observations under the same phase-2 apply and revert locks, before mutation.
 - Corrections retain entity associations. Provider work happens outside pooled
   connections and locks. A bank-keyed advisory transaction lock serializes
