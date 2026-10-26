@@ -217,6 +217,44 @@ The fork-only normalized-observation index revision `e6f7a8b9c0d1` was introduce
   when these fork retry/cancellation contracts still pass. Rollback is source
   only, never a database status reset or runtime restart.
 
+## Cached Index DDL And Graph Deadline Cleanup
+
+- **Disposition:** Source corrections to the accepted `v0.10.3` paths. Nightly
+  runs `39779058353` and `40191601418` failed on unchanged fork revision
+  `6626b87ca71593be9db604f648752836c3136f77`; run `40090804970` passed.
+- **Index exclusion:** `create_data_access_ops` caches one `PostgreSQLOps` per
+  dialect, beyond individual engine/event-loop lifetimes. Preserve per-table
+  process-wide exclusion introduced by `d733772e3`, but use the existing
+  `CrossLoopLock` rather than an `asyncio.Lock` that binds on its first contended
+  acquire. Independent per-loop locks would not preserve DDL serialization.
+- **Graph deadline:** Observation expansion's timeout (`cc806c4d6`) can cancel
+  immediately after asyncpg's Parse/Describe/Flush completes, before the fetch
+  sends Bind/Execute/Sync. PostgreSQL then retains an implicit transaction and
+  snapshot even though the driver's `is_in_transaction()` is false. The
+  reset-free pool cannot detect it. A simple-query synchronization on this
+  timeout path ends that cycle before release, matching the combined expansion
+  fallback's existing next-query behavior without restoring reset SQL on every
+  normal pool release. Otherwise `DROP INDEX CONCURRENTLY` during subsequent
+  bank deletion can wait indefinitely for the parked snapshot.
+- **Regression:** `tests/test_postgres_index_ddl_loops.py` forces contention on
+  the same cached dialect across 2 closed/recreated loops and verifies shared
+  create/drop exclusion. `tests/test_graph_timeout_cleanup.py` cancels a real
+  asyncpg fetch after prepare, then checks `pg_stat_activity` from a separate
+  connection after pool release. `tests/test_link_expansion_config.py` retains
+  its actual deadline assertion and checks the cleanup query. Keep the original
+  `tests/test_load_large_batch.py` and `tests/test_graph_entity_fanout_cap.py`
+  assertions and deadlines unchanged. All 5 files belong to `PATCH_REGRESSIONS`
+  in `bin/ci`.
+- **Falsification:** A fresh dialect per engine, or a contended cached lock
+  that survives sequential loops without error, would refute the loop-lifetime
+  diagnosis. A synchronized idle server backend after cancelled prepare with
+  the original reset-free release would refute the transaction leak. A future
+  nightly hang whose lock wait has no parked graph backend requires a separate
+  diagnosis rather than assuming every timeout has this cause.
+- **Retire/rollback:** Retire only when an adopted release preserves cross-loop
+  DDL exclusion and passes the cancelled-prepare server-state regression.
+  Rollback is source-only, with no runtime restart or database mutation.
+
 Run the API-local regression commands from `hindsight-api-slim`.
 
 

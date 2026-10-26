@@ -4,8 +4,9 @@ Uses unnest(), LATERAL, DISTINCT ON, and native array operations for
 efficient batch operations.
 """
 
-import asyncio
 from datetime import datetime
+
+from hindsight_api._cross_loop import CrossLoopLock
 
 from .base import DatabaseConnection
 from .ops import (
@@ -71,13 +72,15 @@ class PostgreSQLOps(DataAccessOps):
         # deleted at once form a wait cycle Postgres resolves by killing one.
         # A session advisory lock would serialize this across processes too, but
         # advisory locks are banned here (poolers hand sessions around; see the
-        # Database Locking standard). In-process the asyncio lock removes the
-        # cycle outright; across processes the callers' retry-with-backoff
-        # absorbs the (now much rarer) collisions.
-        self._index_ddl_locks: dict[str, asyncio.Lock] = {}
+        # Database Locking standard). In-process exclusion removes the cycle
+        # outright; across processes the callers' retry-with-backoff absorbs
+        # the (now much rarer) collisions. Ops is cached per dialect, so this
+        # state outlives individual engines and event loops. Keep exclusion
+        # across loops too, not one independent lock per loop.
+        self._index_ddl_locks: dict[str, CrossLoopLock] = {}
 
-    def _index_ddl_lock(self, table: str) -> asyncio.Lock:
-        return self._index_ddl_locks.setdefault(table, asyncio.Lock())
+    def _index_ddl_lock(self, table: str) -> CrossLoopLock:
+        return self._index_ddl_locks.setdefault(table, CrossLoopLock())
 
     @property
     def uses_observation_sources_table(self) -> bool:
