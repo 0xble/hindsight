@@ -15,14 +15,20 @@ from ..private_reads import PrivateReadUnsupportedError, private_read_scope
 if TYPE_CHECKING:
     from ..engine.memory_engine import MemoryEngine
 
-# Also match base-path mounts and trailing slashes. Never let a redirect or a
-# malformed private body run through the public diagnostic path.
-PRIVATE_READ_PATH = re.compile(r"/v1/default/banks/.*?/private/(?:recall|reflect)/?$", re.DOTALL)
+# Keep decoded bank IDs within 1 nonempty path segment. A slash-spanning bank
+# match misclassified public document IDs as private and suppressed their audit.
+# Allow mount prefixes, but never consume an earlier bank API namespace in one:
+# document IDs can themselves contain an entire private-looking API path.
+PRIVATE_READ_PATH = re.compile(
+    r"^(?:(?!/v1/default/banks/).)*/v1/default/banks/[^/]+/private/(?:recall|reflect)/?\Z", re.DOTALL
+)
 # OTel's FastAPI instrumentor wraps the *whole* Starlette stack, not just user
 # middleware. Exclude this path there too, regardless of operator exclusions.
 # Keep DOTALL scoped to this branch: OTel joins operator exclusions and this
 # expression with '|', where an unscoped '(?s)' is invalid after another branch.
-PRIVATE_READ_TRACE_EXCLUSION = r"(?s:^[^?]*/v1/default/banks/[^/]+/private/(?:recall|reflect)/?(?:\?.*)?$)"
+PRIVATE_READ_TRACE_EXCLUSION = (
+    r"(?s:^(?:(?!/v1/default/banks/)[^?])*/v1/default/banks/[^/]+/private/(?:recall|reflect)/?(?:\?.*)?\Z)"
+)
 
 
 class PrivateReadMiddleware:

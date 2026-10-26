@@ -122,6 +122,53 @@ async def test_public_read_still_audits_and_logs(http_reads, caplog, operation, 
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "document_id",
+    [
+        "evil/private/recall",
+        "evil/private/reflect",
+        "v1/default/banks/other/private/recall",
+        "v1/default/banks/other/private/reflect",
+    ],
+)
+@pytest.mark.parametrize("method", ["DELETE", "PATCH"])
+@pytest.mark.parametrize("fails", [False, True])
+async def test_public_document_suffix_keeps_audit_and_error_diagnostics(
+    http_reads, caplog, document_id: str, method: str, fails: bool
+) -> None:
+    app, engine, audit = http_reads
+    caplog.set_level(logging.DEBUG)
+    # Keep the real route, request parser and audit wrapper. Only the isolated
+    # fixture's persistence seam is replaced, as in the neighboring HTTP reads.
+    if method == "DELETE":
+        engine.delete_document = AsyncMock(return_value={"document_deleted": 1, "memory_units_deleted": 0})
+        action = "delete_document"
+    else:
+        engine.update_document = AsyncMock(return_value=True)
+        action = "update_document"
+    mutation = getattr(engine, action)
+    if fails:
+        mutation.side_effect = RuntimeError("public-document-error")
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://fixture") as client:
+        response = await client.request(
+            method,
+            f"/v1/default/banks/fixture/documents/{document_id}",
+            json={"tags": ["public-document"]} if method == "PATCH" else None,
+            headers={"Authorization": "Bearer fixture-key"},
+        )
+    await asyncio.sleep(0)
+    assert response.status_code == (500 if fails else 200), response.text
+    assert "X-Hindsight-Private-Read" not in response.headers
+    assert response.headers.get("Cache-Control") != "no-store"
+    mutation.assert_awaited_once()
+    assert mutation.call_args.args == (document_id, "fixture")
+    audit._safe_log.assert_called_once()
+    assert audit._safe_log.call_args.args[0].action == action
+    if fails:
+        assert "public-document-error" in caplog.text
+
+
+@pytest.mark.asyncio
 async def test_private_validation_and_error_do_not_persist(http_reads, caplog):
     app, _, audit = http_reads
     caplog.set_level(logging.DEBUG)

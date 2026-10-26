@@ -31,6 +31,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import re
 from collections.abc import Awaitable, Callable, MutableMapping
 from typing import Any
 
@@ -42,6 +43,14 @@ from ..cancellation import CancellationToken
 SCOPE_CANCELLATION_TOKEN = "hindsight.cancellation_token"
 
 _CLIENT_DISCONNECTED_REASON = "client disconnected"
+
+# Only operation routes own the receive pump. A suffix match also captured public
+# document IDs and could buffer a request unrelated to recall, reflect or retain.
+_MONITORED_OPERATION_PATH = re.compile(
+    r"^(?:(?!/v1/default/banks/).)*/v1/default/banks/[^/]+/"
+    r"(?P<operation>memories/recall|reflect|private/(?:recall|reflect)|memories)/?\Z",
+    re.DOTALL,
+)
 
 Scope = MutableMapping[str, Any]
 Receive = Callable[[], Awaitable[MutableMapping[str, Any]]]
@@ -57,10 +66,10 @@ def _should_monitor(scope: Scope) -> bool:
     possibly into a bank deleted while it ran (issue #4526). DELETE shares the same
     path and is not a retain, hence the method check.
     """
-    path = scope.get("path", "")
-    if path.rstrip("/").endswith(("/memories/recall", "/private/recall", "/reflect")):
-        return True
-    return path.endswith("/memories") and scope.get("method") == "POST"
+    matched = _MONITORED_OPERATION_PATH.search(scope.get("path", ""))
+    if matched is None:
+        return False
+    return matched["operation"] != "memories" or scope.get("method") == "POST"
 
 
 class ClientDisconnectCancellationMiddleware:

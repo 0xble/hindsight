@@ -15,12 +15,14 @@ from time import monotonic
 import pytest
 from hindsight_client_api import ApiClient, Configuration
 from hindsight_client_api.api.audit_api import AuditApi
+from hindsight_client_api.api.documents_api import DocumentsApi
 from hindsight_client_api.api.llm_traces_api import LLMTracesApi
 from hindsight_client_api.api.memory_api import MemoryApi
 from hindsight_client_api.api.monitoring_api import MonitoringApi
 from hindsight_client_api.models.llm_request_list_response import LLMRequestListResponse
 from hindsight_client_api.models.recall_request import RecallRequest
 from hindsight_client_api.models.reflect_request import ReflectRequest
+from hindsight_client_api.models.update_document_request import UpdateDocumentRequest
 
 from hindsight_system_tests import reflect_loop
 from hindsight_system_tests.payloads import consolidation, extracted, fact
@@ -122,3 +124,62 @@ async def test_private_reads_leave_no_read_history_and_public_writes_resume(
         assert reflect_audit.total == len(reflect_audit.items) == 2
         recall_audit = await audit.list_audit_logs(bank_id=bank_id, action="recall", limit=500)
         assert recall_audit.total == len(recall_audit.items) == 1
+
+
+@pytest.mark.parametrize(
+    "document_id",
+    [
+        "evil/private/recall",
+        "evil/private/reflect",
+        "v1/default/banks/other/private/recall",
+        "v1/default/banks/other/private/reflect",
+    ],
+)
+async def test_public_document_private_suffix_keeps_mutations_audited(
+    client, llm, bank_id, settled, hindsight_server, document_id: str
+) -> None:
+    llm.on_step("extract_facts").returns(extracted(fact(FACT, who="fixture musician")))
+    llm.on_step("consolidate").returns(consolidation())
+    await client.aupdate_bank_config(bank_id=bank_id, audit_log_enabled=True)
+    await client.aretain(bank_id=bank_id, content=FACT, document_id=document_id)
+    await settled(bank_id)
+
+    async with ApiClient(Configuration(host=hindsight_server.url)) as transport:
+        documents = DocumentsApi(transport)
+        audit = AuditApi(transport)
+        updated = await documents.update_document_with_http_info(
+            bank_id=bank_id,
+            document_id=document_id,
+            update_document_request=UpdateDocumentRequest(tags=["public-document"]),
+        )
+        assert updated.status_code == 200
+        assert updated.data is not None and updated.data.success is True
+        assert updated.headers is not None
+        update_headers = {name.lower(): value for name, value in updated.headers.items()}
+        assert "x-hindsight-private-read" not in update_headers
+        assert update_headers.get("cache-control") != "no-store"
+
+        deleted = await documents.delete_document_with_http_info(bank_id=bank_id, document_id=document_id)
+        assert deleted.status_code == 200
+        assert deleted.data is not None and deleted.data.success is True
+        assert deleted.data.document_id == document_id
+        assert deleted.data.memory_units_deleted == 1
+        assert deleted.headers is not None
+        delete_headers = {name.lower(): value for name, value in deleted.headers.items()}
+        assert "x-hindsight-private-read" not in delete_headers
+        assert delete_headers.get("cache-control") != "no-store"
+        remaining = await documents.list_documents(bank_id=bank_id)
+        assert remaining.total == len(remaining.items) == 0
+
+        # Audit writes are asynchronous. Observe both through the published API,
+        # not SQL, engine internals or a fixed delay that could miss a late write.
+        deadline = monotonic() + 20
+        while True:
+            updates = await audit.list_audit_logs(bank_id=bank_id, action="update_document", limit=500)
+            deletes = await audit.list_audit_logs(bank_id=bank_id, action="delete_document", limit=500)
+            if updates.total and deletes.total:
+                break
+            assert monotonic() < deadline, "Public document mutations did not retain their audit records"
+            await asyncio.sleep(0.05)
+        assert updates.total == len(updates.items) == 1
+        assert deletes.total == len(deletes.items) == 1

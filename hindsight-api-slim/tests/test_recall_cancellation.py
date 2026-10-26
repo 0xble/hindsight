@@ -111,6 +111,32 @@ def test_should_monitor_recall_reflect_and_retain():
     assert _should_monitor(_scope("/v1/default/banks/b/files/retain")) is False
 
 
+@pytest.mark.parametrize("operation", ["memories/recall", "reflect", "private/recall", "private/reflect"])
+@pytest.mark.parametrize("prefix", ["", "/mount", "/mount\nwith-control"])
+@pytest.mark.parametrize("suffix", ["", "/"])
+def test_should_monitor_exact_read_routes(operation: str, prefix: str, suffix: str) -> None:
+    assert _should_monitor(_scope(f"{prefix}/v1/default/banks/line\nbreak/{operation}{suffix}")) is True
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "/v1/default/banks/b/documents/evil/private/recall",
+        "/v1/default/banks/b/documents/evil/private/reflect",
+        "/v1/default/banks/b/documents/evil/memories/recall",
+        "/v1/default/banks/b/documents/evil/reflect",
+        "/v1/default/banks/b/documents/evil/memories",
+        "/v1/default/banks/b/documents/v1/default/banks/x/private/recall",
+        "/v1/default/banks/b/documents/v1/default/banks/x/reflect",
+        "/v1/default/banks//private/recall",
+        "/v1/default/banks/b/private/recall/extra",
+        "/v1/default/banks/b/private/recall\n",
+    ],
+)
+def test_should_not_monitor_document_suffixes_or_malformed_routes(path: str) -> None:
+    assert _should_monitor(_scope(path)) is False
+
+
 # --- run_cancellable_on_disconnect ----------------------------------------------
 
 

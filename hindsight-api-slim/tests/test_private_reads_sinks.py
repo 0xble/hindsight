@@ -374,14 +374,39 @@ def test_private_path_policy_covers_decoded_control_characters_and_mounts():
     from hindsight_api.api.private_reads import PRIVATE_READ_PATH, PRIVATE_READ_TRACE_EXCLUSION
 
     for bank in ("fixture", "line\nbreak", "bank?name"):
-        path = f"/mount/v1/default/banks/{bank}/private/recall"
-        assert PRIVATE_READ_PATH.search(path)
-        assert re.search(PRIVATE_READ_TRACE_EXCLUSION, f"http://fixture{path}?extra=1")
+        for prefix in ("", "/mount", "/mount\nwith-control"):
+            for operation in ("recall", "reflect"):
+                for suffix in ("", "/"):
+                    path = f"{prefix}/v1/default/banks/{bank}/private/{operation}{suffix}"
+                    assert PRIVATE_READ_PATH.search(path)
+                    assert re.search(PRIVATE_READ_TRACE_EXCLUSION, f"http://fixture{path}?extra=1")
     assert PRIVATE_READ_PATH.search("/v1/default/banks/fixture/memories/recall") is None
     assert (
         re.search(PRIVATE_READ_TRACE_EXCLUSION, "http://fixture/version?next=/v1/default/banks/fixture/private/recall")
         is None
     )
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "/v1/default/banks/b/documents/evil/private/recall",
+        "/v1/default/banks/b/documents/evil/private/reflect",
+        "/mount/v1/default/banks/b/documents/evil/private/recall/",
+        "/v1/default/banks/b/documents/v1/default/banks/x/private/recall",
+        "/v1/default/banks/b/documents/v1/default/banks/x/private/reflect",
+        "/v1/default/banks//private/recall",
+        "/v1/default/banks/b/private/recall/extra",
+        "/v1/default/banks/b/private/recall\n",
+    ],
+)
+def test_private_path_policy_does_not_reclassify_public_or_malformed_paths(path: str) -> None:
+    import re
+
+    from hindsight_api.api.private_reads import PRIVATE_READ_PATH, PRIVATE_READ_TRACE_EXCLUSION
+
+    assert PRIVATE_READ_PATH.search(path) is None
+    assert re.search(PRIVATE_READ_TRACE_EXCLUSION, f"http://fixture{path}") is None
 
 
 def test_private_native_sdk_alias_is_rejected_before_provider_access():

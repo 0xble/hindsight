@@ -23,7 +23,12 @@ executors before they receive a private payload when their side effects cannot b
 contained. Suppress audit writes, LLM trace writes, request/query log production,
 and tracing/export before serialization or scheduling. A private request must not
 modify a recording span inherited from a public caller. Public requests retain
-their existing diagnostics before and after a private request.
+their existing diagnostics before and after a private request. Match only the exact
+private operation with a nonempty, single-segment bank ID. A mount prefix must not
+consume an earlier bank API namespace. Public document IDs ending in a private
+operation, including a nested API-looking path, retain their audit, error logging,
+tracing and normal response headers. Disconnect monitoring follows the operation
+route, not an arbitrary document suffix.
 
 ## Verify
 
@@ -44,7 +49,9 @@ uv run --frozen pytest tests/test_98_private_reads.py
 
 Keep complete public/private payload comparisons, no-store acknowledgements,
 positive public trace/audit controls, complete diagnostic enumeration and zero
-additional private trace/audit rows. Do not replace real client calls with direct
+additional private trace/audit rows. The real-client story also creates, updates
+and deletes documents with private-looking suffixes and observes their persisted
+public audit records. Do not replace real client calls with direct
 engine access, raw SQL, disabled workers or invented provider responses. Respect
 the owning system-test instance and never reuse the live service database.
 
