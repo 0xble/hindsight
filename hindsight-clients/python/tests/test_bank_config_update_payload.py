@@ -1,3 +1,10 @@
+import asyncio
+from typing import Any
+
+import pytest
+from aiohttp import web
+from aiohttp.test_utils import TestServer
+
 from hindsight_client import Hindsight
 
 
@@ -334,3 +341,70 @@ def test_update_bank_config_gemini_safety_settings_is_a_list(monkeypatch):
     client.update_bank_config("test-bank", llm_gemini_safety_settings=settings)
 
     assert captured["updates"] == {"llm_gemini_safety_settings": settings}
+
+
+@pytest.mark.parametrize("method", ["update_bank_config", "aupdate_bank_config"])
+@pytest.mark.parametrize(
+    ("updates", "expected"),
+    [
+        pytest.param({"file_delete_after_retain": False}, {"file_delete_after_retain": False}, id="preserve-files"),
+        pytest.param({"file_delete_after_retain": True}, {"file_delete_after_retain": True}, id="delete-files"),
+        pytest.param({"llm_language_integrity": "off"}, {"llm_language_integrity": "off"}, id="language-off"),
+        pytest.param(
+            {"llm_language_integrity": "observe"}, {"llm_language_integrity": "observe"}, id="language-observe"
+        ),
+        pytest.param({"llm_language_integrity": "retry"}, {"llm_language_integrity": "retry"}, id="language-retry"),
+        pytest.param({"llm_language_integrity": "reject"}, {"llm_language_integrity": "reject"}, id="language-reject"),
+        pytest.param(
+            {"file_delete_after_retain": False, "llm_language_integrity": "reject"},
+            {"file_delete_after_retain": False, "llm_language_integrity": "reject"},
+            id="combined-policies",
+        ),
+        pytest.param({}, {}, id="inherit-omitted-policies"),
+        pytest.param(
+            {"file_delete_after_retain": None, "llm_language_integrity": None, "retain_chunk_size": 1000},
+            {"retain_chunk_size": 1000},
+            id="none-policies-do-not-clear-overrides",
+        ),
+    ],
+)
+async def test_bank_policy_updates_reach_the_http_body(
+    method: str, updates: dict[str, Any], expected: dict[str, object]
+) -> None:
+    observed: list[dict[str, object]] = []
+    response = {"bank_id": "test-bank", "config": expected, "overrides": expected}
+
+    async def patch_config(request: web.Request) -> web.Response:
+        assert request.method == "PATCH"
+        assert request.path == "/v1/default/banks/test-bank/config"
+        observed.append(await request.json())
+        return web.json_response(response)
+
+    app = web.Application()
+    app.router.add_patch("/v1/default/banks/test-bank/config", patch_config)
+    async with TestServer(app) as server:
+        base_url = str(server.make_url(""))
+        if method == "aupdate_bank_config":
+            client = Hindsight(base_url=base_url)
+            try:
+                result = await client.aupdate_bank_config("test-bank", **updates)
+            finally:
+                await client.aclose()
+        else:
+
+            def sync_update() -> dict[str, object]:
+                # The sync wrapper owns its loop while the HTTP server keeps serving.
+                loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(loop)
+                client = Hindsight(base_url=base_url)
+                try:
+                    return client.update_bank_config("test-bank", **updates)
+                finally:
+                    loop.run_until_complete(client.aclose())
+                    loop.close()
+                    asyncio.set_event_loop(None)
+
+            result = await asyncio.to_thread(sync_update)
+
+    assert observed == [{"updates": expected}]
+    assert result == response

@@ -23,6 +23,8 @@ from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import BatchSpanProcessor
 from opentelemetry.trace import Status, StatusCode
 
+from .private_reads import is_private_read
+
 if TYPE_CHECKING:
     from opentelemetry.context import Context
 
@@ -299,7 +301,7 @@ def get_tracer() -> trace.Tracer | NoOpTracer:
     Returns a no-op tracer if tracing is disabled, so callers don't need to check for None.
     This improves code readability by allowing direct use without null checks.
     """
-    return _tracer
+    return NoOpTracer() if is_private_read() else _tracer
 
 
 @contextmanager
@@ -318,7 +320,7 @@ def create_operation_span(operation: str, bank_id: str | None = None):
     Returns:
         Span context manager
     """
-    if not _tracing_enabled or _tracer is None:
+    if is_private_read() or not _tracing_enabled or _tracer is None:
         yield None
         return
 
@@ -334,7 +336,7 @@ def create_operation_span(operation: str, bank_id: str | None = None):
 
 def is_tracing_enabled() -> bool:
     """Check if tracing is enabled."""
-    return _tracing_enabled
+    return _tracing_enabled and not is_private_read()
 
 
 # Key under which the W3C trace context travels inside a task payload. Named
@@ -354,7 +356,7 @@ def inject_task_trace_context(payload: dict[str, Any]) -> None:
 
     No-op when tracing is disabled, so a payload never grows a null key.
     """
-    if not _tracing_enabled:
+    if is_private_read() or not _tracing_enabled:
         return
     try:
         from opentelemetry.propagate import inject
@@ -375,7 +377,7 @@ def extract_task_trace_context(payload: dict[str, Any]) -> "Context | None":
     None when the payload carries no trace context (an internally scheduled
     task, or a payload queued while tracing was off).
     """
-    if not _tracing_enabled:
+    if is_private_read() or not _tracing_enabled:
         return None
     carrier = payload.get(TASK_TRACE_CONTEXT_KEY)
     if not isinstance(carrier, dict):
@@ -449,6 +451,8 @@ class LLMSpanRecorder:
                 ``output_tokens``, which is visible-only.
             _extra: Tolerated forward-compatible kwargs from other recorders.
         """
+        if is_private_read():
+            return
         try:
             # Map provider name to GenAI semantic convention
             genai_provider = PROVIDER_NAME_MAPPING.get(provider.lower(), provider.lower())
@@ -643,6 +647,8 @@ class CompositeSpanRecorder:
             self._recorders.remove(recorder)
 
     def record_llm_call(self, **kwargs: Any) -> None:
+        if is_private_read():
+            return
         for recorder in self._recorders:
             try:
                 recorder.record_llm_call(**kwargs)

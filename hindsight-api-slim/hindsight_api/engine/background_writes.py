@@ -11,6 +11,8 @@ import logging
 from collections.abc import Coroutine
 from typing import Any
 
+from ..private_reads import is_private_read
+
 logger = logging.getLogger(__name__)
 
 
@@ -32,6 +34,9 @@ class PendingWrites:
 
     def schedule(self, coro: Coroutine[Any, Any, None], key: str | None = None) -> bool:
         """Start ``coro`` as a tracked task. False (and no task) if there is no loop."""
+        if is_private_read():
+            coro.close()
+            return False
         try:
             task = asyncio.create_task(coro)
         except RuntimeError:

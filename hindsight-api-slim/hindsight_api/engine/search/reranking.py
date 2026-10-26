@@ -8,6 +8,7 @@ import math
 from dataclasses import dataclass
 from datetime import datetime, timezone
 
+from ...private_reads import run_in_executor
 from ..cross_encoder import RerankTimeoutError, _served_provider
 from .types import MergedCandidate, ScoredResult
 
@@ -341,8 +342,7 @@ class CrossEncoderReranker:
         # getattr: tests inject duck-typed cross encoders that don't subclass
         # CrossEncoderModel and so don't carry the property.
         if getattr(cross_encoder, "blocking_init", False):
-            loop = asyncio.get_event_loop()
-            init = loop.run_in_executor(None, lambda: asyncio.run(cross_encoder.initialize()))
+            init = run_in_executor(None, lambda: asyncio.run(cross_encoder.initialize()))
         else:
             init = cross_encoder.initialize()
 

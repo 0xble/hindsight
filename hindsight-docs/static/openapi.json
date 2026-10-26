@@ -1331,6 +1331,82 @@
         }
       }
     },
+    "/v1/default/banks/{bank_id}/private/recall": {
+      "post": {
+        "tags": [
+          "Memory"
+        ],
+        "summary": "Recall memory without storing read diagnostics",
+        "description": "Run a recall and return results with trace.",
+        "operationId": "private_recall_memories",
+        "parameters": [
+          {
+            "name": "bank_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Bank Id"
+            }
+          },
+          {
+            "name": "authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RecallRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RecallResponse"
+                }
+              }
+            },
+            "headers": {
+              "X-Hindsight-Private-Read": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/v1/default/banks/{bank_id}/reflect": {
       "post": {
         "tags": [
@@ -1383,6 +1459,81 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/ReflectResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/default/banks/{bank_id}/private/reflect": {
+      "post": {
+        "tags": [
+          "Memory"
+        ],
+        "summary": "Reflect without storing read diagnostics",
+        "operationId": "private_reflect",
+        "parameters": [
+          {
+            "name": "bank_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Bank Id"
+            }
+          },
+          {
+            "name": "authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ReflectRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReflectResponse"
+                }
+              }
+            },
+            "headers": {
+              "X-Hindsight-Private-Read": {
+                "schema": {
+                  "type": "string"
                 }
               }
             }
@@ -13398,6 +13549,12 @@
             "type": "boolean",
             "title": "Llm Trace",
             "description": "Whether per-bank LLM request tracing is enabled"
+          },
+          "private_reads": {
+            "type": "boolean",
+            "title": "Private Reads",
+            "description": "Whether request-scoped no-store recall/reflect is supported",
+            "default": false
           },
           "store_document_text": {
             "type": "boolean",

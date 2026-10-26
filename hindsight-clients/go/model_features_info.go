@@ -41,6 +41,8 @@ type FeaturesInfo struct {
 	AuditLog bool `json:"audit_log"`
 	// Whether per-bank LLM request tracing is enabled
 	LlmTrace bool `json:"llm_trace"`
+	// Whether request-scoped no-store recall/reflect is supported
+	PrivateReads *bool `json:"private_reads,omitempty"`
 	// Whether raw source text is persisted. When false, document/chunk source text is not stored.
 	StoreDocumentText bool `json:"store_document_text"`
 }
@@ -63,6 +65,8 @@ func NewFeaturesInfo(observations bool, mcp bool, worker bool, bankConfigApi boo
 	this.DocumentImportApi = documentImportApi
 	this.AuditLog = auditLog
 	this.LlmTrace = llmTrace
+	var privateReads bool = false
+	this.PrivateReads = &privateReads
 	this.StoreDocumentText = storeDocumentText
 	return &this
 }
@@ -72,6 +76,8 @@ func NewFeaturesInfo(observations bool, mcp bool, worker bool, bankConfigApi boo
 // but it doesn't guarantee that properties required by API are set
 func NewFeaturesInfoWithDefaults() *FeaturesInfo {
 	this := FeaturesInfo{}
+	var privateReads bool = false
+	this.PrivateReads = &privateReads
 	return &this
 }
 
@@ -315,6 +321,38 @@ func (o *FeaturesInfo) SetLlmTrace(v bool) {
 	o.LlmTrace = v
 }
 
+// GetPrivateReads returns the PrivateReads field value if set, zero value otherwise.
+func (o *FeaturesInfo) GetPrivateReads() bool {
+	if o == nil || IsNil(o.PrivateReads) {
+		var ret bool
+		return ret
+	}
+	return *o.PrivateReads
+}
+
+// GetPrivateReadsOk returns a tuple with the PrivateReads field value if set, nil otherwise
+// and a boolean to check if the value has been set.
+func (o *FeaturesInfo) GetPrivateReadsOk() (*bool, bool) {
+	if o == nil || IsNil(o.PrivateReads) {
+		return nil, false
+	}
+	return o.PrivateReads, true
+}
+
+// HasPrivateReads returns a boolean if a field has been set.
+func (o *FeaturesInfo) HasPrivateReads() bool {
+	if o != nil && !IsNil(o.PrivateReads) {
+		return true
+	}
+
+	return false
+}
+
+// SetPrivateReads gets a reference to the given bool and assigns it to the PrivateReads field.
+func (o *FeaturesInfo) SetPrivateReads(v bool) {
+	o.PrivateReads = &v
+}
+
 // GetStoreDocumentText returns the StoreDocumentText field value
 func (o *FeaturesInfo) GetStoreDocumentText() bool {
 	if o == nil {
@@ -359,6 +397,9 @@ func (o FeaturesInfo) ToMap() (map[string]interface{}, error) {
 	toSerialize["document_import_api"] = o.DocumentImportApi
 	toSerialize["audit_log"] = o.AuditLog
 	toSerialize["llm_trace"] = o.LlmTrace
+	if !IsNil(o.PrivateReads) {
+		toSerialize["private_reads"] = o.PrivateReads
+	}
 	toSerialize["store_document_text"] = o.StoreDocumentText
 	return toSerialize, nil
 }

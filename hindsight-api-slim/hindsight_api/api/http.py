@@ -308,6 +308,7 @@ from hindsight_api.metrics import (
     reset_metrics_collector,
 )
 from hindsight_api.models import RequestContext
+from hindsight_api.private_reads import PrivateReadUnsupportedError, is_private_read
 
 logger = logging.getLogger(__name__)
 
@@ -4863,6 +4864,9 @@ class FeaturesInfo(BaseModel):
     document_import_api: bool = Field(description="Whether the document import endpoint is enabled")
     audit_log: bool = Field(description="Whether audit logging is enabled by default (overridable per bank)")
     llm_trace: bool = Field(description="Whether per-bank LLM request tracing is enabled")
+    private_reads: bool = Field(
+        default=False, description="Whether request-scoped no-store recall/reflect is supported"
+    )
     store_document_text: bool = Field(
         description="Whether raw source text is persisted. When false, document/chunk source text is not stored."
     )
@@ -5040,6 +5044,8 @@ def _make_audited_http(audit_logger_getter: Callable[[], AuditLogger | None]):
         def decorator(func):
             @wraps(func)
             async def wrapper(*args, **kwargs):
+                if is_private_read():
+                    return await func(*args, **kwargs)
                 al = audit_logger_getter()
                 # Cheap bank-independent pre-filter first, then the per-bank
                 # decision (audit_log_enabled is overridable per bank).
@@ -5383,6 +5389,9 @@ def create_app(
 
     _instrument_app_for_tracing(app, config)
 
+    from .private_reads import PrivateReadMiddleware
+
+    app.add_middleware(PrivateReadMiddleware, memory=memory, http_extension=http_extension is not None)
     return app
 
 
@@ -5455,6 +5464,9 @@ def _instrument_app_for_tracing(app: FastAPI, config: HindsightConfig | StaticCo
         # Probe and metrics scrapes would otherwise dominate the trace stream.
         # OTEL_PYTHON_FASTAPI_EXCLUDED_URLS, when set, takes precedence.
         excluded_urls = os.getenv("OTEL_PYTHON_FASTAPI_EXCLUDED_URLS") or "health,metrics"
+        from .private_reads import PRIVATE_READ_TRACE_EXCLUSION
+
+        excluded_urls = f"{excluded_urls},{PRIVATE_READ_TRACE_EXCLUSION}"
         FastAPIInstrumentor.instrument_app(
             app,
             excluded_urls=excluded_urls,
@@ -5763,6 +5775,7 @@ def _register_routes(app: FastAPI):
                 document_import_api=config.enable_document_import_api,
                 audit_log=config.audit_log_enabled,
                 llm_trace=config.llm_trace_enabled,
+                private_reads=True,
                 store_document_text=config.store_document_text,
             ),
         )
@@ -6279,6 +6292,14 @@ def _register_routes(app: FastAPI):
             raise _internal_error(e, f"/v1/default/banks/{bank_id}/memories/{memory_id}/history")
 
     @app.post(
+        "/v1/default/banks/{bank_id}/private/recall",
+        response_model=RecallResponse,
+        summary="Recall memory without storing read diagnostics",
+        operation_id="private_recall_memories",
+        tags=["Memory"],
+        responses={200: {"headers": {"X-Hindsight-Private-Read": {"schema": {"type": "string"}}}}},
+    )
+    @app.post(
         "/v1/default/banks/{bank_id}/memories/recall",
         response_model=RecallResponse,
         summary="Recall memory",
@@ -6496,6 +6517,8 @@ def _register_routes(app: FastAPI):
                 )
 
             return response
+        except PrivateReadUnsupportedError:
+            raise HTTPException(status_code=503, detail="Configured component does not support private reads")
         except HTTPException:
             raise
         except OperationValidationError as e:
@@ -6512,6 +6535,8 @@ def _register_routes(app: FastAPI):
                 detail="Request timed out while searching memories. Try a shorter or more specific query.",
             )
         except Exception as e:
+            if is_private_read():
+                raise HTTPException(status_code=500, detail="Private read failed") from None
             import traceback
 
             handler_duration = time.time() - handler_start
@@ -6521,6 +6546,14 @@ def _register_routes(app: FastAPI):
             )
             raise HTTPException(status_code=500, detail=str(e))
 
+    @app.post(
+        "/v1/default/banks/{bank_id}/private/reflect",
+        response_model=ReflectResponse,
+        summary="Reflect without storing read diagnostics",
+        operation_id="private_reflect",
+        tags=["Memory"],
+        responses={200: {"headers": {"X-Hindsight-Private-Read": {"schema": {"type": "string"}}}}},
+    )
     @app.post(
         "/v1/default/banks/{bank_id}/reflect",
         response_model=ReflectResponse,
@@ -6664,6 +6697,8 @@ def _register_routes(app: FastAPI):
                 trace=trace_result,
             )
 
+        except PrivateReadUnsupportedError:
+            raise HTTPException(status_code=503, detail="Configured component does not support private reads")
         except OperationValidationError as e:
             raise HTTPException(status_code=e.status_code, detail=e.reason)
         except (AuthenticationError, HTTPException):
@@ -6698,6 +6733,8 @@ def _register_routes(app: FastAPI):
                 detail=str(e) or "Reflect operation timed out. Consider reducing the budget or simplifying the query.",
             )
         except Exception as e:
+            if is_private_read():
+                raise HTTPException(status_code=500, detail="Private read failed") from None
             raise _internal_error(e, f"/v1/default/banks/{bank_id}/reflect")
 
     @app.get(

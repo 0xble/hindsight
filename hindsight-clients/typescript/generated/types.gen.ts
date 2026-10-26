@@ -3063,6 +3063,12 @@ export type FeaturesInfo = {
    */
   llm_trace: boolean;
   /**
+   * Private Reads
+   *
+   * Whether request-scoped no-store recall/reflect is supported
+   */
+  private_reads?: boolean;
+  /**
    * Store Document Text
    *
    * Whether raw source text is persisted. When false, document/chunk source text is not stored.
@@ -8159,6 +8165,44 @@ export type RecallMemoriesResponses = {
 
 export type RecallMemoriesResponse = RecallMemoriesResponses[keyof RecallMemoriesResponses];
 
+export type PrivateRecallMemoriesData = {
+  body: RecallRequest;
+  headers?: {
+    /**
+     * Authorization
+     */
+    authorization?: string | null;
+  };
+  path: {
+    /**
+     * Bank Id
+     */
+    bank_id: string;
+  };
+  query?: never;
+  url: "/v1/default/banks/{bank_id}/private/recall";
+};
+
+export type PrivateRecallMemoriesErrors = {
+  /**
+   * Validation Error
+   */
+  422: HttpValidationError;
+};
+
+export type PrivateRecallMemoriesError =
+  PrivateRecallMemoriesErrors[keyof PrivateRecallMemoriesErrors];
+
+export type PrivateRecallMemoriesResponses = {
+  /**
+   * Successful Response
+   */
+  200: RecallResponse;
+};
+
+export type PrivateRecallMemoriesResponse =
+  PrivateRecallMemoriesResponses[keyof PrivateRecallMemoriesResponses];
+
 export type ReflectData = {
   body: ReflectRequest;
   headers?: {
@@ -8194,6 +8238,42 @@ export type ReflectResponses = {
 };
 
 export type ReflectResponse2 = ReflectResponses[keyof ReflectResponses];
+
+export type PrivateReflectData = {
+  body: ReflectRequest;
+  headers?: {
+    /**
+     * Authorization
+     */
+    authorization?: string | null;
+  };
+  path: {
+    /**
+     * Bank Id
+     */
+    bank_id: string;
+  };
+  query?: never;
+  url: "/v1/default/banks/{bank_id}/private/reflect";
+};
+
+export type PrivateReflectErrors = {
+  /**
+   * Validation Error
+   */
+  422: HttpValidationError;
+};
+
+export type PrivateReflectError = PrivateReflectErrors[keyof PrivateReflectErrors];
+
+export type PrivateReflectResponses = {
+  /**
+   * Successful Response
+   */
+  200: ReflectResponse;
+};
+
+export type PrivateReflectResponse = PrivateReflectResponses[keyof PrivateReflectResponses];
 
 export type ListBanksData = {
   body?: never;

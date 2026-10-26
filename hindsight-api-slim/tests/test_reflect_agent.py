@@ -1268,14 +1268,21 @@ class TestReflectAgentMocked:
         assert choices[0] == choices[1] == LLMToolChoice.named("search_observations")
 
     @pytest.mark.asyncio
-    async def test_cancellation_from_a_tool_is_not_wrapped(self, mock_llm, mock_functions):
-        """A client disconnect must stay a cancellation, not become a tool failure.
+    @pytest.mark.parametrize(
+        "cancellation_type",
+        [OperationCancelledError, asyncio.CancelledError],
+        ids=["client-disconnect", "task-cancellation"],
+    )
+    async def test_cancellation_from_a_tool_is_not_wrapped(
+        self, mock_llm, mock_functions, cancellation_type: type[BaseException]
+    ):
+        """Client disconnects and task cancellation must not become tool failures.
 
         ``recall`` re-raises ``OperationCancelledError`` so the HTTP layer can
-        answer 499 (issue #2122). Wrapping it in ``ReflectToolExecutionError``
-        would report a client that went away as a server-side retrieval failure.
+        answer 499 (issue #2122). Native task cancellation must also propagate
+        through parallel gathering without a retry or fallback answer.
         """
-        mock_functions["recall_fn"].side_effect = OperationCancelledError("client disconnected")
+        mock_functions["recall_fn"].side_effect = cancellation_type("client disconnected")
 
         mock_llm.call_with_tools.side_effect = [
             LLMToolCallResult(
@@ -1284,7 +1291,7 @@ class TestReflectAgentMocked:
             ),
         ]
 
-        with pytest.raises(OperationCancelledError):
+        with pytest.raises(cancellation_type):
             await run_reflect_agent(
                 llm_config=mock_llm,
                 bank_id="test-bank",
@@ -1292,6 +1299,9 @@ class TestReflectAgentMocked:
                 bank_profile={"name": "Test", "mission": "Testing"},
                 **mock_functions,
             )
+
+        assert mock_llm.call_with_tools.call_count == 1
+        mock_llm.call.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_cancellation_from_the_llm_call_is_not_retried(self, mock_llm, mock_functions):

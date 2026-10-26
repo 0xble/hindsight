@@ -18,7 +18,7 @@ import re  # noqa: F401
 import json
 
 from pydantic import BaseModel, ConfigDict, Field, StrictBool
-from typing import Any, ClassVar, Dict, List
+from typing import Any, ClassVar, Dict, List, Optional
 from typing import Optional, Set
 from typing_extensions import Self
 
@@ -36,8 +36,9 @@ class FeaturesInfo(BaseModel):
     document_import_api: StrictBool = Field(description="Whether the document import endpoint is enabled")
     audit_log: StrictBool = Field(description="Whether audit logging is enabled by default (overridable per bank)")
     llm_trace: StrictBool = Field(description="Whether per-bank LLM request tracing is enabled")
+    private_reads: Optional[StrictBool] = Field(default=False, description="Whether request-scoped no-store recall/reflect is supported")
     store_document_text: StrictBool = Field(description="Whether raw source text is persisted. When false, document/chunk source text is not stored.")
-    __properties: ClassVar[List[str]] = ["observations", "mcp", "worker", "bank_config_api", "bank_llm_health", "file_upload_api", "document_export_api", "document_import_api", "audit_log", "llm_trace", "store_document_text"]
+    __properties: ClassVar[List[str]] = ["observations", "mcp", "worker", "bank_config_api", "bank_llm_health", "file_upload_api", "document_export_api", "document_import_api", "audit_log", "llm_trace", "private_reads", "store_document_text"]
 
     model_config = ConfigDict(
         populate_by_name=True,
@@ -100,6 +101,7 @@ class FeaturesInfo(BaseModel):
             "document_import_api": obj.get("document_import_api"),
             "audit_log": obj.get("audit_log"),
             "llm_trace": obj.get("llm_trace"),
+            "private_reads": obj.get("private_reads") if obj.get("private_reads") is not None else False,
             "store_document_text": obj.get("store_document_text")
         })
         return _obj

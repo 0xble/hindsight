@@ -885,6 +885,56 @@ paths:
       summary: Recall memory
       tags:
       - Memory
+  /v1/default/banks/{bank_id}/private/recall:
+    post:
+      description: Run a recall and return results with trace.
+      operationId: private_recall_memories
+      parameters:
+      - explode: false
+        in: path
+        name: bank_id
+        required: true
+        schema:
+          title: Bank Id
+          type: string
+        style: simple
+      - explode: false
+        in: header
+        name: authorization
+        required: false
+        schema:
+          nullable: true
+          type: string
+        style: simple
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RecallRequest'
+        required: true
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RecallResponse'
+          description: Successful Response
+          headers:
+            X-Hindsight-Private-Read:
+              explode: false
+              schema:
+                nullable: true
+                type: string
+              style: simple
+        "422":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Recall memory without storing read diagnostics
+      tags:
+      - Memory
   /v1/default/banks/{bank_id}/reflect:
     post:
       description: |-
@@ -934,6 +984,54 @@ paths:
                 $ref: '#/components/schemas/HTTPValidationError'
           description: Validation Error
       summary: Reflect and generate answer
+      tags:
+      - Memory
+  /v1/default/banks/{bank_id}/private/reflect:
+    post:
+      operationId: private_reflect
+      parameters:
+      - explode: false
+        in: path
+        name: bank_id
+        required: true
+        schema:
+          title: Bank Id
+          type: string
+        style: simple
+      - explode: false
+        in: header
+        name: authorization
+        required: false
+        schema:
+          nullable: true
+          type: string
+        style: simple
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ReflectRequest'
+        required: true
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ReflectResponse'
+          description: Successful Response
+          headers:
+            X-Hindsight-Private-Read:
+              explode: false
+              schema:
+                type: string
+              style: simple
+        "422":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Reflect without storing read diagnostics
       tags:
       - Memory
   /v1/default/banks:
@@ -6708,9 +6806,9 @@ components:
           nullable: true
           type: integer
         consolidation_round_correction_budget:
+          minimum: 0.0
           nullable: true
           type: integer
-          minimum: 0
         consolidation_llm_parallelism:
           nullable: true
           type: integer
@@ -9197,6 +9295,11 @@ components:
         llm_trace:
           description: Whether per-bank LLM request tracing is enabled
           title: Llm Trace
+          type: boolean
+        private_reads:
+          default: false
+          description: Whether request-scoped no-store recall/reflect is supported
+          title: Private Reads
           type: boolean
         store_document_text:
           description: "Whether raw source text is persisted. When false, document/chunk\

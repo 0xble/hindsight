@@ -4,7 +4,6 @@ Temporal extraction for time-aware search queries.
 Handles natural language temporal expressions using transformer-based query analysis.
 """
 
-import asyncio
 import atexit
 import logging
 import threading
@@ -12,6 +11,8 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 
 from hindsight_api.engine.query_analyzer import DateparserQueryAnalyzer, QueryAnalyzer
+
+from ...private_reads import run_in_executor
 
 logger = logging.getLogger(__name__)
 
@@ -140,8 +141,7 @@ async def extract_temporal_constraint_async(
     itself concurrent — the single-worker pool here hid it, the startup warm-up on
     the default executor did not.
     """
-    loop = asyncio.get_running_loop()
-    return await loop.run_in_executor(
+    return await run_in_executor(
         _get_executor(),
         lambda: extract_temporal_constraint(query, reference_date=reference_date, analyzer=analyzer),
     )

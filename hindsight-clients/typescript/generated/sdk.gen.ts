@@ -242,6 +242,12 @@ import type {
   PreviewPromptData,
   PreviewPromptErrors,
   PreviewPromptResponses,
+  PrivateRecallMemoriesData,
+  PrivateRecallMemoriesErrors,
+  PrivateRecallMemoriesResponses,
+  PrivateReflectData,
+  PrivateReflectErrors,
+  PrivateReflectResponses,
   RecallMemoriesData,
   RecallMemoriesErrors,
   RecallMemoriesResponses,
@@ -597,6 +603,27 @@ export const recallMemories = <ThrowOnError extends boolean = false>(
   });
 
 /**
+ * Recall memory without storing read diagnostics
+ *
+ * Run a recall and return results with trace.
+ */
+export const privateRecallMemories = <ThrowOnError extends boolean = false>(
+  options: Options<PrivateRecallMemoriesData, ThrowOnError>
+) =>
+  (options.client ?? client).post<
+    PrivateRecallMemoriesResponses,
+    PrivateRecallMemoriesErrors,
+    ThrowOnError
+  >({
+    url: "/v1/default/banks/{bank_id}/private/recall",
+    ...options,
+    headers: {
+      "Content-Type": "application/json",
+      ...options.headers,
+    },
+  });
+
+/**
  * Reflect and generate answer
  *
  * Reflect and formulate an answer using bank identity, world facts, observations, and mental models.
@@ -613,6 +640,21 @@ export const reflect = <ThrowOnError extends boolean = false>(
 ) =>
   (options.client ?? client).post<ReflectResponses, ReflectErrors, ThrowOnError>({
     url: "/v1/default/banks/{bank_id}/reflect",
+    ...options,
+    headers: {
+      "Content-Type": "application/json",
+      ...options.headers,
+    },
+  });
+
+/**
+ * Reflect without storing read diagnostics
+ */
+export const privateReflect = <ThrowOnError extends boolean = false>(
+  options: Options<PrivateReflectData, ThrowOnError>
+) =>
+  (options.client ?? client).post<PrivateReflectResponses, PrivateReflectErrors, ThrowOnError>({
+    url: "/v1/default/banks/{bank_id}/private/reflect",
     ...options,
     headers: {
       "Content-Type": "application/json",

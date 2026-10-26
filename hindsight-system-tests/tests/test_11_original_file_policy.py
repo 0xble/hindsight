@@ -58,7 +58,7 @@ async def test_bank_preservation_keeps_originals_without_changing_other_banks(
     )
     llm.on_step("consolidate").returns(consolidation())
     await client.acreate_bank(bank_id)
-    await client.banks.update_bank_config(bank_id, {"updates": {"file_delete_after_retain": False}})
+    await client.aupdate_bank_config(bank_id, file_delete_after_retain=False)
     source = tmp_path / "notebook.txt"
     source.write_bytes(CONTENT)
     for bank in (bank_id, other_bank):

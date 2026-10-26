@@ -13,6 +13,8 @@ Learn about disposition-driven reasoning in the [Reflect Architecture](../reflec
 > **💡 Prerequisites**
 >
 Make sure you've completed the [Quick Start](./quickstart.md) to install the client and start the server.
+For request-scoped diagnostic no-store, use the [private-read transport](./private-reads.md) rather than changing bank settings.
+
 ## Basic Usage
 
 ### Python

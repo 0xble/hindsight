@@ -200,6 +200,9 @@ PATCH_REGRESSIONS=(
   tests/test_consolidation_temporal_merge.py
   tests/test_openrouter_null_content.py
   tests/test_llm_trace.py
+  tests/test_private_reads.py
+  tests/test_private_reads_engine.py
+  tests/test_private_reads_sinks.py
   tests/test_metrics.py
   tests/test_batch_api.py
   tests/test_migration_shape.py
@@ -225,13 +228,18 @@ build_smoke() {
 }
 
 client_discriminators() {
-  uv run --directory hindsight-clients/python --frozen pytest tests/test_operation_details.py tests/test_curation_fields.py
+  uv run --directory hindsight-dev --frozen client-coverage-check --client python
+  uv run --directory hindsight-clients/python --frozen pytest \
+    tests/test_operation_details.py tests/test_curation_fields.py \
+    tests/test_bank_config_update_payload.py tests/test_async_sync_parity.py
   (cd hindsight-clients/go && go test -run '^Test(OperationResponseDetails|Curation)' .)
   cargo test --manifest-path hindsight-clients/rust/Cargo.toml --test curation_fields --test operation_enum_collisions
 }
 
-curation_system() {
-  (cd hindsight-system-tests && PYTEST_ADDOPTS= uv run --frozen pytest tests/test_18_raw_curation_batches.py)
+system_stories() {
+  (cd hindsight-system-tests && PYTEST_ADDOPTS= uv run --frozen pytest \
+    tests/test_11_original_file_policy.py tests/test_18_raw_curation_batches.py \
+    tests/test_50_banks_and_config.py tests/test_98_private_reads.py)
 }
 
 assert_candidate
@@ -251,7 +259,7 @@ else
   run offline-suite api uv run --frozen --extra all pytest -m "$OFFLINE_MARKERS" "${LIVE_LLM_TESTS[@]}" --ignore=tests/test_curation_batch.py --ignore=tests/test_guarded_curation.py
 fi
 run curation-batch-regressions api uv run --frozen --extra all pytest -n0 tests/test_curation_batch.py
-run curation-batch-system curation_system
+run system-stories system_stories
 run client-discriminators client_discriminators
 run codex-integration uv run --no-project --with pytest --with tiktoken==0.12.0 pytest hindsight-integrations/codex/tests -q
 run build-smoke build_smoke

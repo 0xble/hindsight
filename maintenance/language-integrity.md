@@ -185,6 +185,7 @@ use the configurable policy below without destructive changes to source facts.
   [Issue #4016](https://github.com/vectorize-io/hindsight/issues/4016) and the
   [unmerged predecessor #4018](https://github.com/vectorize-io/hindsight/pull/4018)
   supply historical context, not upstream acceptance of this scoped extension.
+- **Python convenience client:** Preserve `llm_language_integrity` across the sync and async bank-config methods, forwarding and HTTP payload. The wrapper defaults to `None` to leave overrides unchanged, not the server's `observe` default. Keep bank-config coverage, HTTP payload tests, async/sync parity and the public-client bank-configuration story in the native gate when adopting wrapper changes. Generated BankConfig calls remain the explicit-null boundary for restoring inheritance.
 - **Regression:** `uv run --frozen pytest -n 0 tests/test_bank_language_integrity.py
   tests/test_bank_config_value_types.py tests/test_language_integrity_retain.py`.
   The blackbox `hindsight-system-tests/tests/test_50_banks_and_config.py` story

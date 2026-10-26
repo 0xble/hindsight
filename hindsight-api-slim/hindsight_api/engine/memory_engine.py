@@ -3605,6 +3605,9 @@ class MemoryEngine(MemoryEngineInterface):
         """
         from hindsight_api.extensions import AuthenticationError
 
+        from .private_reads import check_private_read_extensions
+
+        check_private_read_extensions(self)
         if request_context is None:
             raise AuthenticationError("RequestContext is required")
 
@@ -5787,7 +5790,7 @@ class MemoryEngine(MemoryEngineInterface):
             return
 
         # Run model loading in thread pool (CPU-bound) in parallel with pg0 startup
-        loop = asyncio.get_event_loop()
+        from ..private_reads import run_in_executor
 
         async def start_pg0():
             """Start pg0 if configured."""
@@ -5819,7 +5822,7 @@ class MemoryEngine(MemoryEngineInterface):
             """Initialize embedding model."""
             # For local providers, run in thread pool to avoid blocking event loop
             if self.embeddings.provider_name == "local":
-                await loop.run_in_executor(None, lambda: asyncio.run(self.embeddings.initialize()))
+                await run_in_executor(None, lambda: asyncio.run(self.embeddings.initialize()))
             else:
                 await self.embeddings.initialize()
 
@@ -5830,7 +5833,7 @@ class MemoryEngine(MemoryEngineInterface):
             # getattr: tests inject duck-typed cross encoders that don't subclass
             # CrossEncoderModel (same reason as the provider_name read in _recall).
             if getattr(cross_encoder, "blocking_init", False):
-                await loop.run_in_executor(None, lambda: asyncio.run(cross_encoder.initialize()))
+                await run_in_executor(None, lambda: asyncio.run(cross_encoder.initialize()))
             else:
                 await cross_encoder.initialize()
             # Mark reranker as initialized
@@ -5839,7 +5842,7 @@ class MemoryEngine(MemoryEngineInterface):
         async def init_query_analyzer():
             """Initialize query analyzer model."""
             # Query analyzer load is sync and CPU-bound
-            await loop.run_in_executor(None, self.query_analyzer.load)
+            await run_in_executor(None, self.query_analyzer.load)
 
         async def init_memories():
             """Bring up the memories store's own resources (connection pool,
@@ -9017,6 +9020,9 @@ class MemoryEngine(MemoryEngineInterface):
         # 0.2ms — so the other 90% is a real await, and every untimed await here is a candidate.
         _auth_t0 = time.time()
         await self._authenticate_tenant(request_context)
+        from .private_reads import check_private_read_retrieval
+
+        check_private_read_retrieval(self)
         _auth_s = time.time() - _auth_t0
         get_metrics_collector().record_recall_phase("engine_auth", _auth_s)
         if _auth_s > 0.025:
@@ -9166,7 +9172,9 @@ class MemoryEngine(MemoryEngineInterface):
         reranking = _resolve_reranking(budget_config_dict, reranking)
 
         # Log recall start with tags if present (skip if quiet mode for internal operations)
-        if not _quiet:
+        from ..private_reads import is_private_read
+
+        if not _quiet and not is_private_read():
             tags_info = f", tags={tags} ({tags_match})" if tags else ""
             logger.info(f"[RECALL {bank_id[:8]}] Starting recall for query: {query[:50]}...{tags_info}")
 
@@ -9473,9 +9481,12 @@ class MemoryEngine(MemoryEngineInterface):
         recall_id = f"{bank_id[:8]}-{int(time.time() * 1000) % 100000}-{uuid.uuid4().hex[:6]}"
         log_buffer = []
         tags_info = f", tags={tags}, tags_match={tags_match}" if tags else ""
-        log_buffer.append(
-            f"[RECALL {recall_id}] Query: '{query[:50]}...' (budget={thinking_budget}, max_tokens={max_tokens}{tags_info})"
-        )
+        from ..private_reads import is_private_read
+
+        if not is_private_read():
+            log_buffer.append(
+                f"[RECALL {recall_id}] Query: '{query[:50]}...' (budget={thinking_budget}, max_tokens={max_tokens}{tags_info})"
+            )
 
         # Import tracing utilities
         from ..tracing import get_tracer
@@ -15700,9 +15711,15 @@ class MemoryEngine(MemoryEngineInterface):
         reflect but wants the opposite tradeoff (issue #4463), so it gets its own
         config. When MENTAL_MODEL_REFRESH_LLM_* is unset the two are the same object.
         """
-        if operation_label.endswith("refresh_mental_model"):
-            return self._mental_model_refresh_llm_config
-        return self._reflect_llm_config
+        from .private_reads import check_private_llm_config
+
+        llm = (
+            self._mental_model_refresh_llm_config
+            if operation_label.endswith("refresh_mental_model")
+            else self._reflect_llm_config
+        )
+        check_private_llm_config(llm)
+        return llm
 
     @_bind_bank_id()
     async def reflect_async(
@@ -15807,6 +15824,9 @@ class MemoryEngine(MemoryEngineInterface):
         # nested recall tool checks at its own stage boundaries.
         request_context.raise_if_cancelled()
 
+        from .private_reads import check_private_read_retrieval
+
+        check_private_read_retrieval(self)
         # Validate operation if validator is configured
         if self._operation_validator:
             from hindsight_api.extensions import ReflectContext
@@ -15834,7 +15854,10 @@ class MemoryEngine(MemoryEngineInterface):
         reflect_start = time.time()
         reflect_id = f"{bank_id[:8]}-{int(time.time() * 1000) % 100000}"
         tags_info = f", tags={tags} ({tags_match})" if tags else ""
-        logger.info(f"[REFLECT {reflect_id}] Starting agentic reflect for query: {query[:50]}...{tags_info}")
+        from ..private_reads import is_private_read
+
+        if not is_private_read():
+            logger.info(f"[REFLECT {reflect_id}] Starting agentic reflect for query: {query[:50]}...{tags_info}")
 
         # Get bank profile for agent identity
         profile = await self.ensure_bank_profile(bank_id, request_context=request_context)

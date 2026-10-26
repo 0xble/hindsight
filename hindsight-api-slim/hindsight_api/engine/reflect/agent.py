@@ -1599,7 +1599,12 @@ async def _run_reflect_agent_inner(
                         f"Reflect tool '{_normalize_tool_name(tc.name)}' failed on iteration {iteration + 1}: "
                         f"{result_data}"
                     ) from result_data
-                output, duration_ms = result_data
+                if isinstance(result_data, BaseException):
+                    # gather returns task cancellation as a value, so propagate it
+                    # rather than treating it as a successful tool result.
+                    raise result_data
+                output = result_data.output
+                duration_ms = result_data.duration_ms
                 releases_forcing = False
 
                 # Normalize tool name for consistent tracking
@@ -2136,6 +2141,12 @@ async def _process_done_tool(
     )
 
 
+@dataclass(frozen=True)
+class _TimedToolResult:
+    output: dict[str, Any]
+    duration_ms: int
+
+
 async def _execute_tool_with_timing(
     tc: "LLMToolCall",
     search_mental_models_fn: Callable[[str, int], Awaitable[dict[str, Any]]],
@@ -2146,9 +2157,25 @@ async def _execute_tool_with_timing(
     token_limits: "ReflectToolTokenLimits",
     ceiling: int,
     enabled_tools: frozenset[str] | None = None,
-) -> tuple[dict[str, Any], int]:
+) -> _TimedToolResult:
     """Execute a tool call and return result with timing."""
-    from hindsight_api.tracing import get_tracer
+    from hindsight_api.tracing import get_tracer, is_tracing_enabled
+
+    if not is_tracing_enabled():
+        start = time.time()
+        result = await _execute_tool(
+            tc.name,
+            tc.arguments,
+            search_mental_models_fn,
+            read_mental_models_fn,
+            search_observations_fn,
+            recall_fn,
+            expand_fn,
+            token_limits,
+            ceiling,
+            enabled_tools=enabled_tools,
+        )
+        return _TimedToolResult(output=result, duration_ms=int((time.time() - start) * 1000))
 
     start_time = time.time()
 
@@ -2202,7 +2229,7 @@ async def _execute_tool_with_timing(
             end_time_ns = time.time_ns()
             span.end(end_time=end_time_ns)
 
-            return result, duration_ms
+            return _TimedToolResult(output=result, duration_ms=duration_ms)
         except Exception as e:
             from opentelemetry.trace import Status, StatusCode
 
