@@ -194,6 +194,50 @@ class TestSharedState:
         assert client.asked[0][0] in {f"Current date: {day.isoformat()}\n\nQuestion: q" for day in (before, after)}
 
 
+def _pruning(client: _Client) -> DecisionModelReranker:
+    return DecisionModelReranker(client, prune=True)  # type: ignore[arg-type]
+
+
+class TestPrune:
+    async def test_off_by_default_nothing_is_dropped(self):
+        client = _Client({"tea is genmaicha": 0.9, "offsite in lisbon": 0.01})
+        scores = await _reranker(client).predict([("q", "tea is genmaicha"), ("q", "offsite in lisbon")])
+        assert all(score > 0.0 for score in scores)
+
+    async def test_a_candidate_judged_no_help_is_dropped_but_the_best_always_survives(self):
+        client = _Client({"tea is genmaicha": 0.9, "offsite in lisbon": 0.1})
+        scores = await _pruning(client).predict([("q", "offsite in lisbon"), ("q", "tea is genmaicha")])
+        assert scores == [0.0, 1.0]
+
+        # Relative to the best: 0.3 clears the floor but not 40% of 0.9.
+        crowded = _Client({"tea is genmaicha": 0.9, "offsite in lisbon": 0.3})
+        assert (await _pruning(crowded).predict([("q", "offsite in lisbon"), ("q", "tea is genmaicha")]))[0] == 0.0
+
+        lonely = _Client({"offsite in lisbon": 0.05})
+        assert (await _pruning(lonely).predict([("q", "offsite in lisbon")]))[0] > 0.0
+
+    async def test_pruning_asks_nothing_more_than_ranking(self):
+        client = _Client({"tea is genmaicha": 0.9, "Marta favourite tea is genmaicha": 0.85})
+        await _pruning(client).predict([("q", "tea is genmaicha"), ("q", "Marta favourite tea is genmaicha")])
+        assert len(client.asked) == 1
+
+    async def test_recall_leaves_the_dropped_candidates_out(self):
+        client = _Client({"tea is genmaicha": 0.9, "offsite in lisbon": 0.1})
+        reranker = CrossEncoderReranker(cross_encoder=_pruning(client))
+        result = await reranker.rerank("q", [_candidate("offsite in lisbon"), _candidate("tea is genmaicha")])
+        assert [r.candidate.retrieval.text for r in result.results] == ["tea is genmaicha"]
+
+    def test_the_flag_reaches_recalls_reranker(self, monkeypatch):
+        from hindsight_api import config as config_module
+
+        monkeypatch.setenv("HINDSIGHT_API_DECISION_MODEL_PROVIDER", "typesafe")
+        monkeypatch.setenv("HINDSIGHT_API_DECISION_MODEL_API_KEY", "k")
+        monkeypatch.setattr(config_module, "get_config", config_module.HindsightConfig.from_env)
+        assert CrossEncoderReranker().cross_encoder.prunes_candidates is False
+        monkeypatch.setenv("HINDSIGHT_API_RECALL_DECISION_MODEL_PRUNE", "true")
+        assert CrossEncoderReranker().cross_encoder.prunes_candidates is True
+
+
 @pytest.fixture(autouse=True)
 def _no_shared_context():
     assert rerank_shared_context.get() is None

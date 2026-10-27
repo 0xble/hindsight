@@ -31,3 +31,11 @@ def test_the_tokenizer_is_the_callers():
     # A quarter of a 40-token request: 10 words of memory, whatever the cap says.
     (question,) = words.questions(["word " * 50])
     assert question.memory == " ".join(["word"] * 10)
+
+
+def test_pruning_without_sending_anything():
+    """What an outside caller runs on the answers: the no-help ones at exactly 0.0."""
+    words = decision_rerank_interface.DecisionRerank(count=lambda t: len(t.split()), truncate=lambda t, n: t)
+    assert words.pruned([0.9, 0.1, 0.8]) == [1.0, 0.0, 2 / 3]
+    # Below the floor, the best still stays.
+    assert words.pruned([0.05, 0.01]) == [1.0, 0.0]

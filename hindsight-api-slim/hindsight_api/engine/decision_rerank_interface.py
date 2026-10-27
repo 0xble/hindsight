@@ -3,7 +3,8 @@
 This file is a public interface, meant to be used outside hindsight-api too: a service
 that reranks for Hindsight over the System One API can load it and send exactly the
 questions recall's :class:`~hindsight_api.engine.search.decision_reranker.DecisionModelReranker`
-sends, so a pool comes back in the order recall itself would give it.
+sends, so a pool comes back in the order recall itself would give it. With pruning on
+(:meth:`DecisionRerank.pruned`), it drops the same candidates recall would.
 
 To keep it loadable on its own, by file path, without installing hindsight-api:
 
@@ -42,6 +43,24 @@ MAX_MEMORY_TOKENS = 4_000
 MAX_QUESTIONS = 700
 # The default request ceiling, in tokens of the model's own vocabulary.
 MAX_REQUEST_TOKENS = 26_000
+
+# Pruning, opt-in: dropping candidates instead of only ordering them. A candidate is dropped
+# as no help when its answer to the keep question falls below PRUNE_BELOW, or below
+# PRUNE_BELOW_BEST of the best candidate's. The relative cut is needed because the answers
+# move with the pool: asked alongside four memories answering at 0.9, an unrelated "staging
+# cluster upgraded" came back 0.26, against 0.07 among weaker ones. It reuses the ranking
+# answer, so pruning costs no extra request. Asking separately whether a memory "has nothing
+# to do with the question" was worse than useless: the model answers on topic overlap and
+# ignores the negation, so it dropped the needed facts and kept the junk.
+#
+# Repeats are not dropped. A pairwise "Memory B is a repeat of Memory A" question, both
+# memories in the state, caught them, but only one pair per request: on a 250-candidate pool
+# that is either a second round trip after the keep answers or hundreds of requests, and
+# asked inside one request with the pool in the state it lost needed facts. With a model
+# whose keep answers are sharp, the cut alone leaves a pool small enough that the repeats
+# in it cost less than that check would.
+PRUNE_BELOW = 0.2
+PRUNE_BELOW_BEST = 0.4
 
 
 @dataclass(frozen=True)
@@ -138,3 +157,15 @@ class DecisionRerank:
         for position, slot in enumerate(order):
             scores[slot] = (n - position) / n
         return scores
+
+    @staticmethod
+    def pruned(answers: Sequence[float | None]) -> list[float]:
+        """:meth:`scores`, with every candidate judged no help at exactly 0.0.
+
+        No help is below ``PRUNE_BELOW``, or below ``PRUNE_BELOW_BEST`` of the best answer.
+        The best candidate always stays: one weak memory beats an empty recall.
+        """
+        best = max((answer or 0.0 for answer in answers), default=0.0)
+        floor = max(PRUNE_BELOW, PRUNE_BELOW_BEST * best)
+        scores = DecisionRerank.scores(answers)
+        return [score if score == 1.0 or (answer or 0.0) >= floor else 0.0 for answer, score in zip(answers, scores)]

@@ -46,18 +46,20 @@ class DecisionModelReranker(CrossEncoderModel):
     0.59 against 0.79 on a 20-question answer-quality set.
 
     The scores handed back are positions, not confidences: descending from 1.0 in rank
-    order.
+    order. With ``prune`` on, a candidate judged no help scores exactly 0.0, which is how
+    :attr:`prunes_candidates` tells recall to drop it; the best candidate always survives.
     """
 
     # Its decision-model requests are traced one by one; a rerank row would count them twice.
     traces_calls = False
 
-    def __init__(self, client: DecisionModel):
+    def __init__(self, client: DecisionModel, prune: bool = False):
         self._client = client
+        self.prunes_candidates = prune
 
     @classmethod
-    def from_config(cls, config: DecisionModelConfig) -> DecisionModelReranker:
-        return cls(DecisionModel.from_config(config))
+    def from_config(cls, config: DecisionModelConfig, prune: bool = False) -> DecisionModelReranker:
+        return cls(DecisionModel.from_config(config), prune=prune)
 
     @property
     def provider_name(self) -> str:
@@ -77,7 +79,8 @@ class DecisionModelReranker(CrossEncoderModel):
         answers = await self._client.ask_all(state, questions, scope="decision_recall_rerank")
         # Stable on the caller's input order, so equal answers keep their RRF order.
         nouls = [answers[question.key].noul if question.key in answers else None for question in asked]
-        for slot, score in enumerate(rerank.scores(nouls)):
+        ranked = rerank.pruned(nouls) if self.prunes_candidates else rerank.scores(nouls)
+        for slot, score in enumerate(ranked):
             scores[indices[slot]] = score
 
     async def _predict(self, pairs: list[tuple[str, str]]) -> list[float]:
