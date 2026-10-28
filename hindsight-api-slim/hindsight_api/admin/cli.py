@@ -9,6 +9,7 @@ import io
 import json
 import logging
 import os
+import shlex
 import struct
 import uuid
 import zipfile
@@ -26,7 +27,7 @@ from ..engine.memories import get_memories, sql_memories
 from ..engine.memory_engine import _current_schema
 from ..engine.retain.bank_utils import _vector_index_clause, bank_indexes_are_store_owned
 from ..engine.schema import fq_table_explicit as _fq_table
-from ..engine.storage import bank_storage_prefix, create_file_storage
+from ..engine.storage import bank_storage_prefix
 from ..engine.transfer import TransferScope, stream_export_bank
 from ..engine.vector_index_health import (
     BankIndexResult,
@@ -945,7 +946,7 @@ def repair_bank(
 
 
 class RenameBankError(Exception):
-    """A rename-bank precondition failed; nothing was changed."""
+    """A rename precondition failed, or a committed rename needs index repair."""
 
 
 # FKs whose own columns include bank_id and that cannot be deferred as declared.
@@ -962,208 +963,176 @@ _RIGID_BANK_ID_FKS_SQL = """
 
 
 async def _set_fks_deferrable(conn: asyncpg.Connection, fks: list[asyncpg.Record], clause: str) -> None:
-    """Flip the given FKs' deferrability in one short transaction.
-
-    ``ALTER CONSTRAINT`` only touches the catalog, but it still takes a table lock
-    and queues behind any open transaction on the table — and everything else
-    queues behind it. ``lock_timeout`` turns a long wait into a loud failure
-    instead of a tenant-wide stall.
-    """
-    async with conn.transaction():
-        await conn.execute("SET LOCAL lock_timeout = '5s'")
-        for fk in fks:
-            await conn.execute(f"ALTER TABLE {fk['tbl']} ALTER CONSTRAINT {_quote_identifier(fk['conname'])} {clause}")
+    """Flip FKs inside the caller's rename transaction and writer exclusion."""
+    for fk in fks:
+        await conn.execute(f"ALTER TABLE {fk['tbl']} ALTER CONSTRAINT {_quote_identifier(fk['conname'])} {clause}")
 
 
 async def _rename_bank(
     conn: asyncpg.Connection, schema: str, old_bank_id: str, new_bank_id: str, *, dry_run: bool
 ) -> dict[str, int]:
-    """Move every row of ``old_bank_id`` to ``new_bank_id`` in one transaction.
+    """Rename under schema-wide writer exclusion, including files and retries.
 
-    ``bank_id`` is the key every bank-scoped table carries, several composite FKs
-    included (``documents(id, bank_id)``, ``mental_models(id, bank_id)``), so no
-    update order satisfies an immediate FK check. The FKs are made DEFERRABLE
-    just for the rename and put back afterwards, each flip in its own short
-    transaction — doing it inside the rename would hold those table locks, and
-    block every bank in the schema, for its whole duration. This is runtime DDL
-    rather than a migration on purpose: rename is a rare admin operation, and the
-    schema stays exactly as the migrations declare it.
-
-    Only FKs this call flipped are put back. If that restore cannot happen (the
-    process dies, or the restore times out on a lock) they stay DEFERRABLE
-    INITIALLY IMMEDIATE, which checks every normal write exactly as before; a
-    later rename will not restore them, since it only flips what it finds
-    NOT DEFERRABLE, so the failure is reported with the constraint names.
-
-    Returns the rows moved per table (tables the bank had no rows in are omitted).
+    ALTER CONSTRAINT takes table locks anyway. Keep it, every row/key rewrite and
+    its restoration in the same transaction so a crash cannot change the catalog.
+    Clients and external file writers must remain stopped until the operator has
+    switched them to the new id. There is deliberately no old-id alias/tombstone.
+    Dry-run only reads and counts, never UPDATE/rollback (triggers can escape it).
     """
-    rigid = await conn.fetch(_RIGID_BANK_ID_FKS_SQL, schema)
     try:
-        await _set_fks_deferrable(conn, rigid, "DEFERRABLE INITIALLY IMMEDIATE")
-    except asyncpg.exceptions.LockNotAvailableError as exc:
-        raise RenameBankError(
-            "could not lock the bank tables within 5s to prepare the rename; retry when fewer long transactions run"
-        ) from exc
-    try:
-        return await _move_bank_rows(conn, schema, old_bank_id, new_bank_id, dry_run=dry_run)
-    finally:
-        # Never raise from here: it would replace the rename's own outcome (success
-        # or its real error) with a failure that leaves every write checked as before.
-        try:
-            await _set_fks_deferrable(conn, rigid, "NOT DEFERRABLE")
-        except Exception as exc:  # noqa: BLE001
-            names = ", ".join(f"{fk['tbl']}.{fk['conname']}" for fk in rigid)
-            typer.echo(
-                f"Warning: could not restore NOT DEFERRABLE on {names} ({exc}). They still enforce every write "
-                "as before; restore with ALTER TABLE ... ALTER CONSTRAINT ... NOT DEFERRABLE.",
-                err=True,
+        async with conn.transaction():
+            await conn.execute("SET LOCAL lock_timeout = '5s'")
+            tables = await conn.fetch(
+                """SELECT c.table_name FROM information_schema.columns c
+                   JOIN information_schema.tables t USING (table_schema, table_name)
+                   WHERE c.table_schema = $1 AND c.column_name = 'bank_id'
+                     AND t.table_type = 'BASE TABLE' ORDER BY c.table_name""",
+                schema,
             )
-
-
-async def _move_bank_rows(
-    conn: asyncpg.Connection, schema: str, old_bank_id: str, new_bank_id: str, *, dry_run: bool
-) -> dict[str, int]:
-    """The rename transaction proper; the bank_id FKs must already be DEFERRABLE.
-
-    Deferring them lets the tables move in any order, and forcing them back to
-    IMMEDIATE before the commit — or before the dry run's rollback — makes a
-    missed table fail the whole rename instead of stranding rows. Tables are read
-    from the catalog, so extension tables and tables added later are covered
-    without a list to maintain.
-
-    The ``FOR UPDATE`` on the bank row serialises the rename against writers:
-    anything inserting a FK child of the bank takes a key-share lock on that row,
-    so it either commits before the rename reads, or waits and then fails its FK
-    check rather than writing under an id that no longer exists.
-    """
-    banks = _fq_table("banks", schema)
-    tx = conn.transaction()
-    await tx.start()
-    try:
-        if not await conn.fetchval(f"SELECT 1 FROM {banks} WHERE bank_id = $1 FOR UPDATE", old_bank_id):
-            raise RenameBankError(f"bank '{old_bank_id}' does not exist in schema '{schema}'")
-        if await conn.fetchval(f"SELECT 1 FROM {banks} WHERE bank_id = $1", new_bank_id):
-            raise RenameBankError(f"bank '{new_bank_id}' already exists in schema '{schema}'")
-        # An operation's task_payload names its bank, so one run after the rename
-        # would work on (and could recreate) the old id.
-        active = await conn.fetchval(
-            f"SELECT count(*) FROM {_fq_table('async_operations', schema)} "
-            "WHERE bank_id = $1 AND status IN ('pending', 'processing')",
-            old_bank_id,
-        )
-        if active:
-            raise RenameBankError(
-                f"bank '{old_bank_id}' has {active} pending or processing operation(s); "
-                "wait for them to finish or cancel them, then retry"
+            names = [r["table_name"] for r in tables]
+            # FOR UPDATE on banks alone does not block retry/status updates or
+            # claims of existing operations. EXCLUSIVE also blocks row lockers.
+            locked = sorted(set(names) | {"file_storage"})
+            await conn.execute("LOCK TABLE " + ", ".join(_fq_table(t, schema) for t in locked) + " IN EXCLUSIVE MODE")
+            banks = _fq_table("banks", schema)
+            if not await conn.fetchval(f"SELECT 1 FROM {banks} WHERE bank_id = $1", old_bank_id):
+                raise RenameBankError(f"bank '{old_bank_id}' does not exist in schema '{schema}'")
+            if await conn.fetchval(f"SELECT 1 FROM {banks} WHERE bank_id = $1", new_bank_id):
+                raise RenameBankError(f"bank '{new_bank_id}' already exists in schema '{schema}'")
+            if await conn.fetchval(f"SELECT 1 FROM {_fq_table('bank_aliases', schema)} WHERE alias = $1", new_bank_id):
+                raise RenameBankError(f"alias '{new_bank_id}' already exists in schema '{schema}'")
+            active = await conn.fetchval(
+                f"SELECT count(*) FROM {_fq_table('async_operations', schema)} "
+                "WHERE bank_id = $1 AND status IN ('pending', 'processing')",
+                old_bank_id,
             )
-        tables = await conn.fetch(
-            """
-            SELECT c.table_name
-            FROM information_schema.columns c
-            JOIN information_schema.tables t
-              ON t.table_schema = c.table_schema AND t.table_name = c.table_name
-            WHERE c.table_schema = $1 AND c.column_name = 'bank_id' AND t.table_type = 'BASE TABLE'
-            ORDER BY c.table_name
-            """,
-            schema,
-        )
-        await conn.execute("SET CONSTRAINTS ALL DEFERRED")
-        # Every table, store tables included, so the rewrite goes through the Postgres store,
-        # which alone may name its own tables (#4969).
-        # sql_memories(), not get_memories(): the rename walks this Postgres schema's own tables, whatever the store.
-        moved = await sql_memories().admin_move_bank_id(
-            conn=conn,
-            schema=schema,
-            tables=[row["table_name"] for row in tables],
-            old_bank_id=old_bank_id,
-            new_bank_id=new_bank_id,
-        )
-        await conn.execute("SET CONSTRAINTS ALL IMMEDIATE")
-    except BaseException:
-        await tx.rollback()
-        raise
-    if dry_run:
-        await tx.rollback()
-    else:
-        await tx.commit()
-    return moved
-
-
-async def _move_bank_files(conn: asyncpg.Connection, db_url: str, schema: str, old_id: str, new_id: str) -> int:
-    """Re-key the bank's stored files, now that its rows carry the new id.
-
-    A file's key spells the bank id (``bank_storage_prefix``), and no column move
-    reaches inside a key: left alone, the bank's bytes stay under the old prefix,
-    where neither the download route nor ``delete_bank``'s sweep — both of which
-    look under the bank's *current* prefix — can reach them. The sweep missing
-    them is the leak (#4502): on S3 or GCS the bank goes and its bytes stay, still
-    billed.
-
-    Copy first, repoint the row, and only then drop the old prefix, so an
-    interrupted move leaves every row pointing at bytes that exist.
-
-    ponytail: copies through this process, one object at a time. A server-side
-    copy (S3 CopyObject) or, on the native backend, an UPDATE of file_storage
-    would move bytes without reading them — worth it if renames get big or common.
-    """
-    old_prefix = bank_storage_prefix(old_id, schema)
-    new_prefix = bank_storage_prefix(new_id, schema)
-    # Only the native backend needs a pool; building one unconditionally keeps
-    # this from branching on the storage type. Resolved like _admin_connect does,
-    # so a pg0:// URL reaches the embedded server it already started.
-    pool = await asyncpg.create_pool(await resolve_database_url(db_url), min_size=1, max_size=2)
-    try:
-        storage = create_file_storage(
-            storage_type=HindsightConfig.from_env().file_storage_type,
-            pool_getter=lambda: pool,
-            schema=schema,
-        )
-        # Keys written before the tenant layout sit outside the prefix and stay where
-        # they are: delete_bank sweeps those from their rows, which the rename carries
-        # to the new id. `documents` is a store table, so the Postgres store reads and
-        # repoints the keys (#4969).
-        # sql_memories(), not get_memories(): the rename walks this Postgres schema's own tables, whatever the store.
-        pg_store = sql_memories()
-        rows = await pg_store.admin_bank_file_keys(conn=conn, schema=schema, bank_id=new_id, prefix=old_prefix)
-        columns = {"attachments": "storage_key", "documents": "file_storage_key"}
-        moved = 0
-        for row in rows:
-            new_key = new_prefix + row["key"][len(old_prefix) :]
-            try:
-                data = await storage.retrieve(row["key"])
-            except FileNotFoundError:
-                # The row outlived its bytes (an earlier leak swept, a manual
-                # cleanup). Leave it pointing where it does rather than at a key
-                # with nothing behind it, and carry on: the rename is committed.
-                typer.echo(f"Warning: {row['key']} has no stored bytes; its row keeps the old key.")
-                continue
-            await storage.store(file_data=data, key=new_key)
-            await pg_store.admin_repoint_file_key(
+            if active:
+                raise RenameBankError(
+                    f"bank '{old_bank_id}' has {active} pending or processing operation(s); "
+                    "wait for them to finish or cancel them, then retry"
+                )
+            if await conn.fetchval(
+                f"SELECT 1 FROM {_fq_table('curation_batches', schema)} "
+                "WHERE bank_id = $1 AND status = 'applied' LIMIT 1",
+                old_bank_id,
+            ):
+                raise RenameBankError(
+                    "applied curation capsules bind bank ids and snapshot hashes; "
+                    "rename requires their supported recovery/revert first, or a rename-aware curation implementation"
+                )
+            # Counts are also the dry-run result. No UPDATE, DDL or blob writes.
+            moved = {}
+            for table in names:
+                count = await conn.fetchval(
+                    f"SELECT count(*) FROM {_fq_table(table, schema)} WHERE bank_id = $1", old_bank_id
+                )
+                if count:
+                    moved[table] = count
+            await _move_bank_files(conn, schema, old_bank_id, new_bank_id, dry_run=dry_run)
+            if dry_run:
+                return moved
+            rigid = await conn.fetch(_RIGID_BANK_ID_FKS_SQL, schema)
+            await _set_fks_deferrable(conn, rigid, "DEFERRABLE INITIALLY IMMEDIATE")
+            await conn.execute("SET CONSTRAINTS ALL DEFERRED")
+            await sql_memories().admin_move_bank_id(
                 conn=conn,
                 schema=schema,
-                table=row["table_name"],
-                column=columns[row["table_name"]],
-                bank_id=new_id,
-                old_key=row["key"],
-                new_key=new_key,
+                tables=names,
+                old_bank_id=old_bank_id,
+                new_bank_id=new_bank_id,
             )
-            moved += 1
-        # The originals, plus whatever else the bank left under the old prefix:
-        # export and import archives, which no row names and which their
-        # operation can produce again.
+            await conn.execute("SET CONSTRAINTS ALL IMMEDIATE")
+            await _set_fks_deferrable(conn, rigid, "NOT DEFERRABLE")
+            return moved
+    except asyncpg.exceptions.LockNotAvailableError as exc:
+        raise RenameBankError(
+            "could not acquire rename locks within 5s; database changes rolled back and original file keys retained. "
+            "External destination copies may remain. Inspect collisions and retry under admission freeze"
+        ) from exc
+
+
+async def _move_bank_files(conn: asyncpg.Connection, schema: str, old_id: str, new_id: str, *, dry_run: bool) -> int:
+    """Copy/repoint live references inside the rename transaction, never sweep history.
+
+    PostgreSQL blobs join this transaction through the existing single-connection
+    adapter. External copies are create-only and may remain after rollback or a
+    lost response. Originals are never deleted, so retries/history/unknown keys
+    remain recoverable even after a partial failure. No cleanup is inferred from
+    the incomplete attachments/documents enumeration.
+    """
+    storage = _admin_file_storage(conn, schema)
+    old_prefix = bank_storage_prefix(old_id, schema)
+    new_prefix = bank_storage_prefix(new_id, schema)
+    pg_store = sql_memories()
+    rows = await pg_store.admin_bank_file_keys(conn=conn, schema=schema, bank_id=old_id, prefix=old_prefix)
+    keys = {row["key"] for row in rows}
+    operations = _fq_table("async_operations", schema)
+    retries = await conn.fetch(
+        f"SELECT operation_id, task_payload FROM {operations} "
+        "WHERE bank_id = $1 AND status IN ('failed', 'cancelled') AND task_payload IS NOT NULL",
+        old_id,
+    )
+    payloads = []
+    for row in retries:
+        raw = row["task_payload"]
+        payload = json.loads(raw) if isinstance(raw, str) else raw
+        if not isinstance(payload, dict) or payload.get("bank_id", old_id) != old_id:
+            raise RenameBankError(f"operation {row['operation_id']} has an unsupported retry bank reference")
+        payload["bank_id"] = new_id
+        # Only native execution fields, not user metadata, text or historical
+        # result_metadata. Completed payloads are evidence, not retry instructions.
+        holders = [(payload, "storage_key")]
+        metadata = payload.get("_file_metadata")
+        if isinstance(metadata, dict):
+            holders.append((metadata, "file_storage_key"))
+        for holder, field in holders:
+            key = holder.get(field)
+            if isinstance(key, str) and key.startswith(old_prefix):
+                keys.add(key)
+                holder[field] = new_prefix + key[len(old_prefix) :]
+        payloads.append((row["operation_id"], payload))
+    # Check every known destination before any write. retrieve(), not exists():
+    # some object backends' exists() suppress permission/network errors as False.
+    for key in sorted(keys):
+        target = new_prefix + key[len(old_prefix) :]
         try:
-            await storage.delete_prefix(old_prefix)
-        except Exception as exc:  # noqa: BLE001
-            typer.echo(f"Warning: could not clear the old prefix {old_prefix} ({exc}); its files are now orphans.")
-        return moved
-    finally:
-        await pool.close()
+            await storage.retrieve(target)
+        except FileNotFoundError:
+            pass
+        else:
+            raise RenameBankError(f"destination file collision: {target} already exists")
+        try:
+            await storage.retrieve(key)
+        except FileNotFoundError as exc:
+            raise RenameBankError(f"source file {key} has no stored bytes; nothing was changed") from exc
+    if dry_run:
+        return len(keys)
+    for key in sorted(keys):
+        await storage.store_new(file_data=await storage.retrieve(key), key=new_prefix + key[len(old_prefix) :])
+    columns = {"attachments": "storage_key", "documents": "file_storage_key"}
+    for row in rows:
+        await pg_store.admin_repoint_file_key(
+            conn=conn,
+            schema=schema,
+            table=row["table_name"],
+            column=columns[row["table_name"]],
+            bank_id=old_id,
+            old_key=row["key"],
+            new_key=new_prefix + row["key"][len(old_prefix) :],
+        )
+    for operation_id, payload in payloads:
+        await conn.execute(
+            f"UPDATE {operations} SET task_payload = $1::jsonb WHERE operation_id = $2",
+            json.dumps(payload),
+            operation_id,
+        )
+    return len(keys)
 
 
 async def _run_rename_bank(
     db_url: str, schema: str, old_bank_id: str, new_bank_id: str, *, dry_run: bool
 ) -> dict[str, int]:
-    """Rename the bank, then move its stored files and rebuild its vector indexes.
+    """Commit row/file/retry references together, then rebuild vector indexes.
 
     Those indexes are partial on a ``bank_id`` literal, so after the rename they
     cover nothing; the reconcile sees the stale predicate and rebuilds them
@@ -1186,28 +1155,20 @@ async def _run_rename_bank(
     try:
         moved = await _rename_bank(conn, schema, old_bank_id, new_bank_id, dry_run=dry_run)
         if not dry_run:
-            files = await _move_bank_files(conn, db_url, schema, old_bank_id, new_bank_id)
-            typer.echo(f"Stored files: {files} re-keyed under the new bank id")
-        index_clause = _vector_index_clause()
-        if not dry_run and index_clause is not None:
-            # The rename is already committed here, so a failure in the rebuild must
-            # not surface as a bare traceback that buries that fact. Planning can now
-            # raise (a memories store that cannot say who owns the new id is not
-            # guessed at — see bank_indexes_are_store_owned), and the honest report is
-            # "the rename worked, the index did not".
+            repair = f"hindsight-admin repair-bank --bank {shlex.quote(new_bank_id)} --schema {shlex.quote(schema)}"
             try:
-                result = await reconcile_bank_vector_indexes(conn, schema, new_bank_id, index_clause)
-            except Exception as exc:  # noqa: BLE001 — the rename is committed; say so rather than traceback
-                typer.echo(
-                    f"Vector indexes: could not be rebuilt ({exc}). The rename itself succeeded. "
-                    f"Re-run `hindsight-admin repair-bank --bank {new_bank_id}` once the cause is cleared; "
-                    f"until then recall on this bank runs without its index.",
-                    err=True,
-                )
-                return moved
-            typer.echo(f"Vector indexes: {result.created} rebuilt, {result.dropped} dropped, {result.failed} failed")
-            if result.failed:
-                typer.echo(f"Re-run `hindsight-admin repair-bank --bank {new_bank_id}` to retry.", err=True)
+                index_clause = _vector_index_clause()
+                if index_clause is not None:
+                    result = await reconcile_bank_vector_indexes(conn, schema, new_bank_id, index_clause)
+                    if result.failed:
+                        raise RuntimeError(f"{result.failed} vector index build(s) failed")
+                    typer.echo(f"Vector indexes: {result.created} rebuilt, {result.dropped} dropped, 0 failed")
+            except Exception as exc:  # noqa: BLE001 — row/file commit cannot be undone by an index failure
+                raise RenameBankError(
+                    f"Rename committed, but vector indexes could not be rebuilt ({exc}). "
+                    f"Run `{repair}` once the cause is cleared. Do not repeat rename-bank; "
+                    "until repair succeeds recall on this bank may run without its index."
+                ) from exc
         return moved
     finally:
         await conn.close()
@@ -1226,15 +1187,15 @@ def rename_bank(
     dry_run: bool = typer.Option(
         False,
         "--dry-run",
-        help="Run the whole rename, report what would move, then roll back.",
+        help="Preflight and count what would move, without changing rows, schema or files.",
     ),
 ) -> None:
     """Rename a bank's id in place, keeping every memory, document and mental model.
 
-    One transaction moves every row of the bank to the new id. Stop the bank's
-    clients first: anything still calling the old id gets a 404 or, if it creates
-    banks on demand, a new empty bank under the old id. Refused while the bank
-    has pending or processing operations.
+    One transaction moves bank rows and live file/retry references. Stop clients,
+    workers and external file writers until their configuration and caches have
+    switched. A stale client can create a new empty old-id bank after commit.
+    Pending/processing operations and applied curation capsules block rename.
     """
     if not new_bank_id.strip() or new_bank_id == old_bank_id:
         typer.echo("Error: --to must be a non-empty id different from --from.", err=True)
@@ -1266,10 +1227,10 @@ def rename_bank(
     for table, count in sorted(moved.items()):
         typer.echo(f"  {table}: {count}")
     if dry_run:
-        typer.echo(f"Dry run: {sum(moved.values())} row(s) would move; rolled back.")
+        typer.echo(f"Dry run: {sum(moved.values())} row(s) would move; nothing was changed.")
     else:
         typer.echo(
-            f"Renamed: {sum(moved.values())} row(s) moved. Point clients and API keys at '{new_bank_id}'; "
+            f"Renamed: {sum(moved.values())} row(s) moved. Original file keys retained. Point clients and API keys at '{new_bank_id}'; "
             "API servers may serve the old id from cache until bank_info_cache_ttl_seconds elapses."
         )
 

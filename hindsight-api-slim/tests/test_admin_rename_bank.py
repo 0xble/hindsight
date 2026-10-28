@@ -185,7 +185,9 @@ async def _seed_files(conn, schema):
         payload = {
             "bank_id": "old",
             "storage_key": prefix + "retry.pdf",
-            "document_id": "stable-doc",
+            "type": "file_convert_retain",
+            "document_id": "doc-1",
+            "_file_metadata": {"file_storage_key": prefix + "document.pdf", "filename": "old evidence.pdf"},
             "operation_id": str(ids[status]),
             "metadata": {"bank_id": "old", "text": prefix},
         }
@@ -227,7 +229,17 @@ async def test_retry_destinations_files_and_evidence_survive(rename_schema):
     db, schema, conn = rename_schema
     storage, prefix, ids = await _seed_files(conn, schema)
     before = {r["operation_id"]: dict(r) for r in await conn.fetch(f"SELECT * FROM {schema}.async_operations")}
-    originals = {r["storage_key"]: bytes(r["data"]) for r in await conn.fetch(f"SELECT * FROM {schema}.file_storage")}
+    originals = {
+        r["storage_key"]: await storage.retrieve(r["storage_key"])
+        for r in await conn.fetch(f"SELECT * FROM {schema}.file_storage")
+    }
+    identities = await conn.fetch(f"SELECT id FROM {schema}.memory_units WHERE bank_id='old' ORDER BY id")
+    await _seed_bank(conn, schema, "other")
+    await conn.execute(
+        f"INSERT INTO {schema}.curation_batches(bank_id,batch_id,manifest_revision,status,capsule) "
+        "VALUES ('other','other-batch','revision','applied','{\"bank_id\":\"old\",\"hash\":\"immutable\"}')"
+    )
+    other = await conn.fetchval(f"SELECT row_to_json(c)::text FROM {schema}.curation_batches c WHERE bank_id='other'")
     await _run_rename_bank(db, schema, "old", "new", dry_run=False)
     rows = {r["operation_id"]: dict(r) for r in await conn.fetch(f"SELECT * FROM {schema}.async_operations")}
     for status, op_id in ids.items():
@@ -241,9 +253,19 @@ async def test_retry_destinations_files_and_evidence_survive(rename_schema):
             assert await storage.retrieve(payload["storage_key"]) == originals[prefix + "retry.pdf"]
             assert payload["metadata"] == {"bank_id": "old", "text": prefix}
             assert payload["operation_id"] == str(op_id)
+            assert payload["_file_metadata"] == {
+                "file_storage_key": bank_storage_prefix("new", schema) + "document.pdf",
+                "filename": "old evidence.pdf",
+            }
         assert rows[op_id]["result_metadata"] == before[op_id]["result_metadata"]
     for key, value in originals.items():
         assert await storage.retrieve(key) == value
+    assert await conn.fetch(f"SELECT id FROM {schema}.memory_units WHERE bank_id='new' ORDER BY id") == identities
+    assert await conn.fetchval(f"SELECT id FROM {schema}.documents WHERE bank_id='new'") == "doc-1"
+    assert (
+        await conn.fetchval(f"SELECT row_to_json(c)::text FROM {schema}.curation_batches c WHERE bank_id='other'")
+        == other
+    )
 
 
 @pytest.mark.asyncio
@@ -320,6 +342,13 @@ async def test_row_or_commit_failure_rolls_back_schema_rows_and_native_blobs(ren
 
 @pytest.mark.asyncio
 async def test_rename_excludes_retry_claim_document_and_native_file_writers(rename_schema, monkeypatch):
+    from unittest.mock import AsyncMock
+    from hindsight_api.engine.db import create_database_backend
+    from hindsight_api.worker import WorkerPoller
+
+    poller = WorkerPoller(
+        backend=create_database_backend("postgresql"), worker_id="rename-barrier", executor=AsyncMock()
+    )
     db, schema, conn = rename_schema
     _, prefix, ids = await _seed_files(conn, schema)
     held, release = asyncio.Event(), asyncio.Event()
@@ -336,15 +365,21 @@ async def test_rename_excludes_retry_claim_document_and_native_file_writers(rena
     try:
         await asyncio.wait_for(held.wait(), 10)
         statements = [
-            (f"UPDATE {schema}.async_operations SET status='pending' WHERE operation_id=$1", (ids["failed"],)),
-            (f"SELECT operation_id FROM {schema}.async_operations FOR UPDATE SKIP LOCKED", ()),
+            (
+                f"UPDATE {schema}.async_operations SET status='pending' WHERE operation_id=$1 AND bank_id='old'",
+                (ids["failed"],),
+            ),
+            (None, ()),
             (f"UPDATE {schema}.documents SET original_text='writer' WHERE bank_id='old'", ()),
             (f"INSERT INTO {schema}.file_storage(storage_key,data) VALUES($1,$2)", (prefix + "late", b"late bytes")),
         ]
         for statement, args in statements:
             writer = await asyncpg.connect(db)
             writers.append(writer)
-            jobs.append(asyncio.create_task(writer.execute(statement, *args)))
+            if statement is None:
+                jobs.append(asyncio.create_task(poller._claim_batch_for_schema_inner(writer, schema, {}, 1)))
+            else:
+                jobs.append(asyncio.create_task(writer.execute(statement, *args)))
         async with asyncio.timeout(5):
             for writer in writers:
                 while not await conn.fetchval(
@@ -358,6 +393,9 @@ async def test_rename_excludes_retry_claim_document_and_native_file_writers(rena
         for writer in writers:
             await writer.close()
     assert rename.exception() is None
+    assert jobs[0].result() == "UPDATE 0"
+    assert jobs[1].result() == []
+    assert jobs[2].result() == "UPDATE 0"
     assert (
         json.loads(
             await conn.fetchval(
@@ -369,19 +407,26 @@ async def test_rename_excludes_retry_claim_document_and_native_file_writers(rena
 
 
 @pytest.mark.asyncio
-async def test_index_failure_is_not_a_success_and_recovery_is_schema_qualified(rename_schema, monkeypatch):
+@pytest.mark.parametrize("reported", [False, True])
+async def test_index_failure_is_not_a_success_and_recovery_is_schema_qualified(rename_schema, monkeypatch, reported):
+    from types import SimpleNamespace
+
     db, schema, conn = rename_schema
     await _seed_bank(conn, schema, "old")
     reconcile = cli.reconcile_bank_vector_indexes
 
     async def fail(*args):
+        if reported:
+            return SimpleNamespace(created=0, dropped=0, failed=1)
         raise RuntimeError("injected index failure")
 
     monkeypatch.setattr(cli, "reconcile_bank_vector_indexes", fail)
     with pytest.raises(RenameBankError, match=f"repair-bank.*--bank new.*--schema {schema}"):
         await _run_rename_bank(db, schema, "old", "new", dry_run=False)
     assert await conn.fetchval(f"SELECT bank_id FROM {schema}.banks") == "new"
-    await reconcile(conn, schema, "new", cli._vector_index_clause())
+    monkeypatch.setattr(cli, "reconcile_bank_vector_indexes", reconcile)
+    repaired = await cli._run_repair_bank(db, base_schema=schema, schema=schema, bank_id="new", dry_run=False)
+    assert not repaired.skipped_schemas and not any(r.failed for r in repaired.banks)
     defs = await conn.fetch(
         "SELECT indexdef FROM pg_indexes WHERE schemaname=$1 AND indexname LIKE 'idx_mu_emb_%'", schema
     )
@@ -423,3 +468,177 @@ async def test_native_retry_and_worker_claim_execute_the_retargeted_payload(rena
     finally:
         _current_schema.reset(token)
         await backend.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_fk_restore_failure_rolls_back_everything(rename_schema, monkeypatch):
+    db, schema, conn = rename_schema
+    await _seed_files(conn, schema)
+    before = await _snapshot(conn, schema)
+    restore = cli._set_fks_deferrable
+
+    async def fail_restore(conn, fks, clause):
+        if clause == "NOT DEFERRABLE":
+            raise RuntimeError("injected catalog restore failure")
+        await restore(conn, fks, clause)
+
+    monkeypatch.setattr(cli, "_set_fks_deferrable", fail_restore)
+    with pytest.raises(RuntimeError, match="catalog restore"):
+        await _run_rename_bank(db, schema, "old", "new", dry_run=False)
+    assert await _snapshot(conn, schema) == before
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("ack_lost", [False, True])
+async def test_commit_failure_or_lost_ack_preserves_source_and_consistent_references(
+    rename_schema, monkeypatch, ack_lost
+):
+    from asyncpg.transaction import Transaction
+
+    db, schema, conn = rename_schema
+    storage, prefix, ids = await _seed_files(conn, schema)
+    before = await _snapshot(conn, schema)
+    commit = Transaction._Transaction__commit
+
+    async def lose_commit(transaction):
+        if transaction._nested:
+            return await commit(transaction)
+        if ack_lost:
+            await commit(transaction)
+        raise RuntimeError("injected commit transport failure")
+
+    monkeypatch.setattr(Transaction, "_Transaction__commit", lose_commit)
+    with pytest.raises(RuntimeError, match="commit transport"):
+        await _run_rename_bank(db, schema, "old", "new", dry_run=False)
+    assert await storage.retrieve(prefix + "retry.pdf") == b"retry.pdf\x00original"
+    if not ack_lost:
+        assert await _snapshot(conn, schema) == before
+    else:
+        assert await conn.fetchval(f"SELECT bank_id FROM {schema}.banks") == "new"
+        payload = json.loads(
+            await conn.fetchval(
+                f"SELECT task_payload FROM {schema}.async_operations WHERE operation_id=$1", ids["failed"]
+            )
+        )
+        assert payload["bank_id"] == "new"
+        assert await storage.retrieve(payload["storage_key"]) == b"retry.pdf\x00original"
+        assert (await _snapshot(conn, schema))[1] == before[1]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("backend", ["native", "object"])
+async def test_copy_failure_preserves_originals_and_does_not_publish_partial_references(
+    rename_schema, monkeypatch, backend
+):
+    from hindsight_api.engine.storage.base import ObstoreFileStorage
+    from obstore.store import MemoryStore
+
+    db, schema, conn = rename_schema
+    native, prefix, _ = await _seed_files(conn, schema)
+    originals = {
+        r["storage_key"]: await native.retrieve(r["storage_key"])
+        for r in await conn.fetch(f"SELECT storage_key FROM {schema}.file_storage")
+    }
+    factory = cli._admin_file_storage
+    copied = []
+
+    def fail_on_second_copy(storage):
+        create = storage.store_new
+
+        async def fail_second(file_data, key):
+            if copied:
+                raise RuntimeError("injected second copy failure")
+            await create(file_data, key)
+            copied.append(key)
+            return key
+
+        monkeypatch.setattr(storage, "store_new", fail_second)
+        return storage
+
+    if backend == "object":
+        storage = ObstoreFileStorage()
+        storage._store = MemoryStore()
+        for key, data in originals.items():
+            await storage.store(data, key)
+        fail_on_second_copy(storage)
+        monkeypatch.setattr(cli, "_admin_file_storage", lambda *_: storage)
+    else:
+        storage = native
+        # Keep production's borrowed transaction connection, not the observer
+        # connection used to seed and read back the fixture.
+        monkeypatch.setattr(cli, "_admin_file_storage", lambda conn, schema: fail_on_second_copy(factory(conn, schema)))
+    before = await _snapshot(conn, schema)
+    with pytest.raises(RuntimeError, match="second copy"):
+        await _run_rename_bank(db, schema, "old", "new", dry_run=False)
+    assert copied
+    assert await _snapshot(conn, schema) == before
+    for key, data in originals.items():
+        assert await storage.retrieve(key) == data
+    if backend == "object":
+        # External creates cannot join a PG rollback. The safe residue is a
+        # destination orphan, never a deleted source or a repointed database row.
+        assert await storage.retrieve(copied[0])
+        with pytest.raises(RenameBankError, match="collision"):
+            await _run_rename_bank(db, schema, "old", "new", dry_run=False)
+
+
+@pytest.mark.asyncio
+async def test_object_destination_race_is_create_only(rename_schema, monkeypatch):
+    from hindsight_api.engine.storage.base import ObstoreFileStorage
+    from obstore.store import MemoryStore
+
+    db, schema, conn = rename_schema
+    native, _, _ = await _seed_files(conn, schema)
+    storage = ObstoreFileStorage()
+    storage._store = MemoryStore()
+    originals = {
+        r["storage_key"]: await native.retrieve(r["storage_key"])
+        for r in await conn.fetch(f"SELECT storage_key FROM {schema}.file_storage")
+    }
+    for key, data in originals.items():
+        await storage.store(data, key)
+    monkeypatch.setattr(cli, "_admin_file_storage", lambda *_: storage)
+    before = await _snapshot(conn, schema)
+    create = storage.store_new
+    targets = []
+
+    async def racing_create(file_data, key):
+        await storage.store(b"competing destination", key)
+        targets.append(key)
+        return await create(file_data, key)
+
+    monkeypatch.setattr(storage, "store_new", racing_create)
+    with pytest.raises(FileExistsError):
+        await _run_rename_bank(db, schema, "old", "new", dry_run=False)
+    assert await _snapshot(conn, schema) == before
+    assert len(targets) == 1
+    assert await storage.retrieve(targets[0]) == b"competing destination"
+    for key, data in originals.items():
+        assert await storage.retrieve(key) == data
+
+
+@pytest.mark.asyncio
+async def test_cli_reports_committed_index_failure_and_native_repair_recovers(rename_schema, monkeypatch):
+    from typer.testing import CliRunner
+
+    db, schema, conn = rename_schema
+    await _seed_bank(conn, schema, "old")
+    reconcile = cli.reconcile_bank_vector_indexes
+
+    async def fail(*args, **kwargs):
+        raise RuntimeError("injected index failure")
+
+    monkeypatch.setenv("HINDSIGHT_API_DATABASE_URL", db)
+    monkeypatch.setattr(cli, "reconcile_bank_vector_indexes", fail)
+    result = await asyncio.to_thread(
+        CliRunner().invoke, cli.app, ["rename-bank", "--from", "old", "--to", "new", "--schema", schema]
+    )
+    assert result.exit_code == 1
+    assert "Rename committed" in result.output
+    assert f"repair-bank --bank new --schema {schema}" in result.output
+    monkeypatch.setattr(cli, "reconcile_bank_vector_indexes", reconcile)
+    repaired = await asyncio.to_thread(
+        CliRunner().invoke, cli.app, ["repair-bank", "--bank", "new", "--schema", schema]
+    )
+    assert repaired.exit_code == 0, repaired.output
+    assert await conn.fetchval(f"SELECT bank_id FROM {schema}.banks") == "new"
