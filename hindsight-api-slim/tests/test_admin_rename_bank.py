@@ -9,15 +9,14 @@ import asyncio
 import json
 import uuid
 
-from hindsight_api.admin import cli
-from hindsight_api.engine.storage import bank_storage_prefix
-
 import asyncpg
 import pytest
 import pytest_asyncio
 
+from hindsight_api.admin import cli
 from hindsight_api.admin.cli import _RIGID_BANK_ID_FKS_SQL, RenameBankError, _rename_bank, _run_rename_bank
 from hindsight_api.engine.retain.bank_utils import _BANK_INDEX_FACT_TYPES, _vector_index_clause
+from hindsight_api.engine.storage import bank_storage_prefix
 from hindsight_api.engine.vector_index_health import plan_bank_vector_indexes, reconcile_bank_vector_indexes
 from hindsight_api.migrations import run_migrations
 
@@ -407,6 +406,7 @@ async def test_row_or_commit_failure_rolls_back_schema_rows_and_native_blobs(ren
 @pytest.mark.asyncio
 async def test_rename_excludes_retry_claim_document_and_native_file_writers(rename_schema, monkeypatch):
     from unittest.mock import AsyncMock
+
     from hindsight_api.engine.db import create_database_backend
     from hindsight_api.worker import WorkerPoller
 
@@ -500,6 +500,7 @@ async def test_index_failure_is_not_a_success_and_recovery_is_schema_qualified(r
 @pytest.mark.asyncio
 async def test_native_retry_and_worker_claim_execute_the_retargeted_payload(rename_schema, monkeypatch):
     from unittest.mock import AsyncMock
+
     from hindsight_api.engine.db import create_database_backend
     from hindsight_api.engine.memory_engine import MemoryEngine, _current_schema
     from hindsight_api.models import RequestContext
@@ -594,8 +595,9 @@ async def test_commit_failure_or_lost_ack_preserves_source_and_consistent_refere
 async def test_copy_failure_preserves_originals_and_does_not_publish_partial_references(
     rename_schema, monkeypatch, backend
 ):
-    from hindsight_api.engine.storage.base import ObstoreFileStorage
     from obstore.store import MemoryStore
+
+    from hindsight_api.engine.storage.base import ObstoreFileStorage
 
     db, schema, conn = rename_schema
     native, prefix, _ = await _seed_files(conn, schema)
@@ -648,8 +650,9 @@ async def test_copy_failure_preserves_originals_and_does_not_publish_partial_ref
 
 @pytest.mark.asyncio
 async def test_object_destination_race_is_create_only(rename_schema, monkeypatch):
-    from hindsight_api.engine.storage.base import ObstoreFileStorage
     from obstore.store import MemoryStore
+
+    from hindsight_api.engine.storage.base import ObstoreFileStorage
 
     db, schema, conn = rename_schema
     native, _, _ = await _seed_files(conn, schema)
@@ -706,3 +709,106 @@ async def test_cli_reports_committed_index_failure_and_native_repair_recovers(re
     )
     assert repaired.exit_code == 0, repaired.output
     assert await conn.fetchval(f"SELECT bank_id FROM {schema}.banks") == "new"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("dry_run", [False, True])
+async def test_cli_rename_allows_deleted_upload_associations(rename_schema, monkeypatch, dry_run):
+    from typer.testing import CliRunner
+
+    db, schema, conn = rename_schema
+    storage, prefix, ids = await _seed_files(conn, schema)
+    missing_key = prefix + "document.pdf"
+    # Default conversion deletes the upload before batch_retain records this
+    # association. The document and failed/cancelled batches can still name it.
+    await storage.delete(missing_key)
+    await conn.execute(
+        f"UPDATE {schema}.async_operations SET operation_type='batch_retain', "
+        "task_payload=(task_payload - 'storage_key') || '{\"type\":\"batch_retain\"}'::jsonb "
+        "WHERE status IN ('failed','cancelled')"
+    )
+    before = await _snapshot(conn, schema)
+    monkeypatch.setenv("HINDSIGHT_API_DATABASE_URL", db)
+    args = ["rename-bank", "--from", "old", "--to", "new", "--schema", schema]
+    if dry_run:
+        args.append("--dry-run")
+    result = await asyncio.to_thread(CliRunner().invoke, cli.app, args)
+    assert result.exit_code == 0, result.output
+    assert f"Missing optional file association: {missing_key}" in result.output
+    assert "left unchanged" in result.output
+    assert "no bytes restored" in result.output
+    with pytest.raises(FileNotFoundError):
+        await storage.retrieve(missing_key)
+    with pytest.raises(FileNotFoundError):
+        await storage.retrieve(bank_storage_prefix("new", schema) + "document.pdf")
+    if dry_run:
+        assert await _snapshot(conn, schema) == before
+        return
+    assert await conn.fetchval(f"SELECT file_storage_key FROM {schema}.documents WHERE bank_id='new'") == missing_key
+    for status in ("failed", "cancelled"):
+        payload = json.loads(
+            await conn.fetchval(
+                f"SELECT task_payload FROM {schema}.async_operations WHERE operation_id=$1", ids[status]
+            )
+        )
+        assert payload["bank_id"] == "new"
+        assert payload["_file_metadata"]["file_storage_key"] == missing_key
+    completed_before = next(
+        json.loads(value)
+        for value in before[0]["async_operations"]
+        if json.loads(value)["operation_id"] == str(ids["completed"])
+    )
+    assert (
+        json.loads(
+            await conn.fetchval(
+                f"SELECT task_payload FROM {schema}.async_operations WHERE operation_id=$1", ids["completed"]
+            )
+        )
+        == completed_before["task_payload"]
+    )
+    assert await storage.retrieve(prefix + "attachment.png") == b"attachment.png\x00original"
+    assert (
+        await storage.retrieve(bank_storage_prefix("new", schema) + "attachment.png") == b"attachment.png\x00original"
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("required", ["attachment.png", "retry.pdf"])
+async def test_missing_required_file_fails_closed_even_with_optional_association(rename_schema, required):
+    db, schema, conn = rename_schema
+    storage, prefix, _ = await _seed_files(conn, schema)
+    missing_key = prefix + required
+    await storage.delete(missing_key)
+    await conn.execute(f"UPDATE {schema}.documents SET file_storage_key=$1 WHERE bank_id='old'", missing_key)
+    before = await _snapshot(conn, schema)
+    with pytest.raises(RenameBankError, match="source file.*has no stored bytes"):
+        await _run_rename_bank(db, schema, "old", "new", dry_run=False)
+    assert await _snapshot(conn, schema) == before
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("destination", [False, True])
+@pytest.mark.parametrize("error", [PermissionError, OSError])
+async def test_optional_association_storage_errors_are_not_missing(rename_schema, monkeypatch, destination, error):
+    db, schema, conn = rename_schema
+    _, prefix, _ = await _seed_files(conn, schema)
+    factory = cli._admin_file_storage
+    failing_key = (bank_storage_prefix("new", schema) if destination else prefix) + "document.pdf"
+
+    def failing_storage(conn, schema):
+        storage = factory(conn, schema)
+        retrieve = storage.retrieve
+
+        async def fail(key):
+            if key == failing_key:
+                raise error("injected storage I/O failure")
+            return await retrieve(key)
+
+        monkeypatch.setattr(storage, "retrieve", fail)
+        return storage
+
+    monkeypatch.setattr(cli, "_admin_file_storage", failing_storage)
+    before = await _snapshot(conn, schema)
+    with pytest.raises(error, match="injected storage I/O failure"):
+        await _run_rename_bank(db, schema, "old", "new", dry_run=False)
+    assert await _snapshot(conn, schema) == before
