@@ -991,7 +991,8 @@ async def _rename_bank(
             )
             names = [r["table_name"] for r in tables]
             # FOR UPDATE on banks alone does not block retry/status updates or
-            # claims of existing operations. EXCLUSIVE also blocks row lockers.
+            # claims of existing operations. Take the DDL-strength locks up front
+            # so queued writers cannot deadlock a later ALTER lock upgrade.
             moved = await sql_memories().admin_prepare_bank_rename(
                 conn=conn, schema=schema, tables=names, bank_id=old_bank_id
             )

@@ -179,6 +179,7 @@ async def _seed_files(conn, schema):
         f"SELECT bank_id,id,'abc','abc',$1,'image/png',28 FROM {schema}.documents WHERE bank_id='old'",
         prefix + "attachment.png",
     )
+    document_id = await conn.fetchval(f"SELECT id FROM {schema}.documents WHERE bank_id='old'")
     ids = {}
     for status in ["failed", "cancelled", "completed"]:
         ids[status] = uuid.uuid4()
@@ -186,7 +187,9 @@ async def _seed_files(conn, schema):
             "bank_id": "old",
             "storage_key": prefix + "retry.pdf",
             "type": "file_convert_retain",
-            "document_id": "doc-1",
+            "document_id": document_id,
+            "workflow_id": str(uuid.uuid4()),
+            "effect_id": str(uuid.uuid4()),
             "_file_metadata": {"file_storage_key": prefix + "document.pdf", "filename": "old evidence.pdf"},
             "operation_id": str(ids[status]),
             "metadata": {"bank_id": "old", "text": prefix},
@@ -253,6 +256,13 @@ async def test_retry_destinations_files_and_evidence_survive(rename_schema):
             assert await storage.retrieve(payload["storage_key"]) == originals[prefix + "retry.pdf"]
             assert payload["metadata"] == {"bank_id": "old", "text": prefix}
             assert payload["operation_id"] == str(op_id)
+            original = json.loads(before[op_id]["task_payload"])
+            assert payload["workflow_id"] == original["workflow_id"]
+            assert payload["effect_id"] == original["effect_id"]
+            original["bank_id"] = payload["bank_id"]
+            original["storage_key"] = payload["storage_key"]
+            original["_file_metadata"]["file_storage_key"] = payload["_file_metadata"]["file_storage_key"]
+            assert payload == original
             assert payload["_file_metadata"] == {
                 "file_storage_key": bank_storage_prefix("new", schema) + "document.pdf",
                 "filename": "old evidence.pdf",
@@ -261,7 +271,10 @@ async def test_retry_destinations_files_and_evidence_survive(rename_schema):
     for key, value in originals.items():
         assert await storage.retrieve(key) == value
     assert await conn.fetch(f"SELECT id FROM {schema}.memory_units WHERE bank_id='new' ORDER BY id") == identities
-    assert await conn.fetchval(f"SELECT id FROM {schema}.documents WHERE bank_id='new'") == "doc-1"
+    assert (
+        await conn.fetchval(f"SELECT id FROM {schema}.documents WHERE bank_id='new'")
+        == json.loads(before[ids["failed"]]["task_payload"])["document_id"]
+    )
     assert (
         await conn.fetchval(f"SELECT row_to_json(c)::text FROM {schema}.curation_batches c WHERE bank_id='other'")
         == other

@@ -131,7 +131,7 @@ async def prepare_bank_rename(
     """
     locked = sorted(set(tables) | {"file_storage"})
     await conn.execute(
-        "LOCK TABLE " + ", ".join(fq_table_explicit(table, schema) for table in locked) + " IN EXCLUSIVE MODE"
+        "LOCK TABLE " + ", ".join(fq_table_explicit(table, schema) for table in locked) + " IN ACCESS EXCLUSIVE MODE"
     )
     counts: dict[str, int] = {}
     for table in tables:
