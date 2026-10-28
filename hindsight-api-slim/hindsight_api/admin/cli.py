@@ -992,8 +992,9 @@ async def _rename_bank(
             names = [r["table_name"] for r in tables]
             # FOR UPDATE on banks alone does not block retry/status updates or
             # claims of existing operations. EXCLUSIVE also blocks row lockers.
-            locked = sorted(set(names) | {"file_storage"})
-            await conn.execute("LOCK TABLE " + ", ".join(_fq_table(t, schema) for t in locked) + " IN EXCLUSIVE MODE")
+            moved = await sql_memories().admin_prepare_bank_rename(
+                conn=conn, schema=schema, tables=names, bank_id=old_bank_id
+            )
             banks = _fq_table("banks", schema)
             if not await conn.fetchval(f"SELECT 1 FROM {banks} WHERE bank_id = $1", old_bank_id):
                 raise RenameBankError(f"bank '{old_bank_id}' does not exist in schema '{schema}'")
@@ -1020,14 +1021,6 @@ async def _rename_bank(
                     "applied curation capsules bind bank ids and snapshot hashes; "
                     "rename requires their supported recovery/revert first, or a rename-aware curation implementation"
                 )
-            # Counts are also the dry-run result. No UPDATE, DDL or blob writes.
-            moved = {}
-            for table in names:
-                count = await conn.fetchval(
-                    f"SELECT count(*) FROM {_fq_table(table, schema)} WHERE bank_id = $1", old_bank_id
-                )
-                if count:
-                    moved[table] = count
             await _move_bank_files(conn, schema, old_bank_id, new_bank_id, dry_run=dry_run)
             if dry_run:
                 return moved
@@ -1078,19 +1071,19 @@ async def _move_bank_files(conn: asyncpg.Connection, schema: str, old_id: str, n
         payload = json.loads(raw) if isinstance(raw, str) else raw
         if not isinstance(payload, dict) or payload.get("bank_id", old_id) != old_id:
             raise RenameBankError(f"operation {row['operation_id']} has an unsupported retry bank reference")
-        payload["bank_id"] = new_id
+        changes = [(["bank_id"], new_id)]
         # Only native execution fields, not user metadata, text or historical
         # result_metadata. Completed payloads are evidence, not retry instructions.
-        holders = [(payload, "storage_key")]
+        holders = [(payload, "storage_key", ["storage_key"])]
         metadata = payload.get("_file_metadata")
         if isinstance(metadata, dict):
-            holders.append((metadata, "file_storage_key"))
-        for holder, field in holders:
+            holders.append((metadata, "file_storage_key", ["_file_metadata", "file_storage_key"]))
+        for holder, field, path in holders:
             key = holder.get(field)
             if isinstance(key, str) and key.startswith(old_prefix):
                 keys.add(key)
-                holder[field] = new_prefix + key[len(old_prefix) :]
-        payloads.append((row["operation_id"], payload))
+                changes.append((path, new_prefix + key[len(old_prefix) :]))
+        payloads.append((row["operation_id"], changes))
     # Check every known destination before any write. retrieve(), not exists():
     # some object backends' exists() suppress permission/network errors as False.
     for key in sorted(keys):
@@ -1120,11 +1113,18 @@ async def _move_bank_files(conn: asyncpg.Connection, schema: str, old_id: str, n
             old_key=row["key"],
             new_key=new_prefix + row["key"][len(old_prefix) :],
         )
-    for operation_id, payload in payloads:
+    for operation_id, changes in payloads:
+        # JSONB paths preserve unrelated native values, notably arbitrary-precision
+        # numbers that a Python JSON roundtrip would silently round to floats.
+        expression = "task_payload"
+        args = []
+        for path, value in changes:
+            args.extend([path, value])
+            expression = f"jsonb_set({expression}, ${len(args) - 1}::text[], to_jsonb(${len(args)}::text), true)"
+        args.append(operation_id)
         await conn.execute(
-            f"UPDATE {operations} SET task_payload = $1::jsonb WHERE operation_id = $2",
-            json.dumps(payload),
-            operation_id,
+            f"UPDATE {operations} SET task_payload = {expression} WHERE operation_id = ${len(args)}",
+            *args,
         )
     return len(keys)
 
@@ -1142,15 +1142,16 @@ async def _run_rename_bank(
     # Same unreachable-store case the reconcile below now handles, reported the same
     # way: this runs before anything is changed, so refusing is free and a traceback
     # would just look like a crash.
-    try:
-        old_is_store_owned = bank_indexes_are_store_owned(old_bank_id)
-    except Exception as exc:  # noqa: BLE001 — cannot verify the precondition, so do not proceed
-        raise RenameBankError(
-            f"cannot tell whether bank '{old_bank_id}' keeps its memories outside SQL ({exc}); "
-            f"nothing was changed. Re-run once the memories store is reachable."
-        ) from exc
-    if old_is_store_owned:
-        raise RenameBankError(f"bank '{old_bank_id}' keeps its memories outside SQL; rename is not supported for it")
+    for bank_id in (old_bank_id, new_bank_id):
+        try:
+            store_owned = bank_indexes_are_store_owned(bank_id)
+        except Exception as exc:  # noqa: BLE001 — cannot verify the precondition, so do not proceed
+            raise RenameBankError(
+                f"cannot tell whether bank '{bank_id}' keeps its memories outside SQL ({exc}); "
+                f"nothing was changed. Re-run once the memories store is reachable."
+            ) from exc
+        if store_owned:
+            raise RenameBankError(f"bank '{bank_id}' keeps its memories outside SQL; rename is not supported for it")
     conn = await _admin_connect(db_url)
     try:
         moved = await _rename_bank(conn, schema, old_bank_id, new_bank_id, dry_run=dry_run)

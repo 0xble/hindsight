@@ -1798,6 +1798,12 @@ class PostgresMemories(MemoriesExtension):
             conn=conn, fq_table_explicit=fq_store_table_explicit, schema=schema, tables=tables
         )
 
+    async def admin_prepare_bank_rename(self, *, conn, schema: str, tables: list[str], bank_id: str) -> dict[str, int]:
+        """Hold native writer exclusion and return nonmutating rename counts."""
+        return await pg_admin.prepare_bank_rename(
+            conn=conn, fq_table_explicit=fq_store_table_explicit, schema=schema, tables=tables, bank_id=bank_id
+        )
+
     async def admin_move_bank_id(
         self, *, conn, schema: str, tables: list[str], old_bank_id: str, new_bank_id: str
     ) -> dict[str, int]:

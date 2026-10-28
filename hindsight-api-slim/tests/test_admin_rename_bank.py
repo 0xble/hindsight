@@ -269,6 +269,57 @@ async def test_retry_destinations_files_and_evidence_survive(rename_schema):
 
 
 @pytest.mark.asyncio
+async def test_retry_retarget_preserves_native_jsonb_precision(rename_schema):
+    db, schema, conn = rename_schema
+    _, _, ids = await _seed_files(conn, schema)
+    await conn.execute(
+        f"UPDATE {schema}.async_operations SET task_payload = "
+        "jsonb_set(task_payload, '{metadata,precise}', '0.12345678901234567890123456789'::jsonb) "
+        "WHERE operation_id = $1",
+        ids["failed"],
+    )
+    before = await conn.fetchval(
+        f"SELECT (task_payload->'metadata')::text FROM {schema}.async_operations WHERE operation_id=$1",
+        ids["failed"],
+    )
+    await _run_rename_bank(db, schema, "old", "new", dry_run=False)
+    assert (
+        await conn.fetchval(
+            f"SELECT (task_payload->'metadata')::text FROM {schema}.async_operations WHERE operation_id=$1",
+            ids["failed"],
+        )
+        == before
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("disposition", ["owned", "unreachable"])
+async def test_target_store_preflight_has_zero_effects(rename_schema, monkeypatch, disposition):
+    db, schema, conn = rename_schema
+    await _seed_files(conn, schema)
+    before = await _snapshot(conn, schema)
+    probes = []
+
+    def probe(bank_id):
+        probes.append(bank_id)
+        if bank_id == "new":
+            if disposition == "unreachable":
+                raise RuntimeError("target store unavailable")
+            return True
+        return False
+
+    async def unexpected_connect(*args):
+        pytest.fail("store preflight must run before connecting or mutating")
+
+    monkeypatch.setattr(cli, "bank_indexes_are_store_owned", probe)
+    monkeypatch.setattr(cli, "_admin_connect", unexpected_connect)
+    with pytest.raises(RenameBankError, match="outside SQL|cannot tell whether"):
+        await _run_rename_bank(db, schema, "old", "new", dry_run=False)
+    assert probes == ["old", "new"]
+    assert await _snapshot(conn, schema) == before
+
+
+@pytest.mark.asyncio
 async def test_dry_run_never_executes_updates_or_catalog_ddl(rename_schema):
     db, schema, conn = rename_schema
     await _seed_files(conn, schema)

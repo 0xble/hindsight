@@ -121,6 +121,28 @@ async def truncate_tables(*, conn: Any, fq_table_explicit: Callable[..., str], s
         await conn.execute(f"TRUNCATE TABLE {qualified_table} CASCADE")
 
 
+async def prepare_bank_rename(
+    *, conn: Any, fq_table_explicit: Callable[..., str], schema: str, tables: list[str], bank_id: str
+) -> dict[str, int]:
+    """Exclude schema writers/row-locking claims, then count bank rows without mutating.
+
+    The caller owns the transaction through file copying, row rewrites and commit.
+    Keep store-table naming here, just as for move_bank_id, not in the CLI.
+    """
+    locked = sorted(set(tables) | {"file_storage"})
+    await conn.execute(
+        "LOCK TABLE " + ", ".join(fq_table_explicit(table, schema) for table in locked) + " IN EXCLUSIVE MODE"
+    )
+    counts: dict[str, int] = {}
+    for table in tables:
+        count = await conn.fetchval(
+            f"SELECT count(*) FROM {fq_table_explicit(table, schema)} WHERE bank_id = $1", bank_id
+        )
+        if count:
+            counts[table] = count
+    return counts
+
+
 async def move_bank_id(
     *,
     conn: Any,
