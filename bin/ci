@@ -228,6 +228,16 @@ build_smoke() {
   api uv run --frozen python -c "import hindsight_api, hindsight_api.config, hindsight_api.main"
 }
 
+coding_agents() {
+  (
+    cd hindsight-integrations/coding-agents
+    npm ci
+    npm test
+    npm run build
+    npx tsc --noEmit
+  )
+}
+
 client_discriminators() {
   uv run --directory hindsight-dev --frozen client-coverage-check --client python
   uv run --directory hindsight-clients/python --frozen pytest \
@@ -251,6 +261,7 @@ run database-guard-tests api uv run --frozen pytest -o addopts= ../tests/ci/test
 run lint api uv run --frozen ruff check .
 run format api uv run --frozen ruff format --check .
 run types api uv run --frozen ty check hindsight_api
+run coding-agent-regressions coding_agents
 # Guard tests deliberately exercise a quiescent PostgreSQL write window. The
 # optional NOWAIT table guard must not share it with unrelated xdist writers.
 run curation-guard api uv run --frozen --extra all pytest -n 0 tests/test_guarded_curation.py
