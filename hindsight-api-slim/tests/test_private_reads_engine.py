@@ -147,6 +147,9 @@ async def read_harness(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
     monkeypatch.setattr(llm_trace, "acquire_with_retry", connection)
     engine = MemoryEngine.__new__(MemoryEngine)
     engine._tenant_extension = ApiKeyTenantExtension({"api_key": "fixture-only-key"})
+    # State the released constructor initializes and reflect now reads.
+    engine._reflect_decision_model_client = None
+    engine._reflect_decision_model_unsupported_logged = False
     engine._operation_validator = None
     engine._initialized = True
     engine._backend = object()

@@ -1271,14 +1271,17 @@ class OpenAICompatibleLLM(LLMInterface):
         the read timer indefinitely (upstream #4784). The total deadline starts
         after attempt admission and raises the same type as an SDK read timeout.
         """
+        # Resolve the per-request client once: an LLM request extension may choose
+        # credentials, and both the call and the timeout shape must use that client.
+        client = self._request_client()
         deadline = asyncio.timeout(self.timeout)
         try:
             async with deadline:
-                return await self._request_client().chat.completions.create(**call_params)
+                return await client.chat.completions.create(**call_params)
         except TimeoutError as exc:
             if not deadline.expired():
                 raise
-            request = httpx.Request("POST", str(self._client.base_url.join("chat/completions")))
+            request = httpx.Request("POST", str(client.base_url.join("chat/completions")))
             raise APITimeoutError(request=request) from exc
 
     async def call(

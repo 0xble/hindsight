@@ -166,7 +166,7 @@ async def test_successful_empty_extraction_is_typed(monkeypatch, markdown):
     parser = LlamaParseParser(api_key="llx-test", poll_interval=0.0, timeout=10.0)
     upstream = _Upstream(
         upload=_Reply(json={"id": "empty-job"}),
-        gets=[_Reply(json={"status": "SUCCESS"}), _Reply(json={"markdown": markdown})],
+        gets=[_status("COMPLETED"), _Reply(json={"job": {"status": "COMPLETED"}, "markdown_full": markdown})],
     )
 
     async with _serve(monkeypatch, upstream):

@@ -21,7 +21,7 @@ from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanE
 from hindsight_api import tracing
 from hindsight_api.engine.audit import AuditEntry, AuditLogger
 from hindsight_api.engine.background_writes import PendingWrites
-from hindsight_api.engine.llm_trace import LLMRequestRecord, LLMTraceContext, LLMTraceRecorder
+from hindsight_api.engine.llm_trace import LLMRequestRecord, LLMTraceContext, LLMTraceRecorder, _BufferedRow
 from hindsight_api.private_reads import (
     PrivateReadUnsupportedError,
     is_private_read,
@@ -66,10 +66,13 @@ async def test_audit_and_llm_write_owners_never_resolve_serialize_or_schedule_pr
         assert not llm.is_enabled("reflect")
         llm.record_llm_call(provider="mock", model="fixture", scope="reflect", messages=Unformattable())
         llm._record_fire_and_forget(llm_entry)
-        await llm._safe_write(llm_entry)
+        await llm._write_batch([_BufferedRow("fixture", llm_entry)])
         llm.attach_memory_ids(LLMTraceContext(bank_id="fixture", trace_id="fixture-trace"), created=[QUERY])
         await llm._attach_memory_ids("fixture", "fixture-trace", {"source_memory_ids": [QUERY]})
     pool.assert_not_called()
+    # The released recorder buffers rows: a private call must not allocate one or
+    # arm the flush timer, not merely skip the eventual write.
+    assert llm._buffer == [] and not llm._flush_scheduled and not llm._rows_written
     resolver.assert_not_awaited()
     audit_schedule.assert_not_called()
     llm_schedule.assert_not_called()
@@ -256,7 +259,7 @@ async def test_real_reranker_thread_keeps_scope_after_request_cancellation(monke
     encoder = FlashRankCrossEncoder.__new__(FlashRankCrossEncoder)
     encoder._ranker = object()
 
-    def predict(pairs):
+    def predict(pairs, cancelled=None):
         entered.set()
         try:
             if not release.wait(5):
