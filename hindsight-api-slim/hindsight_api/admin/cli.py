@@ -1060,6 +1060,7 @@ async def _move_bank_files(conn: asyncpg.Connection, schema: str, old_id: str, n
     pg_store = sql_memories()
     rows = await pg_store.admin_bank_file_keys(conn=conn, schema=schema, bank_id=old_id, prefix=old_prefix)
     keys = {row["key"] for row in rows}
+    required_keys = {row["key"] for row in rows if row["table_name"] == "attachments"}
     operations = _fq_table("async_operations", schema)
     retries = await conn.fetch(
         f"SELECT operation_id, task_payload FROM {operations} "
@@ -1083,11 +1084,24 @@ async def _move_bank_files(conn: asyncpg.Connection, schema: str, old_id: str, n
             key = holder.get(field)
             if isinstance(key, str) and key.startswith(old_prefix):
                 keys.add(key)
+                if field == "storage_key":
+                    required_keys.add(key)
                 changes.append((path, new_prefix + key[len(old_prefix) :]))
         payloads.append((row["operation_id"], changes))
-    # Check every known destination before any write. retrieve(), not exists():
-    # some object backends' exists() suppress permission/network errors as False.
+    # Check every known source/destination before any write. retrieve(), not
+    # exists(): some object backends suppress permission/network errors as False.
+    missing_keys = set()
     for key in sorted(keys):
+        try:
+            await storage.retrieve(key)
+        except FileNotFoundError as exc:
+            if key in required_keys:
+                raise RenameBankError(f"source file {key} has no stored bytes; nothing was changed") from exc
+            # Default file conversion deletes uploads. Documents and batch_retain
+            # _file_metadata retain association strings, not executable file input.
+            missing_keys.add(key)
+            typer.echo(f"Missing optional file association: {key}; left unchanged, no bytes restored")
+            continue
         target = new_prefix + key[len(old_prefix) :]
         try:
             await storage.retrieve(target)
@@ -1095,16 +1109,16 @@ async def _move_bank_files(conn: asyncpg.Connection, schema: str, old_id: str, n
             pass
         else:
             raise RenameBankError(f"destination file collision: {target} already exists")
-        try:
-            await storage.retrieve(key)
-        except FileNotFoundError as exc:
-            raise RenameBankError(f"source file {key} has no stored bytes; nothing was changed") from exc
+    keys -= missing_keys
+    missing_targets = {new_prefix + key[len(old_prefix) :] for key in missing_keys}
     if dry_run:
         return len(keys)
     for key in sorted(keys):
         await storage.store_new(file_data=await storage.retrieve(key), key=new_prefix + key[len(old_prefix) :])
     columns = {"attachments": "storage_key", "documents": "file_storage_key"}
     for row in rows:
+        if row["key"] in missing_keys:
+            continue
         await pg_store.admin_repoint_file_key(
             conn=conn,
             schema=schema,
@@ -1120,6 +1134,8 @@ async def _move_bank_files(conn: asyncpg.Connection, schema: str, old_id: str, n
         expression = "task_payload"
         args = []
         for path, value in changes:
+            if path != ["bank_id"] and value in missing_targets:
+                continue
             args.extend([path, value])
             expression = f"jsonb_set({expression}, ${len(args) - 1}::text[], to_jsonb(${len(args)}::text), true)"
         args.append(operation_id)
@@ -1189,7 +1205,7 @@ def rename_bank(
     dry_run: bool = typer.Option(
         False,
         "--dry-run",
-        help="Preflight and count what would move, without changing rows, schema or files.",
+        help="Preflight without persistent changes. Blocks schema readers/writers while holding rename locks.",
     ),
 ) -> None:
     """Rename a bank's id in place, keeping every memory, document and mental model.
@@ -1198,6 +1214,8 @@ def rename_bank(
     workers and external file writers until their configuration and caches have
     switched. A stale client can create a new empty old-id bank after commit.
     Pending/processing operations and applied curation capsules block rename.
+    Both rename and --dry-run hold schema-wide ACCESS EXCLUSIVE locks during
+    preflight, including full-object storage reads. Plan an interruption window.
     """
     if not new_bank_id.strip() or new_bank_id == old_bank_id:
         typer.echo("Error: --to must be a non-empty id different from --from.", err=True)
