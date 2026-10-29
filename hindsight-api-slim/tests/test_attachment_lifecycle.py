@@ -182,12 +182,8 @@ async def test_deleting_the_bank_deletes_blobs_stored_under_the_tenantless_layou
 
 
 @pytest.mark.asyncio
-async def test_renaming_the_bank_moves_its_blobs_so_deleting_it_leaves_nothing(api_client, memory, pg0_db_url):
-    """#4502: a key spells the bank id, and rename-bank moves rows, not keys.
-
-    Left alone the bytes stay under the old prefix, which the bank's own delete
-    sweep no longer looks at — the bank goes and its objects stay, still billed.
-    """
+async def test_renaming_keeps_original_evidence_and_delete_reclaims_live_copies(api_client, memory, pg0_db_url):
+    """Live keys follow the bank, but history/unsupported old-prefix bytes are not swept."""
     from hindsight_api.admin.cli import _run_rename_bank
     from hindsight_api.engine.memory_engine import get_current_schema
     from hindsight_api.engine.retain.attachment_store import attachment_storage_key
@@ -201,13 +197,14 @@ async def test_renaming_the_bank_moves_its_blobs_so_deleting_it_leaves_nothing(a
     await _run_rename_bank(pg0_db_url, get_current_schema(), old_id, new_id, dry_run=False)
 
     assert await _blob_exists(memory, new_id, "doc", png)
-    with pytest.raises(FileNotFoundError):
-        await memory._file_storage.retrieve(old_key)
+    assert await memory._file_storage.retrieve(old_key) == PNG_BYTES
 
     response = await api_client.delete(f"/v1/default/banks/{new_id}")
     assert response.status_code == 200, response.text
 
     assert not await _blob_exists(memory, new_id, "doc", png)
+    assert await memory._file_storage.retrieve(old_key) == PNG_BYTES
+    await memory._file_storage.delete(old_key)  # Dispose only this test's retained evidence.
 
 
 @pytest.mark.asyncio
