@@ -117,7 +117,9 @@ async def _retry_deadlocked_apply(action: Callable[[], Awaitable[None]]) -> None
         )
         token = set_trace_context(attempt_trace)
         try:
-            await action()
+            # Publish history only after the complete apply transaction commits.
+            with track_observation_changes(merge_on_success=True):
+                await action()
             if parent_trace is not None and attempt_trace is not None:
                 parent_trace.created_memory_ids.extend(attempt_trace.created_memory_ids)
                 parent_trace.source_memory_ids.extend(attempt_trace.source_memory_ids)
@@ -3518,6 +3520,11 @@ async def _process_memory_batch(
     if perf:
         perf.record_timing("recall", time.perf_counter() - t0)
 
+    # Per-fact recall topology (keyed by memory ID) for the fork's reference admission.
+    per_fact_obs_ids: dict[str, set[str]] = {
+        str(memories[i]["id"]): {str(obs.id) for obs in r.results} for i, r in enumerate(per_fact_recalls)
+    }
+
     # Union all observations (deduped by id)
     seen_ids: set[str] = set()
     union_observations: list["MemoryFact"] = []
@@ -3977,12 +3984,7 @@ async def _process_memory_batch(
             deleted_count = 0
             per_memory_created = set()
             per_memory_updated = set()
-            # History, like produced trace IDs, describes committed writes only.
-            # A prior deadlock attempt may have noted writes before its rollback.
-            batch_changes.created.clear()
-            batch_changes.updated.clear()
-            batch_changes.removed.clear()
-            batch_changes.swept_facts.clear()
+
             # Transaction retries must start from the original prepared targets,
             # not from a survivor selected in a rolled-back attempt.
             create_dedups = [replace(create.dedup) if create.dedup is not None else None for create in prepared_creates]

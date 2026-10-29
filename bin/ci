@@ -185,6 +185,11 @@ PATCH_REGRESSIONS=(
   tests/test_consolidation_schema_correction.py
   tests/test_consolidation_deadlock_order.py
   tests/test_retain_consolidation_deadlock.py
+  tests/test_document_history.py
+  tests/test_llm_trace.py
+  tests/test_llm_request_extension.py
+  tests/test_local_cross_encoder.py
+  tests/test_reranker_timeouts.py
   tests/test_graph_maintenance_dialect.py
   tests/test_consolidation_scope_parallelism.py
   tests/test_consolidation_fair_selection.py

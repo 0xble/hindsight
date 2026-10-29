@@ -164,12 +164,22 @@ _changes: ContextVar[ObservationChanges | None] = ContextVar("document_history_c
 
 
 @contextmanager
-def track_observation_changes() -> Iterator[ObservationChanges]:
-    """Collect the observation writes made inside the block (including in tasks it spawns)."""
+def track_observation_changes(*, merge_on_success: bool = False) -> Iterator[ObservationChanges]:
+    """Collect writes, optionally merging a committed child into its parent.
+
+    Tasks inherit the same accumulator. A transactional child scope only merges
+    after successful completion, so rolled-back attempts cannot produce history.
+    """
+    parent = _changes.get()
     changes = ObservationChanges()
     token = _changes.set(changes)
     try:
         yield changes
+        if merge_on_success and parent is not None:
+            parent.created.update(changes.created)
+            parent.updated.update(changes.updated)
+            parent.removed.update(changes.removed)
+            parent.swept_facts.update(changes.swept_facts)
     finally:
         _changes.reset(token)
 
