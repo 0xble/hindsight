@@ -630,7 +630,9 @@ async def test_overlapping_scopes_serialise_under_parallelism(memory: MemoryEngi
     tracker_lock = asyncio.Lock()
     orig_find = consolidator_mod._find_related_observations
 
-    async def tracked_find(*, memory_engine, bank_id, query, request_context, tags=None, config=None):
+    async def tracked_find(
+        *, memory_engine, bank_id, query, request_context, tags=None, config=None, query_embedding=None
+    ):
         scope = frozenset(tags or [])
         async with tracker_lock:
             in_flight[scope] += 1
@@ -646,6 +648,7 @@ async def test_overlapping_scopes_serialise_under_parallelism(memory: MemoryEngi
                 request_context=request_context,
                 tags=tags,
                 config=config,
+                query_embedding=query_embedding,
             )
         finally:
             async with tracker_lock:
@@ -2414,7 +2417,9 @@ async def test_disjoint_scopes_run_concurrently(memory: MemoryEngine, request_co
     all_scopes_entered = asyncio.Event()
     orig_find = consolidator_mod._find_related_observations
 
-    async def tracked_find(*, memory_engine, bank_id, query, request_context, tags=None, config=None):
+    async def tracked_find(
+        *, memory_engine, bank_id, query, request_context, tags=None, config=None, query_embedding=None
+    ):
         nonlocal distinct_concurrent_scopes_seen
         scope = frozenset(tags or [])
         async with sample_lock:
@@ -2432,6 +2437,7 @@ async def test_disjoint_scopes_run_concurrently(memory: MemoryEngine, request_co
                 request_context=request_context,
                 tags=tags,
                 config=config,
+                query_embedding=query_embedding,
             )
         finally:
             async with sample_lock:

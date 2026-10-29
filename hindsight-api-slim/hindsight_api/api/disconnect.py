@@ -13,14 +13,14 @@ it still owns the real ``receive`` channel. For the routes it monitors (see
 ``_should_monitor``) it drains ``receive`` in a background task and trips a
 :class:`CancellationToken` the moment ``http.disconnect`` arrives, stashing the
 token on the ASGI ``scope``.
-Recall and reflect copy that token onto their ``RequestContext`` and the engine
-checks it at stage boundaries. The retain POST cancels its task outright instead,
-because a sync retain spends its wall time inside one await (the LLM semaphore,
-then the provider) where no checkpoint gets a turn — see
-``run_task_cancellable_on_disconnect``. Either way, abandoned work stops instead
-of running to completion.
+Every monitored route cancels its task outright when the token trips, because
+work parked inside one await (the LLM semaphore, the provider, its retries) never
+reaches a checkpoint — see ``run_task_cancellable_on_disconnect``. Recall and
+reflect also copy the token onto their ``RequestContext`` so the engine checks it
+at stage boundaries, which is what stops work running in worker threads. Either
+way, abandoned work stops instead of running to completion.
 
-It only wraps recall, reflect and the retain POST (small-to-moderate JSON
+It only wraps recall, reflect, the retain POST and the graph GET (small or no
 bodies); every other request — uploads, MCP streams, etc. — passes straight
 through untouched, so there is no buffering or latency cost elsewhere. The pump
 queue is bounded at one message so a monitored request's body is never held in
@@ -48,7 +48,7 @@ _CLIENT_DISCONNECTED_REASON = "client disconnected"
 # document IDs and could buffer a request unrelated to recall, reflect or retain.
 _MONITORED_OPERATION_PATH = re.compile(
     r"^(?:(?!/v1/default/banks/).)*/v1/default/banks/[^/]+/"
-    r"(?P<operation>memories/recall|reflect|private/(?:recall|reflect)|memories)/?\Z",
+    r"(?P<operation>memories/recall|reflect|private/(?:recall|reflect)|memories|graph)/?\Z",
     re.DOTALL,
 )
 
@@ -69,6 +69,10 @@ def _should_monitor(scope: Scope) -> bool:
     matched = _MONITORED_OPERATION_PATH.search(scope.get("path", ""))
     if matched is None:
         return False
+    # The graph read behind the control plane's Memories tabs: several MB and
+    # seconds of work on a big bank, abandoned whenever the user switches tab.
+    if matched["operation"] == "graph":
+        return scope.get("method") == "GET"
     return matched["operation"] != "memories" or scope.get("method") == "POST"
 
 

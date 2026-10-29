@@ -292,10 +292,10 @@ async def relabel_document_memories(
     final_tags: Callable[[list[str] | None], list[str]],
 ) -> RelabelResult:
     """Set the document's tags, metadata and observation scoping on every memory it owns."""
+    from ...consolidation.consolidator import write_scopes_changed
     from ...metadata_utils import drop_null_values
-    from ...retain.fact_storage import _normalize_scopes
 
-    # Read the scoping the survivors carry BEFORE overwriting it — the cascade below has to
+    # Read the labels the survivors carry BEFORE overwriting them — the cascade below has to
     # know which units actually moved, and after the UPDATE that is no longer answerable.
     # Locked in id order, the same order consolidation's source-row guard takes, so the
     # grouped UPDATEs below cannot acquire tuple locks opposite to it.
@@ -309,47 +309,80 @@ async def relabel_document_memories(
         bank_id,
         document_id,
     )
-    desired_metadata = drop_null_values(metadata)
-    desired_scopes = _normalize_scopes(observation_scopes)
-    changed_by_final: dict[tuple[str, ...], list] = {}
-    rescoped_ids: list = []
-    for row in prior:
-        existing_tags = list(row["tags"] or [])
-        final = final_tags(existing_tags)
-        if row["fact_type"] in ("experience", "world") and (
-            set(existing_tags) != set(final) or _normalize_scopes(row["observation_scopes"]) != desired_scopes
-        ):
-            rescoped_ids.append(row["id"])
-        if (
-            existing_tags != final
-            or _normalize_scopes(row["metadata"]) != desired_metadata
-            or _normalize_scopes(row["observation_scopes"]) != desired_scopes
-        ):
-            changed_by_final.setdefault(tuple(final), []).append(row["id"])
+    new_tags_by_id = {row["id"]: final_tags(row["tags"]) for row in prior}
+    # The comparison is against what the unit ends with.
+    rescoped_ids = [
+        row["id"]
+        for row in prior
+        if row["fact_type"] in ("experience", "world")
+        and write_scopes_changed(row["tags"], row["observation_scopes"], new_tags_by_id[row["id"]], observation_scopes)
+    ]
 
-    # Group by final tags so label projections survive, while updating only rows whose
-    # effective metadata, tags, or scopes changed. In particular, identical-metadata
-    # re-retains issue no UPDATE and therefore preserve each unit's updated_at.
-    updated_count = 0
-    for final, ids in changed_by_final.items():
-        result = await conn.execute(
-            f"""
-            UPDATE {fq_table("memory_units")}
-            SET tags = $3, metadata = $4, observation_scopes = $5, updated_at = NOW()
-            WHERE bank_id = $1 AND document_id = $2 AND id = ANY($6::uuid[])
-            """,
-            bank_id,
-            document_id,
-            list(final),
-            json.dumps(desired_metadata),
-            json.dumps(observation_scopes) if observation_scopes is not None else None,
-            ids,
-        )
-        try:
-            updated_count += int(result.split()[-1])
-        except (ValueError, IndexError):
-            pass
-    return RelabelResult(updated=updated_count, rescoped_unit_ids=[str(uid) for uid in rescoped_ids])
+    new_metadata = drop_null_values(metadata)
+    metadata_json = json.dumps(new_metadata)
+    scopes_json = json.dumps(observation_scopes) if observation_scopes is not None else None
+
+    # Write only the units whose labels actually differ. `updated_at` is the "this fact was
+    # edited" signal, and consolidation discards an in-flight batch whose sources moved after
+    # it read them (#5614) — so a re-send of an unchanged document must write nothing.
+    # Compared here rather than with IS DISTINCT FROM, which Oracle does not accept.
+    # Grouped by the FINAL array `final_tags` computed, so the value written is the one it
+    # already deduped — a unit whose label tag is also a document tag must not come back
+    # carrying it twice.
+    by_final: dict[tuple[str, ...], list] = {}
+    for row in prior:
+        final = new_tags_by_id[row["id"]]
+        if (
+            list(row["tags"] or []) != final
+            or (conn.parse_json(row["metadata"]) or {}) != new_metadata
+            or conn.parse_json(row["observation_scopes"]) != observation_scopes
+        ):
+            by_final.setdefault(tuple(final), []).append(row["id"])
+
+    # Id lists go out in chunks: on Oracle `= ANY` / `!= ALL` expand to an IN list, and one
+    # longer than 1000 entries is rejected (ORA-01795) — a large document would fail its relabel.
+    def _chunks(ids: list) -> list[list]:
+        return [ids[i : i + 1000] for i in range(0, len(ids), 1000)]
+
+    updated = 0
+    for final, ids in by_final.items():
+        for chunk in _chunks(ids):
+            result = await conn.execute(
+                f"""
+                UPDATE {fq_table("memory_units")}
+                SET tags = $3, metadata = $4, observation_scopes = $5, updated_at = NOW()
+                WHERE bank_id = $1 AND document_id = $2 AND id = ANY($6::uuid[])
+                """,
+                bank_id,
+                document_id,
+                list(final),
+                metadata_json,
+                scopes_json,
+                chunk,
+            )
+            # asyncpg returns a status string like "UPDATE 5"
+            updated += int(result.split()[-1])
+
+    # A unit inserted concurrently was not read above and still has to get the document
+    # labels. One `!= ALL` per chunk; with nothing read there is none, which also keeps an
+    # empty NOT IN (matching no row on Oracle) out of the statement.
+    read_chunks = _chunks([row["id"] for row in prior])
+    unread = " ".join(f"AND id != ALL(${6 + i}::uuid[])" for i in range(len(read_chunks)))
+    result = await conn.execute(
+        f"""
+        UPDATE {fq_table("memory_units")}
+        SET tags = $3, metadata = $4, observation_scopes = $5, updated_at = NOW()
+        WHERE bank_id = $1 AND document_id = $2 {unread}
+        """,
+        bank_id,
+        document_id,
+        tags or [],
+        metadata_json,
+        scopes_json,
+        *read_chunks,
+    )
+    updated += int(result.split()[-1])
+    return RelabelResult(updated=updated, rescoped_unit_ids=[str(uid) for uid in rescoped_ids])
 
 
 async def memory_ids_for_chunks(

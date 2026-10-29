@@ -138,12 +138,15 @@ async def test_hierarchical_fields_categorization():
     assert "retain_strategies" in configurable
     assert "max_observations_per_scope" in configurable
     assert "observation_scope_limits" in configurable
+    assert "default_observation_scopes" in configurable
     assert "consolidation_strategies" in configurable
     assert "reflect_source_facts_max_tokens" in configurable
     assert "llm_gemini_safety_settings" in configurable
     assert "mcp_enabled_tools" in configurable
     assert "retain_chunk_batch_size" in configurable
     assert "enable_auto_consolidation" in configurable
+    assert "consolidation_use_decision_model" in configurable
+    assert "mental_model_delta_use_decision_model" in configurable
     assert "consolidation_llm_parallelism" in configurable
     assert "consolidation_lane_llm_parallelism" in configurable
     assert "consolidation_round_correction_budget" in configurable
@@ -153,17 +156,18 @@ async def test_hierarchical_fields_categorization():
     assert "enable_temporal_retrieval" in configurable
     assert "enable_graph_retrieval" in configurable
     assert "enable_reranking" in configurable
+    assert "recall_prefer_observations" in configurable
     assert "mental_model_min_refresh_interval_seconds" in configurable
     assert "knowledge_page_default_trigger" in configurable
     assert "reflect_default_options" in configurable
 
     # Verify count is correct
-    # 51 upstream fields plus the fork's consolidation_max_context_tokens (HINDSIGHT-002),
+    # 57 upstream fields plus the fork's consolidation_max_context_tokens (HINDSIGHT-002),
     # consolidation_fair_group_selection, consolidation_lane_llm_parallelism, file_delete_after_retain,
     # llm_language_integrity, and consolidation_round_correction_budget.
     assert "llm_language_integrity" in configurable
     assert "llm_output_language" in static
-    assert len(configurable) == 57
+    assert len(configurable) == 63
 
     # Verify credential fields (NEVER exposed)
     assert "llm_api_key" in credentials

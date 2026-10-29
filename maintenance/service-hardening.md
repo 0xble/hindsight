@@ -60,6 +60,16 @@ in the root contract.
   created/unresolved assertions and additionally pins fail-fast/bisection and
   persisted source provenance. Embedding/tag fixtures model released exact-ID
   preflight and complete configuration, not the old boolean/stub interfaces.
+- **v1.1.0 adaptation:** Released [#5768](https://github.com/vectorize-io/hindsight/pull/5768)
+  supplies `lock_consolidation_write_set`: lock documents before the complete
+  sorted memory write set, including observation sources and merge targets.
+  Reuse it inside the fork's whole-transaction retry and before lane snapshot
+  validation. The released protocol supersedes source ordering alone as the
+  retain/consolidation deadlock prevention boundary. Preserve the fork's
+  residual-deadlock retry, ordered Oracle source fences and lane validation.
+  Qualify `tests/test_retain_consolidation_deadlock.py` alongside the existing
+  deadlock, lane, dedup and Oracle routing regressions. This is partial adoption,
+  not retirement of the remaining retry and backend contracts.
 - **Behavior:** Consolidation's source-liveness check and retain's document-wide
   tag/scope update acquire `memory_units` row locks in the same order, so they no
   longer deadlock. The apply transaction retries a residual PostgreSQL deadlock and
@@ -156,6 +166,12 @@ The fork-only normalized-observation index revision `e6f7a8b9c0d1` was introduce
   cancellation fences; never convert retry or deferral into terminal failure
   or record a terminal metric. Keep operation-targeted reclamation and stop
   after a returned exit boundary rather than continuing to later rows.
+- **v1.1.0 adoption:** Released [#5813](https://github.com/vectorize-io/hindsight/pull/5813)
+  stops terminal-write retries when the operations table was dropped. Keep that
+  missing-relation proof on the shared write primitive used by fork reclamation,
+  without treating transient outages as deletion or changing retry/defer metrics.
+  Qualify `tests/test_worker.py::TestTerminalWriteToADroppedSchema` with the
+  reclaim-outage regressions above.
 - **Upstream guidance:** Read `AGENTS.md`, `CLAUDE.md`, `CONTRIBUTING.md` and
   code-review guidance at the frozen release; the independent proposal preceded
   the upstream tracker search.
