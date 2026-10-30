@@ -643,15 +643,6 @@ export class HindsightClient {
     }
   }
 
-  /** Whether the bank holds any document at all — a one-row listing. A bank that does not exist
-   *  yet (404) holds none; any other failure throws, so a caller can tell "empty" from "unknown". */
-  async hasDocuments(): Promise<boolean> {
-    const r = await this.req("GET", this.bankUrl("/documents?limit=1"));
-    if (r.status === 404) return false;
-    const j = (await r.json()) as { items?: unknown[]; total?: number };
-    return (j.total ?? j.items?.length ?? 0) > 0;
-  }
-
   /** Configure the bank: POST the coding bank manifest to /import (missions, retain strategies,
    *  entity labels), then seed knowledge pages when the server supports them. Both halves are
    *  idempotent and ADDITIVE — nothing the bank already says is overwritten (#3927), bar the

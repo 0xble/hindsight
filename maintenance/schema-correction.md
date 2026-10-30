@@ -11,7 +11,7 @@ errors only. Upstream #3003 closed without repair; #3137 rejected per-item salva
 Do not replace this boundary with coercion, dropped invalid actions, defaults,
 empty-response repair, routing changes, or fabricated references.
 
-Open [#5572](https://github.com/vectorize-io/hindsight/pull/5572) proposes bounded
+Open [issue #5572](https://github.com/vectorize-io/hindsight/issues/5572) proposes bounded
 whole-response repair for missing/model-type consolidation shapes. It is not in
 the v1.1.0 release and does not retire this fork boundary or widen its budgets.
 

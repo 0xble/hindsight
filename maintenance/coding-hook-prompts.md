@@ -22,6 +22,13 @@ Publication of server source does not replace the separately staged coding-agent
 
 `src/core/session-start.test.ts` and `src/core/hindsight.test.ts` cover document-presence evidence and retrieval eligibility. `src/core/runtime.test.ts` proves that an empty page roster preserves first-prompt retrieval and the existing once-per-session injection. Run these regressions and the full coding-agents package suite when adopting or retiring the startup correction. Installed Claude and Codex host canaries remain separate adoption proof.
 
+The v1.1.0 merge must retain only the fork's validated `hasDocuments` method.
+The release adds the same method later in the class, so a clean textual merge can
+silently override the preserved implementation. Returned rows prove presence even
+when a concurrent count is 0. Missing or malformed listings remain unknown rather
+than proving emptiness. The existing `HindsightClient.hasDocuments` table-driven
+regressions reproduce that override before repair and protect both boundaries.
+
 ## Adopt Or Retire
 
 Retire this divergence when an upstream release passes the synthetic-prompt regressions through both direct `buildHookOutput` and native hook entry points. Retain the upstream two-attempt failure budget and unchanged explicit reflection path. No new filter, retry manager or logger is needed.
