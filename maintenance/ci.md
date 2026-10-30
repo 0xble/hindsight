@@ -76,7 +76,9 @@ intentional fork infrastructure policy, not upstream deployment ownership.
   from `PATCH_REGRESSIONS` and registers `test_graph_maintenance_dialect.py` and
   `test_curation_batch_authorization.py`. The shared consolidation deadlock suite
   also covers Oracle/native-store source fences and strict scope counts.
-  Each patch-list entry is unique; Rust client coverage also runs
+  Each patch-list entry is unique. The v1.1.0 integration keeps the released
+  trace regressions registered once alongside the retained private-read sink cases.
+  Rust client coverage also runs
   `operation_enum_collisions` beside `curation_fields`. No workflow/action
   versions, permissions, protections or deployment capabilities change. Mutable
   action major tags remain inherited generic hardening, not a new policy

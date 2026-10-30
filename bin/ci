@@ -205,7 +205,6 @@ PATCH_REGRESSIONS=(
   tests/test_consolidation_fold_fallback.py
   tests/test_consolidation_temporal_merge.py
   tests/test_openrouter_null_content.py
-  tests/test_llm_trace.py
   tests/test_private_reads.py
   tests/test_private_reads_engine.py
   tests/test_private_reads_sinks.py
