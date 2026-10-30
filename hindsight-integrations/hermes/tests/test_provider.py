@@ -878,3 +878,50 @@ def test_owner_subject_merge_stays_within_one_recall_budget(provider):
     )
     block = instance.prefetch("what do I like")
     assert block.count("- ") == 3  # 13 tokens each: three fit in 50, a fourth would not
+
+
+def test_discard_prefetch_drops_the_buffer_and_fences_a_worker_in_flight(provider):
+    release = threading.Event()
+
+    class Slow(FakeClient):
+        async def arecall(self, **kwargs):
+            while not release.is_set():
+                await asyncio.sleep(0.01)
+            return FakeRecallResponse([f"recall for {kwargs['query']}"])
+
+    instance, _ = provider({"prefetch_waits_for_retain": False}, client=Slow())
+    release.set()
+    instance.queue_prefetch("old topic")
+    instance._prefetch_thread.join(5)
+    instance.discard_prefetch()
+    assert instance.prefetch("next") == ""
+
+    release.clear()
+    instance.queue_prefetch("in flight")
+    worker = instance._prefetch_thread
+    instance.discard_prefetch()
+    release.set()
+    worker.join(5)
+    assert instance.prefetch("next") == ""
+    instance.shutdown()
+
+
+@pytest.mark.parametrize(
+    ("user", "assistant", "roles"),
+    [
+        ("What did the tests show?", "", ["user"]),
+        ("What did the tests show?", "[SILENT]", ["user"]),
+        ("", "The tests passed.", ["assistant"]),
+    ],
+)
+def test_an_empty_half_is_not_retained_as_a_bare_line(provider, user, assistant, roles):
+    instance, _ = provider({})
+    assert [m["role"] for m in instance._build_turn_messages(user, assistant)] == roles
+
+
+def test_a_turn_with_both_halves_empty_retains_nothing(provider):
+    instance, fake = provider({"retain_async": False})
+    instance.sync_turn("", "[SILENT]")
+    instance.shutdown()
+    assert fake.retains == []
+    assert instance._session_turns == []

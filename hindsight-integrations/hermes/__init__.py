@@ -88,6 +88,8 @@ _EXTRA_BANK_TIMEOUT_SHARE = 0.8
 # unreachable bank costs one timeout per cooldown instead of one on every turn.
 _EXTRA_BANK_COOLDOWN = 300.0
 _RETAIN_CONTEXT_DEFAULT = "conversation between Hermes Agent and the User"
+# Turn halves with nothing to retain: empty text, or Hermes' silence marker.
+_EMPTY_TURN_HALVES = {"", "[SILENT]"}
 # First-person words that leave a recall query without a subject entity (see _owner_subject_query).
 # "us" is case-sensitive so the country abbreviation "US" does not count as a pronoun.
 _FIRST_PERSON = re.compile(r"\b(?:(?i:i|me|my|mine|we|our|ours)|us|Us)\b")
@@ -1713,6 +1715,14 @@ class HindsightMemoryProvider(MemoryProvider):
             self._prefetch_result, self._prefetch_count = "", 0
         return self._finish_prefetch(result, count)
 
+    def discard_prefetch(self) -> None:
+        """Drop the buffered recall, including one still in flight: bumping the generation under
+        the prefetch lock stops a running worker from publishing. Hermes calls this when the
+        buffer is older than its ``memory.prefetch_max_age_seconds``."""
+        with self._prefetch_lock:
+            self._prefetch_generation += 1
+            self._prefetch_result, self._prefetch_count = "", 0
+
     def recall_status(self) -> Optional[RecallStatus]:
         """Count injected by the last prefetch; None if nothing injected or ``recall_indicator=false``."""
         if not self._recall_indicator or not self._last_recall_returned:
@@ -1745,6 +1755,8 @@ class HindsightMemoryProvider(MemoryProvider):
     # -- retain ------------------------------------------------------------------
 
     def _build_turn_messages(self, user_content: str, assistant_content: str) -> List[Dict[str, str]]:
+        """One message per non-empty half. An empty half (or Hermes' ``[SILENT]`` reply) is skipped,
+        so a turn Hermes filtered down to one side never stores a bare ``Assistant:`` line."""
         now = _event_timestamp()  # one turn -> both messages share the event timestamp
         return [
             {"role": role, "content": f"{prefix}: {content}", "timestamp": now}
@@ -1752,6 +1764,7 @@ class HindsightMemoryProvider(MemoryProvider):
                 ("user", self._retain_user_prefix, user_content),
                 ("assistant", self._retain_assistant_prefix, assistant_content),
             )
+            if (content or "").strip() not in _EMPTY_TURN_HALVES
         ]
 
     def _build_metadata(self, *, message_count: int, turn_index: int) -> Dict[str, str]:
@@ -1874,9 +1887,11 @@ class HindsightMemoryProvider(MemoryProvider):
         if session_id:
             self._session_id = str(session_id).strip()
 
-        self._session_turns.append(
-            json.dumps(self._build_turn_messages(user_content, assistant_content), ensure_ascii=False)
-        )
+        messages = self._build_turn_messages(user_content, assistant_content)
+        if not messages:
+            logger.debug("sync_turn: skipped (both halves empty)")
+            return
+        self._session_turns.append(json.dumps(messages, ensure_ascii=False))
         self._turn_counter = self._turn_index = self._turn_counter + 1
         if remainder := self._turn_counter % self._retain_every_n_turns:
             logger.debug(
