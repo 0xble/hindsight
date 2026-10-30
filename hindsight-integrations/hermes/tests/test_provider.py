@@ -875,3 +875,73 @@ def test_explicit_observation_scopes_win_over_the_default(provider):
     instance.sync_turn("hi", "hello")
     instance.shutdown()
     assert _retain_item(fake)["observation_scopes"] == "combined"
+
+
+class OwnerAware(FakeClient):
+    """Answers the owner-anchored twin with the owner's facts and the plain query with generic ones."""
+
+    def __init__(self, fail=()):
+        super().__init__()
+        self.fail = set(fail)
+
+    async def arecall(self, **kwargs):
+        self.recalls.append(kwargs)
+        twin = kwargs["query"].endswith("(Ada Lovelace)")
+        if ("twin" if twin else "plain") in self.fail:
+            raise RuntimeError("recall down")
+        if twin:
+            return FakeRecallResponse(["Ada Lovelace drives a Toyota", "shared fact"])
+        return FakeRecallResponse(["cars need oil changes", "shared fact"])
+
+
+def test_first_person_auto_recall_also_asks_about_the_owner(provider):
+    instance, fake = provider({"recall_owner_subject": "Ada Lovelace", "recall_sync": True}, client=OwnerAware())
+    block = instance.prefetch("what car do I drive")
+    assert [r["query"] for r in fake.recalls] == ["what car do I drive", "what car do I drive (Ada Lovelace)"]
+    # Round-robin merge keeps the original head first, adds the owner's fact, and dedupes.
+    assert block.index("cars need oil changes") < block.index("Ada Lovelace drives a Toyota")
+    assert block.count("shared fact") == 1
+
+
+def test_owner_subject_recall_skips_queries_it_does_not_help(provider):
+    instance, fake = provider({"recall_owner_subject": "Ada Lovelace", "recall_sync": True}, client=OwnerAware())
+    instance.prefetch("what is the US capital")  # no first-person word; "US" is the country
+    instance.prefetch("what car does ada lovelace drive")  # already names the owner
+    assert [r["query"] for r in fake.recalls] == ["what is the US capital", "what car does ada lovelace drive"]
+
+
+def test_owner_subject_recall_is_off_by_default_and_leaves_the_tool_query_alone(provider):
+    instance, fake = provider({"recall_sync": True}, client=OwnerAware())
+    instance.prefetch("what car do I drive")
+    owner, owner_fake = provider({"recall_owner_subject": "Ada Lovelace"}, client=OwnerAware())
+    owner.handle_tool_call("hindsight_recall", {"query": "what car do I drive"})
+    assert [r["query"] for r in fake.recalls] == ["what car do I drive"]
+    assert [r["query"] for r in owner_fake.recalls] == ["what car do I drive"]
+
+
+def test_one_failed_owner_recall_keeps_the_other_results(provider):
+    instance, _ = provider(
+        {"recall_owner_subject": "Ada Lovelace", "recall_sync": True}, client=OwnerAware(fail={"twin"})
+    )
+    assert "cars need oil changes" in instance.prefetch("what car do I drive")
+    instance, _ = provider(
+        {"recall_owner_subject": "Ada Lovelace", "recall_sync": True}, client=OwnerAware(fail={"plain"})
+    )
+    assert "Ada Lovelace drives a Toyota" in instance.prefetch("what car do I drive")
+    instance, _ = provider(
+        {"recall_owner_subject": "Ada Lovelace", "recall_sync": True}, client=OwnerAware(fail={"plain", "twin"})
+    )
+    assert instance.prefetch("what car do I drive") == ""
+
+
+def test_owner_subject_merge_stays_within_one_recall_budget(provider):
+    class Wordy(FakeClient):
+        async def arecall(self, **kwargs):
+            tag = "owner" if kwargs["query"].endswith(")") else "plain"
+            return FakeRecallResponse([f"{tag} fact {i} " + "x" * 36 for i in range(10)])
+
+    instance, _ = provider(
+        {"recall_owner_subject": "Ada Lovelace", "recall_sync": True, "recall_max_tokens": 50}, client=Wordy()
+    )
+    block = instance.prefetch("what do I like")
+    assert block.count("- ") == 3  # 13 tokens each: three fit in 50, a fourth would not

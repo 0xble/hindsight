@@ -254,6 +254,7 @@ The lookup stops at the repository root. Only `bank_id` is read.
 | `recall_max_tokens` | `4096` | Maximum tokens for recall results |
 | `recall_max_input_chars` | `800` | Maximum input query length for auto-recall |
 | `recall_prompt_preamble` | — | Custom preamble for recalled memories in context |
+| `recall_owner_subject` | — | Bank owner's name. A first-person auto-recall query (I/me/my/we/our/us) that does not already name the owner is also recalled as `<query> (<owner>)`, and the two result lists are merged round-robin within one `recall_max_tokens` budget, so facts stored about the owner surface for "what car do I drive". The `hindsight_recall` tool keeps the model's own query. |
 | `recall_tags` | — | Tags to filter when searching memories: a JSON list (e.g. `["project-x", "team"]`) or comma-separated text (`"project-x, team"`) |
 | `recall_tags_match` | `any` | Tag matching mode: `any` / `all` / `any_strict` / `all_strict` |
 | `reflect_tags` | — | Tags that scope what reflect reasons over (the `hindsight_reflect` tool and `recall_prefetch_method: reflect`), as a JSON list or comma-separated text. Unset, reflect uses the whole bank; `recall_tags` does not apply to reflect. |
