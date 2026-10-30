@@ -237,6 +237,7 @@ async def test_default_size_requeued_rounds_share_per_1000_fact_bound(provider, 
     from hindsight_api.config import DEFAULT_CONSOLIDATION_MAX_MEMORIES_PER_ROUND
 
     config.enable_observations = True
+    config.enable_auto_consolidation = True
     config.consolidation_batch_size = 100
     config.consolidation_max_memories_per_round = DEFAULT_CONSOLIDATION_MAX_MEMORIES_PER_ROUND
     config.consolidation_llm_batch_size = 10
@@ -887,7 +888,13 @@ async def test_fallback_exact_duplicate_persists_all_sources(memory, request_con
                 "_find_related_observations",
                 new=AsyncMock(return_value=RecallResult(results=observations, source_facts={str(old_id): old})),
             ),
-            patch.object(c, "_embed_observation_text", new=AsyncMock(return_value=None)),
+            patch.object(
+                c.embedding_utils,
+                "generate_embeddings_batch",
+                new=AsyncMock(
+                    side_effect=lambda embeddings, texts, **_kwargs: [[0.1] * embeddings.dimension for _ in texts]
+                ),
+            ),
         ):
             await c._process_memory_batch(
                 pool=memory._backend,
@@ -1009,7 +1016,13 @@ async def test_guard_hydrates_capped_provenance_without_prompt_or_row_growth(mem
                     "_find_related_observations",
                     new=AsyncMock(return_value=RecallResult(results=[obs], source_facts={})),
                 ),
-                patch.object(c, "_embed_observation_text", new=AsyncMock(return_value=None)),
+                patch.object(
+                    c.embedding_utils,
+                    "generate_embeddings_batch",
+                    new=AsyncMock(
+                        side_effect=lambda embeddings, texts, **_kwargs: [[0.1] * embeddings.dimension for _ in texts]
+                    ),
+                ),
                 patch.object(store, "get_memory_text_sizes", new=traced_read),
             ):
                 await c._process_memory_batch(
@@ -1218,7 +1231,13 @@ async def test_exact_serialized_fold_veto_inserts_and_attributes_new_source(memo
             patch.object(
                 c, "_find_related_observations", new=AsyncMock(return_value=RecallResult(results=[], source_facts={}))
             ),
-            patch.object(c, "_embed_observation_text", new=AsyncMock(return_value=None)),
+            patch.object(
+                c.embedding_utils,
+                "generate_embeddings_batch",
+                new=AsyncMock(
+                    side_effect=lambda embeddings, texts, **_kwargs: [[0.1] * embeddings.dimension for _ in texts]
+                ),
+            ),
         ):
             await c._process_memory_batch(
                 pool=memory._backend,
@@ -1428,7 +1447,13 @@ async def test_guard_batch_cap_keeps_admitted_updates_in_place(memory, request_c
                 "_find_related_observations",
                 new=AsyncMock(return_value=RecallResult(results=observations, source_facts={})),
             ),
-            patch.object(c, "_embed_observation_text", new=AsyncMock(return_value=None)),
+            patch.object(
+                c.embedding_utils,
+                "generate_embeddings_batch",
+                new=AsyncMock(
+                    side_effect=lambda embeddings, texts, **_kwargs: [[0.1] * embeddings.dimension for _ in texts]
+                ),
+            ),
         ):
             await c._process_memory_batch(
                 pool=memory._backend,

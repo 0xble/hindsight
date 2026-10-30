@@ -312,7 +312,7 @@ async def test_operation_policy_bypasses_another_workers_warm_cache(warm_mode, b
     with patch.object(bank_info_cache, "_cache", writer_cache):
         await writer.update_bank_config(bank, updates, context)
 
-    engine = SimpleNamespace(_config_resolver=worker, _consolidation_llm_config=MagicMock())
+    engine = SimpleNamespace(_config_resolver=worker, _consolidation_llm_config=MagicMock(), _backend=backend)
     with patch.object(bank_info_cache, "_cache", worker_cache):
         readback = await worker.resolve_full_config(bank, context, cached=False)
         if uses_strategy:
@@ -404,7 +404,7 @@ async def test_consolidation_boundary_passes_each_banks_resolved_mode():
     config = resolver()
     await config.update_bank_config("synthetic-consolidation-enforced", {"llm_language_integrity": "reject"})
     wrapper = MagicMock()
-    engine = SimpleNamespace(_config_resolver=config, _consolidation_llm_config=wrapper)
+    engine = SimpleNamespace(_config_resolver=config, _consolidation_llm_config=wrapper, _backend=config._backend)
     context = RequestContext(api_key=None, api_key_id=None, tenant_id=None, internal=False)
     with (
         patch.object(consolidator, "trace_context_of", return_value=None),

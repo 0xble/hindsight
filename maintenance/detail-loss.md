@@ -25,6 +25,13 @@ native store and Oracle restrictions, source/version fences, and
 transaction rollback behavior. A failed exact fold must still reach semantic
 folding or INSERT rather than losing its source coverage.
 
+The v1.1.0 adaptation keeps the released batched embedding interface in guard
+fixtures, with vectors matching the active embedder's dimension. The
+[same-response survivor correction](service-hardening.md#hindsight-007-consolidation-lock-ordering-and-deadlock-retry)
+keeps ordinary CREATE lineage following a successfully updated or folded survivor
+without changing `_preserve_separate` guard fallback insertion. Keep both proof
+surfaces when qualifying a candidate.
+
 The authoritative fork gate registers `test_consolidation_detail_loss*.py` and
 `test_consolidation_guard_provenance.py` in `bin/ci`, alongside existing
 schema-correction, folding, lane, and language regressions. The public client and

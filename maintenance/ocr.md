@@ -141,6 +141,15 @@ remain compatible for callers.
   Keep provider, transport, and job failures unclassified; do not infer no-text
   from arbitrary exception messages. Preserve unclassified failures separately
   from OCR rejection so either ordering of a mixed chain remains unclassified.
+- **v1.1.0 parser-chain fixture (2026-10-30):** Released `e92bf3543`
+  adopts LlamaParse v2: poll nested `job.status=COMPLETED`, then request
+  `?expand=markdown_full` and read `markdown_full`. Use those shapes in the
+  null/empty/whitespace chain matrix and assert both exact GET paths and the
+  original 2-request count. Bound the local parser timeout at 2 seconds so a
+  stale status cannot spin for the production 300-second deadline. Preserve
+  typed all-empty results and unclassified mixed transient failures in either
+  order. Continued polling with a v2-shaped stub would falsify fixture drift
+  as the cause. No live provider calls or parser implementation changes.
 - **Upstream issue:** https://github.com/vectorize-io/hindsight/issues/3255 (scanned
   PDFs; the typed failure is fork-only)
 - **Upstream PR:** None. Upstream closed PDF OCR in #3442 pending a better parser.

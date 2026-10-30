@@ -49,6 +49,14 @@ use the configurable policy below without destructive changes to source facts.
   before any batch write. Recognizable fenced or inline code and
   source-evidenced quotations stay exempt. `tests/LANGUAGE_PREVENTION.md` holds
   the full contract and the rollout and recovery procedure.
+- **v1.1.0 test adaptation (2026-10-30):** The released consolidation path
+  copies Pydantic responses before reference and language validation. Use the
+  response model's `model_construct` in malformed-reference fixtures instead
+  of `SimpleNamespace` response containers. Keep the original-chunk authority,
+  prior-source union, bank isolation and pending-source assertions unchanged.
+  A typed response still failing those assertions would falsify the stale-double
+  diagnosis and require a source correction. Operation-boundary engine doubles
+  also supply the backend used by released document-history finalization.
 - **Fence provenance:** Fork commit `7a970264dab927b53df9e2faa3efe0f07cd28dc9`
   still dropped any newline-terminated opening text, even prose. Strip an opening
   line only when empty or a syntactic language tag; retain prose before the first
@@ -185,6 +193,11 @@ use the configurable policy below without destructive changes to source facts.
   [Issue #4016](https://github.com/vectorize-io/hindsight/issues/4016) and the
   [unmerged predecessor #4018](https://github.com/vectorize-io/hindsight/pull/4018)
   supply historical context, not upstream acceptance of this scoped extension.
+- **Configuration exposure regression (v1.1.0):** The public bank config has
+  grown past the old 60-field heuristic. Assert exact configurable-field
+  membership and disjointness from all static and credential fields, retaining
+  the explicit sensitive-field exclusions. Increasing a field-count bound is
+  not proof of the no-secret/static-field-leak contract.
 - **Python convenience client:** Preserve `llm_language_integrity` across the sync and async bank-config methods, forwarding and HTTP payload. The wrapper defaults to `None` to leave overrides unchanged, not the server's `observe` default. Keep bank-config coverage, HTTP payload tests, async/sync parity and the public-client bank-configuration story in the native gate when adopting wrapper changes. Generated BankConfig calls remain the explicit-null boundary for restoring inheritance.
 - **Regression:** `uv run --frozen pytest -n 0 tests/test_bank_language_integrity.py
   tests/test_bank_config_value_types.py tests/test_language_integrity_retain.py`.

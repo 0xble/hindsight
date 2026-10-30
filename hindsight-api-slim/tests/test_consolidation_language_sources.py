@@ -45,7 +45,7 @@ async def test_update_language_validation_uses_original_chunk_texts_for_new_and_
     llm = AsyncMock()
     llm._provider_impl = None
     llm.call.return_value = LLMCallResult(
-        content=SimpleNamespace(
+        content=consolidator._ConsolidationBatchResponse.model_construct(
             creates=[],
             updates=[
                 SimpleNamespace(
@@ -114,7 +114,7 @@ async def test_missing_original_source_text_does_not_fall_back_to_fact_text(
     llm = AsyncMock()
     llm._provider_impl = None
     llm.call.return_value = LLMCallResult(
-        content=SimpleNamespace(creates=[], updates=[], deletes=[]),
+        content=consolidator._ConsolidationBatchResponse.model_construct(creates=[], updates=[], deletes=[]),
         usage=TokenUsage(),
     )
     prepared_sources: list[dict[str, str]] = []
@@ -148,7 +148,7 @@ async def test_unpersistable_recalled_citation_drops_only_that_action_before_lan
     llm = AsyncMock()
     llm._provider_impl = None
     llm.call.return_value = LLMCallResult(
-        content=SimpleNamespace(
+        content=consolidator._ConsolidationBatchResponse.model_construct(
             creates=[
                 SimpleNamespace(text="valid sibling", source_fact_ids=["new-source"]),
                 SimpleNamespace(text="invalid citation", source_fact_ids=["new-source", "recalled-only"]),
@@ -193,7 +193,7 @@ async def test_fact_cited_only_by_dropped_actions_remains_pending(
     llm = AsyncMock()
     llm._provider_impl = None
     llm.call.return_value = LLMCallResult(
-        content=SimpleNamespace(
+        content=consolidator._ConsolidationBatchResponse.model_construct(
             creates=[
                 SimpleNamespace(text="valid sibling", source_fact_ids=["A"]),
                 SimpleNamespace(text="invalid citation", source_fact_ids=["B", "recalled-only"]),
@@ -237,7 +237,7 @@ async def test_untargeted_update_drops_with_sibling_create_and_leaves_sources_pe
     llm = AsyncMock()
     llm._provider_impl = None
     llm.call.return_value = LLMCallResult(
-        content=SimpleNamespace(
+        content=consolidator._ConsolidationBatchResponse.model_construct(
             creates=[SimpleNamespace(text="valid sibling", source_fact_ids=["A"])],
             updates=[SimpleNamespace(text="untargeted", observation_id="Z", source_fact_ids=["B"])],
             deletes=[],
@@ -552,7 +552,7 @@ async def test_update_must_be_recalled_for_one_of_its_cited_sources_before_langu
     llm = AsyncMock()
     llm._provider_impl = None
     llm.call.return_value = LLMCallResult(
-        content=SimpleNamespace(
+        content=consolidator._ConsolidationBatchResponse.model_construct(
             creates=[SimpleNamespace(text="valid sibling", source_fact_ids=["B"])],
             updates=[SimpleNamespace(text="invalid update", observation_id="O", source_fact_ids=["A"])],
             deletes=[SimpleNamespace(observation_id="O")],
@@ -593,7 +593,7 @@ async def test_update_recalled_for_a_cited_source_and_prior_provenance_remains_v
     llm = AsyncMock()
     llm._provider_impl = None
     llm.call.return_value = LLMCallResult(
-        content=SimpleNamespace(
+        content=consolidator._ConsolidationBatchResponse.model_construct(
             creates=[],
             updates=[SimpleNamespace(text="valid update", observation_id="O", source_fact_ids=["B"])],
             deletes=[],

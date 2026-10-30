@@ -4164,9 +4164,14 @@ async def _process_memory_batch(
                                 zip(prepared_creates, create_dedups)
                             ):
                                 scope = tuple(sorted(prepared_create.source_fact_tags or []))
-                                if not prepared_create.preserve_separate and _norm_obs_text(
-                                    prepared_create.text
-                                ) in exact_by_scope.get(scope, {}):
+                                # Exact candidates were read before the write-set locks.
+                                # A same-response UPDATE may have changed or folded that
+                                # row since, so follow its successful survivor instead.
+                                if (
+                                    index not in same_response_folds
+                                    and not prepared_create.preserve_separate
+                                    and _norm_obs_text(prepared_create.text) in exact_by_scope.get(scope, {})
+                                ):
                                     apply_dedups.append(None)
                                     continue
                                 apply_dedup = prepared_dedup
@@ -4192,11 +4197,11 @@ async def _process_memory_batch(
                                             )
                                 apply_dedups.append(apply_dedup)
 
-                            for prepared_create, apply_dedup in zip(prepared_creates, apply_dedups):
+                            for index, (prepared_create, apply_dedup) in enumerate(zip(prepared_creates, apply_dedups)):
                                 scope = tuple(sorted(prepared_create.source_fact_tags or []))
                                 exact_row = (
                                     None
-                                    if prepared_create.preserve_separate
+                                    if prepared_create.preserve_separate or index in same_response_folds
                                     else exact_by_scope.get(scope, {}).get(_norm_obs_text(prepared_create.text))
                                 )
                                 if exact_row is not None:

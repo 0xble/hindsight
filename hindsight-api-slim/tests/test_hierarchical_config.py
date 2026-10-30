@@ -812,8 +812,10 @@ async def test_config_get_bank_config_no_static_or_credential_fields_leak(memory
         for field in expected_configurable:
             assert field in config, f"Expected configurable field '{field}' missing from config"
 
-        # Should have a small number of configurable fields (not hundreds)
-        assert len(config) < 60, f"Too many fields returned: {len(config)}"
+        # Compare the whole public allowlist rather than a count that grows with releases.
+        assert set(config) == set(configurable_fields)
+        assert set(config).isdisjoint(HindsightConfig.get_static_fields())
+        assert set(config).isdisjoint(credential_fields)
 
     finally:
         await memory.delete_bank(bank_id, request_context=request_context)

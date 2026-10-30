@@ -70,6 +70,26 @@ in the root contract.
   Qualify `tests/test_retain_consolidation_deadlock.py` alongside the existing
   deadlock, lane, dedup and Oracle routing regressions. This is partial adoption,
   not retirement of the remaining retry and backend contracts.
+- **v1.1.0 qualification repair (2026-10-30):** At frozen release
+  `a5a619b5ca59c5c39e0f96be6f7a31fabd136bd5`, recall queries and observation
+  actions use batched embeddings (#5647/#5552). Test doubles accept
+  `query_embedding`, provide observation `source_fact_ids`, and return one vector
+  per input. Preserve query-side batching, unique action embedding order, and
+  transactional source coverage for a CREATE copying an UPDATE. Mock the released
+  write-set read separately in dedup-only tests, retaining the existing fold
+  transaction, source-lock and RETURNING assertions.
+  The integration moved lane exact-candidate reads before document/write-set
+  locking. That snapshot predates same-response UPDATEs, while `create_dedups`
+  already follows their successful survivors. Discarding that outcome for the
+  old exact row causes its CAS to miss and inserts an obsolete duplicate.
+  Keep the released lock order and prefer the successful same-response survivor
+  over the earlier exact snapshot. The diagnosis is falsified if the 4-case
+  `test_same_response_update_survivor_precedes_exact_candidate_snapshot` matrix
+  cannot distinguish the original lane path from the repair: original source
+  passes both serial controls and fails both lane cases, while repaired source
+  passes all 4. Keep the PostgreSQL `test_shown_create_fold_preserves_current_state`
+  matrix, including fold chains, CAS misses, source edits and rollback, as the
+  integration boundary. No lock, guard, retry or dispatch budget is relaxed.
 - **Behavior:** Consolidation's source-liveness check and retain's document-wide
   tag/scope update acquire `memory_units` row locks in the same order, so they no
   longer deadlock. The apply transaction retries a residual PostgreSQL deadlock and

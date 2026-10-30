@@ -47,6 +47,14 @@ scripted providers through the published Python client:
 uv run --frozen pytest tests/test_98_private_reads.py
 ```
 
+The v1.1.0 engine harness stubs `_bank_freshness`, the released internal read
+used after reflect authenticates, rather than the public `get_bank_freshness`
+method. Its diagnostic connection supports released `executemany` trace writes.
+This preserves native authentication, reflection, retrieval and all public/private
+sink assertions. The stale-double explanation is falsified by an acquire failure
+or missing positive public trace with these released boundaries supplied. No
+private-read implementation or diagnostic policy changes in this adaptation.
+
 Keep complete public/private payload comparisons, no-store acknowledgements,
 positive public trace/audit controls, complete diagnostic enumeration and zero
 additional private trace/audit rows. The real-client story also creates, updates

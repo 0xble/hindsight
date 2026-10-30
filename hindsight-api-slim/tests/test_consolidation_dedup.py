@@ -361,8 +361,15 @@ async def test_process_batch_unchanged_currency_merge_has_one_request(shape: str
         patch.object(C, "_dedup_active", return_value=True),
         patch.object(C, "_live_source_ids", new=AsyncMock(return_value={source_id})),
         patch.object(C, "_sources_changed_since_read", new=AsyncMock(return_value=[])),
-        patch.object(C, "_embed_observation_text", new=AsyncMock(return_value="[0.1, 0.2, 0.3]")),
+        patch.object(
+            C.embedding_utils,
+            "generate_embeddings_batch",
+            new=AsyncMock(side_effect=lambda _embeddings, texts, **_kwargs: [[0.1, 0.2, 0.3] for _ in texts]),
+        ),
         patch.object(C, "_apply_create_action", new=AsyncMock(side_effect=AssertionError("valid merge must fold"))),
+        # The released write-set lock reads full memory rows. Keep this test
+        # focused on dedup, whose fold liveness/transaction assertions stay real.
+        patch.object(get_memories(), "lock_consolidation_write_set", new=AsyncMock()),
         _patch_probe([_obs(text, 0.99)]),
     ):
         result = await C._process_memory_batch(
@@ -906,13 +913,14 @@ async def test_process_batch_reports_created_when_create_created() -> None:
 @pytest.mark.memory_backend_incompatible
 async def test_process_batch_embeds_all_actions_in_one_call() -> None:
     # #5552: a response's actions are embedded in ONE embedder call, not one call per action.
-    # A create that copies an update's text is dropped before the call, so it is not embedded.
+    # A CREATE copying an UPDATE shares its embedding and folds its sources
+    # transactionally, rather than losing its citations by dropping the action.
     from hindsight_api.engine.consolidation import consolidator as C
 
     mem_ids = [str(uuid.uuid4()) for _ in range(3)]
     memories = [{"id": mid, "text": f"fact {i}", "tags": []} for i, mid in enumerate(mem_ids)]
     obs_id = uuid.uuid4()
-    observation = types.SimpleNamespace(id=obs_id, text="Old observation.")
+    observation = types.SimpleNamespace(id=obs_id, text="Old observation.", source_fact_ids=[])
     llm_result = C._BatchLLMResult(
         updates=[C._UpdateAction(observation_id=str(obs_id), text="Updated.", source_fact_ids=[mem_ids[0]])],
         creates=[
@@ -937,6 +945,7 @@ async def test_process_batch_embeds_all_actions_in_one_call() -> None:
         # The write set's up-front lock (#5433) reads the observation's sources, a query this fake
         # connection does not model; this test is about the embedder call, not the locks.
         patch.object(get_memories(), "lock_consolidation_write_set", new=AsyncMock()),
+        patch.object(C, "_apply_dedup_create_fold", new=AsyncMock(return_value=str(obs_id))) as fold,
         patch.object(C, "_apply_update_action", new=AsyncMock(return_value="updated")) as update_action,
         patch.object(C, "_apply_create_action", new=AsyncMock(return_value="created")) as create_action,
     ):
@@ -950,13 +959,18 @@ async def test_process_batch_embeds_all_actions_in_one_call() -> None:
             bank_id="bank1",
             memories=memories,
             request_context=object(),
-            config=object(),
+            config=types.SimpleNamespace(llm_language_integrity="off", consolidation_dedup_threshold=1.0),
         )
     # The first call is the recall queries (#5647); the second is every action's text.
     assert embed.await_count == 2
     assert embed.await_args.args[1] == ["Updated.", "First new.", "Second new."]
     assert update_action.await_args.kwargs["prepared"].embedding_str == "[0.0]"
     assert [c.kwargs["prepared"].embedding_str for c in create_action.await_args_list] == ["[1.0]", "[2.0]"]
+
+    fold.assert_awaited_once()
+    assert fold.await_args.args[4].best_id == str(obs_id)
+    assert fold.await_args.args[4].best_text == "Updated."
+    assert fold.await_args.args[5] == [mem_ids[2]]
 
 
 async def test_process_batch_embeds_recall_queries_in_one_call() -> None:
@@ -983,7 +997,7 @@ async def test_process_batch_embeds_recall_queries_in_one_call() -> None:
             bank_id="bank1",
             memories=memories,
             request_context=object(),
-            config=object(),
+            config=types.SimpleNamespace(llm_language_integrity="off"),
         )
     embed.assert_awaited_once()
     assert embed.await_args.args[1] == ["fact 0", "fact 1", "fact 2"]
@@ -993,3 +1007,82 @@ async def test_process_batch_embeds_recall_queries_in_one_call() -> None:
         "fact 1": [1.0],
         "fact 2": [2.0],
     }
+
+
+@pytest.mark.parametrize("lane", [False, True])
+@pytest.mark.parametrize("fold_update", [False, True])
+async def test_same_response_update_survivor_precedes_exact_candidate_snapshot(lane, fold_update) -> None:
+    """A pre-lock exact row cannot override coverage from an UPDATE committed in this response."""
+    import asyncio
+
+    from hindsight_api.engine.consolidation import consolidator as C
+    from hindsight_api.engine.response_models import MemoryFact, RecallResult
+
+    old_id, new_id, create_id, twin_id, survivor_id = [uuid.uuid4() for _ in range(5)]
+    observation = MemoryFact(
+        id=str(twin_id), text="Original observation", fact_type="observation", source_fact_ids=[str(old_id)]
+    )
+    row = {"id": twin_id, "text": observation.text, "tags": [], "source_memory_ids": [old_id]}
+    conn = _DedupConn()
+    conn.fetch = AsyncMock(return_value=[row])
+    result = C._BatchLLMResult(
+        updates=[
+            C._UpdateAction(observation_id=str(twin_id), text="Updated observation", source_fact_ids=[str(new_id)])
+        ],
+        creates=[C._CreateAction(text=observation.text, source_fact_ids=[str(create_id)])],
+    )
+    final_id = str(survivor_id if fold_update else twin_id)
+    final_text = "Merged observation" if fold_update else "Updated observation"
+    update_dedup = _DedupOutcome(
+        best_id=str(survivor_id), best_text="Survivor", merged_text=final_text, should_merge=True
+    )
+    ready = asyncio.Event()
+    ready.set()
+
+    async def fold_create(_conn, _engine, _bank, _config, outcome, sources, _bounds):
+        # With the stale pre-lock outcome, the CAS misses and the batch inserts
+        # an obsolete duplicate instead. Check both survivor identity and text.
+        assert outcome.best_id == final_id
+        assert outcome.best_text == outcome.merged_text == final_text
+        assert sources == [str(create_id)]
+        return final_id
+
+    with (
+        patch.object(C, "_find_related_observations", new=AsyncMock(return_value=RecallResult(results=[observation]))),
+        patch.object(C, "_consolidate_batch_with_llm", new=AsyncMock(return_value=result)),
+        patch.object(C, "_effective_scope_limit", return_value=-1),
+        patch.object(C, "_config_for_scope", side_effect=lambda config, _tags: config),
+        patch.object(C, "_dedup_active", return_value=fold_update),
+        patch.object(C, "_live_source_ids", new=AsyncMock(return_value={str(new_id), str(create_id)})),
+        patch.object(
+            C.embedding_utils,
+            "generate_embeddings_batch",
+            new=AsyncMock(side_effect=lambda _embeddings, texts, **_kwargs: [[0.1] for _ in texts]),
+        ),
+        patch.object(C, "_fetch_exact_observation_candidates", new=AsyncMock(return_value=[row])),
+        patch.object(get_memories(), "lock_consolidation_write_set", new=AsyncMock()),
+        patch.object(C, "_apply_update_action", new=AsyncMock(return_value="[0.1]")),
+        patch.object(C, "_dedup_adjudicate", new=AsyncMock(return_value=update_dedup)),
+        patch.object(C, "_dedup_probe", new=AsyncMock(return_value=update_dedup)),
+        patch.object(C, "_apply_dedup_update_fold", new=AsyncMock(return_value=final_id)),
+        patch.object(C, "_apply_dedup_create_fold", new=AsyncMock(side_effect=fold_create)) as create_fold,
+        patch.object(
+            C, "_apply_create_action", new=AsyncMock(side_effect=AssertionError("sources must follow UPDATE"))
+        ),
+    ):
+        actions, deleted, failed = await C._process_memory_batch(
+            pool=_DedupBackend(conn),
+            memory_engine=_batch_engine(),
+            llm_config=object(),
+            bank_id="bank1",
+            memories=[
+                {"id": str(new_id), "text": "New source", "tags": []},
+                {"id": str(create_id), "text": "CREATE source", "tags": []},
+            ],
+            request_context=object(),
+            config=types.SimpleNamespace(llm_language_integrity="off", consolidation_dedup_threshold=0.97),
+            apply_turn=(ready, asyncio.Event()) if lane else None,
+        )
+    assert actions == [{"action": "updated"}, {"action": "created"}]
+    assert deleted == 0 and not failed
+    create_fold.assert_awaited_once()

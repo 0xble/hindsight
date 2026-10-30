@@ -45,7 +45,9 @@ async def test_single_lane_benchmark(memory: MemoryEngine, request_context, capl
                     [str(facts[0])],
                 )
 
-            async def find(*, memory_engine, bank_id, query, request_context, tags=None, config=None):
+            async def find(
+                *, memory_engine, bank_id, query, request_context, tags=None, config=None, query_embedding=None
+            ):
                 async with memory._pool.acquire() as conn:
                     row = await conn.fetchrow(
                         "SELECT text, source_memory_ids FROM memory_units WHERE id=$1", observation_id

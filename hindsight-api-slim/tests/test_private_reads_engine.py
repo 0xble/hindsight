@@ -70,6 +70,10 @@ class IsolatedSink:
         with self.path.open("a") as output:
             output.write(json.dumps({"sql": sql, "arguments": arguments}, default=str) + "\n")
 
+    async def executemany(self, sql: str, rows: list[tuple[Any, ...]]) -> None:
+        for arguments in rows:
+            await self.execute(sql, *arguments)
+
     def bytes(self) -> bytes:
         return self.path.read_bytes() if self.path.exists() else b""
 
@@ -183,7 +187,8 @@ async def read_harness(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
             "disposition": {"skepticism": 3, "literalism": 3, "empathy": 3},
         }
     )
-    engine.get_bank_freshness = AsyncMock(return_value={})
+    # Reflect already authenticates and now uses the internal freshness read.
+    engine._bank_freshness = AsyncMock(return_value={})
     engine.list_directives = AsyncMock(return_value=DirectivePage(items=[], total=0))
     engine.attachments_for_memories = AsyncMock(return_value={})
 

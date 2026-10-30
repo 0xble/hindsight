@@ -1131,7 +1131,9 @@ async def test_same_lane_stale_update_retries_fresh_recall(memory: MemoryEngine,
         first_snapshot_ready = asyncio.Event()
         initial_recalls_ready = asyncio.Event()
 
-        async def fake_find(*, memory_engine, bank_id, query, request_context, tags=None, config=None):
+        async def fake_find(
+            *, memory_engine, bank_id, query, request_context, tags=None, config=None, query_embedding=None
+        ):
             nonlocal recall_count
             recall_count += 1
             recall_number = recall_count
@@ -1409,7 +1411,9 @@ async def test_lane_partial_invalid_reply_and_stale_sibling_retry(memory: Memory
         first_snapshot_ready = asyncio.Event()
         both_recalled = asyncio.Event()
 
-        async def fake_find(*, memory_engine, bank_id, query, request_context, tags=None, config=None):
+        async def fake_find(
+            *, memory_engine, bank_id, query, request_context, tags=None, config=None, query_embedding=None
+        ):
             nonlocal initial_recalls
             initial_recalls += 1
             recall_number = initial_recalls
@@ -1919,7 +1923,9 @@ async def test_shown_create_fold_preserves_current_state(memory: MemoryEngine, r
             new_fact = dict(await conn.fetchrow("SELECT * FROM memory_units WHERE id=$1", new_id))
             create_fact = dict(await conn.fetchrow("SELECT * FROM memory_units WHERE id=$1", create_id))
             if semantic:
-                embedding = await mod._embed_observation_text(memory, "Updated observation", None)
+                embedding = str(
+                    (await mod.embedding_utils.generate_embeddings_batch(memory.embeddings, ["Updated observation"]))[0]
+                )
                 await conn.execute(
                     "INSERT INTO memory_units (id,bank_id,text,fact_type,tags,source_memory_ids,embedding,created_at) "
                     "VALUES ($1,$2,'Merge survivor','observation','{}',$3,$4::vector,now())",
@@ -1929,7 +1935,9 @@ async def test_shown_create_fold_preserves_current_state(memory: MemoryEngine, r
                     embedding,
                 )
             if change == "reply-fold-chain":
-                embedding = await mod._embed_observation_text(memory, "Chain update", None)
+                embedding = str(
+                    (await mod.embedding_utils.generate_embeddings_batch(memory.embeddings, ["Chain update"]))[0]
+                )
                 await conn.execute(
                     "INSERT INTO memory_units (id,bank_id,text,fact_type,tags,source_memory_ids,embedding,created_at) "
                     "VALUES ($1,$2,'Final merge survivor','observation','{}',$3,$4::vector,now())",
@@ -2161,19 +2169,19 @@ async def test_intra_response_near_twin_creates_match_default_lane(
         mock_llm.set_response_callback(callback)
         wrapper = MagicMock()
         wrapper.with_config.return_value = mock_llm
-        original_embed = mod._embed_observation_text
+        original_embed = mod.embedding_utils.generate_embeddings_batch
         embedding = None
 
-        async def same_embedding(*args, **kwargs):
+        async def same_embedding(embeddings, texts, **kwargs):
             nonlocal embedding
             if embedding is None:
-                embedding = await original_embed(*args, **kwargs)
-            return embedding
+                embedding = (await original_embed(embeddings, texts[:1], **kwargs))[0]
+            return [embedding for _ in texts]
 
         with (
             patch.object(memory, "_consolidation_llm_config", wrapper),
             patch.object(memory, "submit_async_consolidation"),
-            patch.object(mod, "_embed_observation_text", same_embedding),
+            patch.object(mod.embedding_utils, "generate_embeddings_batch", same_embedding),
             _override_config(
                 memory,
                 consolidation_llm_parallelism=2,
