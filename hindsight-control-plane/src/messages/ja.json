@@ -1438,6 +1438,8 @@
     "actionMemoryDefense": "メモリ防御",
     "actionFileRetain": "ファイルをアップロード",
     "actionUpdateMemory": "メモリを更新",
+    "actionApplyCurationBatch": "キュレーションバッチを適用",
+    "actionRevertCurationBatch": "キュレーションバッチを元に戻す",
     "actionUpdateDocument": "ドキュメントを更新",
     "actionDeleteDocument": "ドキュメントを削除",
     "actionReprocessDocument": "ドキュメントを再処理",

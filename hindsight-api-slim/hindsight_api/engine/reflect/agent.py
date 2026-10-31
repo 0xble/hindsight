@@ -12,7 +12,7 @@ import json
 import logging
 import time
 from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Any, Awaitable, Callable
 
 from ...cancellation import OperationCancelledError
@@ -2126,9 +2126,9 @@ def _fresh_usable_pages(tool_calls: list["LLMToolCall"], tool_results: list[Any]
     """The page search's output when every page in it is fresh and has text, else None."""
     pages = next(
         (
-            result[0]
+            result.output
             for tc, result in zip(tool_calls, tool_results)
-            if _normalize_tool_name(tc.name) == "search_mental_models" and isinstance(result, tuple)
+            if _normalize_tool_name(tc.name) == "search_mental_models" and isinstance(result, _TimedToolResult)
         ),
         None,
     )
@@ -2141,8 +2141,8 @@ def _hide_lower_layers(tool_calls: list["LLMToolCall"], tool_results: list[Any])
     """Replace the observation and recall results with empty ones."""
     empty = {"search_observations": {"observations": []}, "recall": {"memories": []}}
     return [
-        (empty[_normalize_tool_name(tc.name)], result[1])
-        if _normalize_tool_name(tc.name) in empty and isinstance(result, tuple)
+        replace(result, output=empty[_normalize_tool_name(tc.name)])
+        if _normalize_tool_name(tc.name) in empty and isinstance(result, _TimedToolResult)
         else result
         for tc, result in zip(tool_calls, tool_results)
     ]
@@ -2173,9 +2173,9 @@ async def _prune_round(
     slots: list[tuple[int, str, str]] = []
     texts: list[str] = []
     for i, output in enumerate(tool_results):
-        if not isinstance(output, tuple) or not isinstance(output[0], dict) or "error" in output[0]:
+        if not isinstance(output, _TimedToolResult) or not isinstance(output.output, dict) or "error" in output.output:
             continue
-        data = output[0]
+        data = output.output
         for key in ("observations", "memories"):
             for item in data.get(key) or []:
                 if isinstance(item, dict) and "id" in item:
@@ -2198,10 +2198,10 @@ async def _prune_round(
     logger.info(f"[REFLECT {reflect_id}] Decision-orchestrated: kept {len(kept)}/{len(slots)} evidence items.")
     pruned: list[Any] = []
     for i, output in enumerate(tool_results):
-        if not isinstance(output, tuple) or not isinstance(output[0], dict) or "error" in output[0]:
+        if not isinstance(output, _TimedToolResult) or not isinstance(output.output, dict) or "error" in output.output:
             pruned.append(output)
             continue
-        data = dict(output[0])
+        data = dict(output.output)
         for key in ("observations", "memories"):
             if key in data:
                 data[key] = [item for item in data[key] if (i, key, str(item.get("id"))) in kept]
@@ -2210,7 +2210,7 @@ async def _prune_round(
         if "source_facts" in data:
             cited = {str(fid) for obs in data.get("observations", []) for fid in obs.get("source_fact_ids") or []}
             data["source_facts"] = {fid: f for fid, f in data["source_facts"].items() if str(fid) in cited}
-        pruned.append((data, output[1]))
+        pruned.append(replace(output, output=data))
     return pruned
 
 

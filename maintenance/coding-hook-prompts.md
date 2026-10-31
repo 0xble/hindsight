@@ -32,3 +32,23 @@ regressions reproduce that override before repair and protect both boundaries.
 ## Adopt Or Retire
 
 Retire this divergence when an upstream release passes the synthetic-prompt regressions through both direct `buildHookOutput` and native hook entry points. Retain the upstream two-attempt failure budget and unchanged explicit reflection path. No new filter, retry manager or logger is needed.
+
+
+## v1.1.0 Accepted Retain Recovery
+
+A confirmed terminal retain failure must start a new extraction even when the
+transcript is unchanged. Preserve the deterministic ID for ambiguous transport
+retries. The existing retain cursor carries a recovery salt rotated only from
+confirmed failed operation IDs, through the dirty claim and accepted write.
+Repeated terminal failures rotate again. No parallel recovery store is needed.
+
+From `hindsight-integrations/coding-agents`, run:
+
+```bash
+heavy-slot --label hindsight-v110-chat-recovery -- npm test -- src/core/chat.test.ts
+```
+
+Keep the existing full package tests, build and typecheck in `bin/ci`. The focused
+cases cover repeated failed/cancelled/error outcomes, unchanged-content recovery,
+transport ambiguity, and subsequent append behavior. Source delivery does not
+install the coding-agents package into a runtime.

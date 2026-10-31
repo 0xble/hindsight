@@ -48,12 +48,10 @@ _memories: MemoriesExtension | None = None
 
 def create_memories(context=None) -> MemoriesExtension:
     """Build the configured memories store, or the Postgres default."""
-    import os
-
-    from ...extensions.loader import load_extension
+    from ...extensions.loader import get_extension_path, load_extension
     from ...private_reads import PrivateReadUnsupportedError, is_private_read
 
-    if is_private_read() and os.getenv("HINDSIGHT_API_MEMORIES_EXTENSION"):
+    if is_private_read() and get_extension_path("MEMORIES"):
         raise PrivateReadUnsupportedError("Memory extensions do not support private reads")
     loaded = load_extension("MEMORIES", MemoriesExtension, context=context)
     if loaded is not None:

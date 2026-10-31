@@ -523,3 +523,54 @@ async def test_a_refresh_still_offers_answer_ready():
     )
 
     assert "answer_ready" in provider.tool_names
+
+
+@pytest.mark.asyncio
+async def test_native_timed_results_prune_and_hide_without_losing_timing():
+    from hindsight_api.engine.reflect.agent import (
+        _fresh_usable_pages,
+        _hide_lower_layers,
+        _prune_round,
+        _TimedToolResult,
+    )
+
+    pages = _TimedToolResult(
+        output={"mental_models": [{"id": "page", "content": "fresh page", "is_stale": False}]}, duration_ms=11
+    )
+    observations = _TimedToolResult(
+        output={
+            "observations": [
+                {"id": "keep", "text": "relevant", "source_fact_ids": ["source"]},
+                {"id": "drop", "text": "irrelevant", "source_fact_ids": ["hidden"]},
+            ],
+            "source_facts": {"source": {"text": "support"}, "hidden": {"text": "secret"}},
+        },
+        duration_ms=22,
+    )
+    recall = _TimedToolResult(output={"memories": [{"id": "raw", "text": "raw fact"}]}, duration_ms=33)
+    error = _TimedToolResult(output={"error": "unavailable"}, duration_ms=44)
+    exception = RuntimeError("tool failed")
+    results = [pages, observations, recall, error, exception]
+    prune = AsyncMock(return_value=[True, False, False])
+    pruned = await _prune_round("question", results, prune, "reflect")
+    prune.assert_awaited_once_with("question", ["relevant", "irrelevant", "raw fact"])
+    assert [r.duration_ms for r in pruned[:-1]] == [11, 22, 33, 44]
+    assert pruned[1].output["observations"] == [observations.output["observations"][0]]
+    assert pruned[1].output["source_facts"] == {"source": {"text": "support"}}
+    assert pruned[2].output == {"memories": []}
+    assert pruned[3] is error and pruned[4] is exception
+    calls = [
+        LLMToolCall(id=str(i), name=name, arguments={})
+        for i, name in enumerate(["search_mental_models", "search_observations", "recall"])
+    ]
+    assert _fresh_usable_pages(calls, pruned) == pages.output
+    hidden = _hide_lower_layers(calls, pruned[:3])
+    assert hidden[0] is pruned[0]
+    assert hidden[1].output == {"observations": []} and hidden[1].duration_ms == 22
+    assert hidden[2].output == {"memories": []} and hidden[2].duration_ms == 33
+    assert observations.output["source_facts"]["hidden"] == {"text": "secret"}
+    assert await _prune_round("q", results, AsyncMock(side_effect=RuntimeError("down")), "r") is results
+    single = [recall, error, exception]
+    unused = AsyncMock()
+    assert await _prune_round("q", single, unused, "r") is single
+    unused.assert_not_awaited()

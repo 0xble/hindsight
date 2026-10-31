@@ -168,3 +168,89 @@ async def test_oracle_create_twins_never_enter_postgres_fold(memory, request_con
         assert any(row["source_memory_ids"] == [fresh] for row in rows)
     finally:
         await memory.delete_bank(bank, request_context=request_context)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("backend", ["oracle", "postgresql"])
+@pytest.mark.parametrize("kind", ["sources", "twin"])
+async def test_store_duplicate_folds_bypass_postgres_arrays_on_oracle(monkeypatch, backend, kind):
+    from types import SimpleNamespace
+
+    from hindsight_api.engine.memories.pg import consolidation as pg
+    from hindsight_api.engine.memories.postgres import PostgresMemories
+    from hindsight_api.engine.schema import fq_store_table
+
+    monkeypatch.setenv("HINDSIGHT_API_DATABASE_BACKEND", backend)
+    source = uuid.uuid4()
+    conn = SimpleNamespace(
+        fetchrow=AsyncMock(return_value={"source_memory_ids": [source]}),
+        fetch=AsyncMock(),
+        fetchval=AsyncMock(return_value=uuid.uuid4()),
+    )
+    store = PostgresMemories()
+    common = dict(
+        conn=conn,
+        fq_table=fq_store_table,
+        bank_id="bank",
+        observation_id=str(uuid.uuid4()),
+        merged_text="merged",
+        embeddings=None,
+    )
+    if kind == "sources":
+        folded = await store.fold_sources_into_observation(
+            **common,
+            expected_text="old",
+            source_memory_ids=[uuid.uuid4()],
+            bounds=c._TemporalBounds(None, None, None, None),
+        )
+    else:
+        # The fence is separately qualified on Oracle. A bypass must not even read
+        # the PG source array before returning control to the normal apply path.
+        with patch.object(pg, "lock_live_memory_ids", AsyncMock(return_value={str(source)})) as live:
+            folded = await store.fold_observation_into_twin(
+                **common,
+                observation_text="old",
+                twin_id=str(uuid.uuid4()),
+                twin_text="twin",
+            )
+        if backend == "oracle":
+            live.assert_not_awaited()
+        else:
+            live.assert_awaited_once()
+    if backend == "oracle":
+        assert folded is False
+        conn.fetchrow.assert_not_awaited()
+        conn.fetch.assert_not_awaited()
+        conn.fetchval.assert_not_awaited()
+    else:
+        assert folded is True
+        assert "unnest(" in conn.fetchval.await_args.args[0]
+        assert "array_agg(DISTINCT" in conn.fetchval.await_args.args[0]
+
+
+@pytest.mark.asyncio
+async def test_oracle_declined_fold_requeues_live_sources_on_caller_connection(monkeypatch):
+    from types import SimpleNamespace
+
+    from hindsight_api.engine.memories.postgres import PostgresMemories
+
+    monkeypatch.setenv("HINDSIGHT_API_DATABASE_BACKEND", "oracle")
+    source = uuid.uuid4()
+    gone = SimpleNamespace(
+        source_memory_ids=[source], event_date=None, occurred_start=None, occurred_end=None, mentioned_at=None
+    )
+    target_id = str(uuid.uuid4())
+    store = PostgresMemories()
+    store.get_memories = AsyncMock(return_value=[SimpleNamespace(fact_type="observation", text="survivor")])
+    store.mark_consolidated = AsyncMock()
+    conn = SimpleNamespace(fetchval=AsyncMock(), fetchrow=AsyncMock(), fetch=AsyncMock())
+    live = AsyncMock(return_value=[source])
+    with patch.object(c, "get_memories", return_value=store), patch.object(c, "_filter_live_source_memories", live):
+        await c._fold_deleted_evidence(conn, SimpleNamespace(embeddings=None), "bank", gone, target_id)
+    live.assert_awaited_once_with(conn, "bank", [source])
+    store.mark_consolidated.assert_awaited_once_with(
+        conn=conn, fq_table=c.fq_table, bank_id="bank", unit_ids=[str(source)], when=None
+    )
+    conn.fetchval.assert_not_awaited()
+    conn.fetchrow.assert_not_awaited()
+    conn.fetch.assert_not_awaited()

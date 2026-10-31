@@ -18513,6 +18513,10 @@ class MemoryEngine(MemoryEngineInterface):
             return None
         from .memories import get_memories
 
+        # Like reflect's tools, the gate must intersect the page filter with the
+        # current caller's scope before any evidence reaches the decision model.
+        forced_scope = await self._tag_scope(bank_id, request_context)
+        tag_groups = [*(tag_filtering.tag_groups or []), *(forced_scope or [])]
         backend = await self._get_backend()
         async with acquire_with_retry(backend) as conn:
             memories = await get_memories().memories_updated_between(
@@ -18525,7 +18529,7 @@ class MemoryEngine(MemoryEngineInterface):
                 fact_types=fact_types,
                 tags=tag_filtering.tags,
                 tags_match=tag_filtering.tags_match,
-                tag_groups=tag_filtering.tag_groups,
+                tag_groups=tag_groups or None,
             )
         if memories is None or len(memories) > _DELTA_GATE_MAX_MEMORIES:
             return None
@@ -18559,7 +18563,7 @@ class MemoryEngine(MemoryEngineInterface):
                 bank_id=bank_id,
                 tags=tag_filtering.tags,
                 tags_match=tag_filtering.tags_match,
-                tag_groups=tag_filtering.tag_groups,
+                tag_groups=tag_groups or None,
                 active_only=True,
                 request_context=request_context,
                 isolation_mode=True,

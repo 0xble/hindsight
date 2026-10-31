@@ -346,7 +346,8 @@ async def test_label_projection_noop_does_not_rewrite_units(memory: MemoryEngine
     document_id = "label-noop"
     try:
         await _retain(memory, bank_id, document_id, _DOCUMENT_V1, [_KEPT_HOTEL], request_context)
-        pool = await memory._get_pool()
+        pool = memory._pool
+        assert pool is not None
         store = get_memories()
         async with pool.acquire() as conn:
             async with conn.transaction():

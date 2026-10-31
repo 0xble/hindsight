@@ -52,6 +52,11 @@ def _resolve_extension_class(ext_path: str, base_class: type[T]) -> type[T]:
     return ext_class
 
 
+def get_extension_path(prefix: str, env_prefix: str = "HINDSIGHT_API") -> str | None:
+    """Read the dynamic extension namespace without importing or constructing it."""
+    return os.getenv(f"{env_prefix}_{prefix}_EXTENSION") or None
+
+
 def resolve_configured_extension_class(
     prefix: str,
     base_class: type[T],
@@ -63,7 +68,7 @@ def resolve_configured_extension_class(
     ``None``. Use this for anything that asks an extension about itself rather than
     asking it to do work.
     """
-    ext_path = os.getenv(f"{env_prefix}_{prefix}_EXTENSION")
+    ext_path = get_extension_path(prefix, env_prefix)
     if not ext_path:
         return None
     return _resolve_extension_class(ext_path, base_class)
@@ -104,7 +109,7 @@ def load_extension(
         # ext.config == {"max_requests": "100"}
     """
     env_var = f"{env_prefix}_{prefix}_EXTENSION"
-    ext_path = os.getenv(env_var)
+    ext_path = get_extension_path(prefix, env_prefix)
 
     if not ext_path:
         logger.debug(f"No extension configured for {env_var}")

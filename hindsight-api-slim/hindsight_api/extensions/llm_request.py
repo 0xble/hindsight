@@ -249,12 +249,19 @@ async def bind_llm_request(provider: LLMProvider) -> BoundLLMRequest:
                 f"sending it on its configured credentials."
             )
         # Names only in the message: the values are the credentials.
-        clashing = [h for h in _credential_headers(receiver.default_headers) if h not in overrides.headers]
+        # LiteLLM promotes extra_body to call kwargs, including extra_headers.
+        # Those headers can shadow api_key just like an SDK's default headers.
+        extra_body = receiver.extra_body or {}
+        header_sources = [receiver.default_headers, extra_body.get("extra_headers")]
+        clashing = {h for headers in header_sources for h in _credential_headers(headers) if h not in overrides.headers}
+        # LiteLLM also accepts `headers`, which can take precedence over
+        # extra_headers. Our override is applied to extra_headers, not this alias.
+        clashing.update(_credential_headers(extra_body.get("headers")))
         if overrides.api_key is not None and clashing:
             raise LLMRequestRefused(
-                f"The LLM request extension chose a key for bank {target.bank_id!r}, but the LLM's default "
-                f"headers {clashing} carry a credential that would override it. Refusing rather than sending "
-                f"the call on those; override the header in the answer's headers, or drop it from the defaults."
+                f"The LLM request extension chose a key for bank {target.bank_id!r}, but the LLM's configured "
+                f"headers {sorted(clashing)} carry a credential that would override it. Refusing rather than sending "
+                f"the call on those; remove the conflicting configured headers or rebind supported default headers."
             )
     return BoundLLMRequest(
         llm=delegate,

@@ -26,6 +26,7 @@ class _RefuseEverything(OperationValidatorExtension):
 
     def __init__(self) -> None:
         super().__init__({})
+        self.calls: list[str] = []
 
     # The three abstract hooks must be defined for the class to instantiate; the
     # __getattribute__ below answers every other validate_* the same way.
@@ -43,6 +44,7 @@ class _RefuseEverything(OperationValidatorExtension):
         if name.startswith("validate_"):
 
             async def refuse(ctx: Any) -> ValidationResult:
+                self.calls.append(name)
                 return ValidationResult.reject("refused", 403)
 
             return refuse
@@ -73,7 +75,8 @@ async def test_every_bank_route_refuses_when_the_validator_does(memory, monkeypa
     await memory.ensure_bank_profile(bank_id=bank_id, request_context=RequestContext())
     app = create_app(memory, initialize_memory=False)
     spec = app.openapi()
-    monkeypatch.setattr(memory, "_operation_validator", _RefuseEverything())
+    validator = _RefuseEverything()
+    monkeypatch.setattr(memory, "_operation_validator", validator)
 
     leaks = []
     async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
@@ -97,7 +100,19 @@ async def test_every_bank_route_refuses_when_the_validator_does(memory, monkeypa
                     kwargs["json"] = _sample(body["application/json"]["schema"], spec)
                 elif "multipart/form-data" in body:
                     kwargs["files"] = {"file": ("a.txt", b"hi")}
+                calls_before = len(validator.calls)
                 resp = await client.request(method.upper(), url, params=params, **kwargs)
+                if operation.get("operationId") in {"private_recall_memories", "private_reflect"}:
+                    # Opaque extensions cannot receive a private payload, even to
+                    # refuse it. The capability rejection precedes validator hooks.
+                    assert resp.status_code == 503
+                    assert resp.json()["detail"] in {
+                        "Configured component does not support private reads",
+                        "Operation extensions do not support private reads",
+                    }
+                    assert len(validator.calls) == calls_before
+                    assert resp.headers.get("X-Hindsight-Private-Read") is None
+                    continue
                 # The minimal retain body has no items: the route has nothing to hand
                 # the engine and answers a no-op 200 — nothing stored, nothing spent.
                 if path.endswith("/memories") and method == "post" and resp.status_code == 200:

@@ -115,6 +115,9 @@ export interface RetainCursor {
   appendSupported?: boolean;
   /** A REPLACE was started and not confirmed: the next retain must replace, not append. */
   dirty?: boolean;
+  /** Salt rotated only after a confirmed terminal operation failure. Carried through
+   *  dirty claims so transport retries keep the recovery operation's identity. */
+  recoveryId?: string;
   /** Appends started and not confirmed, oldest first — replayed before anything new. Their turns
    *  are already counted in `turns`: the cursor covers what is committed OR buffered. */
   pending?: PendingAppend[];

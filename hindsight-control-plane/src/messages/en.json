@@ -1438,6 +1438,8 @@
     "actionMemoryDefense": "Memory Defense",
     "actionFileRetain": "Upload File",
     "actionUpdateMemory": "Update Memory",
+    "actionApplyCurationBatch": "Apply Curation Batch",
+    "actionRevertCurationBatch": "Revert Curation Batch",
     "actionUpdateDocument": "Update Document",
     "actionDeleteDocument": "Delete Document",
     "actionReprocessDocument": "Reprocess Document",

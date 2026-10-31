@@ -159,9 +159,15 @@ async function settleOps(
       }
     })
   );
-  const lost = statuses.some((s) => LOST_OP_STATUSES.has(s));
+  const failedOps = ops.filter((_, i) => LOST_OP_STATUSES.has(statuses[i]));
+  const lost = failedOps.length > 0;
   const open = ops.filter((_, i) => !["completed", "not_found"].includes(statuses[i]));
-  return { cursor: lost ? { ...cursor, dirty: true } : cursor, ops: lost ? [] : open };
+  // Only a confirmed terminal failure changes identity. Persist the new salt on
+  // the same cursor claim so an ambiguous transport retry reuses it unchanged.
+  const recoveryId = lost
+    ? uuidV5(`${cursor.recoveryId ?? ""}\n${failedOps.join("\n")}`)
+    : cursor.recoveryId;
+  return { cursor: lost ? { ...cursor, dirty: true, recoveryId } : cursor, ops: lost ? [] : open };
 }
 
 /** Retry window for a caller that did not supply one — a long-lived host with no external clock. */
@@ -360,8 +366,9 @@ async function writeSession(
 
   /** Identity of ONE payload: a resubmission of the same bytes is collapsed server-side into the
    *  original operation instead of extracting (or appending) twice. */
+  const recoveryId = cursor?.bank === client.bank ? cursor.recoveryId : undefined;
   const opId = (mode: string, content: string) =>
-    uuidV5(`${client.bank}\n${refId}\n${mode}\n${content}`);
+    uuidV5(`${client.bank}\n${refId}\n${mode}\n${content}${recoveryId ? `\n${recoveryId}` : ""}`);
   const submit = (content: string, operationId: string, append: boolean) =>
     client.retain(
       content,
@@ -400,6 +407,7 @@ async function writeSession(
     turns: turns.length,
     fingerprint: fingerprintTurns(turns, turns.length),
     bank: client.bank,
+    ...(recoveryId ? { recoveryId } : {}),
     ...(paths ? { paths } : {}),
     ...(appendSupported ? { appendSupported: true } : {}),
   };

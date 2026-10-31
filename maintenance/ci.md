@@ -234,3 +234,11 @@ intentional fork infrastructure policy, not upstream deployment ownership.
   residual risk. This repair changes no workflows, protection settings, or
   runtime behavior.
 
+
+
+The v1.1.0 repair also registers `test_mental_model_delta_gate.py` and
+`test_reflect_decision_orchestrated.py` in the retained-patch gate. Keep the
+config-reader and store-table architecture guards registered alongside private
+reads. Their intended boundaries remain unchanged: dynamic extension namespace
+reads belong to the loader, and built-in SQL retriever type checks belong to the
+Postgres store. Do not exempt the generic callers to silence these guards.

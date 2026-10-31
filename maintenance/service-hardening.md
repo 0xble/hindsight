@@ -218,3 +218,40 @@ The fork-only normalized-observation index revision `e6f7a8b9c0d1` was introduce
   only, never a database status reset or runtime restart.
 
 Run the API-local regression commands from `hindsight-api-slim`.
+
+
+## v1.1.0 Decision And Provider Boundaries
+
+The delta-refresh decision gate must AND the current caller's forced tag groups
+with the stored page filter before listing candidates. Neither decision-model
+input nor dry-run `based_on` may contain evidence outside that intersection.
+The gate keeps its existing opt-out, cap and decision-failure fallback to reflect.
+Reflect round consumers must use native `_TimedToolResult` objects, retaining
+`duration_ms` during pruning and lower-layer hiding, and passing through errors
+and failed-pruning results unchanged.
+
+The LLM request extension applies its existing credential-header policy to
+configured headers in `extra_body` as well as provider defaults. LiteLLM promotes
+`extra_headers` and `headers` into effective request headers. Credential-bearing
+`headers` must be refused with a tenant key because that alias is not rebound by
+the provider's per-request `extra_headers` override. Harmless headers remain valid,
+and refusal messages contain header names only.
+
+Failed delta edits use `_preserve_and_fail`, `update_mental_model`, and the
+existing failure-history writer. Keep persistence assertions for both
+`refresh_skipped` and `outcome`, with previous content and refresh watermarks
+preserved. No public schema changes are needed for these adaptations.
+
+From `hindsight-api-slim`, qualify through the existing heavy-work admission:
+
+```bash
+heavy-slot --label hindsight-v110-decisions -- uv run --frozen --extra all pytest -n 1 tests/test_mental_model_delta_gate.py tests/test_reflect_decision_orchestrated.py tests/test_refresh_outcome_metadata.py tests/test_llm_request_extension.py
+```
+
+The single xdist worker owns a uniquely named disposable pg0 instance, selects
+a free port and drops the instance at teardown.
+Source probes do not replace this test boundary or authorize runtime adoption.
+
+The retained-label no-op regression uses the engine's database adapter pool for
+store calls, not the legacy raw asyncpg pool. Preserve its tag and `updated_at`
+assertions, including the real relabel operation, when adopting store interfaces.

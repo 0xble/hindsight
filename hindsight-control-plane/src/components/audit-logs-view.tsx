@@ -43,6 +43,8 @@ function getActionOptions(t: TranslateFn) {
     { value: "recall", label: t("actionRecall") },
     { value: "reflect", label: t("actionReflect") },
     { value: "update_memory", label: t("actionUpdateMemory") },
+    { value: "apply_curation_batch", label: t("actionApplyCurationBatch") },
+    { value: "revert_curation_batch", label: t("actionRevertCurationBatch") },
     { value: "clear_memories", label: t("actionClearMemories") },
     { value: "update_document", label: t("actionUpdateDocument") },
     { value: "delete_document", label: t("actionDeleteDocument") },

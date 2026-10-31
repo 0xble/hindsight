@@ -1438,6 +1438,8 @@
     "actionMemoryDefense": "Defensa de memoria",
     "actionFileRetain": "Subir archivo",
     "actionUpdateMemory": "Actualizar memoria",
+    "actionApplyCurationBatch": "Aplicar lote de revisión",
+    "actionRevertCurationBatch": "Revertir lote de revisión",
     "actionUpdateDocument": "Actualizar documento",
     "actionDeleteDocument": "Eliminar documento",
     "actionReprocessDocument": "Reprocesar documento",

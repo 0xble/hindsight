@@ -134,6 +134,10 @@ and Rust `tests/operation_enum_collisions.rs`/`tests/curation_fields.rs`.
 
 ## Verification And Retirement
 
+Keep `apply_curation_batch` and `revert_curation_batch` available in the control
+plane audit filter, with matching labels in every supported locale. The gate's
+`tests/test_audit_log.py` checks every audited HTTP action against that filter.
+
 Run `tests/test_curation_batch.py`, migration-shape, admin backup/restore and
 bank-transfer schema coverage. Run system story
 `tests/test_18_raw_curation_batches.py` through the published Python client,

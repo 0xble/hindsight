@@ -1438,6 +1438,8 @@
     "actionMemoryDefense": "Speicherschutz",
     "actionFileRetain": "Datei hochladen",
     "actionUpdateMemory": "Erinnerung aktualisieren",
+    "actionApplyCurationBatch": "Kurationsstapel anwenden",
+    "actionRevertCurationBatch": "Kurationsstapel rückgängig machen",
     "actionUpdateDocument": "Dokument aktualisieren",
     "actionDeleteDocument": "Dokument löschen",
     "actionReprocessDocument": "Dokument neu verarbeiten",

@@ -1438,6 +1438,8 @@
     "actionMemoryDefense": "記憶防護",
     "actionFileRetain": "上載檔案",
     "actionUpdateMemory": "更新記憶",
+    "actionApplyCurationBatch": "套用整理批次",
+    "actionRevertCurationBatch": "還原整理批次",
     "actionUpdateDocument": "更新文件",
     "actionDeleteDocument": "刪除文件",
     "actionReprocessDocument": "重新處理文件",

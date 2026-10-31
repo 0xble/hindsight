@@ -154,7 +154,13 @@ async def fold_sources_into_observation(
     stays representative and avoids a re-embed + a dialect-specific vector UPDATE). False when
     the row vanished or was rewritten since ``expected_text`` was read.
     """
-    # Oracle-safe: _native_search_vector_update emits the to_tsvector clause only for a
+    from ...schema import _is_oracle
+
+    # Oracle stores sources in observation_sources, not PG arrays. Declining the
+    # optimization leaves the caller's normal rewrite/insert and source fences intact.
+    if _is_oracle():
+        return False
+    # _native_search_vector_update emits the to_tsvector clause only for a
     # native PG tsvector column, "" otherwise (see #3021 — the raw ::regconfig cast
     # breaks Oracle). RETURNING-gate on the twin's probe-time text so a concurrent
     # survivor rewrite during the connection-free LLM window can't be clobbered.
@@ -201,6 +207,10 @@ async def fold_observation_into_twin(
     False when there is nothing to fold (the observation or all its sources are gone) or either
     row was rewritten since it was read. The caller deletes the folded observation.
     """
+    from ...schema import _is_oracle
+
+    if _is_oracle():
+        return False
     # Snapshot the updated row's sources with a PLAIN read (no FOR UPDATE). Lock order
     # must be sources-before-observation: the liveness check below takes
     # FOR SHARE on the SOURCE rows first, then the fold UPDATE locks the observation

@@ -20,7 +20,6 @@ from anthropic import AsyncAnthropic
 from openai import AsyncOpenAI
 
 from hindsight_api.config import LLM_STRATEGY_FAILOVER, LLMMemberConfig, LLMStrategyConfig
-
 from hindsight_api.engine.llm_interface import PromptCachePrefix
 from hindsight_api.engine.llm_wrapper import LLMProvider
 from hindsight_api.engine.memory_engine import _current_schema
@@ -678,3 +677,60 @@ def test_engine_refuses_batch_retain_with_the_extension():
     with pytest.raises(RuntimeError, match="not compatible with HINDSIGHT_API_RETAIN_BATCH_ENABLED"):
         _build_engine(_engine_env(HINDSIGHT_API_RETAIN_BATCH_ENABLED="true"))
     assert installed_llm_request_extension() is None
+
+
+@pytest.mark.parametrize("header", ["Authorization", "x-api-key", "x-proxy-token"])
+async def test_extra_body_credential_headers_cannot_shadow_tenant_key(install, header):
+    install(LLMRequestOverrides(api_key="tenant-secret"))
+    llm = LLMProvider(
+        provider="litellm",
+        api_key="server-secret",
+        base_url="",
+        model="openai/m",
+        extra_body={"extra_headers": {header: "server-header-secret", "x-trace": "trace"}},
+    )
+    with pytest.raises(LLMRequestRefused) as exc:
+        await bind_llm_request(llm)
+    assert header in str(exc.value)
+    assert all(secret not in str(exc.value) for secret in ("tenant-secret", "server-secret", "server-header-secret"))
+
+
+@pytest.mark.parametrize("rebind", [False, True])
+async def test_extra_body_harmless_headers_and_explicit_rebinding(install, rebind):
+    headers = {"x-trace": "trace"}
+    if rebind:
+        headers["Authorization"] = "Bearer server"
+    install(LLMRequestOverrides(api_key="tenant", headers={"Authorization": "Bearer tenant"} if rebind else {}))
+    llm = LLMProvider(
+        provider="litellm",
+        api_key="server",
+        base_url="",
+        model="openai/m",
+        extra_body={"extra_headers": headers},
+    )
+    bound = await bind_llm_request(llm)
+    try:
+        kwargs = llm._provider_impl._build_common_kwargs(messages=[])
+        assert kwargs["api_key"] == "tenant"
+        assert kwargs["extra_headers"]["x-trace"] == "trace"
+        if rebind:
+            assert kwargs["extra_headers"]["Authorization"] == "Bearer tenant"
+    finally:
+        bound.reset()
+    assert llm._provider_impl._build_common_kwargs(messages=[])["api_key"] == "server"
+
+
+@pytest.mark.parametrize("explicit_header", [False, True])
+async def test_extra_body_headers_alias_cannot_shadow_tenant_key(install, explicit_header):
+    install(
+        LLMRequestOverrides(api_key="tenant", headers={"Authorization": "Bearer tenant"} if explicit_header else {})
+    )
+    llm = LLMProvider(
+        provider="litellm",
+        api_key="server",
+        base_url="",
+        model="openai/m",
+        extra_body={"headers": {"Authorization": "Bearer server"}},
+    )
+    with pytest.raises(LLMRequestRefused, match="Authorization"):
+        await bind_llm_request(llm)

@@ -237,6 +237,47 @@ describe("retainLiveSession — incremental write-back", () => {
   const write = (client: HindsightClient, turnList: TransportTurn[], cursors: RetainCursorStore) =>
     retainLiveSession(client, "s1", turnList, "2026-01-01T00:00:00Z", "codex", { cursors });
 
+  it.each(["failed", "cancelled", "error"])(
+    "recovers unchanged content after repeated confirmed %s operations",
+    async (failure) => {
+      const { retain, client } = stubClient();
+      let status = failure;
+      Object.assign(client, {
+        bankUrl: (s: string) => s,
+        req: vi.fn(async () => new Response(JSON.stringify({ status }))),
+      });
+      const cursors = memoryCursorStore();
+      const ids: string[] = [];
+      for (let attempt = 0; attempt < 3; attempt++) {
+        await write(client, turns(2), cursors);
+        ids.push(retain.mock.calls[attempt][5].operationId);
+        expect(retain.mock.calls[attempt][0]).toBe(retain.mock.calls[0][0]);
+      }
+      expect(new Set(ids).size).toBe(3);
+      status = "completed";
+      await write(client, turns(2), cursors);
+      expect(retain).toHaveBeenCalledTimes(3);
+      await write(client, turns(3), cursors);
+      expect(retain.mock.calls[3][5].updateMode).toBe("append");
+    }
+  );
+
+  it("keeps a recovery identity through ambiguous replace transport failures", async () => {
+    const { retain, client } = stubClient();
+    Object.assign(client, {
+      bankUrl: (s: string) => s,
+      req: vi.fn(async () => new Response(JSON.stringify({ status: "failed" }))),
+    });
+    const cursors = memoryCursorStore();
+    await write(client, turns(2), cursors);
+    retain.mockRejectedValueOnce(new Error("response lost"));
+    await expect(write(client, turns(2), cursors)).rejects.toThrow("response lost");
+    const recovery = retain.mock.calls[1][5].operationId;
+    expect(recovery).not.toBe(retain.mock.calls[0][5].operationId);
+    await write(client, turns(2), cursors);
+    expect(retain.mock.calls[2][5].operationId).toBe(recovery);
+  });
+
   it("replaces when an accepted write's operation later failed (#5251)", async () => {
     const status = new Map<string, string>();
     const { retain, client } = stubClient();

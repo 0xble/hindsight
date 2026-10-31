@@ -187,6 +187,7 @@ async def test_directives_reach_the_gated_edit(memory, request_context, gated):
 async def test_a_failed_gated_edit_says_why(memory, request_context, gated, monkeypatch):
     """The gate leaves no reflect candidate, so a failed edit must not read as "empty content"."""
     page = await _page_with_new_memories(memory, request_context)
+    before = await memory.get_mental_model(page.bank_id, page.mm_id, request_context=request_context)
 
     async def boom(*, messages, **kwargs):
         raise RuntimeError("simulated provider 500")
@@ -202,6 +203,9 @@ async def test_a_failed_gated_edit_says_why(memory, request_context, gated, monk
     )
     assert preserved["content"] == "# Preferences\n\nThe user prefers concise answers.\n"
     assert preserved["reflect_response"]["refresh_skipped"] == "delta_ops_failed"
+    assert preserved["reflect_response"]["outcome"] == "refresh_failed_delta_not_applied"
+    assert preserved["last_refreshed_at"] == before["last_refreshed_at"]
+    assert preserved["last_memory_seen_at"] == before["last_memory_seen_at"]
 
 
 async def test_the_store_lists_new_memories_in_the_page_scope(memory: MemoryEngine, request_context):
@@ -252,3 +256,48 @@ async def test_the_store_lists_new_memories_in_the_page_scope(memory: MemoryEngi
 
         assert await listed() == ["oldest in window", "newer in window", "newest in window"]
         assert await listed(limit=2) == ["oldest in window", "newer in window"]
+
+
+async def test_dry_run_gate_intersects_caller_and_page_scopes(memory, request_context, gated, monkeypatch):
+    from hindsight_api.engine.search.tags import TagGroupLeaf
+    from tests.test_tag_scope import _ScopeByApiKey
+
+    page = await _page_with_new_memories(memory, request_context)
+    await memory.update_mental_model(
+        page.bank_id,
+        page.mm_id,
+        tags=["page", "caller"],
+        trigger={"mode": "delta", "tag_groups": [{"tags": ["page"], "match": "all_strict"}]},
+        request_context=request_context,
+    )
+    async with memory._pool.acquire() as conn:
+        await conn.execute(
+            "UPDATE memory_units SET tags = CASE WHEN text = $2 THEN ARRAY['page','caller'] "
+            "ELSE ARRAY['page','other'] END::varchar[] WHERE bank_id = $1",
+            page.bank_id,
+            RELEVANT,
+        )
+        await conn.execute(
+            "INSERT INTO memory_units (id, bank_id, text, fact_type, tags, created_at, updated_at) "
+            "VALUES ($1, $2, 'Caller fact outside page', 'world', ARRAY['caller']::varchar[], "
+            "NOW() - INTERVAL '2 minutes', NOW() - INTERVAL '2 minutes')",
+            uuid.uuid4(),
+            page.bank_id,
+        )
+    scope = [TagGroupLeaf(tags=["caller"], match="all_strict")]
+    monkeypatch.setattr(memory, "_operation_validator", _ScopeByApiKey({"scoped": scope}))
+    memory._reflect_decision_model_client.could_change_page.side_effect = None
+    memory._reflect_decision_model_client.could_change_page.return_value = True
+
+    preview = await memory.dry_run_refresh_mental_model(
+        page.bank_id, page.mm_id, request_context=RequestContext(api_key="scoped")
+    )
+
+    decision_inputs = [call.args[2] for call in memory._reflect_decision_model_client.could_change_page.await_args_list]
+    assert decision_inputs == [RELEVANT]
+    assert RELEVANT in str(preview.based_on)
+    assert UNRELATED not in str(preview.based_on)
+    assert "Caller fact outside page" not in str(preview.based_on)
+    assert UNRELATED not in str(gated.llm)
+    assert "Caller fact outside page" not in str(gated.llm)
+    assert gated.reflect == []

@@ -17,3 +17,25 @@ Part of the root [maintenance contract](../MAINTENANCE.md).
 - **Scope-count qualification (v0.10.3):** Store-routed observation counts use `tags_match="all_strict"`, matching the SQL branch's `tags @> $2` containment instead of charging global/untagged observations against a tagged scope. Preserve pagination and all-tag containment (not exact-set equality); an empty requested tag list still matches all observations, as SQL containment of an empty array does. `test_store_observation_count_matches_sql_containment` covers Oracle and external-store routing, single/multi/empty tag sets, untagged rows, supersets, unrelated scopes and multiple scan pages. `test_store_owned_source_liveness_uses_store_lock_boundary` proves external native fences are not bypassed. The tagged-scope count cases are red on `aa7d9724f` (4 failures; empty-scope controls pass) and all 6 cases pass after the strict-mode correction; the external-fence regression is independently red/green.
 - **Rollback:** Revert only the source-read/source-fence routing corrections, strict scope count, their regressions, shared lock-order changes and this record; retain the broader Oracle SQL-dialect routing required by the fork contract.
 - **Retire when:** The fork no longer carries the Oracle SQL-dialect adaptation or an upstream replacement preserves both SQL-backed connection ownership and the required Oracle routing behavior.
+
+
+## v1.1.0 Duplicate Fold Adaptation
+
+The SQL store's new source-fold helpers use PostgreSQL arrays. Oracle stores
+those relationships in `observation_sources`, so both helpers decline the
+optimization before reading or updating array columns. The caller retains its
+normal semantic rewrite/insert path. For merged-away evidence, a declined fold
+requeues the live sources on the same caller connection, preserving coverage and
+transaction rollback. Keep the existing ordered Oracle source fences.
+
+From `hindsight-api-slim`, run:
+
+```bash
+heavy-slot --label hindsight-v110-fold-routing -- uv run --frozen --extra all pytest -n 1 tests/test_consolidation_fold_fallback.py tests/test_consolidation_scope_parallelism.py tests/test_consolidation_deadlock_order.py tests/test_consolidation_dedup.py
+```
+
+The single xdist worker owns a uniquely named disposable pg0 instance on a free
+port and drops it at teardown. The fold matrix covers no array SQL on Oracle, PostgreSQL folding, and requeueing
+on the caller's connection. This is dialect-routing evidence, not a live Oracle
+qualification. Retire the bypass when the store implements an Oracle-native fold
+that preserves the same sources, fences and transaction.

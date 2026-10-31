@@ -92,6 +92,14 @@ if TYPE_CHECKING:  # pragma: no cover - typing only
 logger = logging.getLogger(__name__)
 
 
+def require_private_graph_retriever(retriever: GraphRetriever) -> None:
+    """Keep the built-in SQL retriever's private-read check inside its store."""
+    from ..private_reads import require_private_component
+    from .pg.link_expansion import LinkExpansionRetriever
+
+    require_private_component(retriever, (LinkExpansionRetriever,))
+
+
 class PostgresMemories(MemoriesExtension):
     """Memories in `memory_units`, links in `memory_links` / `unit_entities`."""
 

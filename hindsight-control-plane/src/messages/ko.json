@@ -1438,6 +1438,8 @@
     "actionMemoryDefense": "메모리 방어",
     "actionFileRetain": "파일 업로드",
     "actionUpdateMemory": "메모리 업데이트",
+    "actionApplyCurationBatch": "큐레이션 배치 적용",
+    "actionRevertCurationBatch": "큐레이션 배치 되돌리기",
     "actionUpdateDocument": "문서 업데이트",
     "actionDeleteDocument": "문서 삭제",
     "actionReprocessDocument": "문서 재처리",

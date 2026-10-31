@@ -87,10 +87,9 @@ def get_default_graph_retriever() -> GraphRetriever:
     from ...private_reads import is_private_read
 
     if is_private_read():
-        from ..memories.pg.link_expansion import LinkExpansionRetriever
-        from ..private_reads import require_private_component
+        from ..memories.postgres import require_private_graph_retriever
 
-        require_private_component(_default_graph_retriever, (LinkExpansionRetriever,))
+        require_private_graph_retriever(_default_graph_retriever)
     return _default_graph_retriever
 
 

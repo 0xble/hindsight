@@ -149,6 +149,8 @@ PATCH_REGRESSIONS=(
   tests/test_consolidation_failure_isolation.py
   tests/test_consolidation_prompt_budget.py
   tests/test_refresh_outcome_metadata.py
+  tests/test_mental_model_delta_gate.py
+  tests/test_reflect_decision_orchestrated.py
   tests/test_bank_template_full_roundtrip.py
   tests/test_hierarchical_config.py
   tests/test_file_preservation_policy.py
@@ -216,6 +218,11 @@ PATCH_REGRESSIONS=(
   tests/test_delete_missing_bank_store_owned.py
   tests/test_list_banks_ordered_page.py
   tests/test_memories_extension.py
+  tests/test_config_is_the_only_env_reader.py
+  tests/test_store_table_boundary.py
+  tests/test_audit_log.py
+  tests/test_bank_validator_coverage.py
+  tests/test_retain_tag_change_observations.py
 )
 
 OFFLINE_MARKERS="not oracle and not hs_llm_mat and not hs_llm_core and not integration and not slow"

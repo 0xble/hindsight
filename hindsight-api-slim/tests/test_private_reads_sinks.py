@@ -10,7 +10,7 @@ import queue
 import threading
 from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor
 from datetime import datetime, timezone
-from unittest.mock import AsyncMock, Mock
+from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
 from opentelemetry import trace
@@ -324,6 +324,49 @@ async def test_native_model_initialization_workers_inherit_policy(monkeypatch, b
             await owner._initialize_member(0)
         await owner._initialize_member(0)
     assert seen == [True, False]
+
+
+def test_private_memory_extension_rejects_before_import_but_public_loads(monkeypatch):
+    from hindsight_api.engine import memories
+    from hindsight_api.extensions import loader
+    from tests.test_memories_extension import InMemoryMemories
+
+    monkeypatch.setenv("HINDSIGHT_API_MEMORIES_EXTENSION", "tests.test_memories_extension:InMemoryMemories")
+    with patch.object(loader, "_resolve_extension_class", side_effect=AssertionError("must not import")):
+        with private_read_scope(), pytest.raises(PrivateReadUnsupportedError):
+            memories.create_memories()
+    assert type(memories.create_memories()) is InMemoryMemories
+
+
+@pytest.mark.parametrize("extension_path", [None, ""])
+def test_private_memory_store_without_extension_uses_postgres(monkeypatch, extension_path):
+    from hindsight_api.engine import memories
+    from hindsight_api.engine.memories.postgres import PostgresMemories
+
+    if extension_path is None:
+        monkeypatch.delenv("HINDSIGHT_API_MEMORIES_EXTENSION", raising=False)
+    else:
+        monkeypatch.setenv("HINDSIGHT_API_MEMORIES_EXTENSION", extension_path)
+    with private_read_scope():
+        assert type(memories.create_memories()) is PostgresMemories
+
+
+def test_private_graph_retriever_accepts_builtin_but_rejects_subclass(monkeypatch):
+    from hindsight_api.engine.memories.pg.link_expansion import LinkExpansionRetriever
+    from hindsight_api.engine.search import retrieval
+
+    class CustomRetriever(LinkExpansionRetriever):
+        pass
+
+    builtin = LinkExpansionRetriever()
+    custom = CustomRetriever()
+    monkeypatch.setattr(retrieval, "_default_graph_retriever", builtin)
+    with private_read_scope():
+        assert retrieval.get_default_graph_retriever() is builtin
+    monkeypatch.setattr(retrieval, "_default_graph_retriever", custom)
+    with private_read_scope(), pytest.raises(PrivateReadUnsupportedError):
+        retrieval.get_default_graph_retriever()
+    assert retrieval.get_default_graph_retriever() is custom
 
 
 def test_private_opaque_store_and_graph_retriever_are_never_invoked(monkeypatch):
