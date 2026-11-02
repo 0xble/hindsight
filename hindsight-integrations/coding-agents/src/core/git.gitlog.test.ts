@@ -20,6 +20,8 @@ function initRepo(d: string): void {
   execFileSync("git", ["-C", d, "init", "-q"]);
   execFileSync("git", ["-C", d, "config", "user.email", "test@example.com"]);
   execFileSync("git", ["-C", d, "config", "user.name", "Test User"]);
+  // Disposable repositories have no project hooks and must not inherit user hooks.
+  execFileSync("git", ["-C", d, "config", "core.hooksPath", ""]);
 }
 
 function commit(d: string, message: string): void {

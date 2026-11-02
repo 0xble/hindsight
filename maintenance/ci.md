@@ -85,6 +85,10 @@ intentional fork infrastructure policy, not upstream deployment ownership.
   requirement for this run.
   The Go client selector includes all `TestOperationResponseDetails` cases,
   including direct-null and invalid-discriminator coverage.
+  Released store fixtures construct `PostgresMemories` with an instance name and
+  use the backend connection adapter for store scans requiring `parse_json`.
+  Coding-agent Git-log fixtures disable inherited hooks only in their disposable
+  repositories, preserving production hooks and bounded-log assertions.
   Test sessions and every `bin/ci` profile refuse production port 5436 and
   protected test port 5556 before native migrations or connections, including
   Unix-domain PostgreSQL socket paths. Preserve `scripts/ci/test_db_guard.py`,
