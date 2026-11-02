@@ -42,6 +42,11 @@ retries. The existing retain cursor carries a recovery salt rotated only from
 confirmed failed operation IDs, through the dirty claim and accepted write.
 Repeated terminal failures rotate again. No parallel recovery store is needed.
 
+Keep the no-cursor path valid for clients without a bank field as well as normal
+bank-scoped clients. Guard the cursor before reading its recovery identity.
+Existing chat, retain-hook, runtime, and journal harness tests cover this path
+alongside confirmed-failure recovery and idempotent resubmission.
+
 From `hindsight-integrations/coding-agents`, run:
 
 ```bash

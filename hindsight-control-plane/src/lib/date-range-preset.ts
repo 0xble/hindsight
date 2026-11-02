@@ -72,19 +72,18 @@ function toIsoOrNull(value: string): string | null {
   return Number.isNaN(parsed.getTime()) ? null : parsed.toISOString();
 }
 
+const PRESET_HOURS = new Map([
+  ["1h", 1],
+  ["1d", 24],
+  ["7d", 7 * 24],
+  ["30d", 30 * 24],
+]);
+
 export function resolveDateRangePreset(range: string, now: Date = new Date()): DateRangeBounds {
-  if (range === "all") return {};
-  // "custom" carries its bounds in its own inputs, not in the preset.
-  if (range === "custom") return {};
+  const hours = PRESET_HOURS.get(range);
+  // All-time, custom, and unknown presets supply no lower bound here.
+  if (hours === undefined) return {};
 
-  const start = new Date(now);
-  if (range === "1h") start.setHours(now.getHours() - 1);
-  else if (range === "1d") start.setDate(now.getDate() - 1);
-  else if (range === "7d") start.setDate(now.getDate() - 7);
-  else if (range === "30d") start.setDate(now.getDate() - 30);
-  // An unknown preset falls through with `start` still at `now`, which would be
-  // an empty window — treat it as no filter instead, the way "all" does.
-  else return {};
-
-  return { start_date: start.toISOString() };
+  // These are elapsed intervals, not local calendar shifts across daylight saving.
+  return { start_date: new Date(now.getTime() - hours * 60 * 60 * 1000).toISOString() };
 }

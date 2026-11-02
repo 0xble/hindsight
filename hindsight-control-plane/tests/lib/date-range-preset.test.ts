@@ -9,7 +9,15 @@ import { resolveCustomRange, resolveDateRangePreset } from "@/lib/date-range-pre
  * preset that silently resolved to `now` would return nothing at all and look
  * like an empty bank.
  */
-describe("resolveDateRangePreset", () => {
+describe.each(["UTC", "America/Los_Angeles"])("resolveDateRangePreset in %s", (timezone) => {
+  const original = process.env.TZ;
+  beforeAll(() => {
+    process.env.TZ = timezone;
+  });
+  afterAll(() => {
+    if (original === undefined) delete process.env.TZ;
+    else process.env.TZ = original;
+  });
   const now = new Date("2026-03-15T12:00:00.000Z");
 
   it("sends no bounds for the all-time preset", () => {
@@ -23,6 +31,14 @@ describe("resolveDateRangePreset", () => {
     ["30d", "2026-02-13T12:00:00.000Z"],
   ])("subtracts the interval %s names", (preset, expected) => {
     expect(resolveDateRangePreset(preset, now).start_date).toBe(expected);
+  });
+
+  it.each([
+    ["1h", "2026-11-01T09:30:00.000Z", "2026-11-01T08:30:00.000Z"],
+    ["1d", "2026-03-08T12:00:00.000Z", "2026-03-07T12:00:00.000Z"],
+    ["7d", "2026-03-09T12:00:00.000Z", "2026-03-02T12:00:00.000Z"],
+  ])("keeps %s an elapsed interval across clock changes", (preset, instant, expected) => {
+    expect(resolveDateRangePreset(preset, new Date(instant)).start_date).toBe(expected);
   });
 
   it("never sets an upper bound — the presets all mean 'since then'", () => {
@@ -99,7 +115,8 @@ describe("resolveCustomRange", () => {
       process.env.TZ = "America/Los_Angeles";
     });
     afterAll(() => {
-      process.env.TZ = original;
+      if (original === undefined) delete process.env.TZ;
+      else process.env.TZ = original;
     });
 
     it("judges the range by the instants it sends, not by the typed text", () => {

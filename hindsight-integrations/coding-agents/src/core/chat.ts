@@ -366,7 +366,7 @@ async function writeSession(
 
   /** Identity of ONE payload: a resubmission of the same bytes is collapsed server-side into the
    *  original operation instead of extracting (or appending) twice. */
-  const recoveryId = cursor?.bank === client.bank ? cursor.recoveryId : undefined;
+  const recoveryId = cursor && cursor.bank === client.bank ? cursor.recoveryId : undefined;
   const opId = (mode: string, content: string) =>
     uuidV5(`${client.bank}\n${refId}\n${mode}\n${content}${recoveryId ? `\n${recoveryId}` : ""}`);
   const submit = (content: string, operationId: string, append: boolean) =>

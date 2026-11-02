@@ -242,3 +242,20 @@ config-reader and store-table architecture guards registered alongside private
 reads. Their intended boundaries remain unchanged: dynamic extension namespace
 reads belong to the loader, and built-in SQL retriever type checks belong to the
 Postgres store. Do not exempt the generic callers to silence these guards.
+
+### UI Time Presets
+
+Keep `hindsight-control-plane/src/lib/date-range-preset.ts` presets as elapsed
+intervals, including the named 24-hour preset, across daylight-saving changes.
+The released local-calendar setters can shift a bound by 1 hour. Do not hide
+that source defect by running the existing fixed-instant assertions only in UTC.
+The native `tests/lib/date-range-preset.test.ts` covers UTC and
+`America/Los_Angeles`, spring-forward and fall-back intervals, unchanged inputs,
+unknown presets, and the separate local-time semantics of custom inputs.
+
+Run `npm test --workspace @vectorize-io/hindsight-control-plane` when qualifying
+this source. Retire the elapsed-interval adjustment only when a selected stable
+upstream release passes these same regressions in both zones. The introducing
+[upstream contribution](https://github.com/vectorize-io/hindsight/pull/4515) is
+merged, closed, and owned by an upstream maintainer, so it is not an authorized
+contributor head for this job to update.
