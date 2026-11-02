@@ -42,5 +42,9 @@ the v1.1.0 release and does not retire this fork boundary or widen its budgets.
 - **Update/retire:** Compare upstream fail-fast and provider-attempt changes before
   porting. Retire only when an upstream equivalent preserves all bounds and
   references/language/topology checks, or when correction is explicitly withdrawn.
+  The fork intentionally retains per-source recall topology for UPDATE admission,
+  unlike v1.1.0's pooled recall. Both reference filtering and write preparation
+  enforce it. Valid siblings commit, while facts cited only by dropped actions
+  remain pending for bounded retry, never silently stamped consolidated.
   Rollback removes only these correction surfaces and this record; never reset
   failed facts or replay previously committed consolidation writes.

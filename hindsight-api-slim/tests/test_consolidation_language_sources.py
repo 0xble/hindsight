@@ -466,6 +466,8 @@ def test_untargeted_updates_are_dropped_but_delete_targets_still_reject() -> Non
         per_fact_observation_ids={"A": set(), "B": {"O"}},
     )
     assert dropped_for_sources.dropped == {"update_target_not_recalled_for_sources": 1}
+    assert consolidator._update_recalled_for_sources("O", ["B"], {"A": set(), "B": {"O"}})
+    assert not consolidator._update_recalled_for_sources("O", ["A"], {"A": set(), "B": {"O"}})
     assert [action.text for action in dropped_for_sources.response.creates] == ["valid"]
     assert dropped_for_sources.pending_fact_ids == {"A"}
     assert not dropped_for_sources.must_reject

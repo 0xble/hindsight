@@ -36,6 +36,13 @@ memory extensions before import or construction, without adding a second config
 parser or importing store SQL modules from generic retrieval. The exact-type
 check must continue to reject custom retrievers and subclasses.
 
+The v1.1.0 LLM-request extension is an opaque operator callback and is rejected
+before receiving private input. Decision-model reranking remains explicitly
+unsupported for private reads until its inference and diagnostic sinks are
+qualified. A configured decision-model reranker fails closed with HTTP 503 and no
+private-read acknowledgement, rather than silently switching to another model.
+Public reads keep their released behavior.
+
 ## Verify
 
 The repository-owned `./bin/ci gate <exact-40-hex-HEAD-SHA>` registers the private
@@ -54,6 +61,12 @@ scripted providers through the published Python client:
 ```bash
 uv run --frozen pytest tests/test_98_private_reads.py
 ```
+
+The v1.1.0 reflect operation also persists child spans such as rerank,
+embedding and tool calls. The real-client story snapshots a stable public
+trace total after every query-bearing provider call, its fact and its `done`
+tool call have landed. A private read must leave that total unchanged and must
+not appear in any row. The following public reflect must increase it.
 
 The v1.1.0 engine harness stubs `_bank_freshness`, the released internal read
 used after reflect authenticates, rather than the public `get_bank_freshness`

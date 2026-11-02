@@ -24,6 +24,7 @@ import math
 import time
 import uuid
 from collections import defaultdict
+from collections.abc import Iterable
 from contextlib import AsyncExitStack
 from dataclasses import asdict, dataclass, field, replace
 from datetime import datetime, timezone
@@ -1318,6 +1319,19 @@ class _ReferenceFilterResult:
         )
 
 
+def _update_recalled_for_sources(
+    observation_id: str,
+    source_ids: Iterable[str],
+    topology: dict[str, set[str]],
+) -> bool:
+    """True when this observation was recalled for at least one cited source.
+
+    Pooled sibling recall is not enough. The reference filter and write
+    preparation both use this predicate so a merge cannot relax only one side.
+    """
+    return any(str(observation_id) in topology.get(str(source_id), set()) for source_id in source_ids)
+
+
 def _filter_unpersistable_references(
     response: _ConsolidationBatchResponse,
     *,
@@ -1372,7 +1386,7 @@ def _filter_unpersistable_references(
             _drop("update_without_sources", action.source_fact_ids)
         elif not set(action.source_fact_ids).issubset(valid_fact_ids):
             _drop("update_cites_fact_outside_batch", action.source_fact_ids)
-        elif not any(action.observation_id in topology.get(fact_id, set()) for fact_id in action.source_fact_ids):
+        elif not _update_recalled_for_sources(action.observation_id, action.source_fact_ids, topology):
             _drop("update_target_not_recalled_for_sources", action.source_fact_ids)
         else:
             updates.append(action)
@@ -3707,11 +3721,15 @@ async def _process_memory_batch(
         if not source_mems:
             _log_unresolved_action("update", update.source_fact_ids, update.text, perf)
             return None
-        # Security: the observation must be one the model was shown, the pooled recall already
-        # confined to this bank and scope, exactly as for a delete. Previously it also had to be
-        # recalled for one of the cited facts, but the model reads the whole pool: attaching a
-        # fact to an observation a sibling fact surfaced is legitimate, and rejecting it dropped
-        # the fact's evidence silently (it is stamped consolidated all the same).
+        # The fork intentionally retains source-relative recall admission. A pooled
+        # sibling observation alone does not authorize attaching this fact's evidence.
+        # Match the earlier reference filter rather than relaxing its accepted boundary.
+        if not _update_recalled_for_sources(update.observation_id, (m["id"] for m in source_mems), per_fact_obs_ids):
+            logger.debug(
+                "Update skipped: observation %s was not recalled for its cited sources",
+                update.observation_id,
+            )
+            return None
         model = next((m for m in union_observations if str(m.id) == update.observation_id), None)
         if model is None:
             logger.warning(

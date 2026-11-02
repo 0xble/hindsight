@@ -413,6 +413,43 @@ async def test_real_public_validator_scope_and_private_fail_closed(read_harness:
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("operation", ["recall", "reflect"])
+async def test_private_llm_request_extension_rejects_before_execution(read_harness: ReadHarness, operation: str):
+    h = read_harness
+    extension = AsyncMock()
+    h.engine._llm_request_extension = extension
+    app = create_app(h.engine, initialize_memory=False)
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://fixture") as client:
+        private = await client.post(_url(operation, True), json=_body(operation, PRIVATE_QUERY), headers=HEADERS)
+        assert private.status_code == 503
+        assert "X-Hindsight-Private-Read" not in private.headers
+        assert extension.mock_calls == []
+        public = await client.post(_url(operation, False), json=_body(operation, PUBLIC_QUERY), headers=HEADERS)
+        assert public.status_code == 200, public.text
+    await h.drain()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("operation", ["recall", "reflect"])
+async def test_private_decision_model_reranker_fails_closed(read_harness: ReadHarness, operation: str):
+    from hindsight_api.engine.search.reranking import DecisionModelReranker
+
+    h = read_harness
+    reranker = h.engine._cross_encoder_reranker
+    original = reranker.cross_encoder
+    reranker.cross_encoder = object.__new__(DecisionModelReranker)
+    app = create_app(h.engine, initialize_memory=False)
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://fixture") as client:
+        private = await client.post(_url(operation, True), json=_body(operation, PRIVATE_QUERY), headers=HEADERS)
+        assert private.status_code == 503
+        assert "X-Hindsight-Private-Read" not in private.headers
+        reranker.cross_encoder = original
+        public = await client.post(_url(operation, False), json=_body(operation, PUBLIC_QUERY), headers=HEADERS)
+        assert public.status_code == 200, public.text
+    await h.drain()
+
+
+@pytest.mark.asyncio
 async def test_private_opaque_tenant_and_http_extension_reject_before_execution(read_harness: ReadHarness):
     from hindsight_api.api.private_reads import PrivateReadMiddleware
 

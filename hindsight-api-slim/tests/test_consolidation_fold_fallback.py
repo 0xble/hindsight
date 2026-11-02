@@ -187,7 +187,7 @@ async def test_store_duplicate_folds_bypass_postgres_arrays_on_oracle(monkeypatc
         fetch=AsyncMock(),
         fetchval=AsyncMock(return_value=uuid.uuid4()),
     )
-    store = PostgresMemories("test-fold")
+    store = PostgresMemories({})
     common = dict(
         conn=conn,
         fq_table=fq_store_table,
@@ -240,7 +240,7 @@ async def test_oracle_declined_fold_requeues_live_sources_on_caller_connection(m
         source_memory_ids=[source], event_date=None, occurred_start=None, occurred_end=None, mentioned_at=None
     )
     target_id = str(uuid.uuid4())
-    store = PostgresMemories("test-fold")
+    store = PostgresMemories({})
     store.get_memories = AsyncMock(return_value=[SimpleNamespace(fact_type="observation", text="survivor")])
     store.mark_consolidated = AsyncMock()
     conn = SimpleNamespace(fetchval=AsyncMock(), fetchrow=AsyncMock(), fetch=AsyncMock())
