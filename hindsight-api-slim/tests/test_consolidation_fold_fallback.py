@@ -254,3 +254,51 @@ async def test_oracle_declined_fold_requeues_live_sources_on_caller_connection(m
     conn.fetchval.assert_not_awaited()
     conn.fetchrow.assert_not_awaited()
     conn.fetch.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.memory_backend_incompatible
+async def test_triage_restate_onto_sibling_recall_stays_pending(memory, request_context):
+    from hindsight_api.engine.consolidation.triage import TriageResult
+
+    bank = "topology-pending-" + uuid.uuid4().hex[:8]
+    await memory.ensure_bank_profile(bank, request_context=request_context)
+    async with memory._pool.acquire() as conn:
+        sibling = await _insert_memory(conn, bank, "Sibling source", [], "shared")
+        fresh = await _insert_memory(conn, bank, "Fresh source", [], "shared")
+        shown_id = str(uuid.uuid4())
+        await conn.execute(
+            "INSERT INTO memory_units (id,bank_id,text,fact_type) VALUES ($1,$2,'Original twin','observation')",
+            shown_id,
+            bank,
+        )
+        facts = [dict(await conn.fetchrow("SELECT * FROM memory_units WHERE id=$1", fid)) for fid in (sibling, fresh)]
+    shown = MemoryFact.model_construct(id=shown_id, text="Original twin", fact_type="observation", source_fact_ids=[])
+
+    async def recall(*_args, query, **_kwargs):
+        if query == "Sibling source":
+            return RecallResult.model_construct(results=[shown])
+        return RecallResult.model_construct(results=[])
+
+    triage = TriageResult(restates={str(fresh): shown_id}, chatter={str(sibling)})
+    with (
+        patch.object(c, "_find_related_observations", recall),
+        patch.object(c, "triage_model", lambda _config: object()),
+        patch.object(c, "triage_facts", AsyncMock(return_value=triage)),
+    ):
+        await c._process_memory_batch(
+            memory._pool,
+            memory,
+            None,
+            bank,
+            facts,
+            request_context,
+            config=replace(_get_raw_config(), enable_observations=True, enable_observation_history=False),
+            mark_consolidated_ids=[sibling, fresh],
+        )
+
+    async with memory._pool.acquire() as conn:
+        stamped = await conn.fetchval("SELECT consolidated_at FROM memory_units WHERE id = $1", fresh)
+        sources = await conn.fetchval("SELECT source_memory_ids FROM memory_units WHERE id = $1", shown_id)
+    assert stamped is None
+    assert str(fresh) not in {str(source) for source in (sources or [])}

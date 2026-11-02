@@ -431,6 +431,32 @@ async def test_private_llm_request_extension_rejects_before_execution(read_harne
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("operation", ["recall", "reflect"])
+async def test_private_process_wide_llm_request_extension_rejects_before_execution(
+    read_harness: ReadHarness, operation: str
+):
+    from hindsight_api.extensions.llm_request import install_llm_request_extension
+
+    h = read_harness
+    extension = AsyncMock()
+    h.engine._llm_request_extension = None
+    install_llm_request_extension(extension)
+    app = create_app(h.engine, initialize_memory=False)
+    try:
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://fixture") as client:
+            private = await client.post(_url(operation, True), json=_body(operation, PRIVATE_QUERY), headers=HEADERS)
+            assert private.status_code == 503
+            assert "X-Hindsight-Private-Read" not in private.headers
+            assert extension.mock_calls == []
+    finally:
+        install_llm_request_extension(None)
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://fixture") as client:
+        public = await client.post(_url(operation, False), json=_body(operation, PUBLIC_QUERY), headers=HEADERS)
+        assert public.status_code == 200, public.text
+    await h.drain()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("operation", ["recall", "reflect"])
 async def test_private_decision_model_reranker_fails_closed(read_harness: ReadHarness, operation: str):
     from hindsight_api.engine.search.reranking import DecisionModelReranker
 

@@ -1321,7 +1321,7 @@ class _ReferenceFilterResult:
 
 def _update_recalled_for_sources(
     observation_id: str,
-    source_ids: Iterable[str],
+    source_ids: Iterable[object],
     topology: dict[str, set[str]],
 ) -> bool:
     """True when this observation was recalled for at least one cited source.
@@ -3725,6 +3725,10 @@ async def _process_memory_batch(
         # sibling observation alone does not authorize attaching this fact's evidence.
         # Match the earlier reference filter rather than relaxing its accepted boundary.
         if not _update_recalled_for_sources(update.observation_id, (m["id"] for m in source_mems), per_fact_obs_ids):
+            # Triage can inject this update after the reference filter. Leave the
+            # cited facts pending so a sibling stamp cannot close them.
+            llm_result.pending_fact_ids.update(str(m["id"]) for m in source_mems)
+            llm_result.filtered_references = True
             logger.debug(
                 "Update skipped: observation %s was not recalled for its cited sources",
                 update.observation_id,
@@ -3840,7 +3844,11 @@ async def _process_memory_batch(
         # The probe reads the state the batch started from, so two near-twin CREATEs in ONE
         # response can both land; the next round's probe sees them and folds them, and the
         # exact-text guard above already covers the common case.
-        if exact_fold_enabled and shown_duplicate is not None:
+        if (
+            exact_fold_enabled
+            and shown_duplicate is not None
+            and _update_recalled_for_sources(shown_duplicate.id, prepared_create.source_memory_ids, per_fact_obs_ids)
+        ):
             prepared_create.source_only_fold = True
             prepared_create.dedup = _DedupOutcome(
                 best_id=str(shown_duplicate.id),
@@ -3848,7 +3856,13 @@ async def _process_memory_batch(
                 should_merge=True,
                 best_text=shown_duplicate.text,
             )
-        elif exact_fold_enabled and reply_duplicate is not None:
+        elif (
+            exact_fold_enabled
+            and reply_duplicate is not None
+            and _update_recalled_for_sources(
+                reply_duplicate.update.observation_id, prepared_create.source_memory_ids, per_fact_obs_ids
+            )
+        ):
             # This future target is valid only if the UPDATE actually writes it.
             # The apply-time CAS falls back to CREATE if that UPDATE is skipped.
             prepared_create.source_only_fold = True
@@ -3872,6 +3886,15 @@ async def _process_memory_batch(
                 anchor_source_ids=[str(source_id) for source_id in prepared_create.source_memory_ids],
                 detail_loss_budget=schema_correction_budget,
             )
+            if (
+                prepared_create.dedup is not None
+                and prepared_create.dedup.should_merge
+                and prepared_create.dedup.best_id is not None
+                and not _update_recalled_for_sources(
+                    prepared_create.dedup.best_id, prepared_create.source_memory_ids, per_fact_obs_ids
+                )
+            ):
+                prepared_create.dedup = None
         if prepared_create.source_only_fold and get_memories().store_owned_for(bank_id):
             # The extension upsert has no text/version CAS. A shown/reply twin
             # may have changed or vanished, so keep this CREATE's own sources

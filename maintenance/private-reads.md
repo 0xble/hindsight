@@ -37,7 +37,8 @@ parser or importing store SQL modules from generic retrieval. The exact-type
 check must continue to reject custom retrievers and subclasses.
 
 The v1.1.0 LLM-request extension is an opaque operator callback and is rejected
-before receiving private input. Decision-model reranking remains explicitly
+before receiving private input, whether it is stored on the engine or installed
+process-wide. Decision-model reranking remains explicitly
 unsupported for private reads until its inference and diagnostic sinks are
 qualified. A configured decision-model reranker fails closed with HTTP 503 and no
 private-read acknowledgement, rather than silently switching to another model.

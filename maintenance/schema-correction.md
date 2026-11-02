@@ -44,7 +44,9 @@ the v1.1.0 release and does not retire this fork boundary or widen its budgets.
   references/language/topology checks, or when correction is explicitly withdrawn.
   The fork intentionally retains per-source recall topology for UPDATE admission,
   unlike v1.1.0's pooled recall. Both reference filtering and write preparation
-  enforce it. Valid siblings commit, while facts cited only by dropped actions
-  remain pending for bounded retry, never silently stamped consolidated.
+  enforce it, including a triage-injected update and a create fold into a sibling
+  that was recalled only for another fact. A rejected citation stays pending and
+  is not stamped consolidated. Valid siblings commit, while facts cited only by
+  dropped actions remain pending for bounded retry.
   Rollback removes only these correction surfaces and this record; never reset
   failed facts or replay previously committed consolidation writes.
