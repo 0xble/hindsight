@@ -16,12 +16,44 @@ The shared startup boundary adopts the document-presence correction from upstrea
 
 ## Update And Verify
 
-The maintained boundary is `hindsight-integrations/coding-agents/src/core/hook.ts`, shared by hook and persistent-plugin callers. `src/core/runtime.ts` excludes synthetic prompts before the plugin host's separate first-turn roster counter advances. `src/core/transcript-util.ts` owns the tag rule. `src/core/hook-synthetic.test.ts` drives the public hook runtime and native Claude lifecycle declaration, proving no network work or session mutation on synthetic prompts, preservation of real surrounding text and unknown suffixes, deferred new-bank prompts, later retry and truthful fallback logging. `src/core/turn-journal.test.ts` proves retained journal output preserves literal suffixes and excludes transport-only turns. `src/core/runtime.test.ts` proves that a plugin's first real prompt receives its live page roster after synthetic prompts. The package's existing `npm test`, `npm run build` and TypeScript check cover the integration.
+The maintained boundary is `hindsight-integrations/coding-agents/src/core/hook.ts`, shared by hook and persistent-plugin callers. `src/core/runtime.ts` excludes synthetic prompts before the plugin host's separate first-turn roster counter advances. `src/core/transcript-util.ts` owns the tag rule. `src/core/hook-synthetic.test.ts` drives the public hook runtime and native Claude lifecycle declaration, proving no network work or session mutation on synthetic prompts, preservation of real surrounding text and unknown suffixes, deferred new-bank prompts, later retry and truthful fallback logging. `src/core/turn-journal.test.ts` proves retained journal output preserves literal suffixes and excludes transport-only turns. `src/core/runtime.test.ts` proves that a plugin's first real prompt receives its live page roster after synthetic prompts. The package's existing `npm test`, `npm run build` and TypeScript check cover the integration. The exact-SHA `bin/ci gate` runs these package checks, including the released bounded-retry and tool-hook paths alongside the fork's synthetic-prompt cases.
 
 Publication of server source does not replace the separately staged coding-agents package. Its supported installer `update` refreshes runtime files without rewiring host configurations. Verify both the staged bundle and a new hook process before claiming adoption.
 
 `src/core/session-start.test.ts` and `src/core/hindsight.test.ts` cover document-presence evidence and retrieval eligibility. `src/core/runtime.test.ts` proves that an empty page roster preserves first-prompt retrieval and the existing once-per-session injection. Run these regressions and the full coding-agents package suite when adopting or retiring the startup correction. Installed Claude and Codex host canaries remain separate adoption proof.
 
+The v1.1.0 merge must retain only the fork's validated `hasDocuments` method.
+The release adds the same method later in the class, so a clean textual merge can
+silently override the preserved implementation. Returned rows prove presence even
+when a concurrent count is 0. Missing or malformed listings remain unknown rather
+than proving emptiness. The existing `HindsightClient.hasDocuments` table-driven
+regressions reproduce that override before repair and protect both boundaries.
+
 ## Adopt Or Retire
 
 Retire this divergence when an upstream release passes the synthetic-prompt regressions through both direct `buildHookOutput` and native hook entry points. Retain the upstream two-attempt failure budget and unchanged explicit reflection path. No new filter, retry manager or logger is needed.
+
+
+## v1.1.0 Accepted Retain Recovery
+
+A confirmed terminal retain failure must start a new extraction even when the
+transcript is unchanged. Preserve the deterministic ID for ambiguous transport
+retries. The existing retain cursor carries a recovery salt rotated only from
+confirmed failed operation IDs, through the dirty claim and accepted write.
+Repeated terminal failures rotate again. No parallel recovery store is needed.
+
+Keep the no-cursor path valid for clients without a bank field as well as normal
+bank-scoped clients. Guard the cursor before reading its recovery identity.
+Existing chat, retain-hook, runtime, and journal harness tests cover this path
+alongside confirmed-failure recovery and idempotent resubmission.
+
+From `hindsight-integrations/coding-agents`, run:
+
+```bash
+heavy-slot --label hindsight-v110-chat-recovery -- npm test -- src/core/chat.test.ts
+```
+
+Keep the existing full package tests, build and typecheck in `bin/ci`. The focused
+cases cover repeated failed/cancelled/error outcomes, unchanged-content recovery,
+transport ambiguity, and subsequent append behavior. Source delivery does not
+install the coding-agents package into a runtime.

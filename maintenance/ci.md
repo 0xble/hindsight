@@ -76,13 +76,19 @@ intentional fork infrastructure policy, not upstream deployment ownership.
   from `PATCH_REGRESSIONS` and registers `test_graph_maintenance_dialect.py` and
   `test_curation_batch_authorization.py`. The shared consolidation deadlock suite
   also covers Oracle/native-store source fences and strict scope counts.
-  Each patch-list entry is unique; Rust client coverage also runs
+  Each patch-list entry is unique. The v1.1.0 integration keeps the released
+  trace regressions registered once alongside the retained private-read sink cases.
+  Rust client coverage also runs
   `operation_enum_collisions` beside `curation_fields`. No workflow/action
   versions, permissions, protections or deployment capabilities change. Mutable
   action major tags remain inherited generic hardening, not a new policy
   requirement for this run.
   The Go client selector includes all `TestOperationResponseDetails` cases,
   including direct-null and invalid-discriminator coverage.
+  Released store fixtures construct `PostgresMemories` with its configuration and
+  use the backend connection adapter for store scans requiring `parse_json`.
+  Coding-agent Git-log fixtures disable inherited hooks only in their disposable
+  repositories, preserving production hooks and bounded-log assertions.
   Test sessions and every `bin/ci` profile refuse production port 5436 and
   protected test port 5556 before native migrations or connections, including
   Unix-domain PostgreSQL socket paths. Preserve `scripts/ci/test_db_guard.py`,
@@ -232,3 +238,28 @@ intentional fork infrastructure policy, not upstream deployment ownership.
   residual risk. This repair changes no workflows, protection settings, or
   runtime behavior.
 
+
+
+The v1.1.0 repair also registers `test_mental_model_delta_gate.py` and
+`test_reflect_decision_orchestrated.py` in the retained-patch gate. Keep the
+config-reader and store-table architecture guards registered alongside private
+reads. Their intended boundaries remain unchanged: dynamic extension namespace
+reads belong to the loader, and built-in SQL retriever type checks belong to the
+Postgres store. Do not exempt the generic callers to silence these guards.
+
+### UI Time Presets
+
+Keep `hindsight-control-plane/src/lib/date-range-preset.ts` presets as elapsed
+intervals, including the named 24-hour preset, across daylight-saving changes.
+The released local-calendar setters can shift a bound by 1 hour. Do not hide
+that source defect by running the existing fixed-instant assertions only in UTC.
+The native `tests/lib/date-range-preset.test.ts` covers UTC and
+`America/Los_Angeles`, spring-forward and fall-back intervals, unchanged inputs,
+unknown presets, and the separate local-time semantics of custom inputs.
+
+Run `npm test --workspace @vectorize-io/hindsight-control-plane` when qualifying
+this source. Retire the elapsed-interval adjustment only when a selected stable
+upstream release passes these same regressions in both zones. The introducing
+[upstream contribution](https://github.com/vectorize-io/hindsight/pull/4515) is
+merged, closed, and owned by an upstream maintainer, so it is not an authorized
+contributor head for this job to update.

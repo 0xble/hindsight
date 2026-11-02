@@ -12,7 +12,7 @@ from hindsight_api.engine.parsers import (
 )
 from tests.aiohttp_stub import stub_server
 from tests.test_iris_parser_stub import _Upstream as IrisUpstream
-from tests.test_llama_parse_parser import _Reply, _serve
+from tests.test_llama_parse_parser import _Reply, _serve, _status
 from tests.test_llama_parse_parser import _Upstream as LlamaUpstream
 from tests.test_no_extractable_text import StubParser
 
@@ -24,11 +24,11 @@ async def test_cloud_parser_chain_classifies_only_all_empty_results(monkeypatch,
     iris_upstream = IrisUpstream(extraction_statuses=[{"ready": True, "data": {"success": True, "text": text}}])
     llama_upstream = LlamaUpstream(
         upload=_Reply(json={"id": "empty-job"}),
-        gets=[_Reply(json={"status": "SUCCESS"}), _Reply(json={"markdown": text})],
+        gets=[_status("COMPLETED"), _Reply(json={"job": {"status": "COMPLETED"}, "markdown_full": text})],
     )
     registry = FileParserRegistry()
     registry.register(IrisParser(token="tok", org_id="org-1", poll_interval=0.0))
-    registry.register(LlamaParseParser(api_key="llx-test", poll_interval=0.0))
+    registry.register(LlamaParseParser(api_key="llx-test", poll_interval=0.0, timeout=2.0))
     registry.register(StubParser("empty", ""))
     registry.register(StubParser("transient", TimeoutError("provider timed out")))
     chain = ["iris", "llama_parse", "empty"]
@@ -52,3 +52,4 @@ async def test_cloud_parser_chain_classifies_only_all_empty_results(monkeypatch,
         assert metadata == {}
     assert iris_upstream.polls == 1
     assert llama_upstream.get_count == 2
+    assert llama_upstream.get_requests == ["/empty-job", "/empty-job?expand=markdown_full"]

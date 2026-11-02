@@ -11,6 +11,10 @@ errors only. Upstream #3003 closed without repair; #3137 rejected per-item salva
 Do not replace this boundary with coercion, dropped invalid actions, defaults,
 empty-response repair, routing changes, or fabricated references.
 
+Open [issue #5572](https://github.com/vectorize-io/hindsight/issues/5572) proposes bounded
+whole-response repair for missing/model-type consolidation shapes. It is not in
+the v1.1.0 release and does not retire this fork boundary or widen its budgets.
+
 - **Surfaces:** `consolidation/consolidator.py`, `llm_wrapper.py`,
   `llm_attempt_limit.py` under `hindsight-api-slim/hindsight_api/engine/`.
 - **Bounds:** At most ten additional actual completions per 1000-fact job.
@@ -28,8 +32,20 @@ empty-response repair, routing changes, or fabricated references.
   consolidation retry, failure-isolation, prompt-budget, lane/scope, language and
   provider quota/auth regressions in an explicitly isolated test database.
   Synthetic provider fixtures prove mechanics, not live provider repair efficacy.
+- **v1.1.0 fixtures (2026-10-30):** The requeued-round budget fixture declares
+  released `enable_auto_consolidation` so its 10 default rounds drain the backlog.
+  Guard/provenance database fixtures stub `embedding_utils.generate_embeddings_batch`
+  with one vector per input at the active embedder's dimension, replacing the
+  removed single-observation helper. Keep every request-count, source attribution,
+  hydration cap, row-growth and pending-fact assertion. A failure with complete
+  released doubles falsifies fixture drift as the explanation for that case.
 - **Update/retire:** Compare upstream fail-fast and provider-attempt changes before
   porting. Retire only when an upstream equivalent preserves all bounds and
   references/language/topology checks, or when correction is explicitly withdrawn.
+  The fork intentionally retains per-source recall topology for UPDATE admission,
+  unlike v1.1.0's pooled recall. Both reference filtering and write preparation
+  enforce it, including a triage-injected update. A rejected citation stays pending
+  and is not stamped consolidated. Valid siblings commit, while facts cited only
+  by dropped actions remain pending for bounded retry.
   Rollback removes only these correction surfaces and this record; never reset
   failed facts or replay previously committed consolidation writes.

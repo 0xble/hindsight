@@ -30,10 +30,26 @@ operation, including a nested API-looking path, retain their audit, error loggin
 tracing and normal response headers. Disconnect monitoring follows the operation
 route, not an arbitrary document suffix.
 
+Keep dynamic extension selection in the extension loader and SQL implementation
+type checks in the Postgres store. Private-read prechecks must reject configured
+memory extensions before import or construction, without adding a second config
+parser or importing store SQL modules from generic retrieval. The exact-type
+check must continue to reject custom retrievers and subclasses.
+
+The v1.1.0 LLM-request extension is an opaque operator callback and is rejected
+before receiving private input, whether it is stored on the engine or installed
+process-wide. Decision-model reranking remains explicitly
+unsupported for private reads until its inference and diagnostic sinks are
+qualified. A configured decision-model reranker fails closed with HTTP 503 and no
+private-read acknowledgement, rather than silently switching to another model.
+Public reads keep their released behavior.
+
 ## Verify
 
 The repository-owned `./bin/ci gate <exact-40-hex-HEAD-SHA>` registers the private
 API, engine and sink regressions and the published-client real-server story.
+It also runs the config-reader and store-table architectural guards, so these
+boundaries are checked before the broad nightly suite.
 From `hindsight-api-slim`, the focused regression command is:
 
 ```bash
@@ -46,6 +62,27 @@ scripted providers through the published Python client:
 ```bash
 uv run --frozen pytest tests/test_98_private_reads.py
 ```
+
+The v1.1.0 reflect operation also persists child spans such as rerank,
+embedding and tool calls. The real-client story snapshots a stable public
+trace total after every query-bearing provider call, its fact and its `done`
+tool call have landed. A private read must leave that total unchanged and must
+not appear in any row. The following public reflect must increase it.
+
+The v1.1.0 engine harness stubs `_bank_freshness`, the released internal read
+used after reflect authenticates, rather than the public `get_bank_freshness`
+method. Its diagnostic connection supports released `executemany` trace writes.
+This preserves native authentication, reflection, retrieval and all public/private
+sink assertions. The stale-double explanation is falsified by an acquire failure
+or missing positive public trace with these released boundaries supplied. No
+private-read implementation or diagnostic policy changes in this adaptation.
+
+The bank-validator route sweep preserves the private capability boundary:
+unsupported extensions produce HTTP 503 before receiving private input, with no
+successful private-read acknowledgement or validator invocation. Public operations
+retain the sweep's original refusal requirements. Keep this exact rejection check
+alongside the native private-read sink controls, rather than sending private
+payloads into opaque validators to obtain HTTP 403.
 
 Keep complete public/private payload comparisons, no-store acknowledgements,
 positive public trace/audit controls, complete diagnostic enumeration and zero

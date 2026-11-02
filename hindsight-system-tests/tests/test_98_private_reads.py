@@ -37,12 +37,13 @@ BEFORE_QUERY = "before-private-story: which instrument does the fixture musician
 AFTER_QUERY = "after-private-story: which instrument does the fixture musician play?"
 
 
-async def _public_trace_is_visible(
+async def _stable_public_traces(
     api: LLMTracesApi, bank_id: str, query: str, expected_calls: int
 ) -> LLMRequestListResponse:
-    """Observe every actual public provider call, including its persisted result."""
+    """Wait until every public provider call and its released child spans have landed."""
     assert expected_calls > 0, "the provider must have received the public control"
     deadline = monotonic() + 20
+    previous_total = None
     last_page = "no trace response"
     while monotonic() < deadline:
         traces = await api.list_llm_requests(bank_id=bank_id, operation="reflect", limit=500)
@@ -51,11 +52,11 @@ async def _public_trace_is_visible(
         control = [entry for entry in traces.items if query in json.dumps(entry.input)]
         assert len(control) <= expected_calls, "public tracing duplicated provider calls"
         assert all(entry.status == "success" for entry in control)
-        # Tool-only replies have null output. Their tool name is persisted in
-        # llm_info, and retrieved facts persist in the following call's input.
-        finished = any("done" in entry.llm_info.get("tool_calls", []) for entry in control)
+        finished = any("done" in (entry.llm_info or {}).get("tool_calls", []) for entry in control)
         persisted_fact = any(FACT in json.dumps(entry.input) for entry in control)
-        if len(control) == expected_calls and finished and persisted_fact:
+        stable = previous_total == traces.total
+        previous_total = traces.total
+        if stable and len(control) == expected_calls and finished and persisted_fact:
             return traces
         await asyncio.sleep(0.05)
     pytest.fail(f"Public tracing did not persist all {expected_calls} provider calls. Last page: {last_page}")
@@ -85,8 +86,7 @@ async def test_private_reads_leave_no_read_history_and_public_writes_resume(
         assert first.text == ANSWER
         await settled(bank_id)
         before_calls = sum(BEFORE_QUERY in call.all_text for call in llm.calls)
-        before_traces = await _public_trace_is_visible(traces_api, bank_id, BEFORE_QUERY, before_calls)
-        assert before_traces.total == before_calls
+        before_traces = await _stable_public_traces(traces_api, bank_id, BEFORE_QUERY, before_calls)
 
         recalled = await memory.private_recall_memories_with_http_info(
             bank_id=bank_id, recall_request=RecallRequest(query=RECALL_QUERY)
@@ -112,13 +112,16 @@ async def test_private_reads_leave_no_read_history_and_public_writes_resume(
         assert reflected.data is not None
         assert reflected.data.model_dump() == first.model_dump()
         await settled(bank_id)
+        during_private = await traces_api.list_llm_requests(bank_id=bank_id, operation="reflect", limit=500)
+        assert during_private.total == len(during_private.items) == before_traces.total
+        assert all(PRIVATE_QUERY not in entry.model_dump_json() for entry in during_private.items)
 
         last = await client.areflect(bank_id=bank_id, query=AFTER_QUERY)
         assert last.model_dump() == first.model_dump()
         await settled(bank_id)
         after_calls = sum(AFTER_QUERY in call.all_text for call in llm.calls)
-        after_traces = await _public_trace_is_visible(traces_api, bank_id, AFTER_QUERY, after_calls)
-        assert after_traces.total == before_calls + after_calls
+        after_traces = await _stable_public_traces(traces_api, bank_id, AFTER_QUERY, after_calls)
+        assert after_traces.total > before_traces.total
         assert all(PRIVATE_QUERY not in entry.model_dump_json() for entry in after_traces.items)
         reflect_audit = await audit.list_audit_logs(bank_id=bank_id, action="reflect", limit=500)
         assert reflect_audit.total == len(reflect_audit.items) == 2

@@ -70,6 +70,10 @@ class IsolatedSink:
         with self.path.open("a") as output:
             output.write(json.dumps({"sql": sql, "arguments": arguments}, default=str) + "\n")
 
+    async def executemany(self, sql: str, rows: list[tuple[Any, ...]]) -> None:
+        for arguments in rows:
+            await self.execute(sql, *arguments)
+
     def bytes(self) -> bytes:
         return self.path.read_bytes() if self.path.exists() else b""
 
@@ -147,6 +151,9 @@ async def read_harness(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
     monkeypatch.setattr(llm_trace, "acquire_with_retry", connection)
     engine = MemoryEngine.__new__(MemoryEngine)
     engine._tenant_extension = ApiKeyTenantExtension({"api_key": "fixture-only-key"})
+    # State the released constructor initializes and reflect now reads.
+    engine._reflect_decision_model_client = None
+    engine._reflect_decision_model_unsupported_logged = False
     engine._operation_validator = None
     engine._initialized = True
     engine._backend = object()
@@ -180,7 +187,8 @@ async def read_harness(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
             "disposition": {"skepticism": 3, "literalism": 3, "empathy": 3},
         }
     )
-    engine.get_bank_freshness = AsyncMock(return_value={})
+    # Reflect already authenticates and now uses the internal freshness read.
+    engine._bank_freshness = AsyncMock(return_value={})
     engine.list_directives = AsyncMock(return_value=DirectivePage(items=[], total=0))
     engine.attachments_for_memories = AsyncMock(return_value={})
 
@@ -401,6 +409,69 @@ async def test_real_public_validator_scope_and_private_fail_closed(read_harness:
         validator.validate_recall.return_value = ValidationResult.reject("fixture-policy-denied", status_code=403)
         denied = await client.post(_url("recall", False), json=_body("recall", PUBLIC_QUERY), headers=HEADERS)
         assert denied.status_code == 403
+    await h.drain()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("operation", ["recall", "reflect"])
+async def test_private_llm_request_extension_rejects_before_execution(read_harness: ReadHarness, operation: str):
+    h = read_harness
+    extension = AsyncMock()
+    h.engine._llm_request_extension = extension
+    app = create_app(h.engine, initialize_memory=False)
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://fixture") as client:
+        private = await client.post(_url(operation, True), json=_body(operation, PRIVATE_QUERY), headers=HEADERS)
+        assert private.status_code == 503
+        assert "X-Hindsight-Private-Read" not in private.headers
+        assert extension.mock_calls == []
+        public = await client.post(_url(operation, False), json=_body(operation, PUBLIC_QUERY), headers=HEADERS)
+        assert public.status_code == 200, public.text
+    await h.drain()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("operation", ["recall", "reflect"])
+async def test_private_process_wide_llm_request_extension_rejects_before_execution(
+    read_harness: ReadHarness, operation: str
+):
+    from hindsight_api.extensions.llm_request import install_llm_request_extension
+
+    h = read_harness
+    extension = AsyncMock()
+    h.engine._llm_request_extension = None
+    install_llm_request_extension(extension)
+    app = create_app(h.engine, initialize_memory=False)
+    try:
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://fixture") as client:
+            private = await client.post(_url(operation, True), json=_body(operation, PRIVATE_QUERY), headers=HEADERS)
+            assert private.status_code == 503
+            assert "X-Hindsight-Private-Read" not in private.headers
+            assert extension.mock_calls == []
+    finally:
+        install_llm_request_extension(None)
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://fixture") as client:
+        public = await client.post(_url(operation, False), json=_body(operation, PUBLIC_QUERY), headers=HEADERS)
+        assert public.status_code == 200, public.text
+    await h.drain()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("operation", ["recall", "reflect"])
+async def test_private_decision_model_reranker_fails_closed(read_harness: ReadHarness, operation: str):
+    from hindsight_api.engine.search.reranking import DecisionModelReranker
+
+    h = read_harness
+    reranker = h.engine._cross_encoder_reranker
+    original = reranker.cross_encoder
+    reranker.cross_encoder = object.__new__(DecisionModelReranker)
+    app = create_app(h.engine, initialize_memory=False)
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://fixture") as client:
+        private = await client.post(_url(operation, True), json=_body(operation, PRIVATE_QUERY), headers=HEADERS)
+        assert private.status_code == 503
+        assert "X-Hindsight-Private-Read" not in private.headers
+        reranker.cross_encoder = original
+        public = await client.post(_url(operation, False), json=_body(operation, PUBLIC_QUERY), headers=HEADERS)
+        assert public.status_code == 200, public.text
     await h.drain()
 
 

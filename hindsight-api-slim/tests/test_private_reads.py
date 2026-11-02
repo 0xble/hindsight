@@ -27,6 +27,8 @@ def http_reads(monkeypatch):
     """Real HTTP handlers with only the engine's expensive retrieval seam stubbed."""
     engine = MemoryEngine.__new__(MemoryEngine)
     engine._tenant_extension = ApiKeyTenantExtension({"api_key": "fixture-key"})
+    engine._reflect_decision_model_client = None
+    engine._reflect_decision_model_unsupported_logged = False
     engine._operation_validator = None
     engine._config_resolver = ConfigResolver(None, engine._tenant_extension)
     engine._config_resolver._load_bank_config = AsyncMock(return_value={"audit_log_enabled": True})
@@ -303,7 +305,7 @@ async def test_real_reranker_executor_keeps_private_scope(caplog):
     encoder = LocalSTCrossEncoder.__new__(LocalSTCrossEncoder)
     encoder._model = object()
 
-    def predict(pairs):
+    def predict(pairs, cancelled=None):
         seen.append(is_private_read())
         logging.getLogger("fixture.executor").warning("%s %s", *pairs[0])
         return [0.75]

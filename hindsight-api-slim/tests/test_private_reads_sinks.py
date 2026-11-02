@@ -10,7 +10,7 @@ import queue
 import threading
 from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor
 from datetime import datetime, timezone
-from unittest.mock import AsyncMock, Mock
+from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
 from opentelemetry import trace
@@ -21,7 +21,7 @@ from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanE
 from hindsight_api import tracing
 from hindsight_api.engine.audit import AuditEntry, AuditLogger
 from hindsight_api.engine.background_writes import PendingWrites
-from hindsight_api.engine.llm_trace import LLMRequestRecord, LLMTraceContext, LLMTraceRecorder
+from hindsight_api.engine.llm_trace import LLMRequestRecord, LLMTraceContext, LLMTraceRecorder, _BufferedRow
 from hindsight_api.private_reads import (
     PrivateReadUnsupportedError,
     is_private_read,
@@ -66,10 +66,13 @@ async def test_audit_and_llm_write_owners_never_resolve_serialize_or_schedule_pr
         assert not llm.is_enabled("reflect")
         llm.record_llm_call(provider="mock", model="fixture", scope="reflect", messages=Unformattable())
         llm._record_fire_and_forget(llm_entry)
-        await llm._safe_write(llm_entry)
+        await llm._write_batch([_BufferedRow("fixture", llm_entry)])
         llm.attach_memory_ids(LLMTraceContext(bank_id="fixture", trace_id="fixture-trace"), created=[QUERY])
         await llm._attach_memory_ids("fixture", "fixture-trace", {"source_memory_ids": [QUERY]})
     pool.assert_not_called()
+    # The released recorder buffers rows: a private call must not allocate one or
+    # arm the flush timer, not merely skip the eventual write.
+    assert llm._buffer == [] and not llm._flush_scheduled and not llm._rows_written
     resolver.assert_not_awaited()
     audit_schedule.assert_not_called()
     llm_schedule.assert_not_called()
@@ -256,7 +259,7 @@ async def test_real_reranker_thread_keeps_scope_after_request_cancellation(monke
     encoder = FlashRankCrossEncoder.__new__(FlashRankCrossEncoder)
     encoder._ranker = object()
 
-    def predict(pairs):
+    def predict(pairs, cancelled=None):
         entered.set()
         try:
             if not release.wait(5):
@@ -321,6 +324,49 @@ async def test_native_model_initialization_workers_inherit_policy(monkeypatch, b
             await owner._initialize_member(0)
         await owner._initialize_member(0)
     assert seen == [True, False]
+
+
+def test_private_memory_extension_rejects_before_import_but_public_loads(monkeypatch):
+    from hindsight_api.engine import memories
+    from hindsight_api.extensions import loader
+    from tests.test_memories_extension import InMemoryMemories
+
+    monkeypatch.setenv("HINDSIGHT_API_MEMORIES_EXTENSION", "tests.test_memories_extension:InMemoryMemories")
+    with patch.object(loader, "_resolve_extension_class", side_effect=AssertionError("must not import")):
+        with private_read_scope(), pytest.raises(PrivateReadUnsupportedError):
+            memories.create_memories()
+    assert type(memories.create_memories()) is InMemoryMemories
+
+
+@pytest.mark.parametrize("extension_path", [None, ""])
+def test_private_memory_store_without_extension_uses_postgres(monkeypatch, extension_path):
+    from hindsight_api.engine import memories
+    from hindsight_api.engine.memories.postgres import PostgresMemories
+
+    if extension_path is None:
+        monkeypatch.delenv("HINDSIGHT_API_MEMORIES_EXTENSION", raising=False)
+    else:
+        monkeypatch.setenv("HINDSIGHT_API_MEMORIES_EXTENSION", extension_path)
+    with private_read_scope():
+        assert type(memories.create_memories()) is PostgresMemories
+
+
+def test_private_graph_retriever_accepts_builtin_but_rejects_subclass(monkeypatch):
+    from hindsight_api.engine.memories.pg.link_expansion import LinkExpansionRetriever
+    from hindsight_api.engine.search import retrieval
+
+    class CustomRetriever(LinkExpansionRetriever):
+        pass
+
+    builtin = LinkExpansionRetriever()
+    custom = CustomRetriever()
+    monkeypatch.setattr(retrieval, "_default_graph_retriever", builtin)
+    with private_read_scope():
+        assert retrieval.get_default_graph_retriever() is builtin
+    monkeypatch.setattr(retrieval, "_default_graph_retriever", custom)
+    with private_read_scope(), pytest.raises(PrivateReadUnsupportedError):
+        retrieval.get_default_graph_retriever()
+    assert retrieval.get_default_graph_retriever() is custom
 
 
 def test_private_opaque_store_and_graph_retriever_are_never_invoked(monkeypatch):

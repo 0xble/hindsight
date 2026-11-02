@@ -60,6 +60,36 @@ in the root contract.
   created/unresolved assertions and additionally pins fail-fast/bisection and
   persisted source provenance. Embedding/tag fixtures model released exact-ID
   preflight and complete configuration, not the old boolean/stub interfaces.
+- **v1.1.0 adaptation:** Released [#5768](https://github.com/vectorize-io/hindsight/pull/5768)
+  supplies `lock_consolidation_write_set`: lock documents before the complete
+  sorted memory write set, including observation sources and merge targets.
+  Reuse it inside the fork's whole-transaction retry and before lane snapshot
+  validation. The released protocol supersedes source ordering alone as the
+  retain/consolidation deadlock prevention boundary. Preserve the fork's
+  residual-deadlock retry, ordered Oracle source fences and lane validation.
+  Qualify `tests/test_retain_consolidation_deadlock.py` alongside the existing
+  deadlock, lane, dedup and Oracle routing regressions. This is partial adoption,
+  not retirement of the remaining retry and backend contracts.
+- **v1.1.0 qualification repair (2026-10-30):** At frozen release
+  `a5a619b5ca59c5c39e0f96be6f7a31fabd136bd5`, recall queries and observation
+  actions use batched embeddings (#5647/#5552). Test doubles accept
+  `query_embedding`, provide observation `source_fact_ids`, and return one vector
+  per input. Preserve query-side batching, unique action embedding order, and
+  transactional source coverage for a CREATE copying an UPDATE. Mock the released
+  write-set read separately in dedup-only tests, retaining the existing fold
+  transaction, source-lock and RETURNING assertions.
+  The integration moved lane exact-candidate reads before document/write-set
+  locking. That snapshot predates same-response UPDATEs, while `create_dedups`
+  already follows their successful survivors. Discarding that outcome for the
+  old exact row causes its CAS to miss and inserts an obsolete duplicate.
+  Keep the released lock order and prefer the successful same-response survivor
+  over the earlier exact snapshot. The diagnosis is falsified if the 4-case
+  `test_same_response_update_survivor_precedes_exact_candidate_snapshot` matrix
+  cannot distinguish the original lane path from the repair: original source
+  passes both serial controls and fails both lane cases, while repaired source
+  passes all 4. Keep the PostgreSQL `test_shown_create_fold_preserves_current_state`
+  matrix, including fold chains, CAS misses, source edits and rollback, as the
+  integration boundary. No lock, guard, retry or dispatch budget is relaxed.
 - **Behavior:** Consolidation's source-liveness check and retain's document-wide
   tag/scope update acquire `memory_units` row locks in the same order, so they no
   longer deadlock. The apply transaction retries a residual PostgreSQL deadlock and
@@ -156,6 +186,12 @@ The fork-only normalized-observation index revision `e6f7a8b9c0d1` was introduce
   cancellation fences; never convert retry or deferral into terminal failure
   or record a terminal metric. Keep operation-targeted reclamation and stop
   after a returned exit boundary rather than continuing to later rows.
+- **v1.1.0 adoption:** Released [#5813](https://github.com/vectorize-io/hindsight/pull/5813)
+  stops terminal-write retries when the operations table was dropped. Keep that
+  missing-relation proof on the shared write primitive used by fork reclamation,
+  without treating transient outages as deletion or changing retry/defer metrics.
+  Qualify `tests/test_worker.py::TestTerminalWriteToADroppedSchema` with the
+  reclaim-outage regressions above.
 - **Upstream guidance:** Read `AGENTS.md`, `CLAUDE.md`, `CONTRIBUTING.md` and
   code-review guidance at the frozen release; the independent proposal preceded
   the upstream tracker search.
@@ -182,3 +218,40 @@ The fork-only normalized-observation index revision `e6f7a8b9c0d1` was introduce
   only, never a database status reset or runtime restart.
 
 Run the API-local regression commands from `hindsight-api-slim`.
+
+
+## v1.1.0 Decision And Provider Boundaries
+
+The delta-refresh decision gate must AND the current caller's forced tag groups
+with the stored page filter before listing candidates. Neither decision-model
+input nor dry-run `based_on` may contain evidence outside that intersection.
+The gate keeps its existing opt-out, cap and decision-failure fallback to reflect.
+Reflect round consumers must use native `_TimedToolResult` objects, retaining
+`duration_ms` during pruning and lower-layer hiding, and passing through errors
+and failed-pruning results unchanged.
+
+The LLM request extension applies its existing credential-header policy to
+configured headers in `extra_body` as well as provider defaults. LiteLLM promotes
+`extra_headers` and `headers` into effective request headers. Credential-bearing
+`headers` must be refused with a tenant key because that alias is not rebound by
+the provider's per-request `extra_headers` override. Harmless headers remain valid,
+and refusal messages contain header names only.
+
+Failed delta edits use `_preserve_and_fail`, `update_mental_model`, and the
+existing failure-history writer. Keep persistence assertions for both
+`refresh_skipped` and `outcome`, with previous content and refresh watermarks
+preserved. No public schema changes are needed for these adaptations.
+
+From `hindsight-api-slim`, qualify through the existing heavy-work admission:
+
+```bash
+heavy-slot --label hindsight-v110-decisions -- uv run --frozen --extra all pytest -n 1 tests/test_mental_model_delta_gate.py tests/test_reflect_decision_orchestrated.py tests/test_refresh_outcome_metadata.py tests/test_llm_request_extension.py
+```
+
+The single xdist worker owns a uniquely named disposable pg0 instance, selects
+a free port and drops the instance at teardown.
+Source probes do not replace this test boundary or authorize runtime adoption.
+
+The retained-label no-op regression uses the engine's database adapter pool for
+store calls, not the legacy raw asyncpg pool. Preserve its tag and `updated_at`
+assertions, including the real relabel operation, when adopting store interfaces.

@@ -1,5 +1,6 @@
 """Consolidation's deadlock backstop and ordered row-lock contract."""
 
+import asyncio
 from contextlib import asynccontextmanager
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
@@ -58,6 +59,43 @@ async def test_apply_retry_restarts_entire_transaction(monkeypatch):
     assert len(attempts) == 2
     assert committed == ["delete", "create"]
     assert counters == ["delete", "create"]
+
+
+@pytest.mark.parametrize("first_error", [asyncpg.DeadlockDetectedError, ValueError, asyncio.CancelledError])
+async def test_apply_retry_history_excludes_rolled_back_attempts(monkeypatch, first_error):
+    from hindsight_api.engine.document_history import (
+        note_observation_written,
+        note_observations_removed,
+        track_observation_changes,
+    )
+
+    monkeypatch.setattr(consolidator.asyncio, "sleep", AsyncMock())
+    attempts = 0
+
+    async def apply():
+        nonlocal attempts
+        attempts += 1
+        note_observation_written(f"created-{attempts}", ["source"], created=True)
+        note_observation_written(f"updated-{attempts}", ["source"], created=False)
+        note_observations_removed({f"removed-{attempts}": ["source"]}, [f"swept-{attempts}"])
+        if attempts == 1:
+            raise first_error()
+
+    with track_observation_changes() as changes:
+        note_observation_written("prior-commit", ["earlier-source"], created=True)
+        if first_error is asyncpg.DeadlockDetectedError:
+            await consolidator._retry_deadlocked_apply(apply)
+            assert changes.created == {"prior-commit": ["earlier-source"], "created-2": ["source"]}
+            assert changes.updated == {"updated-2": ["source"]}
+            assert changes.removed == {"removed-2": ["source"]}
+            assert changes.swept_facts == {"swept-2"}
+            assert attempts == 2
+        else:
+            with pytest.raises(first_error):
+                await consolidator._retry_deadlocked_apply(apply)
+            assert changes.created == {"prior-commit": ["earlier-source"]}
+            assert not changes.updated and not changes.removed and not changes.swept_facts
+            assert attempts == 1
 
 
 async def test_apply_retry_is_bounded_and_does_not_retry_other_errors(monkeypatch):

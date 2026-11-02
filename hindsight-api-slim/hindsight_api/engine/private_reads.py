@@ -39,6 +39,10 @@ def check_private_read_extensions(memory: MemoryEngine) -> None:
     require_private_component(memory._tenant_extension, (ApiKeyTenantExtension, DefaultTenantExtension))
     if memory._operation_validator is not None:
         raise PrivateReadUnsupportedError("Operation extensions do not support private reads")
+    from ..extensions.llm_request import installed_llm_request_extension
+
+    if getattr(memory, "_llm_request_extension", None) is not None or installed_llm_request_extension() is not None:
+        raise PrivateReadUnsupportedError("LLM request extensions do not support private reads")
 
 
 def check_private_read_retrieval(memory: MemoryEngine) -> None:
