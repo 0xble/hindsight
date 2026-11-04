@@ -215,6 +215,122 @@ async def snapshot(memory, seed, scope=None):
             return await store.capture(conn, seed.bank, scope)
 
 
+@pytest.mark.parametrize("action", ["invalidate", "correct"])
+async def test_oversize_link_peer_source_roundtrip(memory, seeded, action):
+    """A link-only peer's document is not input to a target correction."""
+    async with memory._pool.acquire() as conn:
+        target = await raw(conn, seeded.bank, "Small entity-free target")
+        peer = await raw(conn, seeded.bank, "Link-only peer")
+        await conn.execute(
+            "UPDATE documents SET original_text=repeat('x', $2) WHERE bank_id=$1 "
+            "AND id=(SELECT document_id FROM memory_units WHERE id=$3)",
+            seeded.bank,
+            1024 * 1024 + 1,
+            peer,
+        )
+        await conn.execute(
+            "INSERT INTO memory_links(bank_id,from_unit_id,to_unit_id,link_type,weight) "
+            "VALUES($1,$2,$3,'semantic',0.8)",
+            seeded.bank,
+            target,
+            peer,
+        )
+        peer_before = await conn.fetchval("SELECT to_jsonb(m)::text FROM memory_units m WHERE id=$1", peer)
+    seed = Seed(seeded.bank, target, peer, seeded.observation, [], [])
+    app = create_app(memory, initialize_memory=False)
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
+        url = f"/v1/default/banks/{seed.bank}/curation-batches"
+        response = await client.post(
+            url + "/preview", json={"protocol": "raw-curation-v2", "memory_ids": [str(target)]}
+        )
+        assert response.status_code == 200, response.text
+        before = await snapshot(memory, seed)
+        view = await preview(memory, seed)
+        assert response.json()["closure_revision"] == view.closure_revision == snapshot_revision(before)
+        assert set(before.source_revisions) == {str(target)}
+        assert view.inventory.source_bytes == 2 * len("Small entity-free target".encode())
+        request = manifest(view, correction=CurationFields(text="Corrected fact") if action == "correct" else None)
+        response = await client.post(url + "/oversize-peer", json=request.model_dump(mode="json", exclude_unset=True))
+        assert response.status_code == 200, response.text
+        async with memory._pool.acquire() as conn:
+            assert await conn.fetchval("SELECT to_jsonb(m)::text FROM memory_units m WHERE id=$1", peer) == peer_before
+        response = await client.post(
+            url + "/oversize-peer/revert",
+            json={"protocol": "raw-curation-v2", "expected_receipt_revision": response.json()["receipt_revision"]},
+        )
+        assert response.status_code == 200, response.text
+        assert response.json()["status"] == "reverted"
+    assert snapshot_revision(await snapshot(memory, seed, before.scope)) == snapshot_revision(before)
+    async with memory._pool.acquire() as conn:
+        assert await conn.fetchval("SELECT to_jsonb(m)::text FROM memory_units m WHERE id=$1", peer) == peer_before
+
+
+async def test_oversize_cosource_document_restores_timestamps(memory, seeded):
+    async with memory._pool.acquire() as conn:
+        await conn.execute(
+            "UPDATE documents SET original_text=repeat('x', $2) WHERE bank_id=$1 "
+            "AND id=(SELECT document_id FROM memory_units WHERE id=$3)",
+            seeded.bank,
+            1024 * 1024 + 1,
+            seeded.peer,
+        )
+    before = await snapshot(memory, seeded)
+    receipt = await apply(memory, seeded, manifest(await preview(memory, seeded)))
+    async with memory._pool.acquire() as conn:
+        assert await conn.fetchval("SELECT consolidated_at IS NULL FROM memory_units WHERE id=$1", seeded.peer)
+    await revert(memory, seeded, receipt)
+    assert snapshot_revision(await snapshot(memory, seeded, before.scope)) == snapshot_revision(before)
+
+
+async def test_capsule_applied_before_target_source_narrowing_reverts(memory, seeded, monkeypatch):
+    """Capsules written while every raw closure row bound a source revision still revert."""
+    original = store.capture
+
+    async def legacy_capture(conn, bank_id, scope, source_ids=None):
+        if source_ids is None:
+            source_ids = [*scope.affected, *scope.peers]
+        return await original(conn, bank_id, scope, source_ids)
+
+    monkeypatch.setattr(store, "capture", legacy_capture)
+    before = await snapshot(memory, seeded)
+    receipt = await apply(memory, seeded, manifest(await preview(memory, seeded)))
+    async with memory._pool.acquire() as conn:
+        capsule = await store.get_capsule(conn, seeded.bank, "fixture")
+    assert capsule is not None
+    assert str(seeded.peer) in capsule.after.source_revisions
+    monkeypatch.setattr(store, "capture", original)
+    reverted = await revert(memory, seeded, receipt)
+    assert reverted.status == "reverted"
+    monkeypatch.setattr(store, "capture", legacy_capture)
+    assert snapshot_revision(await snapshot(memory, seeded, before.scope)) == snapshot_revision(before)
+
+
+@pytest.mark.parametrize("table,column", [("documents", "original_text"), ("chunks", "chunk_text")])
+async def test_oversize_target_source_still_refused(memory, seeded, table, column):
+    request = manifest(await preview(memory, seeded))
+    async with memory._pool.acquire() as conn:
+        await conn.execute(
+            f"UPDATE {table} SET {column}=repeat('x', $2) WHERE bank_id=$1", seeded.bank, 1024 * 1024 + 1
+        )
+    app = create_app(memory, initialize_memory=False)
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
+        response = await client.post(
+            f"/v1/default/banks/{seeded.bank}/curation-batches/preview",
+            json={"protocol": "raw-curation-v2", "memory_ids": [str(seeded.raw)]},
+        )
+        assert response.status_code == 409
+        assert "Source missing or exceeds 1MiB cap" in response.text
+        response = await client.post(
+            f"/v1/default/banks/{seeded.bank}/curation-batches/oversize-target",
+            json=request.model_dump(mode="json", exclude_unset=True),
+        )
+        assert response.status_code == 409
+        assert "Source missing or exceeds 1MiB cap" in response.text
+    async with memory._pool.acquire() as conn:
+        assert await conn.fetchval("SELECT count(*) FROM curation_batches WHERE bank_id=$1", seeded.bank) == 0
+        assert await conn.fetchval("SELECT 1 FROM memory_units WHERE id=$1", seeded.raw)
+
+
 @pytest.mark.parametrize("table", ["documents", "chunks"])
 async def test_source_writer_race_apply_is_rejected_without_mutation(memory, seeded, table):
     """A source change between phase-1 capture and phase-2 mutation must 409."""
