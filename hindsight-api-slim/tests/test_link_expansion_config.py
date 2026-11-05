@@ -3,6 +3,7 @@
 import asyncio
 from contextlib import asynccontextmanager
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -63,11 +64,13 @@ async def test_observation_expansion_times_out_to_empty_rows(monkeypatch):
         lambda: SimpleNamespace(link_expansion_timeout=0.01, link_expansion_per_entity_limit=10),
     )
 
+    conn = AsyncMock()
     rows = await retriever._expand_observations(
-        object(),
+        conn,
         ["seed"],
         2,
         ops=SimpleNamespace(expand_observations=stuck_expand_observations),
     )
 
     assert rows == LinkExpansionRows(entity=[], semantic=[], causal=[])
+    conn.execute.assert_awaited_once_with("SELECT 1")
