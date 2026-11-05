@@ -294,7 +294,7 @@ sum by (model) (hindsight_llm_tokens_input_total + hindsight_llm_tokens_output_t
 
 ### Internal vs API recall operations
 ```promql
-sum by (source) (rate(hindsight_operation_total{operation="recall"}[5m]))
+sum by (source) (rate(hindsight_operation_operations_total{operation="recall"}[5m]))
 ```
 
 ### HTTP requests per second by endpoint
@@ -352,7 +352,7 @@ hindsight_consolidation_failed > 0
 Alert on worker completion failures and failed LLM calls:
 
 ```promql
-sum(rate(hindsight_operation_total{source="worker",success="false"}[15m])) > 0
+sum(rate(hindsight_operation_operations_total{source="worker",success="false"}[15m])) > 0
 sum(rate(hindsight_llm_calls_total{success="false"}[15m])) > 0
 ```
 
@@ -374,9 +374,11 @@ histogram_quantile(
 
 Use `/health/live` for process liveness and `/health/ready` for database readiness.
 Do not restart a worker solely because the backlog is nonzero. A backlog is expected
-while work is flowing. Combine it with a rising `processing` age, failed-operation
-count, stalled `seconds_since_last_poll`, or exhausted worker capacity before taking
-recovery action.
+while work is flowing. Combine it with a
+`hindsight_async_operations{status="processing"}` count that stays flat while
+nothing completes, a rising failed-operation count, a stalled
+`seconds_since_last_poll`, or exhausted worker capacity before taking recovery
+action.
 
 ---
 
