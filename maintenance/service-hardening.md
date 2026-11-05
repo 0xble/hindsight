@@ -229,18 +229,35 @@ The fork-only normalized-observation index revision `e6f7a8b9c0d1` was introduce
   acquire. Independent per-loop locks would not preserve DDL serialization.
 - **Graph deadline:** Observation expansion's timeout (`cc806c4d6`) can cancel
   immediately after asyncpg's Parse/Describe/Flush completes, before the fetch
-  sends Bind/Execute/Sync. PostgreSQL then retains an implicit transaction and
-  snapshot even though the driver's `is_in_transaction()` is false. The
-  reset-free pool cannot detect it. A simple-query synchronization on this
+  sends Bind/Execute/Sync. PostgreSQL then retains an implicit virtual
+  transaction and relation locks even though the driver's `is_in_transaction()`
+  is false. Local PostgreSQL reports `state=active`, `wait_event=ClientRead`,
+  non-null `xact_start` (not necessarily the literal `idle in transaction`
+  state); the concurrent DROP waits on `virtualxid`, not a data snapshot.
+  The reset-free pool cannot detect it. A simple-query synchronization on this
   timeout path ends that cycle before release, matching the combined expansion
-  fallback's existing next-query behavior without restoring reset SQL on every
-  normal pool release. Otherwise `DROP INDEX CONCURRENTLY` during subsequent
-  bank deletion can wait indefinitely for the parked snapshot.
+  next-query behavior without restoring reset SQL on every normal pool
+  release. Otherwise `DROP INDEX CONCURRENTLY` during subsequent bank deletion
+  waits for the parked backend. Nightly `42050248570` on `fdf3f5f7` timed out
+  after the observation fallback and four bank-delete command timeouts; that
+  captured log has no backend/lock snapshot, so attribution of that particular
+  run remains an inference. A local real-PostgreSQL probe reproduced the exact
+  blocker and verified that the synchronization releases the production DDL.
+- **Bounded deletion:** Bound the whole PostgreSQL bank-index drop (including
+  waiting for the in-process DDL lock) by the engine's effective existing
+  `db_command_timeout`, preserving explicit per-engine overrides.
+  Raise a non-retryable diagnostic on expiry rather than feeding the same
+  parked transaction through eight timeout retries. Deadlocks remain retryable
+  and caller cancellation still propagates. The error explicitly warns that
+  bank data deletion may already have committed before index cleanup.
 - **Regression:** `tests/test_postgres_index_ddl_loops.py` forces contention on
   the same cached dialect across 2 closed/recreated loops and verifies shared
-  create/drop exclusion. `tests/test_graph_timeout_cleanup.py` cancels a real
-  asyncpg fetch after prepare, then checks `pg_stat_activity` from a separate
-  connection after pool release. `tests/test_link_expansion_config.py` retains
+  create/drop exclusion, bounded queue waiting and non-retryable timeout
+  behavior. `tests/test_graph_timeout_cleanup.py` cancels a real asyncpg fetch
+  after prepare, observes the production `drop_bank_vector_indexes` call
+  blocked on that exact backend with `pg_blocking_pids`, and checks that both
+  fallback arms release it. The combined arm must still return semantic/causal
+  rows; observations must yield none. `tests/test_link_expansion_config.py` retains
   its actual deadline assertion and checks the cleanup query. Keep the original
   `tests/test_load_large_batch.py` and `tests/test_graph_entity_fanout_cap.py`
   assertions and deadlines unchanged. All 5 files belong to `PATCH_REGRESSIONS`

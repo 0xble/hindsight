@@ -991,6 +991,8 @@ class OracleOps(DataAccessOps):
         schema: str,
         internal_id: str,
         fact_types: dict[str, str],
+        *,
+        command_timeout: float | None = None,
     ) -> None:
         # Oracle uses a single global vector index — it does not support partial
         # (WHERE-clause) vector indexes, so there are no per-bank ones to drop.

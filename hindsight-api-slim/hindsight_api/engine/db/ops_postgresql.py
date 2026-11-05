@@ -4,9 +4,11 @@ Uses unnest(), LATERAL, DISTINCT ON, and native array operations for
 efficient batch operations.
 """
 
+import asyncio
 from datetime import datetime
 
 from hindsight_api._cross_loop import CrossLoopLock
+from hindsight_api.config import get_config
 
 from .base import DatabaseConnection
 from .ops import (
@@ -1320,6 +1322,8 @@ class PostgreSQLOps(DataAccessOps):
         schema: str,
         internal_id: str,
         fact_types: dict[str, str],
+        *,
+        command_timeout: float | None = None,
     ) -> None:
         # CONCURRENTLY so the drop takes ShareUpdateExclusive, not ACCESS
         # EXCLUSIVE, on the shared memory_units table. A plain DROP INDEX blocks
@@ -1337,11 +1341,23 @@ class PostgreSQLOps(DataAccessOps):
         # cross-process. Both paths retry the transient deadlock (40P01)
         # instead, which is the only lock-free option available — the project
         # forbids advisory locks (unreliable behind poolers, #2817).
-        async with self._index_ddl_lock(f"{schema}.memory_units"):
-            for ft, suffix in fact_types.items():
-                uid = str(internal_id).replace("-", "")[:16]
-                idx = f"idx_mu_emb_{suffix}_{uid}"
-                await conn.execute(f"DROP INDEX CONCURRENTLY IF EXISTS {schema}.{idx}")
+        # Bound the whole drop, including its in-process queue, by the existing
+        # command budget. A parked reader is not a transient deadlock: retrying
+        # its timeout eight times used to hide the cause past the caller's 300s
+        # deadline. RuntimeError is deliberately non-retryable by delete_bank.
+        timeout = command_timeout if command_timeout is not None else get_config().db_command_timeout
+        try:
+            async with asyncio.timeout(timeout):
+                async with self._index_ddl_lock(f"{schema}.memory_units"):
+                    for ft, suffix in fact_types.items():
+                        uid = str(internal_id).replace("-", "")[:16]
+                        idx = f"idx_mu_emb_{suffix}_{uid}"
+                        await conn.execute(f"DROP INDEX CONCURRENTLY IF EXISTS {schema}.{idx}")
+        except TimeoutError as exc:
+            raise RuntimeError(
+                f"Timed out dropping bank vector indexes on {schema}.memory_units "
+                f"for internal_id={internal_id} after {timeout}s; bank data deletion may already be committed"
+            ) from exc
 
     def get_entity_resolution_strategy(self) -> str:
         return "trigram"
