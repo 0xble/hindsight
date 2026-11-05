@@ -296,10 +296,15 @@ def test_request_deadline_excludes_lazy_sdk_resource_setup(monkeypatch, tmp_path
 
 @pytest.mark.asyncio
 async def test_provider_failure_is_not_a_partial_success():
-    with ocr_server(["Alice completed the review on Monday.", None]) as (url, calls):
+    # One good page followed by a persistent outage must fail the whole file
+    # after the configured retry budget, never admit the first page alone.
+    from hindsight_api.config import get_config
+
+    attempts = 1 + get_config().llm_max_retries
+    with ocr_server(["Alice completed the review on Monday."] + [None] * attempts) as (url, calls):
         with pytest.raises(RuntimeError):
             await parser(url).convert(scanned_pdf(2), "original.pdf")
-    assert len(calls) == 2
+    assert len(calls) == 1 + attempts
 
 
 @pytest.mark.asyncio
