@@ -21,6 +21,8 @@ from typing import TYPE_CHECKING, Annotated, Literal, TypeAlias
 
 from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, ValidationError
 
+from hindsight_api.config import DEFAULT_LLM_MAX_RETRIES
+
 from .base import NoExtractableContentError
 from .ocr_quality import (
     LowQualityOcrError,
@@ -29,6 +31,7 @@ from .ocr_quality import (
     OcrQualityResult,
     evaluate_ocr_quality,
 )
+from .transport import FileParserTransportError, is_retryable_file_transport_error
 
 if TYPE_CHECKING:
     from _typeshed import ReadableBuffer
@@ -63,6 +66,7 @@ class PdfOcrConfig(BaseModel):
     model: str
     prompt: str | None
     default_headers: dict[str, str] | None = Field(repr=False)
+    max_retries: int = Field(default=DEFAULT_LLM_MAX_RETRIES, ge=0)
 
 
 class _DeadlineOcrClient:
@@ -89,7 +93,7 @@ class _DeadlineOcrClient:
                 base_url=self.config.base_url.strip(),
                 default_headers=self.config.default_headers,
                 timeout=self.request_seconds,
-                max_retries=0,
+                max_retries=self.config.max_retries,
             ) as client:
                 # `client.chat` is a lazy property whose first access in each
                 # fresh worker synchronously imports hundreds of SDK resource
@@ -138,6 +142,7 @@ class _EmptyResult(_ProcessResult):
 class _ErrorResult(_ProcessResult):
     kind: Literal["error"] = "error"
     error_type: str
+    transport_failure: bool = False
 
 
 PdfOcrResult: TypeAlias = Annotated[
@@ -213,6 +218,8 @@ async def convert_pdf(file_data: bytes, filename: str, ocr_config: PdfOcrConfig,
                 raise NoExtractableContentError(f"No content extracted from '{filename}'")
             if isinstance(result, _ErrorResult):
                 # Never propagate provider exception text, source text or secrets.
+                if result.transport_failure:
+                    raise FileParserTransportError(f"PDF OCR transport failed ({result.error_type})")
                 raise RuntimeError(f"PDF conversion failed ({result.error_type})")
             if isinstance(result, _SuccessResult) and len(result.content.encode("utf-8")) > limits.output_bytes:
                 raise RuntimeError("PDF conversion output exceeds byte limit")
@@ -250,7 +257,9 @@ def _worker(source: str, result_path: str, ocr_config: PdfOcrConfig, limits: Pdf
     except NoExtractableContentError:
         result = _EmptyResult()
     except Exception as error:
-        result = _ErrorResult(error_type=type(error).__name__)
+        result = _ErrorResult(
+            error_type=type(error).__name__, transport_failure=is_retryable_file_transport_error(error)
+        )
 
     def open_result(path: str, flags: int) -> int:
         return os.open(path, flags, 0o600)

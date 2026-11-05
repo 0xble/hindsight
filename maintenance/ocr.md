@@ -41,6 +41,38 @@ remain compatible for callers.
 - **Retire when:** A released upstream build provides equivalent admission,
   fallback, privacy, sparse-text, and multilingual behavior and passes this test.
 
+## Transient OCR transport recovery
+
+- **Status:** Active fork repair; no runtime activation or failed-operation replay.
+- **Problem:** `file_convert_retain` previously settled every conversion error as
+  terminal, including TLS bad-record-MAC/connection failures from image OCR.
+- **Behavior:** Classify OpenAI connection/timeout errors, HTTPX transport errors,
+  SSL errors and their parser cause/context chains as retryable. Inspect
+  MarkItDown's `attempts[].exc_info` because that aggregate need not chain the
+  original exception. Use the existing worker retry limit and backoff; preserve
+  deterministic parse/unsupported/empty/low-quality outcomes as terminal.
+- **Provider budget:** Image and PDF OCR use existing `HINDSIGHT_API_LLM_MAX_RETRIES`
+  (default 3). PDF retries remain inside the existing request/document elapsed
+  deadlines and transport classification crosses its process boundary without
+  provider text or credentials. Retain/consolidation already use the resolved
+  global/per-operation LLM retry configuration; retain SDK `max_retries=0` there
+  to avoid multiplying retries or violating bounded single-completion corrections.
+- **Verification:** `tests/test_file_transport_retry.py` covers worker cap/backoff,
+  direct/wrapped/aggregated errors, deterministic terminal controls, cycle safety,
+  PDF worker sanitization and actual fresh socket recovery for OCR/PDF/retain/
+  consolidation. It is registered in `bin/ci` beside existing OCR regressions.
+- **Upstream preflight:** Read guidance and code-review rules at
+  `30d547ba00989297057a9679f2d59f30a554b240`. Independent proposal: classify
+  only transport failures and reuse existing worker/SDK retry policies. Tracker
+  searches found no bad-record-MAC fix; issue [#5498](https://github.com/vectorize-io/hindsight/issues/5498)
+  discusses manual file retry and explicitly distinguishes transient conversion
+  failures from missing OCR capability. This patch is automatic transport-only
+  recovery, not a manual replay API or a new retry engine.
+- **Retire/rollback:** Reconcile when a released upstream build passes these
+  regressions with bounded retries and terminal evidence exclusions intact.
+  Rollback only these source changes; never reset operation state or restart the
+  service as part of rollback.
+
 ## HINDSIGHT-004: Structured OCR terminal failures
 
 - **Status:** Active

@@ -119,6 +119,7 @@ from .operation_metadata import (
 )
 from .parsers.base import NoExtractableContentError
 from .parsers.ocr_quality import LowQualityOcrError
+from .parsers.transport import is_retryable_file_transport_error
 from .sql import SQLDialect, create_sql_dialect
 from .sql.postgresql import knowledge_bm25_arm
 
@@ -5201,10 +5202,11 @@ class MemoryEngine(MemoryEngineInterface):
 
                 error_traceback = traceback.format_exc()
 
-                if task_type == "file_convert_retain":
-                    # Non-retryable: mark as failed immediately. Stable metadata
-                    # lets callers distinguish deterministic evidence exclusions
-                    # from parser or infrastructure failures without parsing prose.
+                if task_type == "file_convert_retain" and not is_retryable_file_transport_error(e):
+                    # Deterministic parser/admission errors remain terminal. OCR
+                    # transport errors use the normal worker retry cap/backoff.
+                    # Stable metadata distinguishes evidence exclusions from
+                    # parser failures without parsing prose.
                     logger.error(f"Not retrying task {task_type} (non-retryable), marking as failed")
                     if operation_id:
                         await self._mark_operation_failed(
