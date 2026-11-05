@@ -356,20 +356,22 @@ sum(rate(hindsight_operation_operations_total{source="worker",success="false"}[1
 sum(rate(hindsight_llm_calls_total{success="false"}[15m])) > 0
 ```
 
-Alert when consolidation or refresh latency threatens queue capacity:
+Alert when consolidation or refresh latency threatens queue capacity. Both
+histograms top out at a 120s finite bucket, and `histogram_quantile` never returns
+more than that bound, so `>= 120` means the p95 is at or beyond the ceiling:
 
 ```promql
 histogram_quantile(
   0.95,
   sum by (le) (rate(hindsight_llm_duration_seconds_bucket{scope="consolidation"}[15m]))
-) > 120
+) >= 120
 
 histogram_quantile(
   0.95,
   sum by (le) (rate(hindsight_operation_duration_seconds_bucket{
     operation="refresh_mental_model"
   }[15m]))
-) > 300
+) >= 120
 ```
 
 Use `/health/live` for process liveness and `/health/ready` for database readiness.
