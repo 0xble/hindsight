@@ -57,7 +57,10 @@ remain compatible for callers.
   provider text or credentials. Whole-document deadline exhaustion remains
   terminal; only provider per-request timeouts are retryable. Certificate
   verification failures (including wrapped SDK errors) remain terminal at the
-  worker boundary. Retain/consolidation already use the resolved
+  worker boundary. Other SSL failures include deterministic misconfiguration
+  such as `WRONG_VERSION_NUMBER`; these consume the bounded SDK/worker retry
+  budgets before failing rather than being diagnosed as configuration errors.
+  Retain/consolidation already use the resolved
   global/per-operation LLM retry configuration; retain SDK `max_retries=0` there
   to avoid multiplying retries or violating bounded single-completion corrections.
 - **Verification:** `tests/test_file_transport_retry.py` covers worker cap/backoff,
@@ -229,7 +232,8 @@ validation and preserves the reason value through serialization.
   OCR-enabled PDF conversions, including text-only classification/extraction,
   remain process-isolated with CPU, scratch-write and sampled RSS protection. The document
   deadline is 120 seconds. Individual requests have a 30-second elapsed-time
-  deadline around an async SDK call, with SDK retries disabled. The request
+  deadline around an async SDK call; configured SDK retries run inside that
+  per-request elapsed deadline. The request
   deadline starts after client construction and after the SDK's lazy
   `client.chat` resource import, which takes hundreds of milliseconds in a cold
   worker and much longer on a loaded host; that local setup stays under the
@@ -283,7 +287,9 @@ validation and preserves the reason value through serialization.
   to make the story deterministic. Metadata-prefix regressions exercise the
   real ImageConverter with synthetic ExifTool metadata and refused, empty and
   usable descriptions. Local HTTP slow-trickle tests require elapsed expiry,
-  socket closure, no retry, whole-document rejection and worker/scratch cleanup.
+  socket closure, no further provider call after the request elapsed deadline,
+  whole-document rejection and worker/scratch cleanup. SDK connection retries
+  before that deadline remain bounded by the configured budget.
 - **Review-fix preflight:** Governing upstream guidance checked at
   `0be6c02b2aafc2b6bdb188ef1842ac507e0cfa2b`. Independent proposal: admit the
   raw provider description and adapt the existing image hook to a cancellable
