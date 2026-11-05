@@ -54,7 +54,10 @@ remain compatible for callers.
 - **Provider budget:** Image and PDF OCR use existing `HINDSIGHT_API_LLM_MAX_RETRIES`
   (default 3). PDF retries remain inside the existing request/document elapsed
   deadlines and transport classification crosses its process boundary without
-  provider text or credentials. Retain/consolidation already use the resolved
+  provider text or credentials. Whole-document deadline exhaustion remains
+  terminal; only provider per-request timeouts are retryable. Certificate
+  verification failures (including wrapped SDK errors) remain terminal at the
+  worker boundary. Retain/consolidation already use the resolved
   global/per-operation LLM retry configuration; retain SDK `max_retries=0` there
   to avoid multiplying retries or violating bounded single-completion corrections.
 - **Verification:** `tests/test_file_transport_retry.py` covers worker cap/backoff,

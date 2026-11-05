@@ -31,7 +31,12 @@ from .ocr_quality import (
     OcrQualityResult,
     evaluate_ocr_quality,
 )
-from .transport import FileParserTransportError, is_retryable_file_transport_error
+from .transport import (
+    FileParserDeadlineError,
+    FileParserRequestTimeout,
+    FileParserTransportError,
+    is_retryable_file_transport_error,
+)
 
 if TYPE_CHECKING:
     from _typeshed import ReadableBuffer
@@ -84,7 +89,7 @@ class _DeadlineOcrClient:
 
     def create(self, *, model: str, messages: list[ChatCompletionMessageParam]) -> ChatCompletion:
         async def request() -> ChatCompletion:
-            from openai import AsyncOpenAI
+            from openai import APITimeoutError, AsyncOpenAI
 
             # Client construction is local setup, not a provider request. Start
             # the elapsed ceiling immediately before dispatch, after that setup.
@@ -102,12 +107,17 @@ class _DeadlineOcrClient:
                 completions = client.chat.completions
                 remaining = min(self.request_seconds, self.document_deadline - time.monotonic())
                 if remaining <= 0:
-                    raise TimeoutError("PDF OCR request deadline exceeded")
+                    raise FileParserDeadlineError("PDF OCR document deadline exceeded")
                 # SDK timeout limits inactivity, not elapsed time. Cancellation
                 # aborts the async read even for a slow-trickle response; the
                 # enclosing client closes its loop-owned connection on exit.
-                async with asyncio.timeout(remaining):
-                    return await completions.create(model=model, messages=messages)
+                try:
+                    async with asyncio.timeout(remaining):
+                        return await completions.create(model=model, messages=messages)
+                except (TimeoutError, APITimeoutError):
+                    if time.monotonic() >= self.document_deadline:
+                        raise FileParserDeadlineError("PDF OCR document deadline exceeded") from None
+                    raise FileParserRequestTimeout("PDF OCR request timeout exceeded") from None
 
         # Called only by synchronous ImageConverter in the isolated PDF worker.
         response = asyncio.run(request())
@@ -181,7 +191,7 @@ async def convert_pdf(file_data: bytes, filename: str, ocr_config: PdfOcrConfig,
             process.start()
             while process.is_alive():
                 if time.monotonic() >= deadline:
-                    raise RuntimeError("PDF conversion exceeded document deadline")
+                    raise FileParserDeadlineError("PDF conversion exceeded document deadline")
                 try:
                     rss = psutil.Process(process.pid).memory_info().rss
                 except psutil.NoSuchProcess:
@@ -196,7 +206,7 @@ async def convert_pdf(file_data: bytes, filename: str, ocr_config: PdfOcrConfig,
                     raise RuntimeError("PDF conversion exceeded sampled RSS limit")
                 await asyncio.sleep(0.05)
             if time.monotonic() >= deadline:
-                raise RuntimeError("PDF conversion exceeded document deadline")
+                raise FileParserDeadlineError("PDF conversion exceeded document deadline")
             if process.exitcode != 0 or not result_path.exists():
                 raise RuntimeError("PDF conversion process failed")
             # The scan output ceiling must not truncate the original text-only
@@ -279,7 +289,7 @@ def _convert_pages(
 
     def check_deadline() -> None:
         if time.monotonic() >= deadline:
-            raise RuntimeError("PDF conversion exceeded document deadline")
+            raise FileParserDeadlineError("PDF conversion exceeded document deadline")
 
     def checked_text(text: str) -> str:
         if len(text.encode("utf-8")) > limits.output_bytes:

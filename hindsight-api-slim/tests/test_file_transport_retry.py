@@ -222,3 +222,55 @@ def test_classifier_terminates_on_cyclic_cause_and_does_not_match_error_prose():
     error = RuntimeError("APIConnectionError: SSLV3_ALERT_BAD_RECORD_MAC")
     error.__cause__ = error
     assert not is_retryable_file_transport_error(error)
+
+
+@pytest.mark.parametrize("case", ["already_expired", "document_timeout", "request_timeout"])
+async def test_pdf_document_deadline_is_terminal_but_request_timeout_retries(engine, case):
+    import time
+
+    from aiohttp import web
+    from openai import AsyncOpenAI
+
+    from hindsight_api.engine.parsers.pdf_ocr import PdfOcrConfig, _DeadlineOcrClient
+    from hindsight_api.engine.parsers.transport import FileParserDeadlineError, FileParserRequestTimeout
+    from tests.aiohttp_stub import stub_server
+
+    # Exclude lazy SDK import latency from the elapsed deadline being tested.
+    async with AsyncOpenAI(api_key="test") as warmup:
+        _ = warmup.chat.completions
+
+    async def handler(request):
+        await asyncio.sleep(0.3)
+        return web.Response()
+
+    async with stub_server(handler) as base_url:
+        document_seconds = {"already_expired": -1, "document_timeout": 0.1, "request_timeout": 10}[case]
+        request_seconds = 0.05 if case == "request_timeout" else 5
+        client = _DeadlineOcrClient(
+            PdfOcrConfig(api_key="test", base_url=base_url, model="test-model", prompt=None, default_headers=None),
+            request_seconds=request_seconds,
+            document_deadline=time.monotonic() + document_seconds,
+        )
+        expected = FileParserRequestTimeout if case == "request_timeout" else FileParserDeadlineError
+        with pytest.raises(expected) as caught:
+            await asyncio.to_thread(client.create, model="test-model", messages=[{"role": "user", "content": "hello"}])
+    engine._handle_file_convert_retain.side_effect = caught.value
+    if case == "request_timeout":
+        with pytest.raises(RetryTaskAt):
+            await engine._execute_task(_task())
+        engine._mark_operation_failed.assert_not_awaited()
+    else:
+        await engine._execute_task(_task())
+        engine._mark_operation_failed.assert_awaited_once()
+
+
+@pytest.mark.parametrize("wrapped", [False, True])
+async def test_certificate_verification_failure_stays_terminal(engine, wrapped):
+    error = ssl.SSLCertVerificationError("bad certificate")
+    if wrapped:
+        outer = _connection_errors()[0]
+        outer.__cause__ = error
+        error = outer
+    engine._handle_file_convert_retain.side_effect = error
+    await engine._execute_task(_task())
+    engine._mark_operation_failed.assert_awaited_once()
