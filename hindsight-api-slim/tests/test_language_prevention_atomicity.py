@@ -8,7 +8,6 @@ import pytest
 
 from hindsight_api.engine.chunk_ids import build_chunk_id
 from hindsight_api.engine.consolidation.consolidator import (
-    _ConsolidationBatchResponse,
     _CreateAction,
     _DeleteAction,
     _UpdateAction,
@@ -16,6 +15,7 @@ from hindsight_api.engine.consolidation.consolidator import (
 )
 from hindsight_api.engine.language_integrity import GeneratedLanguageMismatch
 from hindsight_api.engine.response_models import MemoryFact
+from tests.consolidation_answers import fact_answer, post_conversion_answer
 from tests.test_consolidation_batch_atomicity import (
     _insert_memory,
     _llm,
@@ -65,7 +65,7 @@ async def test_original_source_rejection_preserves_document_fact_and_observation
         def response(messages, scope):
             assert scope == "consolidation"
             calls.append(messages)
-            return _ConsolidationBatchResponse(
+            return fact_answer(
                 creates=[
                     _CreateAction(
                         text=ENGLISH if corrected and len(calls) == 2 else SPANISH, source_fact_ids=[str(fact)]
@@ -163,7 +163,7 @@ async def test_cross_recall_update_response_rejects_whole_real_pg_batch_without_
 
         def response(_messages, scope):
             assert scope == "consolidation"
-            return _ConsolidationBatchResponse(
+            return post_conversion_answer(
                 creates=[_CreateAction(text="A valid-looking sibling create.", source_fact_ids=[str(fact_b)])],
                 updates=[
                     _UpdateAction(
@@ -238,7 +238,7 @@ async def test_invalid_citation_drops_only_its_action_and_valid_sibling_commits_
 
         def response(_messages, scope):
             assert scope == "consolidation"
-            return _ConsolidationBatchResponse(
+            return post_conversion_answer(
                 creates=[
                     _CreateAction(
                         text="The garden and kitchen were both renovated.", source_fact_ids=[str(fact_a), str(fact_b)]
@@ -297,13 +297,13 @@ async def test_partial_invalid_citation_commits_covered_fact_and_retries_only_pe
             assert scope == "consolidation"
             calls.append(messages)
             if len(calls) == 1:
-                return _ConsolidationBatchResponse(
+                return post_conversion_answer(
                     creates=[
                         _CreateAction(text="Garden was renovated.", source_fact_ids=[str(fact_a)]),
                         _CreateAction(text="Invalid kitchen citation.", source_fact_ids=[str(fact_b), outsider]),
                     ]
                 )
-            return _ConsolidationBatchResponse(
+            return fact_answer(
                 creates=[
                     _CreateAction(text="Kitchen was painted.", source_fact_ids=[str(fact_b)]),
                 ]
@@ -358,7 +358,7 @@ async def test_persistently_miscited_single_fact_is_failed_real_pg(memory, reque
 
         def response(_messages, _scope):
             calls.append(1)
-            return _ConsolidationBatchResponse(
+            return post_conversion_answer(
                 creates=[_CreateAction(text="Invalid.", source_fact_ids=[str(fact), str(uuid.uuid4())])]
             )
 
@@ -409,7 +409,7 @@ async def test_all_dropped_multi_fact_batch_bisects_to_failed_leaves_real_pg(mem
 
         def response(messages, _scope):
             calls.append(messages)
-            return _ConsolidationBatchResponse(
+            return post_conversion_answer(
                 creates=[
                     _CreateAction(text="Invalid garden.", source_fact_ids=[str(fact_a), outsider]),
                     _CreateAction(text="Invalid kitchen.", source_fact_ids=[str(fact_b), outsider]),
@@ -466,7 +466,7 @@ async def test_mixed_reply_keeps_valid_write_and_fails_persistent_miscitation_re
 
         def response(messages, _scope):
             calls.append(messages)
-            return _ConsolidationBatchResponse(
+            return post_conversion_answer(
                 creates=[
                     _CreateAction(text="Garden was renovated.", source_fact_ids=[str(fact_a)]),
                     _CreateAction(text="Invalid kitchen.", source_fact_ids=[str(fact_b), outsider]),
@@ -528,19 +528,15 @@ async def test_pending_fact_retries_before_later_fetch_real_pg(memory, request_c
         def response(messages, _scope):
             calls.append(messages)
             if len(calls) == 1:
-                return _ConsolidationBatchResponse(
+                return post_conversion_answer(
                     creates=[
                         _CreateAction(text="Garden was renovated.", source_fact_ids=[str(fact_a)]),
                         _CreateAction(text="Invalid kitchen.", source_fact_ids=[str(fact_b), outsider]),
                     ]
                 )
             if len(calls) == 2:
-                return _ConsolidationBatchResponse(
-                    creates=[_CreateAction(text="Kitchen was painted.", source_fact_ids=[str(fact_b)])]
-                )
-            return _ConsolidationBatchResponse(
-                creates=[_CreateAction(text="Patio was cleaned.", source_fact_ids=[str(fact_c)])]
-            )
+                return fact_answer(creates=[_CreateAction(text="Kitchen was painted.", source_fact_ids=[str(fact_b)])])
+            return fact_answer(creates=[_CreateAction(text="Patio was cleaned.", source_fact_ids=[str(fact_c)])])
 
         with (
             patch.object(memory, "_consolidation_llm_config", _llm(response)),
@@ -588,7 +584,7 @@ async def test_failed_fact_round_limit_requeues_with_real_remaining_real_pg(memo
         outsider = str(uuid.uuid4())
 
         def response(_messages, _scope):
-            return _ConsolidationBatchResponse(
+            return post_conversion_answer(
                 creates=[
                     _CreateAction(text="Garden was renovated.", source_fact_ids=[str(fact_a)]),
                     _CreateAction(text="Invalid kitchen.", source_fact_ids=[str(fact_b), outsider]),
@@ -642,22 +638,20 @@ async def test_earlier_scope_pending_is_retried_before_stamp_real_pg(memory, req
         def response(_messages, _scope):
             calls.append(1)
             if len(calls) == 1:
-                return _ConsolidationBatchResponse(
+                return post_conversion_answer(
                     creates=[
                         _CreateAction(text="Garden was renovated.", source_fact_ids=[str(fact_a)]),
                         _CreateAction(text="Invalid kitchen.", source_fact_ids=[str(fact_b), outsider]),
                     ]
                 )
             if len(calls) == 2:
-                return _ConsolidationBatchResponse(
+                return fact_answer(
                     creates=[
                         _CreateAction(text="Garden was renovated.", source_fact_ids=[str(fact_a)]),
                         _CreateAction(text="Kitchen was painted.", source_fact_ids=[str(fact_b)]),
                     ]
                 )
-            return _ConsolidationBatchResponse(
-                creates=[_CreateAction(text="Kitchen was painted.", source_fact_ids=[str(fact_b)])]
-            )
+            return fact_answer(creates=[_CreateAction(text="Kitchen was painted.", source_fact_ids=[str(fact_b)])])
 
         with (
             patch.object(memory, "_consolidation_llm_config", _llm(response)),
@@ -714,10 +708,8 @@ async def test_filtered_reply_stamps_valid_duplicate_create_real_pg(memory, requ
         def response(messages, _scope):
             calls.append(messages)
             if len(calls) > 1:
-                return _ConsolidationBatchResponse(
-                    creates=[_CreateAction(text="Another fact.", source_fact_ids=[str(fact_b)])]
-                )
-            return _ConsolidationBatchResponse(
+                return fact_answer(creates=[_CreateAction(text="Another fact.", source_fact_ids=[str(fact_b)])])
+            return post_conversion_answer(
                 creates=[
                     _CreateAction(text="Already known.", source_fact_ids=[str(fact_a)]),
                     _CreateAction(text="Invalid.", source_fact_ids=[str(fact_b), str(uuid.uuid4())]),

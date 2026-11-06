@@ -7,7 +7,7 @@ info:
     name: Apache 2.0
     url: https://www.apache.org/licenses/LICENSE-2.0.html
   title: Hindsight HTTP API
-  version: 1.1.0
+  version: 1.2.0
 servers:
 - url: /
 paths:
@@ -6010,7 +6010,9 @@ paths:
   /v1/default/banks/{bank_id}/llm-requests:
     get:
       description: "List traced LLM requests for a bank, ordered by most recent first.\
-        \ Requires LLM request tracing to be enabled (HINDSIGHT_API_LLM_TRACE_ENABLED)."
+        \ Requires LLM request tracing to be enabled (HINDSIGHT_API_LLM_TRACE_ENABLED).\
+        \ Requests older than HINDSIGHT_API_LLM_TRACE_RETENTION_DAYS are deleted;\
+        \ `retention_days` in the response says how many days are kept (null = forever)."
       operationId: list_llm_requests
       parameters:
       - explode: false
@@ -6184,7 +6186,10 @@ paths:
       - LLM Traces
   /v1/default/banks/{bank_id}/llm-requests/stats:
     get:
-      description: Get LLM request counts grouped by time bucket and status for charting.
+      description: "Get LLM request counts grouped by time bucket and status for charting.\
+        \ Only requests within HINDSIGHT_API_LLM_TRACE_RETENTION_DAYS are kept, so\
+        \ a period longer than `retention_days` (in the response; null = kept forever)\
+        \ only covers the last `retention_days`."
       operationId: llm_request_stats
       parameters:
       - explode: false
@@ -6218,15 +6223,28 @@ paths:
           nullable: true
           type: string
         style: form
-      - description: "Time period: 1d, 7d, or 30d"
+      - description: "Time period: 1d (by hour), 7d, or 30d (by day)"
         explode: true
         in: query
         name: period
         required: false
         schema:
           default: 7d
-          description: "Time period: 1d, 7d, or 30d"
+          description: "Time period: 1d (by hour), 7d, or 30d (by day)"
           title: Period
+          type: string
+        style: form
+      - description: Also split each bucket by model or by operation (returned in
+          `series`)
+        explode: true
+        in: query
+        name: split_by
+        required: false
+        schema:
+          enum:
+          - model
+          - operation
+          nullable: true
           type: string
         style: form
       - explode: false
@@ -7054,6 +7072,9 @@ components:
         store_document_text:
           nullable: true
           type: boolean
+        default_timezone:
+          nullable: true
+          type: string
         enable_auto_consolidation:
           nullable: true
           type: boolean
@@ -7085,6 +7106,12 @@ components:
         recall_prefer_observations:
           nullable: true
           type: boolean
+        recall_decision_model_prune:
+          nullable: true
+          type: boolean
+        recall_decision_model_dedup:
+          nullable: true
+          type: boolean
         recall_max_tokens:
           nullable: true
           type: integer
@@ -7114,6 +7141,8 @@ components:
         priority:
           default: 0
           description: Higher priority directives are injected first
+          maximum: 2147483647
+          minimum: -2147483648
           title: Priority
           type: integer
         is_active:
@@ -7910,7 +7939,7 @@ components:
       example:
         is_active: true
         name: name
-        priority: 0
+        priority: -1803530559
         content: content
         tags:
         - tags
@@ -7927,6 +7956,8 @@ components:
         priority:
           default: 0
           description: Higher priority directives are injected first
+          maximum: 2147483647
+          minimum: -2147483648
           title: Priority
           type: integer
         is_active:
@@ -10449,6 +10480,7 @@ components:
       example:
         total: 0
         offset: 1
+        retention_days: 2
         bank_id: bank_id
         limit: 6
         items:
@@ -10519,6 +10551,9 @@ components:
           items:
             $ref: '#/components/schemas/LLMRequestEntry'
           type: array
+        retention_days:
+          nullable: true
+          type: integer
       required:
       - bank_id
       - items
@@ -10526,10 +10561,31 @@ components:
       - offset
       - total
       title: LLMRequestListResponse
+    LLMRequestSeriesSums:
+      description: Calls and tokens (total + reasoning) of one model or operation
+        within a time bucket.
+      example:
+        calls: 9
+        tokens: 3
+      properties:
+        calls:
+          title: Calls
+          type: integer
+        tokens:
+          title: Tokens
+          type: integer
+      required:
+      - calls
+      - tokens
+      title: LLMRequestSeriesSums
     LLMRequestStatsBucket:
       description: A single time bucket in LLM request stats.
       example:
         total: 6
+        series:
+          key:
+            calls: 9
+            tokens: 3
         statuses:
           key: 0
         tokens:
@@ -10552,6 +10608,10 @@ components:
           type: integer
         tokens:
           $ref: '#/components/schemas/LLMRequestTokenSums'
+        series:
+          additionalProperties:
+            $ref: '#/components/schemas/LLMRequestSeriesSums'
+          nullable: true
       required:
       - statuses
       - time
@@ -10563,9 +10623,14 @@ components:
       example:
         period: period
         trunc: trunc
+        retention_days: 2
         bank_id: bank_id
         buckets:
         - total: 6
+          series:
+            key:
+              calls: 9
+              tokens: 3
           statuses:
             key: 0
           tokens:
@@ -10576,6 +10641,10 @@ components:
             cached: 5
           time: time
         - total: 6
+          series:
+            key:
+              calls: 9
+              tokens: 3
           statuses:
             key: 0
           tokens:
@@ -10603,6 +10672,9 @@ components:
           items:
             $ref: '#/components/schemas/LLMRequestStatsBucket'
           type: array
+        retention_days:
+          nullable: true
+          type: integer
       required:
       - bank_id
       - buckets
@@ -13029,6 +13101,8 @@ components:
         prefer_observations:
           nullable: true
           type: boolean
+        rerank:
+          $ref: '#/components/schemas/RerankOptions'
         budget:
           $ref: '#/components/schemas/Budget'
         max_tokens:
@@ -13422,6 +13496,10 @@ components:
         reflect_search_observations_include_entities:
           nullable: true
           type: boolean
+        reflect_search_mental_models_max_tokens:
+          minimum: 1.0
+          nullable: true
+          type: integer
         query:
           title: Query
           type: string
@@ -13685,6 +13763,18 @@ components:
       - operation_id
       - success
       title: ReprocessDocumentResponse
+    RerankOptions:
+      description: |-
+        What the decision-model reranker does beyond ordering. Each field left unset (null) uses the
+        bank/global config; neither has any effect unless a decision model is set up for recall.
+      properties:
+        prune:
+          nullable: true
+          type: boolean
+        dedup:
+          nullable: true
+          type: boolean
+      title: RerankOptions
     RetainRequest:
       description: Request model for retain endpoint.
       example:
@@ -14177,7 +14267,7 @@ components:
       example:
         is_active: true
         name: name
-        priority: 0
+        priority: -1803530559
         content: content
         tags:
         - tags
@@ -14190,6 +14280,8 @@ components:
           nullable: true
           type: string
         priority:
+          maximum: 2147483647
+          minimum: -2147483648
           nullable: true
           type: integer
         is_active:

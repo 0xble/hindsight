@@ -7,7 +7,6 @@ from typing import Any, cast
 from unittest.mock import AsyncMock, patch
 
 import pytest
-from pydantic import ValidationError
 
 from hindsight_api.config import _get_raw_config
 from hindsight_api.engine.chunk_ids import build_chunk_id
@@ -17,6 +16,7 @@ from hindsight_api.engine.db import DatabaseBackend
 from hindsight_api.engine.language_integrity import LanguageCheckResult
 from hindsight_api.engine.memories.base import StoredMemory
 from hindsight_api.engine.response_models import LLMCallResult, MemoryFact, RecallResult, TokenUsage
+from tests.consolidation_answers import fact_answer, post_conversion_answer
 from tests.test_consolidation_schema_correction import install, provider  # noqa: F401
 from tests.test_consolidation_scope_parallelism import _insert_memory
 
@@ -45,7 +45,7 @@ async def test_update_language_validation_uses_original_chunk_texts_for_new_and_
     llm = AsyncMock()
     llm._provider_impl = None
     llm.call.return_value = LLMCallResult(
-        content=consolidator._ConsolidationBatchResponse.model_construct(
+        content=fact_answer(
             creates=[],
             updates=[
                 SimpleNamespace(
@@ -114,7 +114,7 @@ async def test_missing_original_source_text_does_not_fall_back_to_fact_text(
     llm = AsyncMock()
     llm._provider_impl = None
     llm.call.return_value = LLMCallResult(
-        content=consolidator._ConsolidationBatchResponse.model_construct(creates=[], updates=[], deletes=[]),
+        content=fact_answer(creates=[], updates=[], deletes=[]),
         usage=TokenUsage(),
     )
     prepared_sources: list[dict[str, str]] = []
@@ -148,7 +148,7 @@ async def test_unpersistable_recalled_citation_drops_only_that_action_before_lan
     llm = AsyncMock()
     llm._provider_impl = None
     llm.call.return_value = LLMCallResult(
-        content=consolidator._ConsolidationBatchResponse.model_construct(
+        content=post_conversion_answer(
             creates=[
                 SimpleNamespace(text="valid sibling", source_fact_ids=["new-source"]),
                 SimpleNamespace(text="invalid citation", source_fact_ids=["new-source", "recalled-only"]),
@@ -193,7 +193,7 @@ async def test_fact_cited_only_by_dropped_actions_remains_pending(
     llm = AsyncMock()
     llm._provider_impl = None
     llm.call.return_value = LLMCallResult(
-        content=consolidator._ConsolidationBatchResponse.model_construct(
+        content=post_conversion_answer(
             creates=[
                 SimpleNamespace(text="valid sibling", source_fact_ids=["A"]),
                 SimpleNamespace(text="invalid citation", source_fact_ids=["B", "recalled-only"]),
@@ -237,7 +237,7 @@ async def test_untargeted_update_drops_with_sibling_create_and_leaves_sources_pe
     llm = AsyncMock()
     llm._provider_impl = None
     llm.call.return_value = LLMCallResult(
-        content=consolidator._ConsolidationBatchResponse.model_construct(
+        content=fact_answer(
             creates=[SimpleNamespace(text="valid sibling", source_fact_ids=["A"])],
             updates=[SimpleNamespace(text="untargeted", observation_id="Z", source_fact_ids=["B"])],
             deletes=[],
@@ -554,7 +554,7 @@ async def test_update_must_be_recalled_for_one_of_its_cited_sources_before_langu
     llm = AsyncMock()
     llm._provider_impl = None
     llm.call.return_value = LLMCallResult(
-        content=consolidator._ConsolidationBatchResponse.model_construct(
+        content=post_conversion_answer(
             creates=[SimpleNamespace(text="valid sibling", source_fact_ids=["B"])],
             updates=[SimpleNamespace(text="invalid update", observation_id="O", source_fact_ids=["A"])],
             deletes=[SimpleNamespace(observation_id="O")],
@@ -595,7 +595,7 @@ async def test_update_recalled_for_a_cited_source_and_prior_provenance_remains_v
     llm = AsyncMock()
     llm._provider_impl = None
     llm.call.return_value = LLMCallResult(
-        content=consolidator._ConsolidationBatchResponse.model_construct(
+        content=fact_answer(
             creates=[],
             updates=[SimpleNamespace(text="valid update", observation_id="O", source_fact_ids=["B"])],
             deletes=[],

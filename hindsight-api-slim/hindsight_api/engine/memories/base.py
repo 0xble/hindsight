@@ -743,6 +743,34 @@ def build_fact_records(
     return records
 
 
+def watermark_may_postdate(last_refreshed_at: datetime | None, watermark: datetime | None) -> bool:
+    """Cheap half of staleness: rule a model current from the bank watermark alone.
+
+    False is exact — nothing in the bank has been written since the model last
+    read the memories, so nothing in its scope has either, and no scoped query is
+    needed. True means only that *something* was written, possibly outside the
+    model's tags, so it is a signal to go and ask
+    (:func:`_mental_model_stale_scope` plus the store's scoped check), never an
+    answer to report. Surfaces used to report it as "may need refresh" because
+    asking per model was expensive; they now ask the scoped question instead
+    (#3291), and this stays what it always was — a free way to skip it. Every
+    staleness caller runs it first (#4169): the scoped check is bounded by the
+    writes since the model's own watermark, so a model this settles is exactly the
+    one that would have paid the most to be asked.
+    """
+    if last_refreshed_at is None:
+        return True  # Never refreshed — nothing to be current with.
+    if watermark is None:
+        return False  # Empty bank.
+    # Oracle's TIMESTAMP columns come back naive while the bank watermark is aware;
+    # compare both in UTC, as engine/reflect/tools.py already does for last_refreshed_at.
+    if last_refreshed_at.tzinfo is None:
+        last_refreshed_at = last_refreshed_at.replace(tzinfo=timezone.utc)
+    if watermark.tzinfo is None:
+        watermark = watermark.replace(tzinfo=timezone.utc)
+    return watermark > last_refreshed_at
+
+
 @dataclass(frozen=True)
 class MemoryScopeWatermark:
     """One "has this scope changed?" question, for the batched staleness check.
@@ -1078,7 +1106,7 @@ class EntityResolverHandle(Protocol):
 
     def discard_pending_stats(self) -> None: ...
 
-    async def flush_pending_stats(self) -> None: ...
+    async def flush_pending_stats(self, conn: Any | None = None) -> None: ...
 
     async def reassert_entities_batch(self, bank_id: str, resolved_entities: list[Any], conn) -> None: ...
 
@@ -2285,6 +2313,44 @@ class MemoriesExtension(Extension, ABC):
         raising, so callers may pass a mixed set.
         """
         raise NotImplementedError
+
+    async def mental_model_is_stale(
+        self,
+        *,
+        conn,
+        fq_table,
+        bank_id: str,
+        scope: MemoryScopeWatermark,
+        cited_ids: list[str],
+    ) -> bool:
+        """Whether a memory in ``scope`` was written after ``scope.since``, or any of ``cited_ids`` is gone.
+
+        The whole store-side question behind a single mental model's staleness, asked
+        as one call so a store can answer its parts together. The three reads it is
+        made of — the bank watermark, the scoped existence check, the liveness of the
+        cited ids — are independent apart from the watermark gating the scoped check,
+        and a store that pays a network round trip per read pays them in series here.
+
+        The default asks them in series on ``conn``, which is the only correct shape
+        for a store whose reads share one connection. Override it when the reads can
+        run concurrently.
+        """
+        watermark = await self.latest_memory_write_at(conn=conn, fq_table=fq_table, bank_id=bank_id)
+        if watermark_may_postdate(scope.since, watermark) and await self.any_memory_updated_since(
+            conn=conn,
+            fq_table=fq_table,
+            bank_id=bank_id,
+            since=scope.since,
+            fact_types=scope.fact_types,
+            tags=scope.tags,
+            tags_match=scope.tags_match,
+            tag_groups=scope.tag_groups,
+        ):
+            return True
+        if not cited_ids:
+            return False
+        live = await self.live_memory_ids(conn=conn, fq_table=fq_table, bank_id=bank_id, unit_ids=cited_ids)
+        return len(live) < len(cited_ids)
 
     # ------------------------------------------------------------------ count surfaces
     #
@@ -3789,9 +3855,10 @@ class MemoriesExtension(Extension, ABC):
 
     async def unit_embeddings(self, *, conn, fq_table, bank_id: str, unit_ids: list[str]) -> list:
         """``(id, embedding, fact_type)`` rows, embedding as pgvector text, for the end-of-retain
-        semantic-link pass. Empty here, so the pass links nothing: that pass writes SQL links, and
-        a store that owns its memories derives its own (and sets
-        :attr:`derives_semantic_links_internally`, which skips the pass altogether)."""
+        semantic-link pass and recall's dedup. Empty here, so the pass links nothing: that pass
+        writes SQL links, and a store that owns its memories derives its own (and sets
+        :attr:`derives_semantic_links_internally`, which skips the pass altogether). Recall's
+        dedup then asks every pair among the kept candidates."""
         return []
 
     # ------------------------------------------------------------------ retain links and entity resolution
@@ -4080,9 +4147,10 @@ class MemoriesExtension(Extension, ABC):
 
         current = await self.get_memories(conn=conn, fq_table=fq_table, bank_id=bank_id, unit_ids=[observation_id])
         cur = current[0] if current else None
-        if cur is None:
-            # Nothing to fold into; the caller still skips its CREATE, as it always has here.
-            return True
+        if cur is None or cur.text != expected_text:
+            # A stale/missing survivor is a refused fold, never authority to skip
+            # a CREATE or delete the observation being folded into it.
+            return False
         merged_sources = list(dict.fromkeys([*(cur.source_memory_ids or []), *(str(s) for s in source_memory_ids)]))
         merged_bounds = _TemporalBounds.of(cur).merged_with(bounds)
         vectors = await embedding_utils.generate_embeddings_batch(embeddings, [merged_text])
@@ -4130,14 +4198,16 @@ class MemoriesExtension(Extension, ABC):
         from ..consolidation.consolidator import _TemporalBounds
 
         updated_obs = await self.get_memories(conn=conn, fq_table=fq_table, bank_id=bank_id, unit_ids=[observation_id])
-        updated_sources = [uuid.UUID(s) for s in updated_obs[0].source_memory_ids or []] if updated_obs else []
+        if not updated_obs or updated_obs[0].text != observation_text:
+            return False
+        updated_sources = [uuid.UUID(str(s)) for s in updated_obs[0].source_memory_ids or []]
         if not updated_sources:
             return False
         live = await self.lock_live_memory_ids(conn=conn, fq_table=fq_table, bank_id=bank_id, unit_ids=updated_sources)
         live_sources = [mid for mid in updated_sources if str(mid) in live]
         if not live_sources:
             return False
-        await self.fold_sources_into_observation(
+        return await self.fold_sources_into_observation(
             conn=conn,
             fq_table=fq_table,
             bank_id=bank_id,
@@ -4148,7 +4218,6 @@ class MemoriesExtension(Extension, ABC):
             bounds=_TemporalBounds.of(updated_obs[0]),
             embeddings=embeddings,
         )
-        return True
 
     async def delete_observation(self, *, conn, fq_table, bank_id: str, observation_id: str) -> None:
         """Delete one superseded or contradicted observation, on the caller's transaction."""
@@ -4158,8 +4227,8 @@ class MemoriesExtension(Extension, ABC):
 
     async def expand_memories(self, *, conn, fq_table, bank_id: str, unit_ids: list[uuid.UUID]) -> list:
         """``id`` (a UUID), ``text``, ``chunk_id``, ``document_id``, ``fact_type``, ``context``,
-        ``tags`` for each of ``unit_ids`` that exists, as mappings. Postgres returns its rows as
-        they are."""
+        ``tags``, ``occurred_start``, ``occurred_end``, ``mentioned_at`` for each of ``unit_ids``
+        that exists, as mappings. Postgres returns its rows as they are."""
         stored = await self.get_memories(
             conn=conn, fq_table=fq_table, bank_id=bank_id, unit_ids=[str(u) for u in unit_ids]
         )
@@ -4172,6 +4241,9 @@ class MemoriesExtension(Extension, ABC):
                 "fact_type": s.fact_type,
                 "context": s.context,
                 "tags": s.tags,
+                "occurred_start": s.occurred_start,
+                "occurred_end": s.occurred_end,
+                "mentioned_at": s.mentioned_at,
             }
             for s in stored
         ]

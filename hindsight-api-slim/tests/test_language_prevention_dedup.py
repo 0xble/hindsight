@@ -10,6 +10,7 @@ from hindsight_api.engine.chunk_ids import build_chunk_id
 from hindsight_api.engine.consolidation import consolidator as c
 from hindsight_api.engine.memories import get_memories
 from hindsight_api.engine.response_models import LLMCallResult, MemoryFact, TokenUsage
+from tests.consolidation_answers import batch_fact_ids, fact_answer
 from tests.test_consolidation_batch_atomicity import (
     _insert_memory,
     _llm,
@@ -82,11 +83,11 @@ async def test_dedup_final_text_is_checked_before_any_write(memory, request_cont
                     action="merge", text=ENGLISH if corrected and calls.count(scope) == 2 else SPANISH
                 )
             if action == "create":
-                return c._ConsolidationBatchResponse(
+                return fact_answer(
                     creates=[c._CreateAction(text=ENGLISH, source_fact_ids=[str(fresh)])],
                     deletes=[c._DeleteAction(observation_id=str(anchor))],
                 )
-            return c._ConsolidationBatchResponse(
+            return fact_answer(
                 updates=[c._UpdateAction(observation_id=str(anchor), text=ENGLISH, source_fact_ids=[str(fresh)])]
             )
 
@@ -247,7 +248,8 @@ async def test_language_failure_is_held_and_later_healthy_work_drains(memory, re
     try:
         async with memory._pool.acquire() as conn:
             bad = await source_fact(conn, bank, ENGLISH)
-            good = await source_fact(conn, bank, ENGLISH)
+            good_text = ENGLISH + " The healthy source is independent."
+            good = await source_fact(conn, bank, good_text)
             await conn.execute(
                 "UPDATE memory_units SET created_at=now()-interval '1 day' WHERE bank_id=$1 AND id=$2", bank, bad
             )
@@ -255,10 +257,13 @@ async def test_language_failure_is_held_and_later_healthy_work_drains(memory, re
 
         def response(messages, scope):
             assert scope == "consolidation"
-            prompt = str(messages)
-            ids = [str(f) for f in (bad, good) if str(f) in prompt]
+            prompt = "\n".join(message["content"] for message in messages if message.get("role") == "user")
+            aliases = batch_fact_ids(prompt)
+            # Both singleton prompts reuse F1; source content, not the alias,
+            # identifies which persisted fact is being retried.
+            ids = [str(bad), str(good)] if len(aliases) == 2 else [str(good) if good_text in prompt else str(bad)]
             calls.append(ids)
-            return c._ConsolidationBatchResponse(
+            return fact_answer(
                 creates=[c._CreateAction(text=SPANISH if str(bad) in ids else ENGLISH, source_fact_ids=ids)]
             )
 

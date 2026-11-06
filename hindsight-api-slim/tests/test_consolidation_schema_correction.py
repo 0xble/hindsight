@@ -13,6 +13,7 @@ from pydantic import BaseModel, ValidationError
 from hindsight_api.engine.consolidation import consolidator as c
 from hindsight_api.engine.llm_interface import OutputTooLongError, ProviderRateLimitResetError
 from hindsight_api.engine.llm_wrapper import LLMProvider
+from tests.consolidation_answers import batch_fact_ids, batch_fact_texts, wire_fact_answer
 
 F = "11111111-1111-4111-8111-111111111111"
 OBS_ID = "33333333-3333-4333-8333-333333333333"
@@ -60,7 +61,11 @@ class SDKStub:
         if isinstance(value, BaseException):
             raise value
         return SimpleNamespace(
-            choices=[SimpleNamespace(message=SimpleNamespace(content=json.dumps(value)), finish_reason="stop")],
+            choices=[
+                SimpleNamespace(
+                    message=SimpleNamespace(content=json.dumps(wire_fact_answer(value))), finish_reason="stop"
+                )
+            ],
             usage=SimpleNamespace(
                 prompt_tokens=10,
                 completion_tokens=12,
@@ -278,7 +283,8 @@ async def test_default_size_requeued_rounds_share_per_1000_fact_bound(provider, 
         # One correction-dependent batch per round; the remaining batches are
         # valid initially. Exhaustion/pending behavior has a real-PG lane test.
         needs_correction = kwargs["schema_correction_budget"].stats.attempts == 0
-        stub = install(provider, [MISSING, {}] if needs_correction else [{}])
+        empty_success = {"facts": [], "deletes": []}
+        stub = install(provider, [MISSING, empty_success] if needs_correction else [empty_success])
         result = await c._consolidate_batch_with_llm(
             provider, kwargs["memories"], [], {}, config, schema_correction_budget=kwargs["schema_correction_budget"]
         )
@@ -371,7 +377,7 @@ async def test_codex_hidden_auth_retry_cannot_make_second_correction(provider, c
         impl = CodexLLM(provider="openai-codex", api_key="test-key", base_url="", model="synthetic-model")
     provider._provider_impl = impl
     provider.provider = "openai-codex"
-    first = "event: response.text.delta\ndata: " + json.dumps({"delta": json.dumps(MISSING)}) + "\n\n"
+    first = "event: response.text.delta\ndata: " + json.dumps({"delta": json.dumps(wire_fact_answer(MISSING))}) + "\n\n"
     first += 'data: {"type":"response.completed","response":{}}\n\n'
     requests = []
 
@@ -476,12 +482,22 @@ async def test_correction_failure_counters_and_request_usage(provider, config):
 
 
 @pytest.mark.asyncio
-async def test_constrained_schema_preserves_observation_cap(provider, config):
+@pytest.mark.parametrize("strict_schema", [False, True])
+async def test_constrained_schema_preserves_observation_cap(provider, config, strict_schema):
+    config.llm_strict_schema_consolidation = strict_schema
     stub = install(provider, [MISSING, VALID])
     result = await batch(provider, config, remaining_observation_slots=0)
     assert not result.failed and len(stub.requests) == 2
     feedback = stub.requests[1]["messages"][-1]["content"]
     assert '"maxItems": 0' in feedback
+    if strict_schema:
+        # Native JSON-schema enforcement must carry the cap too, not only the
+        # correction's prose/schema appendix. Updates remain legal at capacity.
+        schema = stub.requests[0]["response_format"]["json_schema"]["schema"]
+        fact_ref = schema["properties"]["facts"]["items"]["$ref"].rsplit("/", 1)[1]
+        fact_schema = schema["$defs"][fact_ref]
+        assert fact_schema["properties"]["new"]["maxItems"] == 0
+        assert schema == stub.requests[1]["response_format"]["json_schema"]["schema"]
 
 
 def test_feedback_is_bounded_and_excludes_input_context_and_messages():
@@ -496,7 +512,6 @@ def test_feedback_is_bounded_and_excludes_input_context_and_messages():
 @pytest.mark.asyncio
 @pytest.mark.memory_backend_incompatible
 async def test_job_budget_survives_scopes_lanes_fetches_bisection_and_isolates_banks(memory, request_context, provider):
-    import re
     import uuid
 
     from hindsight_api.config import _get_raw_config
@@ -522,14 +537,17 @@ async def test_job_budget_survives_scopes_lanes_fetches_bisection_and_isolates_b
     class DispatchStub(SDKStub):
         async def create(self, **kwargs):
             user = kwargs["messages"][-1]["content"]
-            fact_ids = re.findall(r"\[([0-9a-f-]{36})\]", user)
+            fact_ids = batch_fact_ids(user)
             correction = "Return a COMPLETE replacement" in user
             # Multi-fact corrections remain malformed to drive actual adaptive
             # bisection; only a corrected leaf is allowed to write.
             value = (
                 {
                     "creates": [
-                        {"text": f"Synthetic corrected observation for {fact_ids[0]}", "source_fact_ids": fact_ids}
+                        {
+                            "text": f"Synthetic corrected observation for {batch_fact_texts(user)[fact_ids[0]]}",
+                            "source_fact_ids": fact_ids,
+                        }
                     ]
                 }
                 if correction and len(fact_ids) == 1

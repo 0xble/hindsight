@@ -39,3 +39,24 @@ port and drops it at teardown. The fold matrix covers no array SQL on Oracle, Po
 on the caller's connection. This is dialect-routing evidence, not a live Oracle
 qualification. Retire the bypass when the store implements an Oracle-native fold
 that preserves the same sources, fences and transaction.
+
+## v1.2.0 Fold Refusal And Search-Vector Writes
+
+Store-routed engine folds call `fold_sources_into_observation` or
+`fold_observation_into_twin` with the probe-time texts and honor their explicit
+boolean refusal. A missing or rewritten target cannot authorize skipping a
+CREATE or deleting an UPDATE. The default store implementations refuse missing
+or mismatched probe-time rows and propagate a nested fold refusal. This is not
+a new atomic-CAS guarantee for every external store: native store overrides
+remain responsible for their write-time fences. Oracle still declines the
+PG-array optimization separately and keeps the normal rewrite/insert path.
+
+The recovered engine's inline UPDATE/create-fold/update-fold statements must
+refresh native `tsvector` and vchord `bm25vector` search columns; direct-text
+backends emit no search-vector assignment, and Oracle emits no PG expression.
+The engine regression captures SQL at each actual engine apply entry point,
+not merely the store's SQL helper. The pg0 matrix runs both fold entries through
+inline and store routing, verifies missing/changed-target refusals, preserves
+source coverage and temporal widening, and reads back native searchability.
+Native PostgreSQL persistence and dialect dispatch proofs do not constitute
+live vchord or Oracle qualification.

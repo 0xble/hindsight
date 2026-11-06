@@ -78,8 +78,28 @@ intentional fork infrastructure policy, not upstream deployment ownership.
   also covers Oracle/native-store source fences and strict scope counts.
   Each patch-list entry is unique. The v1.1.0 integration keeps the released
   trace regressions registered once alongside the retained private-read sink cases.
+  The v1.2.0 gate also retains the OpenAI total-deadline, timeout-propagation and
+  transport-diagnostic regressions. Released fact-format, delete-schema,
+  observation-search-vector, operation-run and model-call-extension suites run
+  once beside the fact-verdict contract and shared answer-fixture checks.
+  Real-server stories include PDF OCR and guarded-update provenance alongside
+  original-file, curation, bank-config and private-read coverage. These remain
+  native qualification stages, not substitutes for live-provider efficacy proof.
+  The released template extraction moved `BankTemplateConfig` from HTTP into
+  `engine/bank_templates.py`; preserve the six retained optional configuration
+  fields at that source owner, then regenerate OpenAPI, bank schema and clients.
+  Missing fields in generated output indicate source drift, not a reason to edit
+  SDK artifacts by hand. OpenAI deadline tool-turn cases follow the released
+  `tools_via_schema` transport while retaining real SDK/local-HTTP deadline,
+  request-count and retry assertions. Coding-agent startup coverage retains
+  immediate retrieval for an empty roster and once-per-session injection: a
+  second prompt must not replay the first answer or make another synthesis call.
   Rust client coverage also runs
-  `operation_enum_collisions` beside `curation_fields`. No workflow/action
+  `operation_enum_collisions` beside `curation_fields`, then compiles the CLI
+  against the same generated client. Inline enum collision scoping renames
+  ambiguous `Status`/`Kind` types to `OperationStatusResponseStatus` and
+  `KnowledgeNodeKind`; preserve these typed CLI consumers rather than undoing
+  generator disambiguation or hand-editing generated artifacts. No workflow/action
   versions, permissions, protections or deployment capabilities change. Mutable
   action major tags remain inherited generic hardening, not a new policy
   requirement for this run.
@@ -246,6 +266,19 @@ config-reader and store-table architecture guards registered alongside private
 reads. Their intended boundaries remain unchanged: dynamic extension namespace
 reads belong to the loader, and built-in SQL retriever type checks belong to the
 Postgres store. Do not exempt the generic callers to silence these guards.
+
+### v1.2.0 Source Qualification
+
+Keep the fork's six-workflow, read-only execution boundary; do not restore the
+release's publisher workflows or scheduled upstream performance entrypoint.
+The generated control-center bundle contains an intentional trailing space in
+a Preact diagnostic string; its narrow generated-asset whitespace attribute
+preserves the released string rather than hand-editing generated JavaScript.
+OCR system stories use their own disposable PostgreSQL queue because the
+ordinary server's OCR-disabled worker can otherwise claim their conversion
+tasks. Keep both real workers enabled and preserve every public-client byte,
+failure and operation assertion. The harness owns and drops only that uniquely
+allocated instance, including startup failure cleanup.
 
 ### UI Time Presets
 

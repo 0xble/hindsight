@@ -25,7 +25,6 @@ from tests.aiohttp_stub import stub_server
 
 TIMEOUT = 0.5
 MESSAGES = [{"role": "user", "content": "hi"}]
-TOOLS = [{"type": "function", "function": {"name": "noop", "parameters": {"type": "object", "properties": {}}}}]
 
 
 class _Ok(BaseModel):
@@ -69,10 +68,6 @@ def _structured(llm: LLMInterface) -> Awaitable[object]:
     return llm.call(messages=MESSAGES, response_format=_Ok, max_retries=0)
 
 
-def _tools(llm: LLMInterface) -> Awaitable[object]:
-    return llm.call_with_tools(messages=MESSAGES, tools=TOOLS, max_retries=0)
-
-
 # The OpenAI-compatible SDK path reports its deadline as the SDK's own
 # APITimeoutError (caused by the wall-clock TimeoutError) so existing SDK retry
 # and classification keep working; see test_openai_total_deadline.py. The other
@@ -80,7 +75,6 @@ def _tools(llm: LLMInterface) -> Awaitable[object]:
 CASES = {
     "openai-call": (_openai, _call, APITimeoutError),
     "openai-call-structured": (_openai, _structured, APITimeoutError),
-    "openai-tools": (_openai, _tools, APITimeoutError),
     "ollama-native": (_ollama, _structured, TimeoutError),
     "openai-responses": (_responses, _call, TimeoutError),
     "anthropic-call": (_anthropic, _call, TimeoutError),

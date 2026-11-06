@@ -15,6 +15,7 @@ import socket
 import subprocess
 import threading
 import time
+import uuid
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -93,6 +94,7 @@ class HindsightServer:
     url: str
     log_path: Path
     _process: subprocess.Popen
+    _owned_pg_instance: str | None = None
 
     def stop(self) -> None:
         self._process.terminate()
@@ -101,6 +103,24 @@ class HindsightServer:
         except subprocess.TimeoutExpired:
             self._process.kill()
             self._process.wait(timeout=10)
+        if self._owned_pg_instance is not None:
+            subprocess.run(
+                [
+                    "uv",
+                    "run",
+                    "--frozen",
+                    "--project",
+                    str(API_DIR),
+                    "python",
+                    "-c",
+                    "import pg0, sys; pg0.drop(sys.argv[1], force=True)",
+                    self._owned_pg_instance,
+                ],
+                cwd=self.log_path.parent,
+                check=True,
+                timeout=30,
+            )
+            self._owned_pg_instance = None
 
     def logs(self) -> str:
         with contextlib.suppress(OSError):
@@ -180,12 +200,19 @@ def stub_environment(stub_url: str) -> dict[str, str]:
 
 
 def start_hindsight_server(
-    *, stub_url: str, log_path: Path, extra_env: dict[str, str] | None = None
+    *, stub_url: str, log_path: Path, extra_env: dict[str, str] | None = None, isolated_database: bool = False
 ) -> HindsightServer:
     port = free_port()
     env = _server_env(stub_url, extra_env)
+    # Different worker-level policies cannot share one queue: either worker may
+    # claim the other's tasks. Isolate processing without disabling either worker.
+    instance = f"{PG0_INSTANCE}-{uuid.uuid4().hex[:8]}" if isolated_database else None
+    if instance is not None:
+        env["HINDSIGHT_API_DATABASE_URL"] = f"pg0://{instance}:{free_port()}"
     env.update({"HINDSIGHT_API_HOST": "127.0.0.1", "HINDSIGHT_API_PORT": str(port)})
-    return _start(["hindsight-api"], env=env, url=f"http://127.0.0.1:{port}", log_path=log_path)
+    return _start(
+        ["hindsight-api"], env=env, url=f"http://127.0.0.1:{port}", log_path=log_path, owned_pg_instance=instance
+    )
 
 
 def start_hindsight_worker(
@@ -240,7 +267,9 @@ def _server_env(stub_url: str, extra_env: dict[str, str] | None) -> dict[str, st
     return env
 
 
-def _start(command: list[str], *, env: dict[str, str], url: str, log_path: Path) -> HindsightServer:
+def _start(
+    command: list[str], *, env: dict[str, str], url: str, log_path: Path, owned_pg_instance: str | None = None
+) -> HindsightServer:
     # `hindsight-api` calls load_dotenv(find_dotenv(usecwd=True), override=True) at
     # startup, and a discovered .env deliberately wins over the ambient environment
     # (see issue #2961). Started from anywhere inside the repo it would therefore
@@ -260,8 +289,12 @@ def _start(command: list[str], *, env: dict[str, str], url: str, log_path: Path)
         stderr=subprocess.STDOUT,
     )
 
-    server = HindsightServer(url=url, log_path=log_path, _process=process)
-    _wait_until_healthy(server)
+    server = HindsightServer(url=url, log_path=log_path, _process=process, _owned_pg_instance=owned_pg_instance)
+    try:
+        _wait_until_healthy(server)
+    except BaseException:
+        server.stop()
+        raise
     return server
 
 

@@ -94,6 +94,13 @@ the owning system-test instance and never reuse the live service database.
 
 ## Adopt Or Retire
 
+The v1.2.0 `operation_runs` and `ModelCallRecorder` owners are diagnostic sinks
+too. Suppress them before constructing a record or inspecting private payloads,
+and do not charge private work to an inherited public run. Reject configured
+model-call extensions before private input reaches them. The native regression
+`tests/test_private_read_operation_runs.py` preserves positive public controls,
+failure propagation and inherited-run isolation alongside the broader sink suite.
+
 When adopting a released upstream equivalent, check every sink and dispatch
 boundary above, capability negotiation and generated SDK compatibility. Retire
 the fork implementation only when that release passes the same focused and

@@ -1,6 +1,7 @@
 """Unit tests for pg0 URL parsing and MemoryEngine startup."""
 
-from unittest.mock import AsyncMock, patch
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -179,3 +180,13 @@ async def test_embedded_postgres_drop_forces_instance_removal() -> None:
             port=54321,
         )
         pg0_class.return_value.drop.assert_called_once_with(force=True)
+
+
+async def test_start_without_a_uri_fails_with_a_clear_error() -> None:
+    """A start that hands back no URI is a failed start (#5956), not a server at ``None``."""
+    pg0 = EmbeddedPostgres(name="no-uri", port=None)
+    pg0._pg0 = MagicMock(start=MagicMock(return_value=SimpleNamespace(uri=None)))
+
+    with pytest.raises(RuntimeError, match="returned no connection URI"):
+        await pg0.start(max_retries=2, retry_delay=0)
+    assert pg0._pg0.start.call_count == 2

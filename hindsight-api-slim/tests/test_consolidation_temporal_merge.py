@@ -12,6 +12,7 @@ and asserting on a mocked connection cannot tell a working statement from one Po
 refuses to plan.
 """
 
+import json
 import types
 import uuid
 from datetime import datetime, timezone
@@ -21,13 +22,9 @@ import pytest
 
 from hindsight_api.config import _get_raw_config
 from hindsight_api.engine.consolidation import consolidator
-from tests.consolidation_actions import (
-    dedup_reconcile_update,
-    execute_create_action as _execute_create_action,
-    execute_update_action as _execute_update_action,
-)
 from hindsight_api.engine.consolidation.consolidator import (
     _aggregate_source_fields,
+    _CreateAction,
     _DedupDecision,
     _DedupOutcome,
     _TemporalBounds,
@@ -35,7 +32,18 @@ from hindsight_api.engine.consolidation.consolidator import (
 )
 from hindsight_api.engine.memories import MemoriesExtension
 from hindsight_api.engine.memory_engine import MemoryEngine
+from hindsight_api.engine.providers.mock_llm import MockLLM
 from hindsight_api.engine.response_models import MemoryFact
+from tests.consolidation_actions import (
+    dedup_reconcile_update,
+)
+from tests.consolidation_actions import (
+    execute_create_action as _execute_create_action,
+)
+from tests.consolidation_actions import (
+    execute_update_action as _execute_update_action,
+)
+from tests.consolidation_answers import batch_fact_ids, fact_answer
 
 EARLY = datetime(2020, 3, 1, tzinfo=timezone.utc)
 LATE = datetime(2021, 7, 4, 12, 30, tzinfo=timezone.utc)
@@ -167,13 +175,43 @@ async def test_dedup_create_fold_widens_bounds_of_the_twin(memory: MemoryEngine,
         _TemporalBounds(event_date=EARLY, occurred_start=EARLY, occurred_end=LATE, mentioned_at=LATE),
     )
 
-    # The adjudicating LLM votes "merge", so this CREATE folds into the twin instead of inserting.
-    with patch.object(
-        consolidator,
-        "_dedup_decision_from_response",
-        lambda _response: _DedupDecision(action="merge", text="Alice moved to Berlin for a new job.", reason="test"),
+    # Supply a native fact verdict rather than the generic extraction mock's
+    # obsolete consolidation shape. The adjudicator must actually be called:
+    # this test exercises the semantic fold, not an UPDATE or exact-text fold.
+    merged_text = "Alice moved to Berlin for a new job."
+    mock_llm = MockLLM(provider="mock", api_key="", base_url="", model="mock")
+
+    def answer(messages, scope):
+        if scope == "consolidation":
+            prompt = "\n".join(m["content"] for m in messages if m["role"] == "user")
+            [fact_id] = batch_fact_ids(prompt)
+            return fact_answer(creates=[_CreateAction(text=merged_text, source_fact_ids=[fact_id])])
+        assert scope == "consolidation_dedup"
+        return _DedupDecision(action="merge", text=merged_text, reason="test")
+
+    mock_llm.set_response_callback(answer)
+    # Reuse the twin's stored vector for every query/document in this job. This
+    # pins the near-twin gate without depending on a model's similarity score,
+    # and supplies one correctly dimensioned vector for every requested text.
+    async with memory._pool.acquire() as conn:
+        twin_vector = json.loads(
+            await conn.fetchval("SELECT embedding::text FROM memory_units WHERE id = $1", observation_id)
+        )
+    with (
+        patch.object(
+            memory,
+            "_consolidation_llm_config",
+            types.SimpleNamespace(with_config=lambda *_a, **_k: mock_llm),
+        ),
+        patch.object(
+            consolidator.embedding_utils,
+            "generate_embeddings_batch",
+            AsyncMock(side_effect=lambda _e, texts, **_k: [list(twin_vector) for _ in texts]),
+        ),
     ):
-        await run_consolidation_job(memory_engine=memory, bank_id=bank_id, request_context=request_context)
+        result = await run_consolidation_job(memory_engine=memory, bank_id=bank_id, request_context=request_context)
+    assert result["status"] == "completed"
+    assert [call["scope"] for call in mock_llm.get_mock_calls()] == ["consolidation", "consolidation_dedup"]
 
     rows = await _observations(memory, bank_id)
     assert len(rows) == 1, f"the CREATE should have folded into the twin, not inserted: {[dict(r) for r in rows]}"
@@ -342,6 +380,7 @@ async def test_store_owned_fold_merges_bounds_like_the_sql_path():
     """A memories store that owns its rows re-upserts the whole observation, so the fold has to
     apply the same widening in Python."""
     stored = types.SimpleNamespace(
+        text="twin",
         source_memory_ids=["existing"],
         tags=["t1"],
         created_at=EARLY,

@@ -3,3 +3,6 @@ hindsight-clients/go/*.go whitespace=-blank-at-eof
 hindsight-clients/python/hindsight_client_api/models/*.py whitespace=-blank-at-eof
 # Its generated API methods also indent blank lines in optional-argument blocks.
 hindsight-clients/python/hindsight_client_api/api/*.py whitespace=-blank-at-eol
+# The committed Vite bundle preserves a space before a newline inside Preact's
+# diagnostic template literal. Do not rewrite generated JavaScript string bytes.
+hindsight-embed/hindsight_embed/control_center/static/assets/*.js whitespace=-blank-at-eol

@@ -90,6 +90,7 @@ def pdf_server(stub_server, tmp_path_factory) -> Iterator[object]:
     server = start_hindsight_server(
         stub_url=stub_server.url,
         log_path=tmp_path_factory.mktemp("pdf-ocr-server") / "server.log",
+        isolated_database=True,
         extra_env={
             "HINDSIGHT_API_FILE_PARSER_MARKITDOWN_OCR_ENABLED": "true",
             "HINDSIGHT_API_FILE_PARSER_MARKITDOWN_OCR_API_KEY": "stub-key",

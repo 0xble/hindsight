@@ -40,6 +40,14 @@ in the root contract.
 
 ## HINDSIGHT-007: Consolidation lock ordering and deadlock retry
 
+The v1.2.0 production reconciliation preserves the released store fold-refusal
+boundary and native backend-aware search-vector writes without changing lock
+order, source/version fences, history or the deadlock retry allowance. Filtered
+response stamping includes genuine uncited momentary skips alongside durable
+writes, but never facts cited only by rejected actions. Guard fallback
+coalescing requires identical target and text and retains all validated sources;
+it does not merge separate guard lineage into an ordinary exact twin.
+
 - **Status:** Active
 - **Commits:** `27fcb7b`
 - **Surfaces:** `engine/consolidation/consolidator.py` (ordered `FOR SHARE` source

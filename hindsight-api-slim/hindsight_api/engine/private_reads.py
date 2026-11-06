@@ -43,6 +43,10 @@ def check_private_read_extensions(memory: MemoryEngine) -> None:
 
     if getattr(memory, "_llm_request_extension", None) is not None or installed_llm_request_extension() is not None:
         raise PrivateReadUnsupportedError("LLM request extensions do not support private reads")
+    # Unlike the built-in recorder, an operator callback can escape the task-local
+    # sink policy. Refuse before invoking it, just like the request extension.
+    if getattr(memory, "_model_call_extension", None) is not None:
+        raise PrivateReadUnsupportedError("Model call extensions do not support private reads")
 
 
 def check_private_read_retrieval(memory: MemoryEngine) -> None:

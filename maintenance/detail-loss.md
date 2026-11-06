@@ -25,6 +25,14 @@ native store and Oracle restrictions, source/version fences, and
 transaction rollback behavior. A failed exact fold must still reach semantic
 folding or INSERT rather than losing its source coverage.
 
+On the v1.2.0 fact-verdict protocol, retain every repeated-target correction
+proposal through detail validation and every admitted text through independent
+language validation. A later complete proposal cannot hide an earlier lossy
+one. Coalesce guard fallbacks only for identical text and the same original
+target, unioning their validated source ids. Keep these inserts separate from
+ordinary CREATEs and exact shown/reply twins; different fallback texts or
+targets are not coalescing authority.
+
 The v1.1.0 adaptation keeps the released batched embedding interface in guard
 fixtures, with vectors matching the active embedder's dimension. The
 [same-response survivor correction](service-hardening.md#hindsight-007-consolidation-lock-ordering-and-deadlock-retry)

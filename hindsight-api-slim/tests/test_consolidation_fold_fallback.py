@@ -7,6 +7,8 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
+from tests.consolidation_answers import fact_answer
+
 from hindsight_api.config import _get_raw_config
 from hindsight_api.engine.consolidation import consolidator as c
 from hindsight_api.engine.response_models import MemoryFact, RecallResult
@@ -36,7 +38,7 @@ async def test_exact_create_cas_miss_after_prior_create_fold_keeps_sources(memor
             ]
         wrapper, mock = _mock_llm_one_obs_per_fact()
         mock.set_response_callback(
-            lambda messages, scope: c._ConsolidationBatchResponse(
+            lambda messages, scope: fact_answer(
                 creates=[
                     c._CreateAction(text="Semantic twin", source_fact_ids=[str(first)]),
                     c._CreateAction(text="Original twin", source_fact_ids=[str(second)]),
@@ -128,7 +130,7 @@ async def test_oracle_create_twins_never_enter_postgres_fold(memory, request_con
         )
         wrapper, mock = _mock_llm_one_obs_per_fact()
         mock.set_response_callback(
-            lambda messages, scope: c._ConsolidationBatchResponse(
+            lambda messages, scope: fact_answer(
                 creates=[
                     c._CreateAction(
                         text="Updated twin" if target == "reply" else "Original twin", source_fact_ids=[str(fresh)]

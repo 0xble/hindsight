@@ -157,17 +157,20 @@ async def test_hierarchical_fields_categorization():
     assert "enable_graph_retrieval" in configurable
     assert "enable_reranking" in configurable
     assert "recall_prefer_observations" in configurable
+    assert "recall_decision_model_prune" in configurable
+    assert "recall_decision_model_dedup" in configurable
     assert "mental_model_min_refresh_interval_seconds" in configurable
     assert "knowledge_page_default_trigger" in configurable
     assert "reflect_default_options" in configurable
 
-    # Verify count is correct
-    # 57 upstream fields plus the fork's consolidation_max_context_tokens (HINDSIGHT-002),
-    # consolidation_fair_group_selection, consolidation_lane_llm_parallelism, file_delete_after_retain,
+    # Keep the exact surface count, including released recall_decision_model_prune
+    # and recall_decision_model_dedup above and the six retained fork settings:
+    # consolidation_max_context_tokens, consolidation_fair_group_selection,
+    # consolidation_lane_llm_parallelism, file_delete_after_retain,
     # llm_language_integrity, and consolidation_round_correction_budget.
     assert "llm_language_integrity" in configurable
     assert "llm_output_language" in static
-    assert len(configurable) == 63
+    assert len(configurable) == 66
 
     # Verify credential fields (NEVER exposed)
     assert "llm_api_key" in credentials
