@@ -21,6 +21,8 @@ from typing import TYPE_CHECKING, Annotated, Literal, TypeAlias
 
 from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, ValidationError
 
+from hindsight_api.config import DEFAULT_LLM_MAX_RETRIES
+
 from .base import NoExtractableContentError
 from .ocr_quality import (
     LowQualityOcrError,
@@ -28,6 +30,12 @@ from .ocr_quality import (
     OcrQualityReason,
     OcrQualityResult,
     evaluate_ocr_quality,
+)
+from .transport import (
+    FileParserDeadlineError,
+    FileParserRequestTimeout,
+    FileParserTransportError,
+    is_retryable_file_transport_error,
 )
 
 if TYPE_CHECKING:
@@ -63,6 +71,7 @@ class PdfOcrConfig(BaseModel):
     model: str
     prompt: str | None
     default_headers: dict[str, str] | None = Field(repr=False)
+    max_retries: int = Field(default=DEFAULT_LLM_MAX_RETRIES, ge=0)
 
 
 class _DeadlineOcrClient:
@@ -80,7 +89,7 @@ class _DeadlineOcrClient:
 
     def create(self, *, model: str, messages: list[ChatCompletionMessageParam]) -> ChatCompletion:
         async def request() -> ChatCompletion:
-            from openai import AsyncOpenAI
+            from openai import APITimeoutError, AsyncOpenAI
 
             # Client construction is local setup, not a provider request. Start
             # the elapsed ceiling immediately before dispatch, after that setup.
@@ -89,7 +98,7 @@ class _DeadlineOcrClient:
                 base_url=self.config.base_url.strip(),
                 default_headers=self.config.default_headers,
                 timeout=self.request_seconds,
-                max_retries=0,
+                max_retries=self.config.max_retries,
             ) as client:
                 # `client.chat` is a lazy property whose first access in each
                 # fresh worker synchronously imports hundreds of SDK resource
@@ -98,12 +107,17 @@ class _DeadlineOcrClient:
                 completions = client.chat.completions
                 remaining = min(self.request_seconds, self.document_deadline - time.monotonic())
                 if remaining <= 0:
-                    raise TimeoutError("PDF OCR request deadline exceeded")
+                    raise FileParserDeadlineError("PDF OCR document deadline exceeded")
                 # SDK timeout limits inactivity, not elapsed time. Cancellation
                 # aborts the async read even for a slow-trickle response; the
                 # enclosing client closes its loop-owned connection on exit.
-                async with asyncio.timeout(remaining):
-                    return await completions.create(model=model, messages=messages)
+                try:
+                    async with asyncio.timeout(remaining):
+                        return await completions.create(model=model, messages=messages)
+                except (TimeoutError, APITimeoutError):
+                    if time.monotonic() >= self.document_deadline:
+                        raise FileParserDeadlineError("PDF OCR document deadline exceeded") from None
+                    raise FileParserRequestTimeout("PDF OCR request timeout exceeded") from None
 
         # Called only by synchronous ImageConverter in the isolated PDF worker.
         response = asyncio.run(request())
@@ -138,6 +152,7 @@ class _EmptyResult(_ProcessResult):
 class _ErrorResult(_ProcessResult):
     kind: Literal["error"] = "error"
     error_type: str
+    transport_failure: bool = False
 
 
 PdfOcrResult: TypeAlias = Annotated[
@@ -176,7 +191,7 @@ async def convert_pdf(file_data: bytes, filename: str, ocr_config: PdfOcrConfig,
             process.start()
             while process.is_alive():
                 if time.monotonic() >= deadline:
-                    raise RuntimeError("PDF conversion exceeded document deadline")
+                    raise FileParserDeadlineError("PDF conversion exceeded document deadline")
                 try:
                     rss = psutil.Process(process.pid).memory_info().rss
                 except psutil.NoSuchProcess:
@@ -191,7 +206,7 @@ async def convert_pdf(file_data: bytes, filename: str, ocr_config: PdfOcrConfig,
                     raise RuntimeError("PDF conversion exceeded sampled RSS limit")
                 await asyncio.sleep(0.05)
             if time.monotonic() >= deadline:
-                raise RuntimeError("PDF conversion exceeded document deadline")
+                raise FileParserDeadlineError("PDF conversion exceeded document deadline")
             if process.exitcode != 0 or not result_path.exists():
                 raise RuntimeError("PDF conversion process failed")
             # The scan output ceiling must not truncate the original text-only
@@ -213,6 +228,8 @@ async def convert_pdf(file_data: bytes, filename: str, ocr_config: PdfOcrConfig,
                 raise NoExtractableContentError(f"No content extracted from '{filename}'")
             if isinstance(result, _ErrorResult):
                 # Never propagate provider exception text, source text or secrets.
+                if result.transport_failure:
+                    raise FileParserTransportError(f"PDF OCR transport failed ({result.error_type})")
                 raise RuntimeError(f"PDF conversion failed ({result.error_type})")
             if isinstance(result, _SuccessResult) and len(result.content.encode("utf-8")) > limits.output_bytes:
                 raise RuntimeError("PDF conversion output exceeds byte limit")
@@ -250,7 +267,9 @@ def _worker(source: str, result_path: str, ocr_config: PdfOcrConfig, limits: Pdf
     except NoExtractableContentError:
         result = _EmptyResult()
     except Exception as error:
-        result = _ErrorResult(error_type=type(error).__name__)
+        result = _ErrorResult(
+            error_type=type(error).__name__, transport_failure=is_retryable_file_transport_error(error)
+        )
 
     def open_result(path: str, flags: int) -> int:
         return os.open(path, flags, 0o600)
@@ -270,7 +289,7 @@ def _convert_pages(
 
     def check_deadline() -> None:
         if time.monotonic() >= deadline:
-            raise RuntimeError("PDF conversion exceeded document deadline")
+            raise FileParserDeadlineError("PDF conversion exceeded document deadline")
 
     def checked_text(text: str) -> str:
         if len(text.encode("utf-8")) > limits.output_bytes:

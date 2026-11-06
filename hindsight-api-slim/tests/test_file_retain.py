@@ -3,7 +3,6 @@ End-to-end tests for file retain (upload, convert, retain) functionality.
 """
 
 import asyncio
-import io
 import json
 from datetime import datetime, timezone
 
@@ -530,7 +529,7 @@ def test_markitdown_converter_can_enable_ocr(monkeypatch):
     import markitdown
     import openai
 
-    from hindsight_api.config import DEFAULT_FILE_PARSER_MARKITDOWN_OCR_PROMPT
+    from hindsight_api.config import DEFAULT_FILE_PARSER_MARKITDOWN_OCR_PROMPT, get_config
     from hindsight_api.engine.parsers import MarkitdownParser
 
     markitdown_calls = []
@@ -562,6 +561,7 @@ def test_markitdown_converter_can_enable_ocr(monkeypatch):
         {
             "api_key": "parser-key",
             "base_url": "https://vision.example/v1",
+            "max_retries": get_config().llm_max_retries,
         }
     ]
     assert "default_headers" not in openai_calls[0]
@@ -575,6 +575,7 @@ def test_markitdown_converter_passes_default_headers_when_configured(monkeypatch
     import markitdown
     import openai
 
+    from hindsight_api.config import get_config
     from hindsight_api.engine.parsers import MarkitdownParser
 
     openai_calls = []
@@ -605,6 +606,7 @@ def test_markitdown_converter_passes_default_headers_when_configured(monkeypatch
         {
             "api_key": "parser-key",
             "base_url": "https://vision.example/v1",
+            "max_retries": get_config().llm_max_retries,
             "default_headers": headers,
         }
     ]
@@ -645,6 +647,7 @@ def test_markitdown_converter_requires_base_url_when_ocr_enabled(monkeypatch):
 def test_markitdown_converter_reports_missing_openai_when_ocr_enabled(monkeypatch):
     """Missing OpenAI SDK should not be reported as missing MarkItDown."""
     import builtins
+
     import markitdown
 
     from hindsight_api.engine.parsers import MarkitdownParser

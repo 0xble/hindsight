@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from hindsight_api.config import DEFAULT_FILE_PARSER_MARKITDOWN_OCR_PROMPT
+from hindsight_api.config import DEFAULT_FILE_PARSER_MARKITDOWN_OCR_PROMPT, get_config
 
 from .base import FileParser, NoExtractableContentError
 
@@ -184,6 +184,9 @@ class MarkitdownParser(FileParser):
         client_kwargs: dict[str, Any] = {
             "api_key": api_key,
             "base_url": base_url.strip(),
+            # Reuse the existing server retry budget; the SDK discards a failed
+            # httpcore connection before retrying TLS/connect/read errors.
+            "max_retries": get_config().llm_max_retries,
         }
         if default_headers:
             client_kwargs["default_headers"] = default_headers
@@ -212,6 +215,7 @@ class MarkitdownParser(FileParser):
                         "model": self._ocr_model,
                         "prompt": self._ocr_prompt,
                         "default_headers": self._ocr_default_headers,
+                        "max_retries": get_config().llm_max_retries,
                     }
                 ),
                 PDF_OCR_LIMITS,
