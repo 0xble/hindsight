@@ -145,6 +145,46 @@ def test_update_requires_its_own_source_recall_topology():
     assert filtered.response.creates == response.creates
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("effect", ["changes", "ends"])
+async def test_rejected_earlier_update_cannot_contaminate_recalled_repeat(provider, config, effect):
+    observation = MemoryFact(id="O1", text="Workshop on Monday", fact_type="observation")
+    install(
+        provider,
+        [
+            {
+                "facts": [
+                    verdict(
+                        fact_id="F1",
+                        adds="no",
+                        new=[],
+                        existing=[{"observation_id": "O1", "effect": effect, "text": "UNSUPPORTED REWRITE"}],
+                    ),
+                    verdict(
+                        fact_id="F2",
+                        adds="no",
+                        new=[],
+                        existing=[{"observation_id": "O1", "effect": "repeats", "text": ""}],
+                    ),
+                ]
+            }
+        ],
+    )
+    result = await c._consolidate_batch_with_llm(
+        provider,
+        [{"id": "F1", "text": "unrelated fact"}, {"id": "F2", "text": "Workshop on Monday"}],
+        [observation],
+        {},
+        config,
+        per_fact_observation_ids={"F1": set(), "F2": {"O1"}},
+    )
+    assert not result.failed
+    assert len(result.updates) == 1
+    assert result.updates[0].text == observation.text
+    assert result.updates[0].source_fact_ids == ["F2"]
+    assert result.pending_fact_ids == {"F1"}
+
+
 def test_new_string_sanitization_keeps_released_blank_handling():
     model = c._build_fact_response_model(["F1"])
     answer = model.model_validate({"facts": [verdict(new=[" ", "Workshop on Tuesday", ""])]})

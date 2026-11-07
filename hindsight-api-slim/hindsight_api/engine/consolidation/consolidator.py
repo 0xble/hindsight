@@ -1544,6 +1544,7 @@ class _FactBatchResponse(BaseModel):
         marked: Callable[[str, str], bool],
         *,
         update_proposals: list[_UpdateAction] | None = None,
+        per_fact_observation_ids: dict[str, set[str]] | None = None,
     ) -> _ConsolidationBatchResponse:
         """The writes this answer stands for.
 
@@ -1572,6 +1573,7 @@ class _FactBatchResponse(BaseModel):
         # older fact stays cited.
         updates: dict[str, _UpdateAction] = {}
         skips: list[_SkipAction] = []
+        invalid_updates: list[_UpdateAction] = []
 
         def cite(action: _CreateAction | _UpdateAction, fact_id: str) -> None:
             if fact_id not in action.source_fact_ids:
@@ -1605,6 +1607,16 @@ class _FactBatchResponse(BaseModel):
                             update_proposals.append(invalid)
                         else:
                             updates[oid] = invalid
+                    continue
+                if per_fact_observation_ids is not None and oid not in per_fact_observation_ids.get(f.fact_id, set()):
+                    # Keep invalid proposals for the common reference filter, but
+                    # never let their text, history notes or citations become the
+                    # base of a later, independently authorized source's update.
+                    invalid = _UpdateAction(observation_id=oid, text=change.text, source_fact_ids=[f.fact_id])
+                    if update_proposals is not None:
+                        update_proposals.append(invalid)
+                    else:
+                        invalid_updates.append(invalid)
                     continue
                 earlier = updates.get(oid)
                 base = earlier.text if earlier is not None else current
@@ -1652,7 +1664,7 @@ class _FactBatchResponse(BaseModel):
                 cite(twin, f.fact_id)
         return _ConsolidationBatchResponse(
             creates=all_creates,
-            updates=list(updates.values()) if update_proposals is None else update_proposals,
+            updates=[*invalid_updates, *updates.values()] if update_proposals is None else update_proposals,
             deletes=self.deletes,
             skips=skips,
         )
@@ -5863,6 +5875,7 @@ async def _consolidate_batch_with_llm(
                 or bool(newest_fact and (ot := obs_time.get(oid)) and ot > newest_fact)
             ),
             update_proposals=[],
+            per_fact_observation_ids=per_fact_observation_ids,
         )
 
     # Constrain the schema: fact_id to this batch's ids, and the verdicts to their enums.

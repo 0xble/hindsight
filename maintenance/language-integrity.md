@@ -49,6 +49,12 @@ use the configurable policy below without destructive changes to source facts.
   before any batch write. Recognizable fenced or inline code and
   source-evidenced quotations stay exempt. `tests/LANGUAGE_PREVENTION.md` holds
   the full contract and the rollout and recovery procedure.
+- **v1.2.0 persisted dimensions:** Upstream now stores `where` in fact text.
+  Include it in the per-dimension language check and malformed-string guard,
+  alongside `when`, `who`, and `why`. Foreign-language `where` prose must trigger
+  the same bounded correction in retry/reject modes. Structured values must
+  never be stringified into persisted text or bypass the language check.
+  `tests/test_language_integrity_retain.py` owns these regressions.
 - **v1.1.0 test adaptation (2026-10-30):** The released consolidation path
   copies Pydantic responses before reference and language validation. Use the
   response model's `model_construct` in malformed-reference fixtures instead

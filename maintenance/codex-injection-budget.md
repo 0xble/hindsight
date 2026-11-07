@@ -1,5 +1,9 @@
 # Codex Injection Budget
 
+The standalone fork installer remains maintained for this contract. Its banner
+must describe the fork-owned hooks, not redirect users to the upstream Coding
+Agents plugin as if these hooks were retired.
+
 Part of the root [maintenance contract](../MAINTENANCE.md).
 
 ## Intentional Divergence

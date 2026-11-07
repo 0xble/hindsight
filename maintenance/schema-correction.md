@@ -2,6 +2,12 @@
 
 Part of the root [maintenance contract](../MAINTENANCE.md).
 
+Validate each fact's recalled-observation topology before its update can supply
+accumulated text, history notes or citations to a sibling proposal. Keep rejected
+proposals visible to the common reference filter and their sources pending.
+The changes/ends followed by a recalled repeat regression is covered in
+`tests/test_consolidation_fork_verdict_contract.py`.
+
 ## Intentional divergence
 
 Upstream #3783 (`ad6312a512119c45a5dd67c43dccb6d391de2609`) keeps

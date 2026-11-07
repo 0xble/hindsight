@@ -2281,12 +2281,12 @@ async def _extract_facts_from_chunk(
                 who = get_value("who")
                 why = get_value("why")
 
-                # ``when`` and ``who`` are interpolated into the text that is
+                # These dimensions are interpolated into the text that is
                 # persisted and then checked for language drift.  Do not stringify
                 # structured model output and accidentally omit it from that check.
                 # Marking it malformed uses the normal corrective extraction retry.
-                if any(value is not None and not isinstance(value, str) for value in (when, who)):
-                    logger.warning("Skipping fact %s: non-string when/who dimension", i)
+                if any(value is not None and not isinstance(value, str) for value in (when, where, who, why)):
+                    logger.warning("Skipping fact %s: non-string when/where/who/why dimension", i)
                     has_malformed_facts = True
                     continue
 
@@ -2483,7 +2483,13 @@ async def _extract_facts_from_chunk(
                     if language_context is not None:
                         language_fields.extend(
                             GeneratedText(f"fact:{i}:{name}", sanitize_llm_output(str(value)) or "", ("chunk",))
-                            for name, value in (("what", what), ("when", when), ("who", who), ("why", why))
+                            for name, value in (
+                                ("what", what),
+                                ("when", when),
+                                ("where", where),
+                                ("who", who),
+                                ("why", why),
+                            )
                             if isinstance(value, str) and value and value.lower() != "not specified"
                         )
                 except Exception as e:

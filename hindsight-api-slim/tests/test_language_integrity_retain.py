@@ -95,6 +95,28 @@ async def _extract(mode: str, llm, *, content_retries: int = 0, source: str = EN
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("mode", ["retry", "reject"])
+async def test_where_prose_is_checked_separately_and_corrected(mode: str) -> None:
+    llm = _llm()
+    llm.call = AsyncMock(
+        side_effect=[
+            LLMCallResult(
+                content={"facts": [{"what": ENGLISH_FACT, "where": SPANISH_DRIFT, "fact_type": "world"}]},
+                usage=TokenUsage(),
+            ),
+            LLMCallResult(
+                content={"facts": [{"what": ENGLISH_FACT, "where": ENGLISH_FACT, "fact_type": "world"}]},
+                usage=TokenUsage(),
+            ),
+        ]
+    )
+    facts, _ = await _extract(mode, llm)
+    assert llm.call.await_count == 2
+    assert SPANISH_DRIFT not in facts[0].fact
+    assert f"Where: {ENGLISH_FACT}" in facts[0].fact
+
+
+@pytest.mark.asyncio
 async def test_retry_mode_regenerates_once_and_returns_corrected_facts() -> None:
     llm = _llm(SPANISH_DRIFT, ENGLISH_FACT)
 
@@ -192,7 +214,10 @@ async def test_batch_retry_mode_reaches_real_live_path_without_recursing() -> No
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("field, bad_value", [("when", ["mañana"]), ("who", {"name": "María"})])
+@pytest.mark.parametrize(
+    "field, bad_value",
+    [("when", ["mañana"]), ("who", {"name": "María"}), ("why", {"note": "mañana"}), ("where", {"place": "Madrid"})],
+)
 async def test_non_string_persisted_dimensions_trigger_corrective_retry(field: str, bad_value: object) -> None:
     malformed = {"what": ENGLISH_FACT, field: bad_value, "fact_type": "world"}
     corrected = {"what": ENGLISH_FACT, field: "2026-09-04" if field == "when" else "Alice Smith", "fact_type": "world"}
@@ -220,7 +245,10 @@ async def test_non_string_persisted_dimensions_trigger_corrective_retry(field: s
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("field, bad_value", [("when", ["mañana"]), ("who", {"name": "María"})])
+@pytest.mark.parametrize(
+    "field, bad_value",
+    [("when", ["mañana"]), ("who", {"name": "María"}), ("why", {"note": "mañana"}), ("where", {"place": "Madrid"})],
+)
 async def test_persistently_non_string_dimensions_are_rejected(field: str, bad_value: object) -> None:
     """Retry only helps when the corrected response is persistable."""
     malformed = {"what": ENGLISH_FACT, field: bad_value, "fact_type": "world"}
