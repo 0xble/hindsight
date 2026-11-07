@@ -101,6 +101,12 @@ model-call extensions before private input reaches them. The native regression
 `tests/test_private_read_operation_runs.py` preserves positive public controls,
 failure propagation and inherited-run isolation alongside the broader sink suite.
 
+The public real-client trace control follows the released structured-tool owner:
+the terminal trace has request schema `done` and the expected answer in its
+output. Keep all provider-call counts, stable totals, child spans and complete
+private-payload exclusions; removed provider-native `tool_calls` metadata is not
+the completion signal for v1.2.0.
+
 When adopting a released upstream equivalent, check every sink and dispatch
 boundary above, capability negotiation and generated SDK compatibility. Retire
 the fork implementation only when that release passes the same focused and

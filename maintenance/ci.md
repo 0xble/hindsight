@@ -32,9 +32,9 @@ intentional fork infrastructure policy, not upstream deployment ownership.
   remain forbidden. The positive step-action allowlist rejects known publishing
   actions and every unreviewed/local action, regardless of version or inputs;
   all reusable workflow calls are forbidden, even to a governed workflow. There
-  are no credential or reusable-workflow exceptions. All six workflows currently
-  use `permissions: {contents: read}`, need no secrets or write scope, and make
-  no reusable-workflow calls. No workflow edits are required.
+  are no credential or reusable-workflow exceptions. All six workflows use
+  read-only permissions. The gate also reads actions and pull requests for
+  qualification and nightly health, without write scope or reusable-workflow calls.
   With no write permission, no publishing credentials beyond a read-only
   GITHUB_TOKEN, no OIDC token, and no publishing actions, publication using the
   governed workflow's credentials cannot succeed however command text is written.

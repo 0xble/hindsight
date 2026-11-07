@@ -82,6 +82,10 @@ remain compatible for callers.
   Rollback only these source changes; never reset operation state or restart the
   service as part of rollback.
 
+The PDF real-client story resolves the released `F1`-style source id from the
+matching user-batch fact rather than scanning for historical UUID prompt lines.
+Retain its real worker, original-byte readback and observation-lineage assertions.
+
 ## HINDSIGHT-004: Structured OCR terminal failures
 
 - **Status:** Active

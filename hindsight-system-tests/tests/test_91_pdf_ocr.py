@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
-import re
 import uuid
 import zlib
 from collections.abc import AsyncIterator, Iterator
@@ -19,7 +18,7 @@ import pytest
 from hindsight_client import Hindsight
 
 from hindsight_system_tests import start_hindsight_server, wait_until_settled
-from hindsight_system_tests.payloads import Consolidation, Observation, extracted, fact
+from hindsight_system_tests.payloads import Consolidation, Observation, batch_fact_id, extracted, fact
 from hindsight_system_tests.rulebook import ChatRequest, ChatRule, StubbedReply
 
 pytestmark = pytest.mark.asyncio
@@ -167,11 +166,11 @@ async def test_scanned_pdf_retains_consolidates_and_original_provenance_reads_ba
     )
 
     def observe_source(request: ChatRequest) -> Consolidation:
-        # The generic helper also sees illustrative UUIDs in the system prompt.
-        # Cite only the newly retained source line, never prompt examples.
-        ids = set(re.findall(r"\[([0-9a-f-]{36})\]\s+" + re.escape(SOURCE_TEXT.rstrip(".")), request.all_text))
-        assert len(ids) == 1
-        return Consolidation(creates=[Observation(text=OBSERVATION, source_fact_ids=list(ids))])
+        # The released prompt names facts F1/F2, not UUIDs. Read only the user
+        # batch's matching source line, never the system prompt's examples.
+        source_id = batch_fact_id(request, SOURCE_TEXT.rstrip("."))
+        assert source_id is not None
+        return Consolidation(creates=[Observation(text=OBSERVATION, source_fact_ids=[source_id])])
 
     llm.on_step("consolidate").answers_with(observe_source)
     submission = await upload(pdf_client, pdf_bank, source)

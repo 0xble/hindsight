@@ -52,7 +52,13 @@ async def _stable_public_traces(
         control = [entry for entry in traces.items if query in json.dumps(entry.input)]
         assert len(control) <= expected_calls, "public tracing duplicated provider calls"
         assert all(entry.status == "success" for entry in control)
-        finished = any("done" in (entry.llm_info or {}).get("tool_calls", []) for entry in control)
+        # v1.2.0 tool turns are structured calls. Their completed `done` schema,
+        # not removed provider-native tool_calls metadata, identifies the answer.
+        finished = any(
+            (entry.llm_info or {}).get("request", {}).get("response_schema") == "done"
+            and json.loads(entry.output or "{}").get("answer") == ANSWER
+            for entry in control
+        )
         persisted_fact = any(FACT in json.dumps(entry.input) for entry in control)
         stable = previous_total == traces.total
         previous_total = traces.total
