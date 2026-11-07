@@ -94,6 +94,10 @@ remain compatible for callers.
   deterministic evidence exclusions without parsing error prose. Retries clear
   stale terminal details, and generated clients accept both supported detail types,
   including raw dictionary and JSON Pydantic validation nested in operation responses.
+- **Metadata fixture ownership:** The PostgreSQL operation-metadata fixture patches
+  `engine/schema.py`, the released `fq_table` resolver, so its temporary table
+  receives the native updates. Preserve metadata, rollback and terminal-state
+  assertions when schema ownership changes.
 - **Nullable discriminator correction (L7):** The Python/Go oneOf wrappers were
   introduced by fork `fded26c852a11c2ffc2b99a106544c4ce3ec3979` after released
   base `5fc4ce20917b916240cef27c212c387a177f115b`; upstream's single refresh

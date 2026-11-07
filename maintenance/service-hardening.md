@@ -152,6 +152,14 @@ store path rather than duplicating it. The fork's lane target-snapshot compariso
 remains a residual divergence, not an upstream-owned guarantee.
 
 
+## Provider Deadlines
+
+The v1.2.0 deadline regressions invoke tool turns through `LLMProvider`, whose
+schema-backed `call_with_tools` replaced the removed provider-level methods.
+Keep OpenAI and Anthropic tool turns plus the native text/structured cases in
+`test_llm_wall_clock_timeout.py`, registered in the exact-SHA fork gate. Every
+case must observe the provider's elapsed deadline before the test safety net.
+
 ## Exact CREATE Fold Fallback And Dialect Boundary
 
 The fork lane exact-fold snapshot can become stale after an earlier CREATE in the same response semantically rewrites its twin. A failed text CAS must fall through to the normal fold/create path; it is not durable coverage for stamping sources. Shown/reply twins and serialized exact probes must also respect the PostgreSQL-only fold SQL boundary. Exact folding stays enabled on PostgreSQL even when the semantic threshold is 1.0; Oracle preserves CREATE sources through insertion instead.

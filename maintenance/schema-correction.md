@@ -81,3 +81,9 @@ and pg0 persistence regressions verify that a valid uncited momentary skip is
 stamped with or without valid write siblings while an invalid sibling's fact
 remains pending. An unknown skip or a contradictory skip on the invalid action's
 own source cannot settle that fact.
+
+The native mock provider must emit the required empty `existing` list for
+create-only verdicts. An incomplete mock response otherwise enters correction
+and fails closed on an unaudited provider, hiding observations in unrelated
+document-history and tag-invalidation tests. Preserve those full native engine
+regressions and the direct dynamic-schema check, not a mock correction bypass.

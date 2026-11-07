@@ -442,7 +442,7 @@ class MockLLM(LLMInterface):
 
         # One new observation per fact, to preserve entity separation
         entries = [
-            {"fact_id": fact_id, "kind": "lasting", "adds": "yes", "new": [fact_text.strip()]}
+            {"fact_id": fact_id, "kind": "lasting", "adds": "yes", "existing": [], "new": [fact_text.strip()]}
             for fact_id, fact_text in fact_entries
         ]
         return response_format.model_validate({"facts": entries})

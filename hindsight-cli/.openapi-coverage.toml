@@ -60,6 +60,12 @@ preview_prompt = "Preview/diagnostics endpoint (control-plane dialog); not expos
 # Memory curation (edit / invalidate / revert) is exposed via the HTTP API, SDKs,
 # and the control plane, not the end-user CLI. update_memory covers all three.
 update_memory = "Curation endpoint; exposed via the API, SDKs, and control plane, not the CLI"
+preview_curation_batch = "Guarded curation controller endpoint; use the API or SDK"
+apply_curation_batch = "Guarded curation controller endpoint; use the API or SDK"
+get_curation_batch = "Guarded curation controller endpoint; use the API or SDK"
+revert_curation_batch = "Guarded curation controller endpoint; use the API or SDK"
+private_recall_memories = "Request-local private-read contract for API and SDK consumers; CLI recall stays public"
+private_reflect = "Request-local private-read contract for API and SDK consumers; CLI reflect stays public"
 
 # UI-only endpoints powering the control-plane LLM Requests (per-bank tracing) tab.
 # The trace waterfall, token charts, and metadata viewers don't map to a useful

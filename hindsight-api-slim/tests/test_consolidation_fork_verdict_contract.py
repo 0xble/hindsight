@@ -36,6 +36,16 @@ def test_malformed_sibling_rejects_complete_verdict(invalid):
     assert c._schema_correction_feedback(raised.value, model) is not None
 
 
+def test_native_mock_produces_complete_dynamic_fact_verdict():
+    from hindsight_api.engine.providers.mock_llm import MockLLM
+
+    model = c._build_fact_response_model(["F1"])
+    answer = MockLLM._build_mock_consolidation([{"role": "user", "content": "[F1] Workshop on Tuesday\n"}], model)
+    assert answer.facts[0].fact_id == "F1"
+    assert answer.facts[0].existing == []
+    assert answer.facts[0].new == ["Workshop on Tuesday"]
+
+
 @pytest.mark.parametrize("invalid", ["invalid change", {"observation_id": "O1"}])
 def test_malformed_targeted_change_is_not_salvaged(invalid):
     model = c._build_fact_response_model(["F1"])
