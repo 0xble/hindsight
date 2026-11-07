@@ -7,6 +7,7 @@ from datetime import timedelta
 from typing import Any
 
 import obstore as obs
+from obstore.exceptions import AlreadyExistsError
 
 logger = logging.getLogger(__name__)
 
@@ -33,6 +34,14 @@ class FileStorage(ABC):
             Storage key that can be used to retrieve the file
         """
         pass
+
+    async def store_new(self, file_data: bytes, key: str) -> str:
+        """Atomically create a key without replacing existing bytes.
+
+        Rename uses this instead of a probe followed by an overwriting store.
+        Backends without a conditional-create primitive must refuse, not guess.
+        """
+        raise NotImplementedError("this file storage backend cannot create keys without overwriting")
 
     async def store_stream(
         self,
@@ -159,6 +168,13 @@ class ObstoreFileStorage(FileStorage):
         metadata: dict[str, str] | None = None,
     ) -> str:
         await obs.put_async(self._store, key, file_data)
+        return key
+
+    async def store_new(self, file_data: bytes, key: str) -> str:
+        try:
+            await obs.put_async(self._store, key, file_data, mode="create", use_multipart=False)
+        except AlreadyExistsError as exc:
+            raise FileExistsError(f"destination file collision: {key}") from exc
         return key
 
     async def store_stream(

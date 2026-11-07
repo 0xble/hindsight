@@ -171,6 +171,19 @@ class PostgreSQLFileStorage(FileStorage):
         logger.debug(f"Stored file {key} ({len(file_data)} bytes) in PostgreSQL")
         return key
 
+    async def store_new(self, file_data: bytes, key: str) -> str:
+        """Create only. A borrowed admin connection keeps bytes in the rename transaction."""
+        async with acquire_with_retry(self._pool_getter()) as conn:
+            inserted = await conn.fetchval(
+                f"INSERT INTO {fq_table('file_storage', self._schema)} (storage_key, data) "
+                "VALUES ($1, $2) ON CONFLICT (storage_key) DO NOTHING RETURNING storage_key",
+                key,
+                file_data,
+            )
+            if inserted is None:
+                raise FileExistsError(f"destination file collision: {key}")
+        return key
+
     async def store_stream(
         self,
         key: str,
