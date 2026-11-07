@@ -11,9 +11,10 @@ errors only. Upstream #3003 closed without repair; #3137 rejected per-item salva
 Do not replace this boundary with coercion, dropped invalid actions, defaults,
 empty-response repair, routing changes, or fabricated references.
 
-Open [issue #5572](https://github.com/vectorize-io/hindsight/issues/5572) proposes bounded
-whole-response repair for missing/model-type consolidation shapes. It is not in
-the v1.1.0 release and does not retire this fork boundary or widen its budgets.
+[Issue #5572](https://github.com/vectorize-io/hindsight/issues/5572) is closed as
+completed by [PR #6374](https://github.com/vectorize-io/hindsight/pull/6374), merged
+after the selected v1.2.0 release. That unreleased correction is not part of this
+sync and does not replace the fork's job-wide completion budget or widen it.
 
 - **Surfaces:** `consolidation/consolidator.py`, `llm_wrapper.py`,
   `llm_attempt_limit.py` under `hindsight-api-slim/hindsight_api/engine/`.

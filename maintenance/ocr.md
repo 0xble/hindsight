@@ -12,6 +12,9 @@ remain compatible for callers.
 - **Commits:** `2fa19ab`, `83d7ad3`, `8c107c6`, `19357a9`, `b684912`, `60128d9`, `3068ac09`
 - **Surfaces:** `engine/parsers/{__init__,ocr_quality}.py`, `tests/test_ocr_quality.py`
 - **Upstream issue:** https://github.com/vectorize-io/hindsight/issues/3897
+  is closed. The maintainer requests an actual sanitized input and model reply
+  before reopening. Retain the fork divergence rather than reopening the issue
+  without that evidence.
 - **Upstream PR:** [#4047](https://github.com/vectorize-io/hindsight/pull/4047),
   closed unmerged: the maintainer preferred explicit MarkItDown flags over heuristics.
   The admission policy remains an intentional fork divergence.
@@ -40,6 +43,44 @@ remain compatible for callers.
 - **Rollback:** Revert the listed commits in reverse order and rerun the regression.
 - **Retire when:** A released upstream build provides equivalent admission,
   fallback, privacy, sparse-text, and multilingual behavior and passes this test.
+
+## Transient OCR transport recovery
+
+- **Status:** Active fork repair; no runtime activation or failed-operation replay.
+- **Problem:** `file_convert_retain` previously settled every conversion error as
+  terminal, including TLS bad-record-MAC/connection failures from image OCR.
+- **Behavior:** Classify OpenAI connection/timeout errors, HTTPX transport errors,
+  SSL errors and their parser cause/context chains as retryable. Inspect
+  MarkItDown's `attempts[].exc_info` because that aggregate need not chain the
+  original exception. Use the existing worker retry limit and backoff; preserve
+  deterministic parse/unsupported/empty/low-quality outcomes as terminal.
+- **Provider budget:** Image and PDF OCR use existing `HINDSIGHT_API_LLM_MAX_RETRIES`
+  (default 3). PDF retries remain inside the existing request/document elapsed
+  deadlines and transport classification crosses its process boundary without
+  provider text or credentials. Whole-document deadline exhaustion remains
+  terminal; only provider per-request timeouts are retryable. Certificate
+  verification failures (including wrapped SDK errors) remain terminal at the
+  worker boundary. Other SSL failures include deterministic misconfiguration
+  such as `WRONG_VERSION_NUMBER`; these consume the bounded SDK/worker retry
+  budgets before failing rather than being diagnosed as configuration errors.
+  Retain/consolidation already use the resolved
+  global/per-operation LLM retry configuration; retain SDK `max_retries=0` there
+  to avoid multiplying retries or violating bounded single-completion corrections.
+- **Verification:** `tests/test_file_transport_retry.py` covers worker cap/backoff,
+  direct/wrapped/aggregated errors, deterministic terminal controls, cycle safety,
+  PDF worker sanitization and actual fresh socket recovery for OCR/PDF/retain/
+  consolidation. It is registered in `bin/ci` beside existing OCR regressions.
+- **Upstream preflight:** Read guidance and code-review rules at
+  `30d547ba00989297057a9679f2d59f30a554b240`. Independent proposal: classify
+  only transport failures and reuse existing worker/SDK retry policies. Tracker
+  searches found no bad-record-MAC fix; issue [#5498](https://github.com/vectorize-io/hindsight/issues/5498)
+  discusses manual file retry and explicitly distinguishes transient conversion
+  failures from missing OCR capability. This patch is automatic transport-only
+  recovery, not a manual replay API or a new retry engine.
+- **Retire/rollback:** Reconcile when a released upstream build passes these
+  regressions with bounded retries and terminal evidence exclusions intact.
+  Rollback only these source changes; never reset operation state or restart the
+  service as part of rollback.
 
 ## HINDSIGHT-004: Structured OCR terminal failures
 
@@ -194,7 +235,8 @@ validation and preserves the reason value through serialization.
   OCR-enabled PDF conversions, including text-only classification/extraction,
   remain process-isolated with CPU, scratch-write and sampled RSS protection. The document
   deadline is 120 seconds. Individual requests have a 30-second elapsed-time
-  deadline around an async SDK call, with SDK retries disabled. The request
+  deadline around an async SDK call; configured SDK retries run inside that
+  per-request elapsed deadline. The request
   deadline starts after client construction and after the SDK's lazy
   `client.chat` resource import, which takes hundreds of milliseconds in a cold
   worker and much longer on a loaded host; that local setup stays under the
@@ -248,7 +290,9 @@ validation and preserves the reason value through serialization.
   to make the story deterministic. Metadata-prefix regressions exercise the
   real ImageConverter with synthetic ExifTool metadata and refused, empty and
   usable descriptions. Local HTTP slow-trickle tests require elapsed expiry,
-  socket closure, no retry, whole-document rejection and worker/scratch cleanup.
+  socket closure, no further provider call after the request elapsed deadline,
+  whole-document rejection and worker/scratch cleanup. SDK connection retries
+  before that deadline remain bounded by the configured budget.
 - **Review-fix preflight:** Governing upstream guidance checked at
   `0be6c02b2aafc2b6bdb188ef1842ac507e0cfa2b`. Independent proposal: admit the
   raw provider description and adapt the existing image hook to a cancellable

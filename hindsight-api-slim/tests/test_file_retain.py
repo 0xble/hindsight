@@ -3,7 +3,6 @@ End-to-end tests for file retain (upload, convert, retain) functionality.
 """
 
 import asyncio
-import io
 import json
 from datetime import datetime, timezone
 
@@ -531,7 +530,7 @@ def test_markitdown_converter_can_enable_ocr(monkeypatch):
     import markitdown
     import openai
 
-    from hindsight_api.config import DEFAULT_FILE_PARSER_MARKITDOWN_OCR_PROMPT
+    from hindsight_api.config import DEFAULT_FILE_PARSER_MARKITDOWN_OCR_PROMPT, get_config
     from hindsight_api.engine.parsers import MarkitdownParser
 
     markitdown_calls = []
@@ -564,6 +563,7 @@ def test_markitdown_converter_can_enable_ocr(monkeypatch):
             "api_key": "parser-key",
             "base_url": "https://vision.example/v1",
             "default_headers": {"User-Agent": OPENAI_COMPATIBLE_USER_AGENT},
+            "max_retries": get_config().llm_max_retries,
         }
     ]
     assert markitdown_calls[0]["llm_client"].__class__ is FakeOpenAI
@@ -576,6 +576,7 @@ def test_markitdown_converter_passes_default_headers_when_configured(monkeypatch
     import markitdown
     import openai
 
+    from hindsight_api.config import get_config
     from hindsight_api.engine.parsers import MarkitdownParser
 
     openai_calls = []
@@ -607,6 +608,7 @@ def test_markitdown_converter_passes_default_headers_when_configured(monkeypatch
             "api_key": "parser-key",
             "base_url": "https://vision.example/v1",
             "default_headers": {**headers, "User-Agent": OPENAI_COMPATIBLE_USER_AGENT},
+            "max_retries": get_config().llm_max_retries,
         }
     ]
 

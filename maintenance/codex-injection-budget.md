@@ -12,6 +12,11 @@ reflect serialization and does not replace this hook boundary. No equivalent
 Codex patch was found during the 2026-10-01 upstream preflight. Fork publication follows the protected gate route and is separate from installed
 runtime adoption.
 
+The v1.2.0 release removes the standalone Codex integration and retires its
+installer in favor of coding-agents. Keep this fork's complete script and
+installer source while the standalone consumer remains supported. Upstream
+deletion alone does not prove an installed replacement preserves the full cap.
+
 At historical fork base `be6bddb66ed4d3a9676f82b96a7422e683dae1f3`, the active Python
 prompt hook submitted raw injected-memory and transport wrappers as recall
 queries. Its existing content filter now mirrors the coding-agents structural

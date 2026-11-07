@@ -1308,8 +1308,9 @@ class WorkerPoller:
 
         Tasks that want to be retried raise RetryTaskAt; the poller sets next_retry_at
         and resets status to 'pending'. All other exceptions are marked as failed immediately.
-        Non-retryable failures (e.g., file_convert_retain) are handled by the executor
-        internally — it marks the operation as failed and returns normally.
+        Deterministic failures (including terminal file-conversion outcomes) are
+        handled internally by the executor, which marks failed and returns normally.
+        Transient file-conversion transport errors use RetryTaskAt like other tasks.
         """
         task_type = task.task_dict.get("type", "unknown")
         bank_id = task.task_dict.get("bank_id", "unknown")
@@ -1321,8 +1322,9 @@ class WorkerPoller:
         # success semantics are deliberately narrow: success=false means the task
         # raised out to the poller (an unexpected error, or retry-exhausted). It does
         # NOT capture deterministic failures that the executor handles itself and
-        # returns from normally (file_convert_retain, non-retryable errors via
-        # memory_engine.execute_task) — those record success=true here. Treat this as
+        # returns from normally (terminal file-conversion outcomes and other
+        # non-retryable errors via memory_engine.execute_task) — those record
+        # success=true here. Treat this as
         # a completion-throughput signal, not a failure-rate one: for authoritative
         # failure visibility use the hindsight_async_operations{status="failed"} gauge,
         # which reads each operation's final DB status.

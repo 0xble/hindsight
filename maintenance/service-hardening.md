@@ -146,6 +146,11 @@ Retire this correction only when a released upstream equivalent fences target
 observation metadata and passes the regression. Rollback is source-only and must
 not rewrite existing observation tags.
 
+Released [PR #4897](https://github.com/vectorize-io/hindsight/pull/4897) owns the
+transactional read of current target tags before merging. Preserve that released
+store path rather than duplicating it. The fork's lane target-snapshot comparison
+remains a residual divergence, not an upstream-owned guarantee.
+
 
 ## Exact CREATE Fold Fallback And Dialect Boundary
 
