@@ -12418,7 +12418,9 @@ class MemoryEngine(MemoryEngineInterface):
             # any realistic pile-up.
             if bank_internal_id:
                 await retry_with_backoff(
-                    lambda: bank_utils.drop_bank_vector_indexes(conn, bank_internal_id, ops=self._backend.ops),
+                    lambda: bank_utils.drop_bank_vector_indexes(
+                        conn, bank_internal_id, ops=self._backend.ops, command_timeout=self._db_command_timeout
+                    ),
                     max_retries=7,
                     max_delay=10.0,
                 )

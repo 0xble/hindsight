@@ -437,6 +437,13 @@ class LinkExpansionRetriever(GraphRetriever):
                 timeout=config.link_expansion_timeout,
             )
         except asyncio.TimeoutError:
+            # PREPARE can finish just as wait_for cancels, before asyncpg sends
+            # Bind/Execute/Sync. The server then has an implicit transaction
+            # the driver has not observed, and our reset-free pool would keep
+            # its snapshot/locks alive. Unlike _expand_combined's fallback,
+            # this path has no next query to synchronize it. Finish that cycle
+            # before returning the connection to the pool.
+            await conn.execute("SELECT 1")
             logger.warning(
                 f"[LinkExpansion] Observation expansion timed out after {config.link_expansion_timeout}s, "
                 "skipping graph results for fact_type=observation"
