@@ -105,6 +105,19 @@ async def _seed_bank(conn: asyncpg.Connection, bank_id: str) -> list[uuid.UUID]:
     ]
     unit_a, unit_b = units
     entity_a, entity_b = entities
+    batch_id = f"batch-{uuid.uuid4().hex[:8]}"
+    await conn.execute(
+        """INSERT INTO curation_batches (bank_id, batch_id, manifest_revision, status, capsule)
+           VALUES ($1, $2, 'test-revision', 'applied', '{}'::jsonb)""",
+        bank_id,
+        batch_id,
+    )
+    await conn.execute(
+        "INSERT INTO curation_entity_pins (bank_id, batch_id, entity_id) VALUES ($1, $2, $3)",
+        bank_id,
+        batch_id,
+        entity_a,
+    )
     await conn.execute("INSERT INTO unit_entities (unit_id, entity_id) VALUES ($1, $2)", unit_a, entity_a)
     await conn.execute(
         "INSERT INTO entity_cooccurrences (entity_id_1, entity_id_2) VALUES ($1, $2)",
@@ -210,6 +223,16 @@ async def test_deleting_a_bank_leaves_no_row_in_any_table(
     unseeded = sorted(t for t, n in before.items() if not n)
     assert not unseeded, f"seed these tables in _seed_bank, or the delete is not checked for them: {unseeded}"
 
+    from hindsight_api.engine.curation_batch import CurationBatchConflict
+
+    with pytest.raises(CurationBatchConflict, match="Active curation capsules"):
+        await memory.delete_bank(bank_id, request_context=request_context)
+    async with pool.acquire() as conn:
+        assert await _counts(conn, schema_tables, bank_id, ids) == before
+        # Complete the fixture's revert before deleting. Active recovery evidence
+        # must block deletion; completed receipts no longer hold entity pins.
+        await conn.execute("DELETE FROM curation_entity_pins WHERE bank_id=$1", bank_id)
+        await conn.execute("UPDATE curation_batches SET status='reverted' WHERE bank_id=$1", bank_id)
     await memory.delete_bank(bank_id, request_context=request_context)
 
     async with pool.acquire() as conn:
@@ -221,6 +244,9 @@ async def test_deleting_a_bank_leaves_no_row_in_any_table(
         assert not left, f"rows of the deleted bank left behind: {left}"
         assert await _counts(conn, schema_tables, bystander, bystander_ids) == bystander_before
 
+    async with pool.acquire() as conn:
+        await conn.execute("DELETE FROM curation_entity_pins WHERE bank_id=$1", bystander)
+        await conn.execute("UPDATE curation_batches SET status='reverted' WHERE bank_id=$1", bystander)
     await memory.delete_bank(bystander, request_context=request_context)
 
 
@@ -232,6 +258,8 @@ async def test_clearing_a_bank_drops_its_maintenance_queue_rows(memory: MemoryEn
     pool = await memory._get_pool()
     async with pool.acquire() as conn:
         await _seed_bank(conn, bank_id)
+        await conn.execute("DELETE FROM curation_entity_pins WHERE bank_id=$1", bank_id)
+        await conn.execute("UPDATE curation_batches SET status='reverted' WHERE bank_id=$1", bank_id)
 
     await memory.delete_bank(bank_id, delete_bank_profile=False, request_context=request_context)
 

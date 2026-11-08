@@ -54,6 +54,12 @@ remain compatible for callers.
   MarkItDown's `attempts[].exc_info` because that aggregate need not chain the
   original exception. Use the existing worker retry limit and backoff; preserve
   deterministic parse/unsupported/empty/low-quality outcomes as terminal.
+- **Transport identity:** PDF OCR applies the released shared OpenAI-compatible
+  User-Agent helper inside its disposable worker. Canonicalize operator header
+  casing in that helper so the SDK does not emit its default alongside an
+  operator override. `tests/test_pdf_ocr.py` checks actual wire headers and
+  preserved custom headers; `tests/test_openai_client_user_agent.py` remains
+  registered in the gate beside the OCR regressions.
 - **Provider budget:** Image and PDF OCR use existing `HINDSIGHT_API_LLM_MAX_RETRIES`
   (default 3). PDF retries remain inside the existing request/document elapsed
   deadlines and transport classification crosses its process boundary without

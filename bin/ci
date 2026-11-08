@@ -147,6 +147,9 @@ PATCH_REGRESSIONS=(
   tests/test_ocr_quality.py
   tests/test_pdf_ocr.py
   tests/test_file_transport_retry.py
+  tests/test_openai_client_user_agent.py
+  tests/test_cache_affinity.py
+  tests/test_delete_bank_leaves_no_rows.py
   tests/test_llm_wall_clock_timeout.py
   tests/test_consolidation_failure_isolation.py
   tests/test_consolidation_prompt_budget.py
