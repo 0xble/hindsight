@@ -79,6 +79,26 @@ def test_engine_public_exports_preserve_original_objects():
         engine.missing_public_export
 
 
+@pytest.mark.parametrize("headers", [None, {"user-agent": "operator-ocr", "X-Request-Source": "test"}])
+def test_pdf_ocr_client_preserves_transport_identity_and_operator_headers(headers):
+    from hindsight_api.engine.parsers.pdf_ocr import PdfOcrConfig, _DeadlineOcrClient
+    from hindsight_api.engine.providers.openai_compatible_headers import OPENAI_COMPATIBLE_USER_AGENT
+
+    received = []
+    with ocr_server(["Alice completed the review."], request_headers=received) as (url, calls):
+        config = PdfOcrConfig(
+            api_key="synthetic-key", base_url=url, model="ocr-model", prompt=None, default_headers=headers
+        )
+        client = _DeadlineOcrClient(config, request_seconds=10, document_deadline=time.monotonic() + 30)
+        client.create(model="ocr-model", messages=[{"role": "user", "content": "read the page"}])
+    assert len(calls) == 1
+    normalized = {key.lower(): value for key, value in received[0].items()}
+    assert normalized["user-agent"] == (headers["user-agent"] if headers else OPENAI_COMPATIBLE_USER_AGENT)
+    if headers:
+        assert normalized["x-request-source"] == "test"
+        assert headers == {"user-agent": "operator-ocr", "X-Request-Source": "test"}
+
+
 def scanned_pdf(pages=1, *, size=(240, 160)):
     images = []
     for page in range(pages):
@@ -93,7 +113,7 @@ def scanned_pdf(pages=1, *, size=(240, 160)):
 
 
 @contextmanager
-def ocr_server(responses, *, disconnected=None, request_times=None):
+def ocr_server(responses, *, disconnected=None, request_times=None, request_headers=None):
     calls = []
     scripted = iter(responses)
 
@@ -102,6 +122,8 @@ def ocr_server(responses, *, disconnected=None, request_times=None):
             pass
 
         def do_POST(self):
+            if request_headers is not None:
+                request_headers.append(dict(self.headers))
             if request_times is not None:
                 request_times.append(time.monotonic())
             calls.append(json.loads(self.rfile.read(int(self.headers["Content-Length"]))))

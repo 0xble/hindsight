@@ -12,6 +12,12 @@ def with_openai_compatible_user_agent(default_headers: dict[str, str] | None) ->
     the canonical spelling. An operator-supplied value remains authoritative.
     """
     headers = dict(default_headers or {})
-    if not any(name.lower() == "user-agent" for name in headers):
-        headers["User-Agent"] = OPENAI_COMPATIBLE_USER_AGENT
+    # The SDK merges these with a case-sensitive dict containing User-Agent
+    # before constructing HTTPX headers. Canonicalize an operator override so
+    # it replaces the SDK value instead of producing duplicate wire headers.
+    user_agent = OPENAI_COMPATIBLE_USER_AGENT
+    for name in list(headers):
+        if name.lower() == "user-agent":
+            user_agent = headers.pop(name)
+    headers["User-Agent"] = user_agent
     return headers

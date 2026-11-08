@@ -22,6 +22,7 @@ from typing import TYPE_CHECKING, Annotated, Literal, TypeAlias
 from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, ValidationError
 
 from hindsight_api.config import DEFAULT_LLM_MAX_RETRIES
+from hindsight_api.engine.providers.openai_compatible_headers import with_openai_compatible_user_agent
 
 from .base import NoExtractableContentError
 from .ocr_quality import (
@@ -96,7 +97,7 @@ class _DeadlineOcrClient:
             async with AsyncOpenAI(
                 api_key=self.config.api_key,
                 base_url=self.config.base_url.strip(),
-                default_headers=self.config.default_headers,
+                default_headers=with_openai_compatible_user_agent(self.config.default_headers),
                 timeout=self.request_seconds,
                 max_retries=self.config.max_retries,
             ) as client:

@@ -42,6 +42,10 @@ unchanged. Logical bank transfer is not capsule backup.
   preview and receipt entity inventories count that complete pin set. Recheck
   this bound during phase-2 capture before admission or mutation.
   Pins remain until successful revert. Active capsules prevent bank deletion.
+  `tests/test_delete_bank_leaves_no_rows.py` seeds capsules and pins, proves
+  refusal preserves every row while active, then checks complete deletion after
+  the fixture releases pins and marks recovery reverted. Keep this upstream
+  schema-inventory regression in the gate without exempting fork-owned tables.
   Shared mention counters change only by the batch's posting delta. Compatible
   unrelated references must not conflict solely because their counters changed.
 - Per-memory validators gate both apply and revert. Correction revert is a field
