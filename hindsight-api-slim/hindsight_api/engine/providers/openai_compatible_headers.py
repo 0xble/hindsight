@@ -6,10 +6,10 @@ OPENAI_COMPATIBLE_USER_AGENT = f"hindsight/openai-compatible/{__version__}"
 
 
 def with_openai_compatible_user_agent(default_headers: dict[str, str] | None) -> dict[str, str]:
-    """Return client headers with Hindsight's transport identity when unset.
+    """Return client headers with a single canonical User-Agent key.
 
-    Header names are case-insensitive, so inspect them accordingly before adding
-    the canonical spelling. An operator-supplied value remains authoritative.
+    Preserve an operator's case-insensitive override, otherwise use Hindsight's
+    transport identity. Canonical spelling replaces the SDK's default value.
     """
     headers = dict(default_headers or {})
     # The SDK merges these with a case-sensitive dict containing User-Agent

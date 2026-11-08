@@ -292,7 +292,8 @@ def test_openai_compatible_client_identifies_hindsight():
 
 def test_configured_user_agent_wins_case_insensitively():
     llm = _llm(default_headers={"user-agent": "operator-client/1.0"})
-    assert llm._client.default_headers["user-agent"] == "operator-client/1.0"
+    assert llm._client.default_headers["User-Agent"] == "operator-client/1.0"
+    assert [name for name in llm._client.default_headers if name.lower() == "user-agent"] == ["User-Agent"]
     assert OPENAI_COMPATIBLE_USER_AGENT not in llm._client.default_headers.values()
 
 
