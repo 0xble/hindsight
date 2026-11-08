@@ -53,14 +53,19 @@ def create_memories(context=None) -> MemoriesExtension:
 
     if is_private_read() and get_extension_path("MEMORIES"):
         raise PrivateReadUnsupportedError("Memory extensions do not support private reads")
+    from ...operation_runs import time_store_calls
+
+    # Every call into the store is timed against the operation run in progress (see
+    # operation_runs): that is how a run reports its time in the store, whichever store it is.
+
     loaded = load_extension("MEMORIES", MemoriesExtension, context=context)
     if loaded is not None:
         logger.info("[memories] store=%s (memory rows do not go to postgres)", loaded.name)
-        return loaded
+        return time_store_calls(loaded)
 
     from .postgres import PostgresMemories
 
-    return PostgresMemories({})
+    return time_store_calls(PostgresMemories({}))
 
 
 def get_memories() -> MemoriesExtension:

@@ -18,6 +18,8 @@ from aiohttp import ClientResponse, StreamReader, web
 from openai import APITimeoutError
 from pydantic import BaseModel
 
+from hindsight_api.engine.llm_interface import LLM_TOOL_CHOICE_REQUIRED
+from hindsight_api.engine.providers import tools_via_schema
 from hindsight_api.engine.providers.openai_compatible_llm import OpenAICompatibleLLM
 from tests.aiohttp_stub import stub_server
 
@@ -46,7 +48,20 @@ def _provider(url, path, timeout=TIMEOUT):
 
 async def _invoke(llm, path, **kwargs):
     if path == "tools":
-        return await llm.call_with_tools(messages=MESSAGES, tools=TOOLS, **kwargs)
+        # v1.2.0 tool turns use the provider's structured-output transport, not
+        # the removed native call_with_tools method. Keep the released schema
+        # and prompt construction while exercising real SDK body reads/retries.
+        return await llm.call(
+            messages=[
+                *tools_via_schema.as_text_messages(MESSAGES, TOOLS),
+                {"role": "user", "content": tools_via_schema.turn_request(TOOLS, LLM_TOOL_CHOICE_REQUIRED)},
+            ],
+            response_format=tools_via_schema.schema_format(
+                tools_via_schema.response_schema(TOOLS, LLM_TOOL_CHOICE_REQUIRED)
+            ),
+            strict_schema=True,
+            **kwargs,
+        )
     return await llm.call(
         messages=MESSAGES,
         response_format=_Ok if path in ("structured", "native") else None,
@@ -57,6 +72,8 @@ async def _invoke(llm, path, **kwargs):
 
 def _body(path):
     content = '{"ok": true}' if path in ("structured", "native") else "ok"
+    if path == "tools":
+        content = json.dumps({"call": {"name": "noop", "arguments": {}}})
     if path == "native":
         return {"message": {"content": content}, "done": True, "done_reason": "stop"}
     return {
@@ -67,6 +84,12 @@ def _body(path):
         "choices": [{"index": 0, "finish_reason": "stop", "message": {"role": "assistant", "content": content}}],
         "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
     }
+
+
+def _expected_content(path):
+    if path == "tools":
+        return {"call": {"name": "noop", "arguments": {}}}
+    return _Ok(ok=True) if path in ("structured", "native") else "ok"
 
 
 async def _within_observation(call: Awaitable[_Result]) -> _Result:
@@ -136,6 +159,13 @@ def _handler(requests, path, *, success_after=None, warmup=False):
     async def handle(request):
         nonlocal warmed
         payload = await request.json()
+        if path == "tools":
+            assert payload["response_format"]["type"] == "json_schema"
+            assert (
+                payload["response_format"]["json_schema"]["schema"]
+                == tools_via_schema.response_schema(TOOLS, LLM_TOOL_CHOICE_REQUIRED).schema
+            )
+            assert "tools" not in payload and "tool_choice" not in payload
         if warmup and not warmed:
             warmed = True
             return web.json_response(_body(path))
@@ -213,7 +243,7 @@ async def test_timeout_retry_gets_a_fresh_deadline_and_can_succeed(path, monkeyp
             assert len(admitted) == 2
             assert len(requests) == 2
             assert sum(chunk.isspace() for chunk in chunks) >= 2
-            assert result.content == (_Ok(ok=True) if path in ("structured", "native") else "ok")
+            assert result.content == _expected_content(path)
         finally:
             await llm.cleanup()
 
@@ -229,7 +259,7 @@ async def test_successful_response_within_deadline_is_unchanged(path):
         llm = _provider(url, path)
         try:
             result = await _invoke(llm, path, max_retries=0)
-            assert result.content == (_Ok(ok=True) if path in ("structured", "native") else "ok")
+            assert result.content == _expected_content(path)
         finally:
             await llm._client.close()
 

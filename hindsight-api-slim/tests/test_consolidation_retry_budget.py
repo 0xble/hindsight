@@ -13,16 +13,14 @@ from hindsight_api.engine.language_integrity import GeneratedLanguageMismatch
 from hindsight_api.engine.llm_interface import OutputTooLongError, ProviderRateLimitResetError
 from hindsight_api.engine.providers.openai_compatible_llm import ProviderResponseError
 from hindsight_api.engine.response_models import LLMCallResult, TokenUsage
+from tests.consolidation_answers import fact_answer
 
 
 @pytest.fixture
 def mock_llm_config():
     llm = AsyncMock()
     llm._provider_impl = None
-    response = MagicMock()
-    response.creates = []
-    response.updates = []
-    response.deletes = []
+    response = fact_answer()
     llm.call.return_value = LLMCallResult(
         content=response,
         usage=TokenUsage(),
@@ -366,9 +364,9 @@ class TestConsolidationLanguageIntegrity:
 
     @staticmethod
     def _batch(text: str):
-        from hindsight_api.engine.consolidation.consolidator import _ConsolidationBatchResponse, _CreateAction
+        from hindsight_api.engine.consolidation.consolidator import _CreateAction
 
-        return _ConsolidationBatchResponse(creates=[_CreateAction(text=text, source_fact_ids=["m1"])])
+        return fact_answer(creates=[_CreateAction(text=text, source_fact_ids=["m1"])])
 
     @classmethod
     def _response(cls, text: str):
@@ -418,13 +416,13 @@ class TestConsolidationLanguageIntegrity:
 
     @pytest.mark.asyncio
     async def test_multilingual_retry_targets_only_mismatching_action(self, mock_llm_config, mock_config):
-        from hindsight_api.engine.consolidation.consolidator import _ConsolidationBatchResponse, _CreateAction
+        from hindsight_api.engine.consolidation.consolidator import _CreateAction
 
         mock_config.llm_language_integrity = "retry"
         mock_config.llm_output_language = None
         mock_config.consolidation_max_attempts = 1
         first = LLMCallResult(
-            content=_ConsolidationBatchResponse(
+            content=fact_answer(
                 creates=[
                     _CreateAction(text=self.spanish, source_fact_ids=["en"]),
                     _CreateAction(text=self.spanish, source_fact_ids=["es"]),
@@ -433,7 +431,7 @@ class TestConsolidationLanguageIntegrity:
             usage=TokenUsage(),
         )
         corrected = LLMCallResult(
-            content=_ConsolidationBatchResponse(
+            content=fact_answer(
                 creates=[
                     _CreateAction(text=self.english, source_fact_ids=["en"]),
                     _CreateAction(text=self.spanish, source_fact_ids=["es"]),

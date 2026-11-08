@@ -22,7 +22,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-import re
 import uuid
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -33,7 +32,6 @@ import pytest
 from hindsight_api.config import _get_raw_config
 from hindsight_api.engine.consolidation import consolidator as consolidator_module
 from hindsight_api.engine.consolidation.consolidator import (
-    _ConsolidationBatchResponse,
     _CreateAction,
     _gather_or_cancel,
     run_consolidation_job,
@@ -48,6 +46,7 @@ from hindsight_api.engine.memory_engine import (
 )
 from hindsight_api.engine.providers.mock_llm import MockLLM
 from hindsight_api.engine.response_models import MemoryFact, RecallResult
+from tests.consolidation_answers import batch_fact_ids, batch_fact_texts, fact_answer, wire_fact_answer
 
 
 class _RecallTimeout(Exception):
@@ -155,11 +154,14 @@ def _mock_llm_one_obs_per_fact():
 
     def callback(messages, scope):
         if scope != "consolidation":
-            return _ConsolidationBatchResponse()
+            return fact_answer()
         prompt = "\n".join(m.get("content", "") for m in messages if m.get("role") == "user")
-        fact_ids = re.findall(r"\[([0-9a-f-]{36})\]", prompt)
-        creates = [_CreateAction(text=f"Observation about fact {fid[:8]}", source_fact_ids=[fid]) for fid in fact_ids]
-        return _ConsolidationBatchResponse(creates=creates)
+        fact_ids = batch_fact_ids(prompt)
+        creates = [
+            _CreateAction(text=f"Observation about {batch_fact_texts(prompt)[fid]}", source_fact_ids=[fid])
+            for fid in fact_ids
+        ]
+        return fact_answer(creates=creates)
 
     mock_llm.set_response_callback(callback)
     wrapper = MagicMock()
@@ -276,14 +278,25 @@ async def test_round_budget_defers_facts_but_input_failure_still_marks_failed(me
         if failure == "attempt_limit":
             raise CompletionAttemptLimitError("synthetic per-call attempt limit")
         prompt = kwargs["messages"][-1]["content"]
-        fact_ids = re.findall(r"\[([0-9a-f-]{36})\]", prompt)
+        fact_ids = batch_fact_ids(prompt)
         response = (
-            {"creates": [{"text": f"Observation about {fact_ids[0]}", "source_fact_ids": fact_ids}]}
+            {
+                "creates": [
+                    {
+                        "text": "Observation about " + prompt.split("[F1]", 1)[1].splitlines()[0].strip(),
+                        "source_fact_ids": fact_ids,
+                    }
+                ]
+            }
             if "Return a COMPLETE replacement" in prompt
             else {"creates": [{}]}
         )
         return SimpleNamespace(
-            choices=[SimpleNamespace(message=SimpleNamespace(content=json.dumps(response)), finish_reason="stop")],
+            choices=[
+                SimpleNamespace(
+                    message=SimpleNamespace(content=json.dumps(wire_fact_answer(response))), finish_reason="stop"
+                )
+            ],
             usage=SimpleNamespace(
                 prompt_tokens=10,
                 completion_tokens=12,
@@ -361,7 +374,9 @@ async def test_round_budget_defers_facts_but_input_failure_still_marks_failed(me
 
 def _sdk_reply(value):
     return SimpleNamespace(
-        choices=[SimpleNamespace(message=SimpleNamespace(content=json.dumps(value)), finish_reason="stop")],
+        choices=[
+            SimpleNamespace(message=SimpleNamespace(content=json.dumps(wire_fact_answer(value))), finish_reason="stop")
+        ],
         usage=SimpleNamespace(
             prompt_tokens=10,
             completion_tokens=12,
@@ -385,7 +400,7 @@ async def test_round_budget_multiscope_defer_keeps_committed_action_accounting(m
     async def complete(**kwargs):
         calls.append(kwargs)
         prompt = kwargs["messages"][-1]["content"]
-        ids = re.findall(r"\[([0-9a-f-]{36})\]", prompt)
+        ids = batch_fact_ids(prompt)
         reply = (
             {
                 "creates": [{"text": "Independent observation", "source_fact_ids": ids}],
@@ -475,10 +490,10 @@ async def test_round_budget_parallel_lane_drains_and_refetch_excludes_deferred(m
     async def complete(**kwargs):
         calls.append(kwargs)
         prompt = kwargs["messages"][-1]["content"]
-        ids = re.findall(r"\[([0-9a-f-]{36})\]", prompt)
+        ids = batch_fact_ids(prompt)
         await asyncio.sleep(0.01)
         reply = (
-            {"creates": [{"text": f"Observation {ids[0]}", "source_fact_ids": ids}]}
+            {"creates": [{"text": f"Observation {batch_fact_texts(prompt)[ids[0]]}", "source_fact_ids": ids}]}
             if "Return a COMPLETE replacement" in prompt
             else {"creates": [{}]}
         )
@@ -550,11 +565,12 @@ async def test_round_budget_first_scope_defer_does_not_recount_previous_leaf(mem
         nonlocal first_leaf
         calls.append(kwargs)
         prompt = kwargs["messages"][-1]["content"]
-        ids = re.findall(r"\[([0-9a-f-]{36})\]", prompt)
+        ids = batch_fact_ids(prompt)
+        texts = batch_fact_texts(prompt)
         if len(ids) > 1:
-            first_leaf = ids[0]
+            first_leaf = texts[ids[0]]
             raise OutputTooLongError("synthetic batch-size failure")
-        if ids[0] == first_leaf and ("Return a COMPLETE replacement" in prompt or len(calls) == 4):
+        if texts[ids[0]] == first_leaf and ("Return a COMPLETE replacement" in prompt or len(calls) == 4):
             return _sdk_reply({"creates": [{"text": "Leaf observation", "source_fact_ids": ids}]})
         return _sdk_reply({"creates": [{}]})
 
@@ -599,7 +615,8 @@ async def test_round_budget_first_scope_defer_does_not_recount_previous_leaf(mem
                 "SELECT id, consolidated_at, consolidation_failed_at FROM memory_units WHERE id=ANY($1)", ids
             )
         assert all(row["consolidation_failed_at"] is None for row in rows)
-        assert all((row["consolidated_at"] is not None) == (str(row["id"]) == first_leaf) for row in rows)
+        first_leaf_id = str(ids[int(first_leaf.rsplit(" ", 1)[1])])
+        assert all((row["consolidated_at"] is not None) == (str(row["id"]) == first_leaf_id) for row in rows)
         assert result["schema_correction_attempts"] == result["schema_correction_budget_exhausted"] == 1
         assert len(calls) == 5
     finally:

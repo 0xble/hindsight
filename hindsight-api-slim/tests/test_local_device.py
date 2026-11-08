@@ -31,16 +31,16 @@ def _fake_torch(*, cuda=False, mps=False, xpu=False, has_xpu=None, empty_cache_l
     torch = types.ModuleType("torch")
     torch.cuda = types.SimpleNamespace(
         is_available=lambda: cuda,
-        empty_cache=lambda: (empty_cache_log.append("cuda") if empty_cache_log is not None else None),
+        empty_cache=lambda: empty_cache_log.append("cuda") if empty_cache_log is not None else None,
     )
     torch.backends = types.SimpleNamespace(mps=types.SimpleNamespace(is_available=lambda: mps))
     torch.mps = types.SimpleNamespace(
-        empty_cache=lambda: (empty_cache_log.append("mps") if empty_cache_log is not None else None),
+        empty_cache=lambda: empty_cache_log.append("mps") if empty_cache_log is not None else None,
     )
     if has_xpu:
         torch.xpu = types.SimpleNamespace(
             is_available=lambda: xpu,
-            empty_cache=lambda: (empty_cache_log.append("xpu") if empty_cache_log is not None else None),
+            empty_cache=lambda: empty_cache_log.append("xpu") if empty_cache_log is not None else None,
         )
     return torch
 

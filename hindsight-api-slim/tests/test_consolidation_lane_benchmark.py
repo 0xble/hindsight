@@ -8,8 +8,9 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from tests.consolidation_answers import batch_fact_texts, fact_answer
+
 from hindsight_api.engine.consolidation.consolidator import (
-    _ConsolidationBatchResponse,
     _CreateAction,
     _UpdateAction,
     run_consolidation_job,
@@ -76,12 +77,13 @@ async def test_single_lane_benchmark(memory: MemoryEngine, request_context, capl
                     new_text = prompt.split("[NEW] ", 1)[1].split("\n", 1)[0]
                     return {"action": "merge", "text": new_text, "reason": "same observation"}
                 if scope != "consolidation":
-                    return _ConsolidationBatchResponse()
+                    return fact_answer()
                 prompt = "\n".join(m.get("content", "") for m in messages if m.get("role") == "user")
-                fact_id = next(str(fact_id) for fact_id in facts if str(fact_id) in prompt)
-                index = facts.index(uuid.UUID(fact_id))
+                text = next(iter(batch_fact_texts(prompt).values()))
+                index = int(text.rsplit(" ", 1)[1])
+                fact_id = str(facts[index])
                 if index < 12:
-                    return _ConsolidationBatchResponse(
+                    return fact_answer(
                         updates=[
                             _UpdateAction(
                                 observation_id=str(observation_id),
@@ -90,7 +92,7 @@ async def test_single_lane_benchmark(memory: MemoryEngine, request_context, capl
                             )
                         ]
                     )
-                return _ConsolidationBatchResponse(
+                return fact_answer(
                     creates=[
                         _CreateAction(
                             text=(

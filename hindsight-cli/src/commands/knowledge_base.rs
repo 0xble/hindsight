@@ -506,7 +506,7 @@ pub fn export(
 /// Print one tree node and its children, indented by depth.
 fn print_node(node: &types::KnowledgeNode, depth: usize) {
     let indent = "  ".repeat(depth);
-    let marker = if node.kind == types::Kind::Folder {
+    let marker = if node.kind == types::KnowledgeNodeKind::Folder {
         "/"
     } else {
         ""

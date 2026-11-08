@@ -12,6 +12,9 @@ remain compatible for callers.
 - **Commits:** `2fa19ab`, `83d7ad3`, `8c107c6`, `19357a9`, `b684912`, `60128d9`, `3068ac09`
 - **Surfaces:** `engine/parsers/{__init__,ocr_quality}.py`, `tests/test_ocr_quality.py`
 - **Upstream issue:** https://github.com/vectorize-io/hindsight/issues/3897
+  is closed. The maintainer requests an actual sanitized input and model reply
+  before reopening. Retain the fork divergence rather than reopening the issue
+  without that evidence.
 - **Upstream PR:** [#4047](https://github.com/vectorize-io/hindsight/pull/4047),
   closed unmerged: the maintainer preferred explicit MarkItDown flags over heuristics.
   The admission policy remains an intentional fork divergence.
@@ -79,6 +82,10 @@ remain compatible for callers.
   Rollback only these source changes; never reset operation state or restart the
   service as part of rollback.
 
+The PDF real-client story resolves the released `F1`-style source id from the
+matching user-batch fact rather than scanning for historical UUID prompt lines.
+Retain its real worker, original-byte readback and observation-lineage assertions.
+
 ## HINDSIGHT-004: Structured OCR terminal failures
 
 - **Status:** Active
@@ -91,6 +98,10 @@ remain compatible for callers.
   deterministic evidence exclusions without parsing error prose. Retries clear
   stale terminal details, and generated clients accept both supported detail types,
   including raw dictionary and JSON Pydantic validation nested in operation responses.
+- **Metadata fixture ownership:** The PostgreSQL operation-metadata fixture patches
+  `engine/schema.py`, the released `fq_table` resolver, so its temporary table
+  receives the native updates. Preserve metadata, rollback and terminal-state
+  assertions when schema ownership changes.
 - **Nullable discriminator correction (L7):** The Python/Go oneOf wrappers were
   introduced by fork `fded26c852a11c2ffc2b99a106544c4ce3ec3979` after released
   base `5fc4ce20917b916240cef27c212c387a177f115b`; upstream's single refresh

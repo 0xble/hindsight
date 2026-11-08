@@ -9,15 +9,21 @@ from typing import TYPE_CHECKING, Literal
 from hindsight_api.extensions.base import Extension
 
 if TYPE_CHECKING:
-    from hindsight_api.engine.memory_engine import Budget
+    from hindsight_api.engine.response_models import Budget, ReflectResult
     from hindsight_api.engine.response_models import RecallResult as RecallResultModel
-    from hindsight_api.engine.response_models import ReflectResult
     from hindsight_api.engine.search.tags import TagGroup, TagsMatch
     from hindsight_api.models import RequestContext
 
 
 class OperationValidationError(Exception):
-    """Raised when an operation fails validation."""
+    """The operation was refused before it did any work.
+
+    Raised for a ``ValidationResult.reject`` from an OperationValidatorExtension, and by
+    the engine's own tag-scope checks.
+
+    The HTTP layer answers ``status_code`` with ``reason``, and the operation is counted
+    with ``success="rejected"`` rather than as a failure (see metrics.OperationOutcome).
+    """
 
     def __init__(self, reason: str, status_code: int = 403):
         self.reason = reason

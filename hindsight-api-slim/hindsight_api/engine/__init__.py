@@ -12,6 +12,9 @@ must not initialize the application, provider configuration or local ML stack.
 
 from typing import TYPE_CHECKING
 
+from ..schema_context import get_current_schema
+from .schema import fq_table
+
 _LAZY_EXPORTS: dict[str, tuple[str, str]] = {
     "MemoryEngine": (".memory_engine", "MemoryEngine"),
     "acquire_with_retry": (".db_utils", "acquire_with_retry"),

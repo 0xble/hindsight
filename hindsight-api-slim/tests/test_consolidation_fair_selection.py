@@ -20,7 +20,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-import re
 import uuid
 from collections import defaultdict
 from datetime import datetime, timedelta, timezone
@@ -28,10 +27,11 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from tests.consolidation_answers import batch_fact_texts, fact_answer
+
 from hindsight_api.config import _get_raw_config
 from hindsight_api.engine.consolidation import consolidator as consolidator_mod
 from hindsight_api.engine.consolidation.consolidator import (
-    _ConsolidationBatchResponse,
     _CreateAction,
     _fair_group_cap,
     _fetch_fair_unconsolidated_rows,
@@ -82,11 +82,13 @@ def _mock_llm():
 
     def callback(messages, scope):
         if scope != "consolidation":
-            return _ConsolidationBatchResponse()
+            return fact_answer()
         prompt = "\n".join(m.get("content", "") for m in messages if m.get("role") == "user")
-        fact_ids = re.findall(r"\[([0-9a-f-]{36})\]", prompt)
-        return _ConsolidationBatchResponse(
-            creates=[_CreateAction(text=f"Observation about fact {fid[:8]}", source_fact_ids=[fid]) for fid in fact_ids]
+        texts = batch_fact_texts(prompt)
+        return fact_answer(
+            creates=[
+                _CreateAction(text=f"Observation about {text}", source_fact_ids=[fid]) for fid, text in texts.items()
+            ]
         )
 
     mock_llm.set_response_callback(callback)

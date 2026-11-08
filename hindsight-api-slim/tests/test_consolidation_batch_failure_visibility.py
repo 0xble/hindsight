@@ -17,7 +17,6 @@ transport-shaped retries stay separable from schema rejections.
 from __future__ import annotations
 
 import json
-import re
 import uuid
 from unittest.mock import MagicMock, patch
 
@@ -29,13 +28,15 @@ from hindsight_api.engine.consolidation import consolidator as consolidator_modu
 from hindsight_api.engine.consolidation.consolidator import (
     _BatchFailureClass,
     _classify_batch_failure,
-    _ConsolidationBatchResponse,
     _CreateAction,
+    _FactBatchResponse,
+    _FactDecision,
     run_consolidation_job,
 )
 from hindsight_api.engine.memory_engine import MemoryEngine
 from hindsight_api.engine.providers.mock_llm import MockLLM
 from hindsight_api.metrics import NoOpMetricsCollector
+from tests.consolidation_answers import batch_fact_ids, batch_fact_texts, fact_answer
 
 
 @pytest.fixture(autouse=True)
@@ -126,18 +127,19 @@ async def test_failures_rescued_by_bisection_are_still_counted(memory: MemoryEng
         def callback(messages, scope):
             nonlocal validation_failures
             if scope != "consolidation":
-                return _ConsolidationBatchResponse()
+                return fact_answer()
             prompt = "\n".join(m.get("content", "") for m in messages if m.get("role") == "user")
-            fact_ids = re.findall(r"\[([0-9a-f-]{36})\]", prompt)
+            fact_ids = batch_fact_ids(prompt)
             # Stands in for a model that only emits valid strict JSON for the
             # simplest prompts: anything with more than one fact comes back
             # schema-invalid, and bisection is what eventually gets through.
             if len(fact_ids) > 1:
                 validation_failures += 1
                 raise _schema_validation_error()
-            return _ConsolidationBatchResponse(
+            return fact_answer(
                 creates=[
-                    _CreateAction(text=f"Observation about fact {fid[:8]}", source_fact_ids=[fid]) for fid in fact_ids
+                    _CreateAction(text=f"Observation about {batch_fact_texts(prompt)[fid]}", source_fact_ids=[fid])
+                    for fid in fact_ids
                 ]
             )
 
@@ -184,12 +186,13 @@ async def test_a_clean_run_reports_no_batch_failures(memory: MemoryEngine, reque
 
         def callback(messages, scope):
             if scope != "consolidation":
-                return _ConsolidationBatchResponse()
+                return fact_answer()
             prompt = "\n".join(m.get("content", "") for m in messages if m.get("role") == "user")
-            fact_ids = re.findall(r"\[([0-9a-f-]{36})\]", prompt)
-            return _ConsolidationBatchResponse(
+            fact_ids = batch_fact_ids(prompt)
+            return fact_answer(
                 creates=[
-                    _CreateAction(text=f"Observation about fact {fid[:8]}", source_fact_ids=[fid]) for fid in fact_ids
+                    _CreateAction(text=f"Observation about {batch_fact_texts(prompt)[fid]}", source_fact_ids=[fid])
+                    for fid in fact_ids
                 ]
             )
 
@@ -227,7 +230,7 @@ async def test_retried_attempts_each_count(memory: MemoryEngine, request_context
 
         def callback(messages, scope):
             if scope != "consolidation":
-                return _ConsolidationBatchResponse()
+                return fact_answer()
             # Not JSONDecodeError/ValidationError/OutputTooLong, so it classifies RETRY
             # and the outer ladder re-sends instead of failing the batch immediately.
             raise RuntimeError("connection reset by peer")
@@ -271,7 +274,7 @@ async def test_facts_bisection_cannot_rescue_are_counted_in_both_places(memory: 
 
         def callback(messages, scope):
             if scope != "consolidation":
-                return _ConsolidationBatchResponse()
+                return fact_answer()
             raise _schema_validation_error()
 
         _install_llm(memory, callback)
@@ -316,20 +319,22 @@ async def test_action_citing_no_batch_fact_is_counted_not_silent(memory: MemoryE
 
         def callback(messages, scope):
             if scope != "consolidation":
-                return _ConsolidationBatchResponse()
+                return fact_answer()
             prompt = "\n".join(m.get("content", "") for m in messages if m.get("role") == "user")
-            fact_ids = re.findall(r"\[([0-9a-f-]{36})\]", prompt)
-            batches_seen.append(set(fact_ids))
+            fact_ids = batch_fact_ids(prompt)
+            texts = batch_fact_texts(prompt)
+            real_ids = {fid: good_id if texts[fid].startswith("Erin likes tea") else bad_id for fid in fact_ids}
+            batches_seen.append(set(real_ids.values()))
             if len(fact_ids) == 1:
                 # The fork rejects the unsafe whole reply and bisects. A fresh
                 # singleton reply rescues the good fact; the other is declined.
-                return _ConsolidationBatchResponse(
+                return fact_answer(
                     creates=[_CreateAction(text="Erin likes tea", source_fact_ids=[good_id])]
-                    if fact_ids == [good_id]
+                    if real_ids[fact_ids[0]] == good_id
                     else []
                 )
-            assert set(fact_ids) == {good_id, bad_id}
-            return _ConsolidationBatchResponse(
+            assert set(real_ids.values()) == {good_id, bad_id}
+            return fact_answer(
                 creates=[
                     _CreateAction(text="Erin likes tea", source_fact_ids=[good_id]),
                     _CreateAction(text="Erin bikes", source_fact_ids=[bad_id[:8] + "-…", str(uuid.uuid4())]),
@@ -354,6 +359,67 @@ async def test_action_citing_no_batch_fact_is_counted_not_silent(memory: MemoryE
             )
         assert len(rows) == 1
         assert rows[0]["source_memory_ids"] == [source_ids[0]]
+    finally:
+        memory._consolidation_llm_config = original_llm
+        await memory.delete_bank(bank_id, request_context=request_context)
+
+
+@pytest.mark.asyncio
+@pytest.mark.memory_backend_incompatible
+async def test_action_with_empty_text_is_dropped_not_embedded(memory: MemoryEngine, request_context):
+    """A create or update whose text is empty is dropped. Sent to the embedder, it fails the
+    whole batch on providers that reject empty input (OpenAI-compatible ones do)."""
+    bank_id = f"test-empty-obs-{uuid.uuid4().hex[:8]}"
+    await memory.ensure_bank_profile(bank_id=bank_id, request_context=request_context)
+    original_llm = memory._consolidation_llm_config
+    try:
+        async with memory._pool.acquire() as conn:
+            for text in ("Erin likes tea", "Erin bikes daily"):
+                await _insert_memory(conn, bank_id, text, ["user:erin"])
+
+        def callback(messages, scope):
+            if scope != "consolidation":
+                return fact_answer()
+            prompt = "\n".join(m.get("content", "") for m in messages if m.get("role") == "user")
+            fact_ids = batch_fact_ids(prompt)
+            # Empty generated text is discarded by the native verdict parser /
+            # conversion, before the embedder or action application boundary.
+            # The unanswered empty fact is re-asked on its own. F1 is local to
+            # that retry, so identify the fact by content and explicitly decline
+            # it rather than accidentally generating the good sibling again.
+            texts = batch_fact_texts(prompt)
+            return _FactBatchResponse(
+                facts=[
+                    _FactDecision(
+                        fact_id=fid,
+                        kind="momentary" if len(fact_ids) == 1 and "Erin bikes daily" in texts[fid] else "lasting",
+                        adds="yes",
+                        new=["Erin likes tea" if "Erin likes tea" in texts[fid] else "  "],
+                    )
+                    for fid in fact_ids
+                ]
+            )
+
+        embedded: list[str] = []
+        real_embed = consolidator_module.embedding_utils.generate_embeddings_batch
+
+        async def strict_embed(backend, texts, *args, **kwargs):
+            embedded.extend(texts)
+            if any(not t.strip() for t in texts):
+                raise RuntimeError("input must be a non-empty string")
+            return await real_embed(backend, texts, *args, **kwargs)
+
+        _install_llm(memory, callback)
+        with (
+            _override_config(memory, consolidation_llm_batch_size=2, consolidation_llm_parallelism=1),
+            patch.object(memory, "submit_async_consolidation"),
+            patch.object(consolidator_module.embedding_utils, "generate_embeddings_batch", strict_embed),
+        ):
+            result = await run_consolidation_job(memory_engine=memory, bank_id=bank_id, request_context=request_context)
+
+        assert result["observations_created"] == 1
+        assert result["llm_batch_failures"] == 0
+        assert all(t.strip() for t in embedded)
     finally:
         memory._consolidation_llm_config = original_llm
         await memory.delete_bank(bank_id, request_context=request_context)

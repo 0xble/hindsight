@@ -16,6 +16,13 @@ Upstream guidance was checked at `ec39e10900c6a971f1a73cd37402228d5cccaa25` on `
 
 ## Source Timestamp Fidelity
 
+The selected v1.2.0 release removes the standalone Python integration. Its
+fork-supported source remains until the active-consumer retirement checks pass.
+[Issue #5210](https://github.com/vectorize-io/hindsight/issues/5210) remains open:
+the maintainer keeps a first-message session timestamp pending server-side
+per-message support. That newer integration decision does not supersede this
+Python serializer's role-preserving per-record source timestamps.
+
 At fork base `5fda29ac84a81e30935ca56cd6f0d42e4b7b36da`, the standalone Python reader discarded native Codex record timestamps before text or JSON retention. The local repair extends existing normalization and formatting without changing role filters, assistant/tool grouping or retention configuration. It preserves valid timezone-aware source times verbatim, including fractional precision and offsets. Grouped assistant messages carry per-block times rather than a synthesized message date. No item-wide `timestamp` or `event_date` is set.
 
 Upstream guidance was inspected at `0cc0f39fc2a6cd889f15353ab3ebc0b3bb383cc3` on `2026-10-01`, including AGENTS.md, CLAUDE.md, CONTRIBUTING.md and code-review standards. Merged [PR #4425](https://github.com/vectorize-io/hindsight/pull/4425), head `a91f95ad934088bac069e76d418c8f147c8dc846`, preserves native turn timestamps in the newer TypeScript coding-agents adapter. Merged [PR #4660](https://github.com/vectorize-io/hindsight/pull/4660), head `9769a8684609895442f3c3c21c880b060e481a4d`, anchors that package's backfill documents to a source turn. Neither changes the standalone Python client. Closed, unmerged [PR #2974](https://github.com/vectorize-io/hindsight/pull/2974) proposed an ingestion-clock item timestamp and was superseded by the newer integration. Do not import its whole-item date or the newer backfill's synthetic fallback into this compatibility repair.

@@ -147,6 +147,7 @@ PATCH_REGRESSIONS=(
   tests/test_ocr_quality.py
   tests/test_pdf_ocr.py
   tests/test_file_transport_retry.py
+  tests/test_llm_wall_clock_timeout.py
   tests/test_consolidation_failure_isolation.py
   tests/test_consolidation_prompt_budget.py
   tests/test_refresh_outcome_metadata.py
@@ -186,10 +187,20 @@ PATCH_REGRESSIONS=(
   tests/test_operation_status.py
   tests/test_response_schema_validation.py
   tests/test_consolidation_schema_correction.py
+  tests/test_consolidation_fork_verdict_contract.py
+  tests/test_consolidation_answer_fixtures.py
+  tests/test_consolidation_fact_format.py
+  tests/test_consolidation_delete_schema.py
+  tests/test_observation_search_vector.py
   tests/test_consolidation_deadlock_order.py
   tests/test_retain_consolidation_deadlock.py
   tests/test_document_history.py
   tests/test_llm_trace.py
+  tests/test_operation_runs.py
+  tests/test_model_call_extension.py
+  tests/test_openai_total_deadline.py
+  tests/test_llm_timeout_propagation.py
+  tests/test_llm_transport_diagnostics.py
   tests/test_llm_request_extension.py
   tests/test_local_cross_encoder.py
   tests/test_reranker_timeouts.py
@@ -211,6 +222,7 @@ PATCH_REGRESSIONS=(
   tests/test_private_reads.py
   tests/test_private_reads_engine.py
   tests/test_private_reads_sinks.py
+  tests/test_private_read_operation_runs.py
   tests/test_metrics.py
   tests/test_batch_api.py
   tests/test_migration_shape.py
@@ -257,12 +269,14 @@ client_discriminators() {
     tests/test_bank_config_update_payload.py tests/test_async_sync_parity.py
   (cd hindsight-clients/go && go test -run '^Test(OperationResponseDetails|Curation)' .)
   cargo test --manifest-path hindsight-clients/rust/Cargo.toml --test curation_fields --test operation_enum_collisions
+  cargo check --manifest-path hindsight-cli/Cargo.toml
 }
 
 system_stories() {
   (cd hindsight-system-tests && PYTEST_ADDOPTS= uv run --frozen pytest \
     tests/test_11_original_file_policy.py tests/test_18_raw_curation_batches.py \
-    tests/test_50_banks_and_config.py tests/test_98_private_reads.py)
+    tests/test_50_banks_and_config.py tests/test_91_pdf_ocr.py \
+    tests/test_97_guarded_update_provenance.py tests/test_98_private_reads.py)
 }
 
 assert_candidate

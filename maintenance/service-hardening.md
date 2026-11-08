@@ -40,6 +40,14 @@ in the root contract.
 
 ## HINDSIGHT-007: Consolidation lock ordering and deadlock retry
 
+The v1.2.0 production reconciliation preserves the released store fold-refusal
+boundary and native backend-aware search-vector writes without changing lock
+order, source/version fences, history or the deadlock retry allowance. Filtered
+response stamping includes genuine uncited momentary skips alongside durable
+writes, but never facts cited only by rejected actions. Guard fallback
+coalescing requires identical target and text and retains all validated sources;
+it does not merge separate guard lineage into an ordinary exact twin.
+
 - **Status:** Active
 - **Commits:** `27fcb7b`
 - **Surfaces:** `engine/consolidation/consolidator.py` (ordered `FOR SHARE` source
@@ -138,6 +146,19 @@ Retire this correction only when a released upstream equivalent fences target
 observation metadata and passes the regression. Rollback is source-only and must
 not rewrite existing observation tags.
 
+Released [PR #4897](https://github.com/vectorize-io/hindsight/pull/4897) owns the
+transactional read of current target tags before merging. Preserve that released
+store path rather than duplicating it. The fork's lane target-snapshot comparison
+remains a residual divergence, not an upstream-owned guarantee.
+
+
+## Provider Deadlines
+
+The v1.2.0 deadline regressions invoke tool turns through `LLMProvider`, whose
+schema-backed `call_with_tools` replaced the removed provider-level methods.
+Keep OpenAI and Anthropic tool turns plus the native text/structured cases in
+`test_llm_wall_clock_timeout.py`, registered in the exact-SHA fork gate. Every
+case must observe the provider's elapsed deadline before the test safety net.
 
 ## Exact CREATE Fold Fallback And Dialect Boundary
 

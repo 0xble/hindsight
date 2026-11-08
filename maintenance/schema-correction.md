@@ -2,6 +2,12 @@
 
 Part of the root [maintenance contract](../MAINTENANCE.md).
 
+Validate each fact's recalled-observation topology before its update can supply
+accumulated text, history notes or citations to a sibling proposal. Keep rejected
+proposals visible to the common reference filter and their sources pending.
+The changes/ends followed by a recalled repeat regression is covered in
+`tests/test_consolidation_fork_verdict_contract.py`.
+
 ## Intentional divergence
 
 Upstream #3783 (`ad6312a512119c45a5dd67c43dccb6d391de2609`) keeps
@@ -11,9 +17,10 @@ errors only. Upstream #3003 closed without repair; #3137 rejected per-item salva
 Do not replace this boundary with coercion, dropped invalid actions, defaults,
 empty-response repair, routing changes, or fabricated references.
 
-Open [issue #5572](https://github.com/vectorize-io/hindsight/issues/5572) proposes bounded
-whole-response repair for missing/model-type consolidation shapes. It is not in
-the v1.1.0 release and does not retire this fork boundary or widen its budgets.
+[Issue #5572](https://github.com/vectorize-io/hindsight/issues/5572) is closed as
+completed by [PR #6374](https://github.com/vectorize-io/hindsight/pull/6374), merged
+after the selected v1.2.0 release. That unreleased correction is not part of this
+sync and does not replace the fork's job-wide completion budget or widen it.
 
 - **Surfaces:** `consolidation/consolidator.py`, `llm_wrapper.py`,
   `llm_attempt_limit.py` under `hindsight-api-slim/hindsight_api/engine/`.
@@ -22,6 +29,12 @@ the v1.1.0 release and does not retire this fork boundary or widen its budgets.
   ten, shared across fetches, scopes, lanes and bisection. Thus requeued default
   100-fact rounds get one credit each, not ten. Unlimited and sub-100-fact rounds
   fail closed. Allow at most one correction per subbatch.
+  `HINDSIGHT_API_CONSOLIDATION_ROUND_CORRECTION_BUDGET` (bank field
+  `consolidation_round_correction_budget`) is a lower ceiling, not an escape
+  hatch: the effective allowance is `min(explicit, calculated)` when set.
+  Zero disables corrections; negative values remain invalid. The same ceiling
+  covers schema and detail corrections together. An explicit value cannot
+  enable corrections for unlimited or sub-100 rounds.
   Keep model, schema, temperature, completion cap and validation unchanged.
   Reject oversized correction context before sending. Only audited OpenAI-compatible
   and Codex provider attempt boundaries support correction; others fail closed.
@@ -49,3 +62,34 @@ the v1.1.0 release and does not retire this fork boundary or widen its budgets.
   by dropped actions remain pending for bounded retry.
   Rollback removes only these correction surfaces and this record; never reset
   failed facts or replay previously committed consolidation writes.
+
+## v1.2.0 Fact-Verdict Adaptation
+
+The released model answers per-fact verdicts instead of write actions. Preserve
+the dynamic fact-verdict schema and cache-aware token accounting, including
+update/delete work when a scope has no remaining create slots. Malformed
+siblings must reject the complete response, not disappear through released
+per-item salvage. Only a change with no observation target is skipped; that
+cannot authorize a write. Never fabricate source ids from entry position or
+turn an invented observation target into a CREATE. Valid momentary skips must
+survive reference filtering. Original-chunk language checks and the detail guard
+inspect every update proposal before repeated targets are collapsed.
+
+`tests/test_consolidation_fork_verdict_contract.py` locks these protocol
+boundaries alongside the existing full correction, language, provenance and
+lane regressions. AST-only schema probes are not native engine qualification.
+
+The production adaptation rejects non-string `new` siblings (including falsy
+`null`, `false` and `0`) without widening correction eligibility. Zero create
+capacity is carried into each fact's `new.maxItems` in both normal and strict
+schemas; existing-observation work remains legal. The native provider/request
+and pg0 persistence regressions verify that a valid uncited momentary skip is
+stamped with or without valid write siblings while an invalid sibling's fact
+remains pending. An unknown skip or a contradictory skip on the invalid action's
+own source cannot settle that fact.
+
+The native mock provider must emit the required empty `existing` list for
+create-only verdicts. An incomplete mock response otherwise enters correction
+and fails closed on an unaudited provider, hiding observations in unrelated
+document-history and tag-invalidation tests. Preserve those full native engine
+regressions and the direct dynamic-schema check, not a mock correction bypass.

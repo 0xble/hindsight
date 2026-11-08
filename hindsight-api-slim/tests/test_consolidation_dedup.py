@@ -922,11 +922,15 @@ async def test_process_batch_embeds_all_actions_in_one_call() -> None:
     obs_id = uuid.uuid4()
     observation = types.SimpleNamespace(id=obs_id, text="Old observation.", source_fact_ids=[])
     llm_result = C._BatchLLMResult(
-        updates=[C._UpdateAction(observation_id=str(obs_id), text="Updated.", source_fact_ids=[mem_ids[0]])],
+        updates=[
+            C._UpdateAction(observation_id=str(obs_id), text="Updated.", source_fact_ids=[mem_ids[0]]),
+            C._UpdateAction(observation_id=str(obs_id), text="  ", source_fact_ids=[mem_ids[1]]),
+        ],
         creates=[
             C._CreateAction(text="First new.", source_fact_ids=[mem_ids[1]]),
             C._CreateAction(text="Second new.", source_fact_ids=[mem_ids[2]]),
             C._CreateAction(text="Updated.", source_fact_ids=[mem_ids[2]]),
+            C._CreateAction(text="", source_fact_ids=[mem_ids[2]]),
         ],
     )
     embed = AsyncMock(side_effect=lambda _backend, texts, **_kw: [[float(i)] for i in range(len(texts))])
@@ -964,9 +968,9 @@ async def test_process_batch_embeds_all_actions_in_one_call() -> None:
     # The first call is the recall queries (#5647); the second is every action's text.
     assert embed.await_count == 2
     assert embed.await_args.args[1] == ["Updated.", "First new.", "Second new."]
+    assert update_action.await_count == 1
     assert update_action.await_args.kwargs["prepared"].embedding_str == "[0.0]"
     assert [c.kwargs["prepared"].embedding_str for c in create_action.await_args_list] == ["[1.0]", "[2.0]"]
-
     fold.assert_awaited_once()
     assert fold.await_args.args[4].best_id == str(obs_id)
     assert fold.await_args.args[4].best_text == "Updated."

@@ -35,7 +35,6 @@ import pytest
 
 from hindsight_api.config import _get_raw_config
 from hindsight_api.engine.consolidation.consolidator import (
-    _ConsolidationBatchResponse,
     _CreateAction,
     _effective_lane_parallelism,
     _resolve_original_source_texts,
@@ -45,6 +44,7 @@ from hindsight_api.engine.consolidation.consolidator import (
 from hindsight_api.engine.memory_engine import MemoryEngine
 from hindsight_api.engine.providers.mock_llm import MockLLM
 from hindsight_api.engine.response_models import MemoryFact, RecallResult
+from tests.consolidation_answers import batch_fact_ids, batch_fact_texts, fact_answer, post_conversion_answer
 
 # ---------------------------------------------------------------------------
 # Regression tests for database-dialect routing
@@ -157,13 +157,16 @@ def _mock_llm_one_obs_per_fact():
 
     def callback(messages, scope):
         if scope != "consolidation":
-            return _ConsolidationBatchResponse()
+            return fact_answer()
         # Facts live in the user message; the system message (stable, cached) carries
         # example UUIDs in its OUTPUT samples — read user only.
         prompt = "\n".join(m.get("content", "") for m in messages if m.get("role") == "user")
-        fact_ids = re.findall(r"\[([0-9a-f-]{36})\]", prompt)
-        creates = [_CreateAction(text=f"Observation about fact {fid[:8]}", source_fact_ids=[fid]) for fid in fact_ids]
-        return _ConsolidationBatchResponse(creates=creates)
+        fact_ids = batch_fact_ids(prompt)
+        creates = [
+            _CreateAction(text=f"Observation about {batch_fact_texts(prompt)[fid]}", source_fact_ids=[fid])
+            for fid in fact_ids
+        ]
+        return fact_answer(creates=creates)
 
     mock_llm.set_response_callback(callback)
     wrapper = MagicMock()
@@ -283,10 +286,10 @@ async def test_shared_mode_pools_different_native_tags_into_one_llm_batch(memory
     await memory.ensure_bank_profile(bank_id=bank_id, request_context=request_context)
     try:
         async with memory._pool.acquire() as conn:
-            mem_a = await _insert_memory(
+            await _insert_memory(
                 conn, bank_id, "Terraform Cloud is our IaC tool", ["suggested_tool:terraform-cloud"], "shared"
             )
-            mem_b = await _insert_memory(
+            await _insert_memory(
                 conn, bank_id, "Gardea helps with garden planning", ["suggested_tool:gardea"], "shared"
             )
 
@@ -296,14 +299,16 @@ async def test_shared_mode_pools_different_native_tags_into_one_llm_batch(memory
 
         def callback(messages, scope):
             if scope != "consolidation":
-                return _ConsolidationBatchResponse()
+                return fact_answer()
             prompt = "\n".join(m.get("content", "") for m in messages if m.get("role") == "user")
-            fact_ids = set(re.findall(r"\[([0-9a-f-]{36})\]", prompt))
-            calls.append(fact_ids)
+            fact_ids = set(batch_fact_ids(prompt))
+            # The prompt names facts F1, F2, …: which memories were batched shows in their texts.
+            calls.append({t.split(" (")[0] for t in batch_fact_texts(prompt).values()})
             creates = [
-                _CreateAction(text=f"Observation about fact {fid[:8]}", source_fact_ids=[fid]) for fid in fact_ids
+                _CreateAction(text=f"Observation about {batch_fact_texts(prompt)[fid]}", source_fact_ids=[fid])
+                for fid in fact_ids
             ]
-            return _ConsolidationBatchResponse(creates=creates)
+            return fact_answer(creates=creates)
 
         mock_llm.set_response_callback(callback)
         wrapper = MagicMock()
@@ -324,7 +329,7 @@ async def test_shared_mode_pools_different_native_tags_into_one_llm_batch(memory
 
         assert result["status"] == "completed"
         assert len(calls) == 1, f"expected exactly one LLM consolidation call, got {len(calls)}: {calls}"
-        assert calls[0] == {str(mem_a), str(mem_b)}, calls[0]
+        assert calls[0] == {"Terraform Cloud is our IaC tool", "Gardea helps with garden planning"}, calls[0]
     finally:
         await memory.delete_bank(bank_id, request_context=request_context)
 
@@ -747,10 +752,11 @@ async def test_lane_exact_duplicate_create_without_semantic_dedup(
 
     def response(messages, scope):
         if scope != "consolidation":
-            return _ConsolidationBatchResponse()
+            return fact_answer()
         prompt = "\n".join(m.get("content", "") for m in messages if m.get("role") == "user")
-        fact_id = next(str(fid) for fid in fact_ids if str(fid) in prompt)
-        return _ConsolidationBatchResponse(
+        text = next(iter(batch_fact_texts(prompt).values()))
+        fact_id = str(fact_ids[int(text.rsplit(" ", 1)[1])])
+        return fact_answer(
             creates=[
                 _CreateAction(
                     text=first_text if fact_id == str(fact_ids[0]) else second_text,
@@ -1108,12 +1114,13 @@ async def test_same_lane_stale_update_retries_fresh_recall(memory: MemoryEngine,
 
         def update_callback(messages, scope):
             if scope != "consolidation":
-                return _ConsolidationBatchResponse()
+                return fact_answer()
             if recall_count <= 2:
                 assert len(initial_snapshot_texts) == 2, "LLM started before both snapshots completed"
             prompt = "\n".join(m.get("content", "") for m in messages if m.get("role") == "user")
-            source_id = next(str(fact_id) for fact_id in fact_ids if str(fact_id) in prompt)
-            return _ConsolidationBatchResponse(
+            text = next(iter(batch_fact_texts(prompt).values()))
+            source_id = str(fact_ids[int(text.rsplit(" ", 1)[1])])
+            return fact_answer(
                 updates=[
                     _UpdateAction(
                         observation_id=str(observation_id),
@@ -1261,17 +1268,19 @@ async def test_lane_apply_waits_for_source_before_observation_during_delete_swee
         wrapper = MagicMock()
         llm = MockLLM(provider="mock", api_key="", base_url="", model="mock-model")
         llm.set_response_callback(
-            lambda messages, scope: _ConsolidationBatchResponse(
-                updates=[
-                    _UpdateAction(
-                        observation_id=str(obs_id),
-                        text="Should not survive deletion",
-                        source_fact_ids=[str(fact_id)],
-                    )
-                ]
+            lambda messages, scope: (
+                fact_answer(
+                    updates=[
+                        _UpdateAction(
+                            observation_id=str(obs_id),
+                            text="Should not survive deletion",
+                            source_fact_ids=[str(fact_id)],
+                        )
+                    ]
+                )
+                if scope == "consolidation"
+                else fact_answer()
             )
-            if scope == "consolidation"
-            else _ConsolidationBatchResponse()
         )
         wrapper.with_config.return_value = llm
         with (
@@ -1371,7 +1380,7 @@ async def test_lane_partial_invalid_reply_and_stale_sibling_retry(memory: Memory
             prompt = "\n".join(m.get("content", "") for m in messages if m.get("role") == "user")
             calls.append(prompt)
             if "Lane partial fact 0" in prompt and "Lane partial fact 1" in prompt:
-                return _ConsolidationBatchResponse(
+                return post_conversion_answer(
                     updates=[
                         _UpdateAction(
                             observation_id=str(observation_id),
@@ -1387,7 +1396,7 @@ async def test_lane_partial_invalid_reply_and_stale_sibling_retry(memory: Memory
                     ],
                 )
             if "Lane partial fact 1" in prompt:
-                return _ConsolidationBatchResponse(
+                return fact_answer(
                     creates=[
                         _CreateAction(
                             text="Covered second fact",
@@ -1396,7 +1405,7 @@ async def test_lane_partial_invalid_reply_and_stale_sibling_retry(memory: Memory
                     ]
                 )
             assert "Lane partial fact 2" in prompt
-            return _ConsolidationBatchResponse(
+            return fact_answer(
                 updates=[
                     _UpdateAction(
                         observation_id=str(observation_id),
@@ -1535,9 +1544,7 @@ async def test_stale_later_scope_preserves_committed_delete_counters(memory: Mem
                 memory,
                 "_consolidation_llm_config",
                 _llm(
-                    lambda messages, scope: _ConsolidationBatchResponse(
-                        deletes=[mod._DeleteAction(observation_id=str(observation_id))]
-                    )
+                    lambda messages, scope: fact_answer(deletes=[mod._DeleteAction(observation_id=str(observation_id))])
                 ),
             ),
             patch.object(memory, "submit_async_consolidation"),
@@ -1830,12 +1837,10 @@ async def test_same_lane_apply_rechecks_create_dedup(
 
         def callback(messages, scope):
             if scope != "consolidation":
-                return _ConsolidationBatchResponse()
+                return fact_answer()
             prompt = "\n".join(m.get("content", "") for m in messages if m.get("role") == "user")
-            fact_id = re.search(r"\[([0-9a-f-]{36})\]", prompt).group(1)
-            return _ConsolidationBatchResponse(
-                creates=[_CreateAction(text="The same shared observation", source_fact_ids=[fact_id])]
-            )
+            fact_id = batch_fact_ids(prompt)[0]
+            return fact_answer(creates=[_CreateAction(text="The same shared observation", source_fact_ids=[fact_id])])
 
         mock_llm.set_response_callback(callback)
         wrapper = MagicMock()
@@ -1983,7 +1988,7 @@ async def test_shown_create_fold_preserves_current_state(memory: MemoryEngine, r
                     action="merge",
                     text="Final merged observation" if "Chain update" in prompt else "Merged observation",
                 )
-            return _ConsolidationBatchResponse(
+            return fact_answer(
                 creates=[
                     _CreateAction(
                         text="Updated observation" if change == "reply-text" else "Original observation",
@@ -2159,7 +2164,7 @@ async def test_intra_response_near_twin_creates_match_default_lane(
             nonlocal calls
             assert scope == "consolidation"
             calls += 1
-            return _ConsolidationBatchResponse(
+            return fact_answer(
                 creates=[
                     _CreateAction(text="Alice lives in Paris.", source_fact_ids=[str(facts[0])]),
                     _CreateAction(text="Alice currently lives in Paris.", source_fact_ids=[str(facts[1])]),
@@ -2313,9 +2318,9 @@ async def test_default_lane_does_not_validate_recalled_targets(memory: MemoryEng
         def callback(messages, scope):
             nonlocal calls
             if scope != "consolidation":
-                return _ConsolidationBatchResponse()
+                return fact_answer()
             calls += 1
-            return _ConsolidationBatchResponse(
+            return fact_answer(
                 updates=[
                     _UpdateAction(
                         observation_id=str(obs_id),

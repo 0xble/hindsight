@@ -115,7 +115,7 @@ async def test_terminal_failure_does_not_roll_up_parent(captured_engine, monkeyp
 async def pg_operation_engine(captured_engine, pg0_db_url, monkeypatch):
     """Use the migrated operation schema on an isolated temporary table."""
     monkeypatch.setenv("HINDSIGHT_API_DATABASE_BACKEND", "postgresql")
-    monkeypatch.setattr(engine_module, "get_current_schema", lambda: "pg_temp")
+    monkeypatch.setattr("hindsight_api.engine.schema.get_current_schema", lambda: "pg_temp")
     conn = await asyncpg.connect(pg0_db_url)
     try:
         await conn.execute("CREATE TEMP TABLE async_operations (LIKE public.async_operations INCLUDING ALL)")
