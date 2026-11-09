@@ -1,8 +1,8 @@
 """Real-detector regressions for language-integrity code exemptions."""
 
 import pytest
-from hindsight_api.engine import language_integrity as guard
 
+from hindsight_api.engine import language_integrity as guard
 from tests.test_language_prevention import ENGLISH, SPANISH
 from tests.test_language_prevention_review import check
 
@@ -31,6 +31,73 @@ def test_foreign_prose_inside_code_delimiters_is_not_exempt(output):
 )
 def test_recognizable_code_spans_remain_exempt(output):
     assert not guard.enforcement_failures(check(ENGLISH, output), guard.LanguageIntegrityMode.REJECT)
+
+
+@pytest.mark.parametrize("tag", ["", "javascript", "text"])
+@pytest.mark.parametrize(
+    "literal",
+    [
+        SPANISH,
+        SPANISH + " # / literal",
+        "这是示例代码中的文本内容",
+        "L’équipe a terminé la vérification des documents.",
+    ],
+)
+def test_fenced_template_literal_string_data_remains_exempt(tag, literal):
+    output = f"```{tag}\nconst greeting = `{literal}`;\n```"
+    result = check(ENGLISH, output)
+
+    assert result.verdicts[0].status == "preserved"
+    assert not guard.enforcement_failures(result, guard.LanguageIntegrityMode.REJECT)
+    assert literal not in guard._without_code(output)
+
+
+@pytest.mark.parametrize("separator", ["; ", ";\n"])
+@pytest.mark.parametrize("prose", [SPANISH, "团队已经完成了全部检查并且保存了所有原始文件"])
+def test_template_literal_does_not_exempt_adjacent_foreign_prose(separator, prose):
+    output = f"```javascript\nconst greeting = `{SPANISH}`{separator}{prose}\n```"
+    result = check(ENGLISH, output)
+
+    assert prose in guard._without_code(output)
+    assert result.verdicts[0].status == "mismatch"
+    assert guard.enforcement_failures(result, guard.LanguageIntegrityMode.REJECT)
+
+
+@pytest.mark.parametrize(
+    "statement",
+    [
+        "const {prose} = `ready`;",
+        'print("`", {prose}, "`")',
+        "print('`', {prose}, '`')",
+        "print(/* ` */ {prose} /* ` */)",
+        "print(/`/, {prose}, /`/)",
+        "print(/[a`]/, {prose}, /[`]/)",
+        "print(/* ` {prose} `)",
+        "print('` {prose} `)",
+        'print("` {prose} `)',
+        "const greeting = `${{{prose}}}`;",
+    ],
+    ids=[
+        "declaration-name",
+        "double-quoted-backticks",
+        "single-quoted-backticks",
+        "comment-backticks",
+        "regexp-backticks",
+        "regexp-character-class-backticks",
+        "unclosed-comment",
+        "unclosed-single-quote",
+        "unclosed-double-quote",
+        "interpolation",
+    ],
+)
+def test_template_masking_does_not_hide_unicode_identifiers(statement):
+    prose = "团队已经完成了全部检查并且保存了所有原始文件"
+    output = "```javascript\n" + statement.format(prose=prose) + "\n```"
+    result = check(ENGLISH, output)
+
+    assert prose in guard._without_code(output)
+    assert result.verdicts[0].status == "mismatch"
+    assert guard.enforcement_failures(result, guard.LanguageIntegrityMode.REJECT)
 
 
 def test_untagged_fence_keeps_foreign_first_body_line_for_rejection():
