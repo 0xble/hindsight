@@ -960,6 +960,33 @@ class WorkerPoller:
 
             async def reclaim() -> None:
                 await self._reclaim_own_processing_tasks(task.schema, operation_id=operation_id)
+                # The normal recovery helper deliberately excludes provider
+                # batches. This task has stopped executing, so hand back only
+                # its own batch-backed row, preserving the polling payload and
+                # metadata without spending a crash-recovery retry.
+                table = fq_table("async_operations", task.schema)
+                async with self._backend.acquire() as conn:
+                    async with conn.transaction():
+                        await conn.execute(
+                            f"""
+                            UPDATE {table}
+                            SET status = 'pending', worker_id = NULL, claimed_at = NULL, updated_at = now()
+                            WHERE operation_id = $1 AND worker_id = $2 AND status = 'processing'
+                              AND result_metadata->>'batch_id' IS NOT NULL
+                              AND task_payload IS NOT NULL
+                            """,
+                            operation_id,
+                            self._worker_id,
+                        )
+                        # Read before commit so a new claimant cannot race this
+                        # proof and be mistaken for the stopped execution.
+                        row = await conn.fetchrow(
+                            f"SELECT status, worker_id FROM {table} WHERE operation_id = $1", operation_id
+                        )
+                if row and row["status"] == "processing" and row["worker_id"] == self._worker_id:
+                    # A successful no-op is not proof of recovery. Retry or exit
+                    # through the same deadline rather than forget an owned row.
+                    raise RuntimeError(f"Operation {operation_id} remains processing after reclaim")
 
             landed = await self._write_terminal(task, "reclaimed", reclaim)
             if not landed:

@@ -2533,8 +2533,9 @@ class TestTaskReleaseOnStop:
     @pytest.mark.asyncio
     @pytest.mark.parametrize("kind", ["retry", "defer"])
     @pytest.mark.parametrize("recovers", [False, True])
+    @pytest.mark.parametrize("batch_backed", [False, True])
     async def test_retry_defer_reclaim_outage_cannot_strand_live_worker(
-        self, pool, backend, clean_operations, monkeypatch, kind, recovers
+        self, pool, backend, clean_operations, monkeypatch, kind, recovers, batch_backed
     ):
         """Survive past the old five-attempt ceiling or exit for restart recovery."""
         from hindsight_api.worker import WorkerPoller
@@ -2553,6 +2554,17 @@ class TestTaskReleaseOnStop:
 
         poller = WorkerPoller(backend=backend, worker_id="release-worker", executor=asking_executor)
         task = await self._claim_ours(poller, op_id)
+        batch_metadata = {"batch_id": "existing-provider-batch", "batch_provider": "openai"}
+        original_payload = await pool.fetchval(
+            "SELECT task_payload FROM async_operations WHERE operation_id = $1", op_id
+        )
+        if batch_backed:
+            # The provider batch was submitted while executing this claimed task.
+            await pool.execute(
+                "UPDATE async_operations SET result_metadata = $2::jsonb WHERE operation_id = $1",
+                op_id,
+                json.dumps(batch_metadata),
+            )
         broken_write = AsyncMock(side_effect=ConnectionResetError("database unavailable"))
         monkeypatch.setattr(poller, "_schedule_retry" if kind == "retry" else "_defer_operation", broken_write)
         real_reclaim = poller._reclaim_own_processing_tasks
@@ -2586,11 +2598,77 @@ class TestTaskReleaseOnStop:
             monkeypatch.setattr(poller, "_reclaim_own_processing_tasks", real_reclaim)
             assert await poller.recover_own_tasks() == 1
         row = await pool.fetchrow(
-            "SELECT status, worker_id, claimed_at, retry_count FROM async_operations WHERE operation_id = $1", op_id
+            "SELECT status, worker_id, claimed_at, retry_count, result_metadata, task_payload "
+            "FROM async_operations WHERE operation_id = $1",
+            op_id,
         )
         assert row["status"] == "pending"
         assert row["worker_id"] is None and row["claimed_at"] is None
-        assert row["retry_count"] == 1
+        assert row["retry_count"] == (0 if batch_backed else 1)
+        assert row["task_payload"] == original_payload
+        if batch_backed:
+            metadata = (
+                json.loads(row["result_metadata"])
+                if isinstance(row["result_metadata"], str)
+                else row["result_metadata"]
+            )
+            assert metadata == batch_metadata
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("target_state", ["processing", "cancelled", "other-worker", "missing-payload"])
+    async def test_batch_retry_rescue_is_exact_owned_processing_row(
+        self, pool, backend, clean_operations, monkeypatch, target_state
+    ):
+        from hindsight_api.worker import WorkerPoller
+        from hindsight_api.worker import poller as poller_module
+
+        bank_id = f"test-worker-{uuid.uuid4().hex[:8]}"
+        await _ensure_bank(pool, bank_id)
+        op_id = await self._insert_pending(pool, bank_id)
+        poller = WorkerPoller(backend=backend, worker_id="release-worker", executor=AsyncMock())
+        task = await self._claim_ours(poller, op_id)
+        peer = await self._insert_pending(pool, bank_id)
+        foreign = await self._insert_pending(pool, bank_id)
+        for operation_id, owner in [(op_id, "release-worker"), (peer, "release-worker"), (foreign, "another-worker")]:
+            await pool.execute(
+                "UPDATE async_operations SET status = 'processing', worker_id = $2, claimed_at = now(), "
+                "result_metadata = $3::jsonb, retry_count = 100 WHERE operation_id = $1",
+                operation_id,
+                owner,
+                json.dumps({"batch_id": "existing-batch"}),
+            )
+        if target_state == "cancelled":
+            await pool.execute("UPDATE async_operations SET status = 'cancelled' WHERE operation_id = $1", op_id)
+        elif target_state == "other-worker":
+            await pool.execute(
+                "UPDATE async_operations SET worker_id = 'another-worker' WHERE operation_id = $1", op_id
+            )
+        elif target_state == "missing-payload":
+            await pool.execute("UPDATE async_operations SET task_payload = NULL WHERE operation_id = $1", op_id)
+        exit_process = MagicMock()
+        monkeypatch.setattr(poller, "_exit_process", exit_process)
+        monkeypatch.setattr(poller_module, "TERMINAL_WRITE_DEADLINE_S", 0.0)
+        await poller._reclaim_task_with_backoff(task)
+        row = await pool.fetchrow(
+            "SELECT status, worker_id, retry_count FROM async_operations WHERE operation_id = $1", op_id
+        )
+        if target_state == "processing":
+            assert row["status"] == "pending" and row["worker_id"] is None
+        elif target_state == "cancelled":
+            assert row["status"] == "cancelled"
+        else:
+            assert row["status"] == "processing"
+            assert row["worker_id"] == ("another-worker" if target_state == "other-worker" else "release-worker")
+        assert row["retry_count"] == 100, "batch polling does not spend a crash retry"
+        if target_state == "missing-payload":
+            exit_process.assert_called_once()
+        else:
+            exit_process.assert_not_called()
+        for operation_id, owner in [(peer, "release-worker"), (foreign, "another-worker")]:
+            row = await pool.fetchrow(
+                "SELECT status, worker_id FROM async_operations WHERE operation_id = $1", operation_id
+            )
+            assert row["status"] == "processing" and row["worker_id"] == owner
 
     @pytest.mark.asyncio
     async def test_failed_backpressure_defer_write_releases_operation(self, pool, backend, clean_operations):
