@@ -220,6 +220,64 @@ async def test_store_observation_count_matches_sql_containment(monkeypatch, dial
     conn.fetchval.assert_not_called()
 
 
+@pytest.mark.parametrize("dialect", ["oracle", "external"])
+@pytest.mark.parametrize("total", [0, 500, 50_501])
+async def test_store_observation_count_exhausts_opaque_pages(monkeypatch, dialect, total):
+    from types import SimpleNamespace
+
+    store = MagicMock()
+    store.store_owned_for.return_value = dialect == "external"
+    monkeypatch.setattr(consolidator, "get_memories", lambda: store)
+    monkeypatch.setattr(consolidator, "get_config", lambda: SimpleNamespace(database_backend=dialect))
+    tokens = []
+
+    async def scan(**kwargs):
+        token = kwargs["page_token"]
+        tokens.append(token)
+        offset = 0 if not token else int(token.removeprefix("opaque:"))
+        size = min(500, total - offset)
+        return SimpleNamespace(
+            memories=[None] * size,
+            next_page_token=f"opaque:{offset + size}" if offset + size < total else "",
+        )
+
+    store.scan_memories = AsyncMock(side_effect=scan)
+    assert await consolidator._count_observations_for_scope(MagicMock(), "bank", ["scope:a"]) == total
+    assert tokens[0] == ""
+    assert len(tokens) == max(1, (total + 499) // 500)
+
+
+@pytest.mark.parametrize("tokens", [["same", "same"], ["a", "b", "a"]])
+async def test_store_observation_count_rejects_cursor_cycles(monkeypatch, tokens):
+    from types import SimpleNamespace
+
+    store = MagicMock()
+    store.store_owned_for.return_value = True
+    monkeypatch.setattr(consolidator, "get_memories", lambda: store)
+    store.scan_memories = AsyncMock(
+        side_effect=[SimpleNamespace(memories=[], next_page_token=token) for token in tokens]
+    )
+    with pytest.raises(RuntimeError, match="repeated.*page token"):
+        await consolidator._count_observations_for_scope(MagicMock(), "bank", [])
+    assert store.scan_memories.await_count == len(tokens)
+
+
+async def test_store_observation_count_continues_after_empty_page(monkeypatch):
+    from types import SimpleNamespace
+
+    store = MagicMock()
+    store.store_owned_for.return_value = True
+    monkeypatch.setattr(consolidator, "get_memories", lambda: store)
+    store.scan_memories = AsyncMock(
+        side_effect=[
+            SimpleNamespace(memories=[], next_page_token="opaque"),
+            SimpleNamespace(memories=[None], next_page_token=""),
+        ]
+    )
+    assert await consolidator._count_observations_for_scope(MagicMock(), "bank", []) == 1
+    assert store.scan_memories.await_args.kwargs["page_token"] == "opaque"
+
+
 def test_document_update_prelocks_in_same_order():
     # The same connection is passed by the caller inside its retain transaction.
     source = Path(fact_storage.__file__).read_text()

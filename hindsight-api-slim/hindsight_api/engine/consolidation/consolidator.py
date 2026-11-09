@@ -1804,7 +1804,8 @@ async def _count_observations_for_scope(
     # A store that keeps observations outside Postgres: count them through it (tag containment).
     total = 0
     page_token = ""
-    for _ in range(100):
+    seen_tokens: set[str] = set()
+    while True:
         page = await store.scan_memories(
             conn=conn,
             fq_table=fq_table,
@@ -1819,6 +1820,9 @@ async def _count_observations_for_scope(
         page_token = page.next_page_token
         if not page_token:
             break
+        if page_token in seen_tokens:
+            raise RuntimeError("Observation scope scan returned a repeated page token")
+        seen_tokens.add(page_token)
     return total
 
 
