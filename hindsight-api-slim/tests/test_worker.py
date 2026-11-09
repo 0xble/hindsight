@@ -2615,6 +2615,37 @@ class TestTaskReleaseOnStop:
             assert metadata == batch_metadata
 
     @pytest.mark.asyncio
+    async def test_nonbatch_retry_rescue_does_not_reset_a_new_batch_execution(
+        self, pool, backend, clean_operations, monkeypatch
+    ):
+        from hindsight_api.worker import WorkerPoller
+
+        bank_id = f"test-worker-{uuid.uuid4().hex[:8]}"
+        await _ensure_bank(pool, bank_id)
+        op_id = await self._insert_pending(pool, bank_id)
+        poller = WorkerPoller(backend=backend, worker_id="release-worker", executor=AsyncMock())
+        task = await self._claim_ours(poller, op_id)
+        real_reclaim = poller._reclaim_own_processing_tasks
+
+        async def reclaim_then_start_new_execution(schema, *, operation_id):
+            recovered = await real_reclaim(schema, operation_id=operation_id)
+            assert recovered == 1
+            # Simulate a new claimant immediately starting a provider batch after
+            # the normal recovery UPDATE commits, before returning its count.
+            await pool.execute(
+                "UPDATE async_operations SET status = 'processing', worker_id = 'release-worker', "
+                "claimed_at = now(), result_metadata = $2::jsonb WHERE operation_id = $1",
+                op_id,
+                json.dumps({"batch_id": "new-execution-batch"}),
+            )
+            return recovered
+
+        monkeypatch.setattr(poller, "_reclaim_own_processing_tasks", reclaim_then_start_new_execution)
+        await poller._reclaim_task_with_backoff(task)
+        row = await pool.fetchrow("SELECT status, worker_id FROM async_operations WHERE operation_id = $1", op_id)
+        assert row["status"] == "processing" and row["worker_id"] == "release-worker"
+
+    @pytest.mark.asyncio
     @pytest.mark.parametrize("target_state", ["processing", "cancelled", "other-worker", "missing-payload"])
     async def test_batch_retry_rescue_is_exact_owned_processing_row(
         self, pool, backend, clean_operations, monkeypatch, target_state

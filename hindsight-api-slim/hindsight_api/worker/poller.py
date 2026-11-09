@@ -959,7 +959,11 @@ class WorkerPoller:
         for operation_id in task.all_operation_ids:
 
             async def reclaim() -> None:
-                await self._reclaim_own_processing_tasks(task.schema, operation_id=operation_id)
+                reclaimed = await self._reclaim_own_processing_tasks(task.schema, operation_id=operation_id)
+                if reclaimed:
+                    # That UPDATE already proved a non-batch handoff. Do not
+                    # touch a subsequent execution if polling reclaims it now.
+                    return
                 # The normal recovery helper deliberately excludes provider
                 # batches. This task has stopped executing, so hand back only
                 # its own batch-backed row, preserving the polling payload and

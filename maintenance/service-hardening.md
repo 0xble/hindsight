@@ -203,7 +203,11 @@ The fork-only normalized-observation index revision `e6f7a8b9c0d1` was introduce
   row to pending. Preserve its payload, provider metadata and retry count; do not
   run the broad startup batch sweep against other live work. Read the exact row
   back before treating rescue as landed: an owned processing row still present
-  retries through the existing write deadline/exit boundary. Disposable pg0
+  retries through the existing write deadline/exit boundary. A normal recovery
+  UPDATE's positive row count already proves its handoff: stop there so a newly
+  claimed execution cannot be mistaken for the old provider batch. Verify batch
+  handoff inside its update transaction before another claimant can race it.
+  Disposable pg0
   regressions cover both retry and defer, sixth-attempt recovery and deadline
   exit/startup recovery, cancelled/reassigned rows, unrelated same/other-worker
   claims, exhausted normal retry budgets and a missing-payload no-op. The latter
