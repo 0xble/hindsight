@@ -7,7 +7,7 @@ import logging
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, BinaryIO
 
 from hindsight_api.config import DEFAULT_FILE_PARSER_MARKITDOWN_OCR_PROMPT, get_config
 
@@ -149,11 +149,31 @@ class MarkitdownParser(FileParser):
                     prompt=self._ocr_prompt,
                     default_headers=self._ocr_default_headers,
                 )
+                # Raster evidence must be the provider description, not the
+                # ImageConverter's metadata + Markdown wrapper. Keep the normal
+                # converter selection and existing string result shape.
+                from markitdown import DocumentConverterResult
+                from markitdown.converters import ImageConverter
+
+                class OcrImageConverter(ImageConverter):
+                    def convert(
+                        self, file_stream: BinaryIO, stream_info: "StreamInfo", **kwargs: Any
+                    ) -> DocumentConverterResult:
+                        description = self._get_llm_description(
+                            file_stream,
+                            stream_info,
+                            client=kwargs["llm_client"],
+                            model=kwargs["llm_model"],
+                            prompt=kwargs.get("llm_prompt"),
+                        )
+                        return DocumentConverterResult(markdown=description or "")
+
                 self._markitdown = MarkItDown(
                     llm_client=ocr_options.llm_client,
                     llm_model=ocr_options.llm_model,
                     llm_prompt=ocr_options.llm_prompt,
                 )
+                self._markitdown.register_converter(OcrImageConverter())
             else:
                 self._markitdown = MarkItDown()
         return self._markitdown

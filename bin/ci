@@ -145,6 +145,7 @@ PATCH_REGRESSIONS=(
   tests/test_op_cancellation.py
   tests/test_worker.py
   tests/test_ocr_quality.py
+  tests/test_markitdown_parser.py
   tests/test_pdf_ocr.py
   tests/test_file_transport_retry.py
   tests/test_openai_client_user_agent.py

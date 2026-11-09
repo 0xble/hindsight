@@ -6,6 +6,19 @@ Reject unusable OCR without discarding useful sparse, multilingual, or partially
 uncertain evidence or parser fallback. Admission and typed terminal status must
 remain compatible for callers.
 
+## Raster metadata admission (v1.2.0 review)
+
+MarkItDown's raster ImageConverter normally prepends ExifTool metadata and a
+`# Description:` wrapper. Its OCR-enabled registration now returns only the raw
+provider description in the existing string result. Metadata must not turn
+`No visible text`, refusal, an empty response, or a missing response into admitted
+evidence. Keep the registry's existing quality check, typed no-text/refusal
+outcomes and fallback ordering. The regression in `test_markitdown_parser.py`
+uses the real converter selection with a metadata-producing ExifTool boundary
+and synthetic description boundary, verifies fallback after both no-text and
+refusal, and preserves valid image text without metadata. Text/document parsing,
+configured OCR endpoint/model/prompt and the separate PDF path are unchanged.
+
 ## HINDSIGHT-001: OCR evidence admission
 
 - **Status:** Active
