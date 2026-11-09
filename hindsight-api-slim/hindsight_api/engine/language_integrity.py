@@ -502,13 +502,26 @@ def _without_code(text: str) -> str:
         r"(?:from\s+[\w.]+\s+import\s+[\w*, ]*|import\s+[\w., ]+)|"
         r"(?:print|assert|len|range|console\.log)\s*\([^)]*\)|"
         r"(?:return|raise|yield)\s+(?:f?['\"`][^'\"`]*['\"`]|\w+(?:\([^)]*\))?)|"
-        r"\w+\s*(?:=|:=)\s*(?:f?['\"`][^'\"`]*['\"`]|\d+|\w+(?:\([^)]*\))?))\s*"
+        r"\w+\s*(?:=|:=)\s*(?:f?['\"`][^'\"`]*['\"`]|\d+|\w+(?:\([^)]*\))?))\s*",
+        re.ASCII,
     )
-    declaration_prefix = re.compile(rf"^\s*{declaration[:-2]};\s*")
+    # Match the AST path's identifier restriction without restricting string data.
+    declaration_prefix = re.compile(rf"^\s*{declaration[:-2]};\s*", re.ASCII)
 
     def strip_code(line: str) -> str:
         if _is_syntax_code(line):
             return _code_comment_prose(line)
+        # A regex fallback must not override a rejected Unicode identifier in
+        # arguments or other permissive groups. Token names exclude string data.
+        try:
+            tokens = tokenize.generate_tokens(StringIO(line.strip()).readline)
+            if any(
+                token.type == tokenize.NAME and any(not char.isascii() and char.isalpha() for char in token.string)
+                for token in tokens
+            ):
+                return line
+        except (tokenize.TokenError, IndentationError, SyntaxError):
+            return line
         if whole_line.fullmatch(line):
             return " "
         # A known statement preceding prose is removable, but the residual is

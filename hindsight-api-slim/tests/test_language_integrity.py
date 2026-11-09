@@ -87,7 +87,7 @@ async def test_detects_novel_script_prose_when_source_profile_abstains() -> None
             TYPESCRIPT_SOURCE + ' The customer said, "这是保留的中文引文，不应被当作新的翻译内容。"',
             'The customer said, "这是保留的中文引文，不应被当作新的翻译内容。"',
         ),
-        (TYPESCRIPT_SOURCE, "Keep this literal code: `const 标签 = '这是示例代码中的文本内容';`"),
+        (TYPESCRIPT_SOURCE, "Keep this literal code: `const label = '这是示例代码中的文本内容';`"),
         (TYPESCRIPT_SOURCE, "The attendee was 王小明."),
     ],
 )

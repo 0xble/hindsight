@@ -94,6 +94,7 @@ use the configurable policy below without destructive changes to source facts.
   `preserved` at `92d44c8`; the identifier guard restores `mismatch` without
   changing the await/call/loop/JSON controls. These corrections use
   verdict policy `source-spans-v4`; they do not change enforcement modes.
+- **Regex identifier parity (v1.2.0 review):** A syntax-rejected Unicode identifier must not become code through the regex fallback. Use ASCII regex identifiers and inspect fallback NAME tokens, including arguments in permissive regex groups, while preserving quoted string data. Inline/fenced `return`/`raise`/`yield`, assignment, JS declaration and argument-shaped CJK prose retain their full residue and REJECT verdict. `test_reject_mode_rejects_unicode_return_prose_after_correction` exercises real retain extraction and its bounded corrective retry. The old JS string-data control now uses an ASCII `label` identifier; Unicode identifier exemption is intentionally disallowed on both recognition paths. No enforcement mode or provider routing changes.
 - **String-literal exemption (follow-up L):** Deliberately preserve string-literal
   contents as code data, including `note("<Spanish sentence>")` inside backticks
   or a `python` fence, just as Chinese values in fenced JSON containers stay

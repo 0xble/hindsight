@@ -162,6 +162,17 @@ async def test_reject_mode_fails_only_after_corrective_retry() -> None:
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("wrapper", ["`{code}`", "```python\n{code}\n```"], ids=["inline", "fenced"])
+async def test_reject_mode_rejects_unicode_return_prose_after_correction(wrapper):
+    output = wrapper.format(code="return 团队已经完成了全部检查并且保存了所有原始文件")
+    llm = _llm(output, output)
+    with pytest.raises(GeneratedLanguageMismatch):
+        await _extract("reject", llm)
+    assert llm.call.await_count == 2
+    assert "LANGUAGE CORRECTION" in llm.call.await_args.kwargs["messages"][1]["content"]
+
+
+@pytest.mark.asyncio
 async def test_observe_mode_neither_retries_nor_rejects() -> None:
     llm = _llm(SPANISH_DRIFT)
 

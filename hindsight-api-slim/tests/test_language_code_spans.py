@@ -25,7 +25,7 @@ def test_foreign_prose_inside_code_delimiters_is_not_exempt(output):
     "output",
     [
         "`print('hello')`",
-        "`const 标签 = '这是示例代码中的文本内容';`",
+        "`const label = '这是示例代码中的文本内容';`",
         "```python\ndef greeting(name):\n    return f'hello {name}'\n```",
     ],
 )
@@ -169,6 +169,29 @@ def test_code_syntax_or_tag_does_not_exempt_adjacent_foreign_prose(output: str) 
 )
 def test_python_unicode_identifiers_are_not_syntax_exemption_authority(code: str) -> None:
     assert not guard._is_syntax_code(code)
+
+
+@pytest.mark.parametrize("wrapper", ["`{code}`", "```python\n{code}\n```"], ids=["inline", "python-fence"])
+@pytest.mark.parametrize(
+    "statement",
+    [
+        "return {prose}",
+        "raise {prose}",
+        "yield {prose}",
+        "result = {prose}",
+        "const result = {prose};",
+        "const {prose} = 'ready';",
+        "print({prose})",
+        "def save({prose}):",
+    ],
+)
+def test_regex_fallback_preserves_unicode_identifier_prose(wrapper, statement):
+    foreign = "团队已经完成了全部检查并且保存了所有原始文件"
+    output = wrapper.format(code=statement.format(prose=foreign))
+    assert foreign in guard._without_code(output)
+    result = check(ENGLISH, output)
+    assert result.verdicts[0].status == "mismatch"
+    assert guard.enforcement_failures(result, guard.LanguageIntegrityMode.REJECT)
 
 
 @pytest.mark.parametrize("wrapper", ["`{code}`", "```python\n{code}\n```"], ids=["inline", "python-fence"])
