@@ -529,16 +529,21 @@ def test_markitdown_converter_can_enable_ocr(monkeypatch):
     """When enabled, Markitdown receives an OpenAI-compatible client, model, and OCR prompt."""
     import markitdown
     import openai
+    from markitdown.converters import ImageConverter
 
     from hindsight_api.config import DEFAULT_FILE_PARSER_MARKITDOWN_OCR_PROMPT, get_config
     from hindsight_api.engine.parsers import MarkitdownParser
 
     markitdown_calls = []
     openai_calls = []
+    registered_converters: list[ImageConverter] = []
 
     class FakeMarkItDown:
         def __init__(self, **kwargs):
             markitdown_calls.append(kwargs)
+
+        def register_converter(self, converter: ImageConverter) -> None:
+            registered_converters.append(converter)
 
     class FakeOpenAI:
         def __init__(self, **kwargs):
@@ -569,21 +574,29 @@ def test_markitdown_converter_can_enable_ocr(monkeypatch):
     assert markitdown_calls[0]["llm_client"].__class__ is FakeOpenAI
     assert markitdown_calls[0]["llm_model"] == "vision-model"
     assert markitdown_calls[0]["llm_prompt"] == DEFAULT_FILE_PARSER_MARKITDOWN_OCR_PROMPT
+    assert len(registered_converters) == 1
+    assert isinstance(registered_converters[0], ImageConverter)
+    assert type(registered_converters[0]).__name__ == "OcrImageConverter"
 
 
 def test_markitdown_converter_passes_default_headers_when_configured(monkeypatch):
     """Custom OCR headers are forwarded to the OpenAI client alongside the hindsight User-Agent."""
     import markitdown
     import openai
+    from markitdown.converters import ImageConverter
 
     from hindsight_api.config import get_config
     from hindsight_api.engine.parsers import MarkitdownParser
 
     openai_calls = []
+    registered_converters: list[ImageConverter] = []
 
     class FakeMarkItDown:
         def __init__(self, **kwargs):
             pass
+
+        def register_converter(self, converter: ImageConverter) -> None:
+            registered_converters.append(converter)
 
     class FakeOpenAI:
         def __init__(self, **kwargs):
@@ -611,6 +624,9 @@ def test_markitdown_converter_passes_default_headers_when_configured(monkeypatch
             "max_retries": get_config().llm_max_retries,
         }
     ]
+    assert len(registered_converters) == 1
+    assert isinstance(registered_converters[0], ImageConverter)
+    assert type(registered_converters[0]).__name__ == "OcrImageConverter"
 
 
 def test_markitdown_converter_requires_model_when_ocr_enabled(monkeypatch):
