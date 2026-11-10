@@ -254,6 +254,61 @@ The fork-only normalized-observation index revision `e6f7a8b9c0d1` was introduce
   when these fork retry/cancellation contracts still pass. Rollback is source
   only, never a database status reset or runtime restart.
 
+## Cached Index DDL And Graph Deadline Cleanup
+
+- **Disposition:** Source corrections to the accepted `v0.10.3` paths. Nightly
+  runs `39779058353` and `40191601418` failed on unchanged fork revision
+  `6626b87ca71593be9db604f648752836c3136f77`; run `40090804970` passed.
+- **Index exclusion:** `create_data_access_ops` caches one `PostgreSQLOps` per
+  dialect, beyond individual engine/event-loop lifetimes. Preserve per-table
+  process-wide exclusion introduced by `d733772e3`, but use the existing
+  `CrossLoopLock` rather than an `asyncio.Lock` that binds on its first contended
+  acquire. Independent per-loop locks would not preserve DDL serialization.
+- **Graph deadline:** Observation expansion's timeout (`cc806c4d6`) can cancel
+  immediately after asyncpg's Parse/Describe/Flush completes, before the fetch
+  sends Bind/Execute/Sync. PostgreSQL then retains an implicit virtual
+  transaction and relation locks even though the driver's `is_in_transaction()`
+  is false. Local PostgreSQL reports `state=active`, `wait_event=ClientRead`,
+  non-null `xact_start` (not necessarily the literal `idle in transaction`
+  state); the concurrent DROP waits on `virtualxid`, not a data snapshot.
+  The reset-free pool cannot detect it. A simple-query synchronization on this
+  timeout path ends that cycle before release, matching the combined expansion
+  next-query behavior without restoring reset SQL on every normal pool
+  release. Otherwise `DROP INDEX CONCURRENTLY` during subsequent bank deletion
+  waits for the parked backend. Nightly `42050248570` on `fdf3f5f7` timed out
+  after the observation fallback and four bank-delete command timeouts; that
+  captured log has no backend/lock snapshot, so attribution of that particular
+  run remains an inference. A local real-PostgreSQL probe reproduced the exact
+  blocker and verified that the synchronization releases the production DDL.
+- **Bounded deletion:** Bound the whole PostgreSQL bank-index drop (including
+  waiting for the in-process DDL lock) by the engine's effective existing
+  `db_command_timeout`, preserving explicit per-engine overrides.
+  Raise a non-retryable diagnostic on expiry rather than feeding the same
+  parked transaction through eight timeout retries. Deadlocks remain retryable
+  and caller cancellation still propagates. The error explicitly warns that
+  bank data deletion may already have committed before index cleanup.
+- **Regression:** `tests/test_postgres_index_ddl_loops.py` forces contention on
+  the same cached dialect across 2 closed/recreated loops and verifies shared
+  create/drop exclusion, bounded queue waiting and non-retryable timeout
+  behavior. `tests/test_graph_timeout_cleanup.py` cancels a real asyncpg fetch
+  after prepare, observes the production `drop_bank_vector_indexes` call
+  blocked on that exact backend with `pg_blocking_pids`, and checks that both
+  fallback arms release it. The combined arm must still return semantic/causal
+  rows; observations must yield none. `tests/test_link_expansion_config.py` retains
+  its actual deadline assertion and checks the cleanup query. Keep the original
+  `tests/test_load_large_batch.py` and `tests/test_graph_entity_fanout_cap.py`
+  assertions and deadlines unchanged. All 5 files belong to `PATCH_REGRESSIONS`
+  in `bin/ci`.
+- **Falsification:** A fresh dialect per engine, or a contended cached lock
+  that survives sequential loops without error, would refute the loop-lifetime
+  diagnosis. A synchronized idle server backend after cancelled prepare with
+  the original reset-free release would refute the transaction leak. A future
+  nightly hang whose lock wait has no parked graph backend requires a separate
+  diagnosis rather than assuming every timeout has this cause.
+- **Retire/rollback:** Retire only when an adopted release preserves cross-loop
+  DDL exclusion and passes the cancelled-prepare server-state regression.
+  Rollback is source-only, with no runtime restart or database mutation.
+
 Run the API-local regression commands from `hindsight-api-slim`.
 
 

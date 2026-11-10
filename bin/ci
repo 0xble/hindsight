@@ -161,6 +161,11 @@ PATCH_REGRESSIONS=(
   tests/test_hierarchical_config.py
   tests/test_file_preservation_policy.py
   tests/test_db_abstraction.py
+  tests/test_postgres_index_ddl_loops.py
+  tests/test_graph_timeout_cleanup.py
+  tests/test_link_expansion_config.py
+  tests/test_load_large_batch.py
+  tests/test_graph_entity_fanout_cap.py
   tests/test_language_integrity.py
   tests/test_language_integrity_retain.py
   tests/test_bank_language_integrity.py

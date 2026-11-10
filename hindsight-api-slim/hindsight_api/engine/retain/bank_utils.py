@@ -182,7 +182,9 @@ async def create_bank_vector_indexes(
     )
 
 
-async def drop_bank_vector_indexes(conn: "DatabaseConnection", internal_id: str, *, ops: "DataAccessOps") -> None:
+async def drop_bank_vector_indexes(
+    conn: "DatabaseConnection", internal_id: str, *, ops: "DataAccessOps", command_timeout: float | None = None
+) -> None:
     """Drop per-(bank, fact_type) partial vector indexes for a bank being deleted.
 
     Called before the bank row is deleted so internal_id is still known.
@@ -195,6 +197,7 @@ async def drop_bank_vector_indexes(conn: "DatabaseConnection", internal_id: str,
         get_current_schema(),
         internal_id,
         _BANK_INDEX_FACT_TYPES,
+        command_timeout=command_timeout,
     )
 
 

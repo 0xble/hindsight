@@ -669,6 +669,8 @@ class DataAccessOps(ABC):
         schema: str,
         internal_id: str,
         fact_types: dict[str, str],
+        *,
+        command_timeout: float | None = None,
     ) -> None:
         """Drop per-bank partial vector indexes.
 
