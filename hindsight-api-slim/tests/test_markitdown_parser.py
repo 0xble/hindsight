@@ -1,6 +1,7 @@
 """Unit tests for the markitdown file parser."""
 
 import codecs
+import io
 import json
 
 import pytest
@@ -11,6 +12,67 @@ from hindsight_api.engine.parsers.markitdown import MarkitdownParser
 @pytest.fixture
 def parser() -> MarkitdownParser:
     return MarkitdownParser()
+
+
+@pytest.fixture
+def raster_ocr(monkeypatch):
+    import markitdown.converters._image_converter as images
+    from PIL import Image
+
+    monkeypatch.setattr(
+        images, "exiftool_metadata", lambda *args, **kwargs: {"ImageSize": "20x20", "Description": "Synthetic metadata"}
+    )
+    png = io.BytesIO()
+    Image.new("RGB", (20, 20), "white").save(png, format="PNG")
+    parser = MarkitdownParser(
+        ocr_enabled=True, ocr_api_key="synthetic-key", ocr_base_url="http://127.0.0.1:1/v1", ocr_model="existing-model"
+    )
+
+    def configure(description):
+        monkeypatch.setattr(images.ImageConverter, "_get_llm_description", lambda *args, **kwargs: description)
+        return parser, png.getvalue()
+
+    return configure
+
+
+@pytest.mark.parametrize("description", ["No visible text", "I am unable to read the image.", "", None])
+async def test_raster_ocr_metadata_cannot_admit_empty_or_refused_description(raster_ocr, description):
+    from hindsight_api.engine.parsers import FileParserRegistry, LowQualityOcrError, NoExtractableContentError
+
+    parser, png = raster_ocr(description)
+    registry = FileParserRegistry()
+    registry.register(parser)
+    error = LowQualityOcrError if description and description.startswith("I am") else NoExtractableContentError
+    with pytest.raises(error):
+        await registry.convert_with_fallback(["markitdown"], png, "source.png", "image/png")
+
+
+@pytest.mark.parametrize("description", ["No visible text", "I am unable to read the image."])
+async def test_raster_ocr_metadata_rejection_tries_fallback(raster_ocr, description):
+    from hindsight_api.engine.parsers import FileParserRegistry
+    from tests.test_ocr_quality import StaticParser
+
+    parser, png = raster_ocr(description)
+    registry = FileParserRegistry()
+    registry.register(parser)
+    fallback = StaticParser("fallback", "Alice completed all checks and preserved the original files.")
+    registry.register(fallback)
+    result = await registry.convert_with_fallback(["markitdown", "fallback"], png, "source.png", "image/png")
+    assert result.parser_name == "fallback"
+    assert result.content == fallback._content
+    assert fallback.calls == 1
+
+
+async def test_raster_ocr_valid_description_preserves_string_evidence(raster_ocr):
+    from hindsight_api.engine.parsers import FileParserRegistry
+
+    description = "Alice completed all checks and preserved the original files."
+    parser, png = raster_ocr(description)
+    registry = FileParserRegistry()
+    registry.register(parser)
+    result = await registry.convert_with_fallback(["markitdown"], png, "source.png", "image/png")
+    assert result.content == description
+    assert result.parser_name == "markitdown"
 
 
 def _utf8_json_with_ascii_prefix() -> bytes:

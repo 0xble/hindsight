@@ -94,6 +94,17 @@ use the configurable policy below without destructive changes to source facts.
   `preserved` at `92d44c8`; the identifier guard restores `mismatch` without
   changing the await/call/loop/JSON controls. These corrections use
   verdict policy `source-spans-v4`; they do not change enforcement modes.
+- **Regex identifier parity (v1.2.0 review):** A syntax-rejected Unicode identifier must not become code through the regex fallback. Use ASCII regex identifiers and inspect fallback NAME tokens, including arguments in permissive regex groups, while preserving quoted string data. Inline/fenced `return`/`raise`/`yield`, assignment, JS declaration and argument-shaped CJK prose retain their full residue and REJECT verdict. `test_reject_mode_rejects_unicode_return_prose_after_correction` exercises real retain extraction and its bounded corrective retry. The old JS string-data control now uses an ASCII `label` identifier; Unicode identifier exemption is intentionally disallowed on both recognition paths. No enforcement mode or provider routing changes.
+- **Backtick string data (v1.2.0 review follow-up):** Mask complete, non-interpolated
+  JS backtick strings only for the fallback's Python NAME-token check; recognize
+  code and retain residual prose against the original text. Python tokenization
+  otherwise mistakes foreign string contents for Unicode identifiers. Backticks
+  inside other strings or comments must not hide adjacent Unicode names; leave
+  template interpolations visible because they can contain identifiers. Unparsed
+  slash/regexp syntax stays conservative rather than trusting a partial JS lexer. Fenced
+  Spanish, French and CJK string data remain exempt, while same-line/next-line
+  foreign prose and Unicode declaration/interpolation names remain REJECT controls
+  in `tests/test_language_code_spans.py`. No enforcement or routing changes.
 - **String-literal exemption (follow-up L):** Deliberately preserve string-literal
   contents as code data, including `note("<Spanish sentence>")` inside backticks
   or a `python` fence, just as Chinese values in fenced JSON containers stay

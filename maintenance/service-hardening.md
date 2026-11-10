@@ -197,6 +197,22 @@ The fork-only normalized-observation index revision `e6f7a8b9c0d1` was introduce
 
 ## Worker Nonterminal-Write Recovery Qualification
 
+- **Provider-batch rescue (v1.2.0 review):** Normal own-task recovery intentionally
+  skips `result_metadata.batch_id`. After a retry/defer write fails, explicitly
+  reset only that stopped task's owned, processing, payload-backed provider-batch
+  row to pending. Preserve its payload, provider metadata and retry count; do not
+  run the broad startup batch sweep against other live work. Read the exact row
+  back before treating rescue as landed: an owned processing row still present
+  retries through the existing write deadline/exit boundary. A normal recovery
+  UPDATE's positive row count already proves its handoff: stop there so a newly
+  claimed execution cannot be mistaken for the old provider batch. Verify batch
+  handoff inside its update transaction before another claimant can race it.
+  Disposable pg0
+  regressions cover both retry and defer, sixth-attempt recovery and deadline
+  exit/startup recovery, cancelled/reassigned rows, unrelated same/other-worker
+  claims, exhausted normal retry budgets and a missing-payload no-op. The latter
+  must exit rather than silently forget an unrecoverable row.
+
 - **Disposition:** Fork-only integration repair at upstream release `v0.10.3`
   (`eb6df499d35300e5b2f3f029b2e6adda04ed90f8`). The fork's retry/defer
   reconciliation stopped after five failed reclaim attempts, leaving a live

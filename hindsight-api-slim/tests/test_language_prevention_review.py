@@ -175,7 +175,7 @@ def test_inline_foreign_prose_cannot_hide_in_sentence_or_backticks(output):
     assert guard.enforcement_failures(check(ENGLISH, output), guard.LanguageIntegrityMode.REJECT)
 
 
-@pytest.mark.parametrize("output", ["Alice Smith", "`const 标签 = '这是示例代码中的文本内容';`", "`print('hello')`"])
+@pytest.mark.parametrize("output", ["Alice Smith", "`const label = '这是示例代码中的文本内容';`", "`print('hello')`"])
 def test_source_names_and_real_code_are_preserved(output):
     assert not guard.enforcement_failures(
         check(ENGLISH + " Alice Smith led the review.", output), guard.LanguageIntegrityMode.REJECT

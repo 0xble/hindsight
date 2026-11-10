@@ -502,13 +502,37 @@ def _without_code(text: str) -> str:
         r"(?:from\s+[\w.]+\s+import\s+[\w*, ]*|import\s+[\w., ]+)|"
         r"(?:print|assert|len|range|console\.log)\s*\([^)]*\)|"
         r"(?:return|raise|yield)\s+(?:f?['\"`][^'\"`]*['\"`]|\w+(?:\([^)]*\))?)|"
-        r"\w+\s*(?:=|:=)\s*(?:f?['\"`][^'\"`]*['\"`]|\d+|\w+(?:\([^)]*\))?))\s*"
+        r"\w+\s*(?:=|:=)\s*(?:f?['\"`][^'\"`]*['\"`]|\d+|\w+(?:\([^)]*\))?))\s*",
+        re.ASCII,
     )
-    declaration_prefix = re.compile(rf"^\s*{declaration[:-2]};\s*")
+    # Match the AST path's identifier restriction without restricting string data.
+    declaration_prefix = re.compile(rf"^\s*{declaration[:-2]};\s*", re.ASCII)
+    # Python's tokenizer does not recognize JS backtick strings. Protect other
+    # strings/comments first so their backticks cannot hide adjacent identifiers.
+    quoted_spans = re.compile(
+        r"'(?:\\.|[^'\\])*(?:'|$)|\"(?:\\.|[^\"\\])*(?:\"|$)|"
+        r"`(?:\\.|[^`\\])*`|\#[^\n]*"
+    )
 
     def strip_code(line: str) -> str:
         if _is_syntax_code(line):
             return _code_comment_prose(line)
+        # A regex fallback must not override a rejected Unicode identifier in
+        # arguments or other permissive groups. Token names exclude string data.
+        token_text = quoted_spans.sub(
+            lambda match: '""' if match[0].startswith("`") and "${" not in match[0] else match[0], line
+        )  # Keep template interpolations visible: they may contain identifiers.
+        if "/" in token_text:
+            token_text = line  # Unparsed JS regexp/division syntax can also contain backticks.
+        try:
+            tokens = tokenize.generate_tokens(StringIO(token_text.strip()).readline)
+            if any(
+                token.type == tokenize.NAME and any(not char.isascii() and char.isalpha() for char in token.string)
+                for token in tokens
+            ):
+                return line
+        except (tokenize.TokenError, IndentationError, SyntaxError):
+            return line
         if whole_line.fullmatch(line):
             return " "
         # A known statement preceding prose is removable, but the residual is
