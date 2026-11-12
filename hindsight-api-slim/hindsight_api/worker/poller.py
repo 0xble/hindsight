@@ -1599,43 +1599,47 @@ class WorkerPoller:
             recovery_filters.append(f"AND operation_id = ${len(recovery_args) + 2}")
         recovery_filter = " ".join(recovery_filters)
         async with self._backend.acquire() as conn:
-            # Rows under the limit: increment retry_count and reset to pending
-            result = await conn.execute(
-                f"""
-                UPDATE {table}
-                SET status = 'pending', worker_id = NULL, claimed_at = NULL,
-                    retry_count = COALESCE(retry_count, 0) + 1, updated_at = now()
-                WHERE status = 'processing' AND worker_id = $1
-                  AND result_metadata->>'batch_id' IS NULL
-                  AND COALESCE(retry_count, 0) < $2
-                  {recovery_filter}
-                """,
-                self._worker_id,
-                max_retries,
-                *recovery_args,
-            )
-            # Rows that exceeded the limit: move to failed. RETURNING gives us
-            # the ids so their parent aggregators can be rolled up below — a
-            # batch_retain child sub-batch carries parent_operation_id (not
-            # batch_id) in its metadata, so it IS eligible to be failed here,
-            # and without propagating that terminal state the parent is stranded
-            # in 'processing' forever (the same crash loop this fixes, one level up).
-            failed_rows = await conn.fetch(
-                f"""
-                UPDATE {table}
-                SET status = 'failed', worker_id = NULL, claimed_at = NULL,
-                    error_message = 'exceeded max recovery attempts (retry_count >= {max_retries})',
-                    completed_at = now(), updated_at = now()
-                WHERE status = 'processing' AND worker_id = $1
-                  AND result_metadata->>'batch_id' IS NULL
-                  AND COALESCE(retry_count, 0) >= $2
-                  {recovery_filter}
-                RETURNING operation_id
-                """,
-                self._worker_id,
-                max_retries,
-                *recovery_args,
-            )
+            # Keep both writes atomic. Live rescue has no claimed_before fence:
+            # at max_retries - 1 a new execution could otherwise claim the
+            # pending row before the second UPDATE and be failed by this rescue.
+            async with conn.transaction():
+                # Rows under the limit: increment retry_count and reset to pending
+                result = await conn.execute(
+                    f"""
+                    UPDATE {table}
+                    SET status = 'pending', worker_id = NULL, claimed_at = NULL,
+                        retry_count = COALESCE(retry_count, 0) + 1, updated_at = now()
+                    WHERE status = 'processing' AND worker_id = $1
+                      AND result_metadata->>'batch_id' IS NULL
+                      AND COALESCE(retry_count, 0) < $2
+                      {recovery_filter}
+                    """,
+                    self._worker_id,
+                    max_retries,
+                    *recovery_args,
+                )
+                # Rows that exceeded the limit: move to failed. RETURNING gives us
+                # the ids so their parent aggregators can be rolled up below — a
+                # batch_retain child sub-batch carries parent_operation_id (not
+                # batch_id) in its metadata, so it IS eligible to be failed here,
+                # and without propagating that terminal state the parent is stranded
+                # in 'processing' forever (the same crash loop this fixes, one level up).
+                failed_rows = await conn.fetch(
+                    f"""
+                    UPDATE {table}
+                    SET status = 'failed', worker_id = NULL, claimed_at = NULL,
+                        error_message = 'exceeded max recovery attempts (retry_count >= {max_retries})',
+                        completed_at = now(), updated_at = now()
+                    WHERE status = 'processing' AND worker_id = $1
+                      AND result_metadata->>'batch_id' IS NULL
+                      AND COALESCE(retry_count, 0) >= $2
+                      {recovery_filter}
+                    RETURNING operation_id
+                    """,
+                    self._worker_id,
+                    max_retries,
+                    *recovery_args,
+                )
 
         # Roll each failed child up to its parent aggregator, one transaction
         # per child so a single problematic parent can't undo the others —

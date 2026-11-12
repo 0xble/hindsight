@@ -8,6 +8,7 @@ from .iris import IrisParser
 from .llama_parse import LlamaParseParser
 from .markitdown import MarkitdownParser
 from .ocr_quality import LowQualityOcrError, evaluate_ocr_quality, is_image_input
+from .transport import FileParserTransportError, is_retryable_file_transport_error
 
 __all__ = [
     "FileParser",
@@ -114,6 +115,8 @@ class FileParserRegistry:
         last_error: Exception | None = None
         nonempty_error: Exception | None = None
         nonterminal_error: Exception | None = None
+        retryable_transport_error: Exception | None = None
+        terminal_transport_error: Exception | None = None
         ocr_error: LowQualityOcrError | None = None
         empty_parsers: list[str] = []
         all_empty = bool(parsers)
@@ -172,6 +175,17 @@ class FileParserRegistry:
                 last_error = e
                 nonempty_error = e
                 nonterminal_error = e
+                if is_retryable_file_transport_error(e):
+                    retryable_transport_error = e
+                else:
+                    # A known transport wrapper is retryable unless the shared
+                    # classifier finds a certificate/deadline veto in its cause.
+                    # This probe is never raised and leaves e's chaining intact;
+                    # generic errors alone still never become retryable.
+                    probe = FileParserTransportError("Parser fallback classification")
+                    probe.__cause__ = e
+                    if not is_retryable_file_transport_error(probe):
+                        terminal_transport_error = e
 
         # Only a chain whose every outcome is empty can be a terminal no-text result.
         # Preserve unclassified errors separately: a later empty result OR OCR
@@ -179,7 +193,9 @@ class FileParserRegistry:
         if all_empty:
             raise NoExtractableContentError(f"No content extracted from '{filename}'", parsers=empty_parsers)
         raise (
-            nonterminal_error
+            terminal_transport_error
+            or retryable_transport_error
+            or nonterminal_error
             or ocr_error
             or nonempty_error
             or last_error

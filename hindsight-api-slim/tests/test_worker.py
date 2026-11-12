@@ -2646,6 +2646,63 @@ class TestTaskReleaseOnStop:
         assert row["status"] == "processing" and row["worker_id"] == "release-worker"
 
     @pytest.mark.asyncio
+    async def test_retry_rescue_is_atomic_at_last_recovery_attempt(self, pool, backend, clean_operations, monkeypatch):
+        """A same-worker claim cannot slip between recovery's pending/failed writes."""
+        from contextlib import asynccontextmanager
+        from types import SimpleNamespace
+
+        from hindsight_api.worker import WorkerPoller
+
+        bank_id = f"test-worker-{uuid.uuid4().hex[:8]}"
+        await _ensure_bank(pool, bank_id)
+        op_id = await self._insert_pending(pool, bank_id)
+        poller = WorkerPoller(backend=backend, worker_id="release-worker", executor=AsyncMock())
+        claimant = WorkerPoller(backend=backend, worker_id="release-worker", executor=AsyncMock())
+        task = await self._claim_ours(poller, op_id)
+        await pool.execute(
+            "UPDATE async_operations SET retry_count = $2 WHERE operation_id = $1", op_id, poller._max_retries - 1
+        )
+        interleaved_claims = []
+        interleaved_attempts = 0
+
+        class InterleavedConnection:
+            def __init__(self, conn):
+                self.conn = conn
+
+            def __getattr__(self, name):
+                return getattr(self.conn, name)
+
+            async def execute(self, query, *args):
+                nonlocal interleaved_attempts
+                result = await self.conn.execute(query, *args)
+                if "retry_count = COALESCE(retry_count, 0) + 1" in query:
+                    interleaved_attempts += 1
+                    # Actual claim SQL on another connection: SKIP LOCKED must
+                    # skip the released row until both recovery writes commit.
+                    interleaved_claims.extend(await claimant.claim_batch())
+                return result
+
+        @asynccontextmanager
+        async def acquire():
+            async with backend.acquire() as conn:
+                yield InterleavedConnection(conn)
+
+        monkeypatch.setattr(poller, "_backend", SimpleNamespace(acquire=acquire))
+        await poller._reclaim_task_with_backoff(task)
+        row = await pool.fetchrow(
+            "SELECT status, worker_id, claimed_at, retry_count FROM async_operations WHERE operation_id = $1", op_id
+        )
+        assert interleaved_attempts == 1
+        assert not interleaved_claims, f"new execution was reclaimed inside rescue: {dict(row)}"
+        assert row["status"] == "pending"
+        assert row["worker_id"] is None and row["claimed_at"] is None
+        assert row["retry_count"] == poller._max_retries
+        claimed = await claimant.claim_batch()
+        assert [item.operation_id for item in claimed] == [str(op_id)]
+        row = await pool.fetchrow("SELECT status, worker_id FROM async_operations WHERE operation_id = $1", op_id)
+        assert row["status"] == "processing" and row["worker_id"] == "release-worker"
+
+    @pytest.mark.asyncio
     @pytest.mark.parametrize("target_state", ["processing", "cancelled", "other-worker", "missing-payload"])
     async def test_batch_retry_rescue_is_exact_owned_processing_row(
         self, pool, backend, clean_operations, monkeypatch, target_state

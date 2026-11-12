@@ -152,7 +152,7 @@ class MarkitdownParser(FileParser):
                 # Raster evidence must be the provider description, not the
                 # ImageConverter's metadata + Markdown wrapper. Keep the normal
                 # converter selection and existing string result shape.
-                from markitdown import DocumentConverterResult
+                from markitdown import PRIORITY_SPECIFIC_FILE_FORMAT, DocumentConverter, DocumentConverterResult
                 from markitdown.converters import ImageConverter
 
                 class OcrImageConverter(ImageConverter):
@@ -168,12 +168,21 @@ class MarkitdownParser(FileParser):
                         )
                         return DocumentConverterResult(markdown=description or "")
 
-                self._markitdown = MarkItDown(
+                class OcrMarkItDown(MarkItDown):
+                    def register_converter(
+                        self, converter: DocumentConverter, *, priority: float = PRIORITY_SPECIFIC_FILE_FORMAT
+                    ) -> None:
+                        # Replace the native raster route, not just its first
+                        # attempt: metadata must not bypass admission on fallback.
+                        if isinstance(converter, ImageConverter):
+                            converter = OcrImageConverter()
+                        super().register_converter(converter, priority=priority)
+
+                self._markitdown = OcrMarkItDown(
                     llm_client=ocr_options.llm_client,
                     llm_model=ocr_options.llm_model,
                     llm_prompt=ocr_options.llm_prompt,
                 )
-                self._markitdown.register_converter(OcrImageConverter())
             else:
                 self._markitdown = MarkItDown()
         return self._markitdown

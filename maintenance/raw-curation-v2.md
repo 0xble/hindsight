@@ -142,6 +142,40 @@ ordinary operation states; curation field omission/null serialization and
 readable 409 error status/body remain unchanged. See [typed failures](ocr.md)
 and Rust `tests/operation_enum_collisions.rs`/`tests/curation_fields.rs`.
 
+## Correction and import/closure qualification
+
+The final scoped review at `9620f53a054963a90e25a61ace655e3f40bdba5c`
+identified three owning-path gaps. The repair keeps the existing V2 manifest,
+receipts, row/byte caps, non-waiting curation conflicts and exact revert contract:
+
+- `mentioned_at` is not an editable V2 field. Pass its original value from the
+  locked before-image to the ordinary edit store rather than clearing it or
+  trusting provider preparation. Context-only, text and event-time corrections
+  retain both microsecond timestamps and explicit nulls; revert remains exact.
+- Imported observation sources are a bare UUID array, not FK references. On
+  PostgreSQL, import locks the distinct source rows in UUID order **before**
+  checking liveness and retains the locks through insertion/commit. An importer
+  owning the source makes curation fail busy; a fresh curation retry captures
+  and retracts the committed observation inside its capsule. An importer behind
+  curation waits, rechecks the deleted source and skips the observation. The
+  existing non-PostgreSQL import dialect is unchanged.
+- An asymmetric A-B pair pins B but does not make B a discovery frontier. Lock
+  only cooccurrences incident to the original scope, not every B-C pair. Check
+  the pair cap before fetching endpoints; server-side count probes and bounded
+  fetches protect both the pair and complete endpoint sets, with pair bounds
+  rechecked under the entity locks. Limits remain 4,000 pairs and 2,000 pins.
+
+The native PostgreSQL regressions in `tests/test_curation_batch.py` force both
+import/curation orderings using the real importer, inserts and transactions;
+check that retry capsules contain the imported observation; and verify exact
+revert. A 4,001-pair second-hop hub proves unrelated pair writers neither block
+nor are blocked by the small original closure. A real-connection fetch spy
+proves over-cap pairs are rejected before endpoint transfer. The pre-repair
+focused run returned **7 failed, 3 passed**: three timestamps were cleared, the
+import-first ordering committed an actual dangling observation, the
+curation-first ordering incorrectly imported one, the hub made the closure
+busy, and over-cap endpoint materialization was admitted.
+
 ## Verification And Retirement
 
 Keep `apply_curation_batch` and `revert_curation_batch` available in the control

@@ -31,9 +31,12 @@ _PATTERNS = {
     "date": re.compile(r"\b\d{4}-\d{2}-\d{2}\b"),
     "version": re.compile(r"\bv?\d+(?:\.\d+){2,}(?:[-+][\w.-]+)?\b"),
     "identifier": re.compile(
-        r"\b(?:(?<![\d,.-])0\d+(?![.,-]\d)|[a-f0-9]{7,64}|[\w]+(?:[._][\w]+)+|[A-Z]+-\d+|"
-        r"(?-i:(?=[A-Za-z0-9_]*[a-z])(?=[A-Za-z0-9_]*[A-Z])(?![A-Z][a-z0-9_]*\b)[A-Za-z0-9_]+)|"
-        r"[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12})\b",
+        # UUIDs must win over the hexadecimal prefix alternative. A word
+        # boundary at a hyphen is not the end of an opaque identifier; reject
+        # UUID substrings of longer dotted/hyphenated tokens as well.
+        r"\b(?:(?<![\w.-])[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}(?![\w-]|\.\w)|"
+        r"(?<![\d,.-])0\d+(?![.,-]\d)|[a-f0-9]{7,64}|[\w]+(?:[._][\w]+)+|[A-Z]+-\d+|"
+        r"(?-i:(?=[A-Za-z0-9_]*[a-z])(?=[A-Za-z0-9_]*[A-Z])(?![A-Z][a-z0-9_]*\b)[A-Za-z0-9_]+))\b",
         re.I,
     ),
     "number": re.compile(r"(?<![\w.])(?:-(?<![\w.]-))?(?:\d+(?:,\d{3})*(?:\.\d+)?|\.\d+)(?:%|st|nd|rd|th)?(?![\w])"),

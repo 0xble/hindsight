@@ -539,18 +539,19 @@ async def import_observations(
 
     async with acquire_with_retry(backend) as conn:
         async with conn.transaction():
-            # ``source_memory_ids`` is a bare uuid[] with no foreign key, so a
-            # ref that resolved above but whose unit is no longer in this bank
-            # would be written as a dangling reference and silently corrupt the
-            # observation graph (an observation citing units that exist nowhere).
-            # Re-check liveness inside the write transaction and treat a missing
-            # source exactly like an unresolved one: skip the observation.
+            # A transaction-local check alone is not a fence: source_memory_ids
+            # has no FK, and curation could delete a source before this INSERT.
+            # Acquire source row locks in curation's stable order before deciding
+            # liveness, and keep them through commit. If curation already owns a
+            # source, PostgreSQL rechecks it after waiting and skips the deleted
+            # row; if import owns it, curation fails busy and retries fresh.
+            source_lock = " ORDER BY id FOR UPDATE" if conn.backend_type == "postgresql" else ""
             live = {
                 r["id"]
                 for r in await conn.fetch(
-                    f"SELECT id FROM {fq_table('memory_units')} WHERE bank_id = $1 AND id = ANY($2)",
+                    f"SELECT id FROM {fq_table('memory_units')} WHERE bank_id = $1 AND id = ANY($2)" + source_lock,
                     bank_id,
-                    [uuid.UUID(s) for _obs, sources in resolved for s in sources],
+                    sorted({uuid.UUID(s) for _obs, sources in resolved for s in sources}),
                 )
             }
             kept_resolved: list[tuple[TransferObservation, list[str]]] = []

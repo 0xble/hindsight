@@ -316,7 +316,12 @@ validation and preserves the reason value through serialization.
   the original uploaded bytes. No observation/consolidation enablement is disabled
   to make the story deterministic. Metadata-prefix regressions exercise the
   real ImageConverter with synthetic ExifTool metadata and refused, empty and
-  usable descriptions. Local HTTP slow-trickle tests require elapsed expiry,
+  usable descriptions. OCR constructor/header tests in `test_file_retain.py`
+  use native MarkItDown converter registration instead of constructor-only
+  doubles. Preserve their lazy initialization, model, prompt, client and header
+  assertions. The exact-head gate includes that complete file-retain suite so
+  converter-registration changes cannot first fail in nightly qualification.
+  Local HTTP slow-trickle tests require elapsed expiry,
   socket closure, no further provider call after the request elapsed deadline,
   whole-document rejection and worker/scratch cleanup. SDK connection retries
   before that deadline remain bounded by the configured budget.

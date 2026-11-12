@@ -536,9 +536,10 @@ def test_markitdown_converter_can_enable_ocr(monkeypatch):
     markitdown_calls = []
     openai_calls = []
 
-    class FakeMarkItDown:
+    class FakeMarkItDown(markitdown.MarkItDown):
         def __init__(self, **kwargs):
             markitdown_calls.append(kwargs)
+            super().__init__(**kwargs)
 
     class FakeOpenAI:
         def __init__(self, **kwargs):
@@ -573,7 +574,6 @@ def test_markitdown_converter_can_enable_ocr(monkeypatch):
 
 def test_markitdown_converter_passes_default_headers_when_configured(monkeypatch):
     """Custom OCR headers are forwarded to the OpenAI client alongside the hindsight User-Agent."""
-    import markitdown
     import openai
 
     from hindsight_api.config import get_config
@@ -581,16 +581,11 @@ def test_markitdown_converter_passes_default_headers_when_configured(monkeypatch
 
     openai_calls = []
 
-    class FakeMarkItDown:
-        def __init__(self, **kwargs):
-            pass
-
     class FakeOpenAI:
         def __init__(self, **kwargs):
             openai_calls.append(kwargs)
 
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
-    monkeypatch.setattr(markitdown, "MarkItDown", FakeMarkItDown)
     monkeypatch.setattr(openai, "OpenAI", FakeOpenAI)
 
     headers = {"X-Component-Id": "hindsight-ocr", "X-Request-Source": "markitdown"}

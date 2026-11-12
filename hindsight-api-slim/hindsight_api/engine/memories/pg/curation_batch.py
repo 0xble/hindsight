@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 from collections import Counter
 from collections.abc import Iterable
+from datetime import datetime
 from decimal import Decimal
 from typing import Any
 from uuid import UUID
@@ -78,6 +79,25 @@ async def lock(conn: DatabaseConnection, bank_id: str) -> None:
         raise CurationBatchConflict("Curation window is busy")
 
 
+async def _check_lock_row_cap(conn: DatabaseConnection, query: str, *args: Any, cap: int, message: str) -> None:
+    # Probe only cap+1 rows on the server before transferring lock identities.
+    count = await conn.fetchval(f"SELECT count(*) FROM ({query} LIMIT {cap + 1}) bounded", *args)
+    if count > cap:
+        raise CurationBatchConflict(message)
+
+
+async def _bounded_lock_rows(
+    conn: DatabaseConnection, query: str, *args: Any, cap: int, message: str, for_update: bool = False
+) -> list[Any]:
+    await _check_lock_row_cap(conn, query, *args, cap=cap, message=message)
+    rows = await conn.fetch(query + f" LIMIT {cap + 1}" + (" FOR UPDATE NOWAIT" if for_update else ""), *args)
+    # A writer may expand the set between the count and lock query. Keep that
+    # transfer bounded too, and fail rather than admitting a partial closure.
+    if len(rows) > cap:
+        raise CurationBatchConflict(message)
+    return rows
+
+
 async def lock_closure(conn: DatabaseConnection, bank_id: str, scope: ClosureScope) -> None:
     """Take fail-fast writer locks for every row in the recoverable closure.
 
@@ -143,11 +163,25 @@ async def lock_closure(conn: DatabaseConnection, bank_id: str, scope: ClosureSco
             affected_ids,
         )
 
-        # Entity cooccurrences may pin an entity that is not present in the
-        # initial scope (the asymmetric partner case). Discover all endpoints
-        # before locking entities so ordinary posting/cooccurrence writers are
-        # also forced to wait or fail rather than changing the CAS inputs.
-        closure_entity_rows = await conn.fetch(
+        # Asymmetric partners are parent pins, NOT a new discovery frontier.
+        # Count original-scope pairs before transferring even their endpoints.
+        # Otherwise one captured A-B pair can expand locking across B's hub.
+        scope_entity_ids = _ids(scope.entities)
+        cooccurrence_query = (
+            f"SELECT entity_id_1,entity_id_2 FROM {fq_table('entity_cooccurrences')} "
+            "WHERE entity_id_1=ANY($1::uuid[]) OR entity_id_2=ANY($1::uuid[]) "
+            "ORDER BY entity_id_1,entity_id_2"
+        )
+        await _check_lock_row_cap(
+            conn,
+            cooccurrence_query,
+            scope_entity_ids,
+            cap=MAX_LINKS,
+            message="Closure exceeds entity_cooccurrences row cap",
+        )
+        closure_entity_rows = await _bounded_lock_rows(
+            conn,
+            "SELECT unnest($3::uuid[]) AS entity_id UNION "
             f"SELECT entity_id FROM {fq_table('unit_entities')} WHERE unit_id=ANY($1::uuid[]) "
             "UNION "
             f"SELECT entity_id FROM {fq_table('memory_links')} WHERE bank_id=$2 "
@@ -161,9 +195,11 @@ async def lock_closure(conn: DatabaseConnection, bank_id: str, scope: ClosureSco
             "WHERE entity_id_1=ANY($3::uuid[]) OR entity_id_2=ANY($3::uuid[])",
             affected_ids,
             bank_id,
-            _ids(scope.entities),
+            scope_entity_ids,
+            cap=MAX_ENTITIES,
+            message="Entity pin cap exceeded",
         )
-        entity_ids = _ids([*scope.entities, *(row["entity_id"] for row in closure_entity_rows)])
+        entity_ids = _ids(row["entity_id"] for row in closure_entity_rows)
         await conn.fetch(
             f"SELECT id FROM {fq_table('entities')} "
             "WHERE bank_id=$1 AND id=ANY($2::uuid[]) ORDER BY id FOR UPDATE NOWAIT",
@@ -187,11 +223,13 @@ async def lock_closure(conn: DatabaseConnection, bank_id: str, scope: ClosureSco
             bank_id,
             affected_ids,
         )
-        await conn.fetch(
-            f"SELECT entity_id_1,entity_id_2 FROM {fq_table('entity_cooccurrences')} "
-            "WHERE entity_id_1=ANY($1::uuid[]) OR entity_id_2=ANY($1::uuid[]) "
-            "ORDER BY entity_id_1,entity_id_2 FOR UPDATE NOWAIT",
-            entity_ids,
+        await _bounded_lock_rows(
+            conn,
+            cooccurrence_query,
+            scope_entity_ids,
+            cap=MAX_LINKS,
+            message="Closure exceeds entity_cooccurrences row cap",
+            for_update=True,
         )
         await conn.fetch(
             f"SELECT id FROM {fq_table('observation_history')} "
@@ -637,7 +675,11 @@ async def apply(
         bank_id,
         observations,
     )
+    # mentioned_at is not an editable V2 field. The locked before-image is its
+    # authority, not the provider preparation, which carries only editable fields.
+    original_rows = {str(row["id"]): row for row in before.memories.rows}
     for patch in corrections:
+        original_mentioned = original_rows[str(patch.memory_id)]["mentioned_at"]
         await writes.apply_edit(
             conn=conn,
             fq_table=fq_table,
@@ -649,7 +691,9 @@ async def apply(
             occurred_start=patch.occurred_start,
             occurred_end=patch.occurred_end,
             event_date=patch.event_date,
-            mentioned_at=None,
+            mentioned_at=TypeAdapter(datetime).validate_python(original_mentioned)
+            if original_mentioned is not None
+            else None,
             entity_ids=None,
             embedding=patch.embedding,
         )

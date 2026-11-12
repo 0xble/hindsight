@@ -586,6 +586,50 @@ def test_preprocessing_many_consumption_words_stays_bounded():
     assert process_time() - start < 5.0
 
 
+UUID_ANCHOR = "550e8400-e29b-41d4-a716-446655440000"
+
+
+@pytest.mark.parametrize("value", [UUID_ANCHOR, UUID_ANCHOR.upper()])
+def test_uuid_is_one_complete_opaque_identifier(value):
+    assert {anchor.value for anchor in anchors(f"Use ({value}).") if anchor.kind == "identifier"} == {value}
+
+
+@pytest.mark.parametrize("guard", ["update", "merge"])
+@pytest.mark.parametrize(
+    "replacement",
+    [
+        "550e8400-e29c-41d4-a716-446655440000",
+        "550e8400-e29b-41d5-a716-446655440000",
+        "550e8400-e29b-41d4-a717-446655440000",
+        "x" + UUID_ANCHOR,
+        UUID_ANCHOR + "x",
+        "x-" + UUID_ANCHOR,
+        UUID_ANCHOR + "-x",
+        "x." + UUID_ANCHOR,
+        UUID_ANCHOR + ".x",
+        UUID_ANCHOR.upper(),
+    ],
+)
+def test_uuid_middle_changes_and_longer_opaque_tokens_veto(guard, replacement):
+    before, after = f"Use {UUID_ANCHOR}.", f"Use {replacement}."
+    dropped = (
+        dropped_merge_anchors(before, after)
+        if guard == "merge"
+        else dropped_supported_anchors(before, after, [Evidence(before)], [])
+    )
+    assert Anchor("identifier", UUID_ANCHOR) in dropped
+
+
+@pytest.mark.parametrize("guard", ["update", "merge"])
+def test_whole_uuid_restatement_remains_allowed(guard):
+    before, after = f"Use {UUID_ANCHOR}.", f"Use ({UUID_ANCHOR})."
+    assert not (
+        dropped_merge_anchors(before, after)
+        if guard == "merge"
+        else dropped_supported_anchors(before, after, [Evidence(before)], [])
+    )
+
+
 def test_excessive_source_count_fails_closed():
     assert dropped_supported_anchors("Plain prose.", "Short prose.", [Evidence("Plain prose.")] * 257, []) == [
         Anchor("budget", "detail-loss analysis limit exceeded")

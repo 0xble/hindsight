@@ -75,6 +75,95 @@ async def test_raster_ocr_valid_description_preserves_string_evidence(raster_ocr
     assert result.parser_name == "markitdown"
 
 
+@pytest.mark.parametrize("extension", [".png", ".jpg", ".jpeg"])
+@pytest.mark.parametrize(
+    "description",
+    [
+        "No visible text",
+        "I am unable to read the image.",
+        "",
+        None,
+        "Alice completed all checks and preserved the original files.",
+    ],
+)
+async def test_raster_ocr_http_failure_cannot_escape_raw_description_admission(monkeypatch, description, extension):
+    """Real SDK + native converter fallback after HTTP 503 must never admit metadata."""
+    import markitdown.converters._image_converter as images
+    from aiohttp import web
+    from PIL import Image
+
+    from hindsight_api.engine.parsers import FileParserRegistry, LowQualityOcrError, NoExtractableContentError
+    from tests.aiohttp_stub import stub_server
+
+    monkeypatch.setenv("HINDSIGHT_API_LLM_MAX_RETRIES", "0")
+    monkeypatch.setattr(images, "exiftool_metadata", lambda *args, **kwargs: {"ImageSize": "20x20"})
+    image = io.BytesIO()
+    # Conflicting suffix and native format give MarkItDown two stream guesses.
+    # After the first converter fails, every remaining raster route must still
+    # use raw-description admission rather than the built-in metadata wrapper.
+    Image.new("RGB", (20, 20), "white").save(image, format="JPEG" if extension == ".png" else "PNG")
+    filename = "source" + extension
+    content_type = "image/png" if extension == ".png" else "image/jpeg"
+    requests = []
+
+    async def handler(request):
+        requests.append(await request.json())
+        if len(requests) == 1:
+            return web.json_response({"error": {"message": "synthetic outage"}}, status=503)
+        return web.json_response(
+            {
+                "id": "ocr-test",
+                "object": "chat.completion",
+                "created": 0,
+                "model": "existing-model",
+                "choices": [
+                    {
+                        "index": 0,
+                        "message": {"role": "assistant", "content": description},
+                        "finish_reason": "stop",
+                    }
+                ],
+            }
+        )
+
+    async with stub_server(handler) as base_url:
+        parser = MarkitdownParser(
+            ocr_enabled=True, ocr_api_key="synthetic-key", ocr_base_url=base_url, ocr_model="existing-model"
+        )
+        registry = FileParserRegistry()
+        registry.register(parser)
+        try:
+            if description and description.startswith("Alice"):
+                result = await registry.convert_with_fallback(["markitdown"], image.getvalue(), filename, content_type)
+                assert result.content == description
+            else:
+                expected = (
+                    LowQualityOcrError if description and description.startswith("I am") else NoExtractableContentError
+                )
+                with pytest.raises(expected):
+                    await registry.convert_with_fallback(["markitdown"], image.getvalue(), filename, content_type)
+        finally:
+            if parser._markitdown is not None:
+                parser._markitdown._llm_client.close()
+    assert len(requests) == 2
+
+
+async def test_ocr_enabled_non_image_keeps_native_converter(monkeypatch):
+    monkeypatch.setenv("HINDSIGHT_API_LLM_MAX_RETRIES", "0")
+    parser = MarkitdownParser(
+        ocr_enabled=True, ocr_api_key="synthetic-key", ocr_base_url="http://127.0.0.1:1/v1", ocr_model="existing-model"
+    )
+    try:
+        content = await parser.convert(
+            b"<html><body><h1>Original title</h1><p>Original evidence.</p></body></html>", "source.html"
+        )
+        assert "# Original title" in content
+        assert "Original evidence." in content
+    finally:
+        if parser._markitdown is not None:
+            parser._markitdown._llm_client.close()
+
+
 def _utf8_json_with_ascii_prefix() -> bytes:
     """A JSON file whose first chunk is ASCII but contains multibyte UTF-8 later.
 

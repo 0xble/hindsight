@@ -274,3 +274,84 @@ async def test_certificate_verification_failure_stays_terminal(engine, wrapped):
     engine._handle_file_convert_retain.side_effect = error
     await engine._execute_task(_task())
     engine._mark_operation_failed.assert_awaited_once()
+
+
+@pytest.mark.parametrize("transport_index", [0, 1, 2])
+async def test_parser_chain_preserves_transport_failure_across_generic_errors(engine, transport_index):
+    from hindsight_api.engine.parsers import FileParserRegistry
+    from tests.test_no_extractable_text import StubParser
+
+    transport = _connection_errors()[0]
+    errors = [ValueError("corrupt input"), RuntimeError("unsupported file")]
+    errors.insert(transport_index, transport)
+    registry = FileParserRegistry()
+    for index, error in enumerate(errors):
+        registry.register(StubParser(f"parser-{index}", outcome=error))
+    with pytest.raises(APIConnectionError) as caught:
+        await registry.convert_with_fallback(registry.list_parsers(), b"synthetic source", "source.png", "image/png")
+    assert caught.value is transport
+    engine._handle_file_convert_retain.side_effect = caught.value
+    with pytest.raises(RetryTaskAt):
+        await engine._execute_task(_task())
+    engine._mark_operation_failed.assert_not_awaited()
+
+
+async def test_parser_chain_success_after_transport_and_generic_failure():
+    from hindsight_api.engine.parsers import FileParserRegistry
+    from tests.test_no_extractable_text import StubParser
+
+    registry = FileParserRegistry()
+    registry.register(StubParser("transport", outcome=_connection_errors()[0]))
+    registry.register(StubParser("generic", outcome=RuntimeError("unsupported file")))
+    registry.register(StubParser("success", outcome="Alice completed all checks and preserved the original files."))
+    result = await registry.convert_with_fallback(registry.list_parsers(), b"source", "source.png", "image/png")
+    assert result.parser_name == "success"
+
+
+@pytest.mark.parametrize("reverse", [False, True])
+async def test_parser_chain_generic_errors_remain_terminal(engine, reverse):
+    from hindsight_api.engine.parsers import FileParserRegistry
+    from tests.test_no_extractable_text import StubParser
+
+    errors = [ValueError("corrupt input"), RuntimeError("unsupported file")]
+    if reverse:
+        errors.reverse()
+    registry = FileParserRegistry()
+    for index, error in enumerate(errors):
+        registry.register(StubParser(f"parser-{index}", error))
+    with pytest.raises(type(errors[-1])) as caught:
+        await registry.convert_with_fallback(registry.list_parsers(), b"source", "source.png", "image/png")
+    assert caught.value is errors[-1]
+    engine._handle_file_convert_retain.side_effect = caught.value
+    await engine._execute_task(_task())
+    engine._mark_operation_failed.assert_awaited_once()
+
+
+@pytest.mark.parametrize("terminal_kind", ["certificate", "deadline"])
+@pytest.mark.parametrize("terminal_first", [False, True])
+@pytest.mark.parametrize("wrapped", [False, True])
+async def test_parser_chain_terminal_transport_boundary_overrides_retryable_failure(
+    engine, terminal_kind, terminal_first, wrapped
+):
+    from hindsight_api.engine.parsers import FileParserRegistry
+    from hindsight_api.engine.parsers.transport import FileParserDeadlineError
+    from tests.test_no_extractable_text import StubParser
+
+    terminal = (
+        ssl.SSLCertVerificationError("bad certificate")
+        if terminal_kind == "certificate"
+        else FileParserDeadlineError("document deadline")
+    )
+    if wrapped:
+        outer = FileConversionException(attempts=[FailedConversionAttempt(object(), (type(terminal), terminal, None))])
+        terminal = outer
+    errors = [terminal, _connection_errors()[0]] if terminal_first else [_connection_errors()[0], terminal]
+    registry = FileParserRegistry()
+    for index, error in enumerate(errors):
+        registry.register(StubParser(f"parser-{index}", outcome=error))
+    with pytest.raises(type(terminal)) as caught:
+        await registry.convert_with_fallback(registry.list_parsers(), b"source", "source.png", "image/png")
+    assert caught.value is terminal
+    engine._handle_file_convert_retain.side_effect = caught.value
+    await engine._execute_task(_task())
+    engine._mark_operation_failed.assert_awaited_once()

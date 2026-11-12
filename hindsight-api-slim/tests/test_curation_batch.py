@@ -11,6 +11,7 @@ import uuid
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from decimal import Decimal, localcontext
+from typing import cast
 from unittest.mock import AsyncMock, patch
 
 import asyncpg
@@ -33,12 +34,13 @@ from hindsight_api.engine.curation_batch import (
     revision,
     snapshot_revision,
 )
+from hindsight_api.engine.db.base import DatabaseConnection
 from hindsight_api.engine.embeddings import Embeddings
 from hindsight_api.engine.memories import get_memories
 from hindsight_api.engine.memories.pg import curation_batch as store
 from hindsight_api.engine.memories.pg import graph
 from hindsight_api.engine.memory_engine import MemoryEngine
-from hindsight_api.engine.schema import fq_store_table, fq_table
+from hindsight_api.engine.schema import fq_store_table
 from hindsight_api.engine.task_backend import SyncTaskBackend
 
 pytestmark = [pytest.mark.asyncio, pytest.mark.memory_backend_incompatible]
@@ -374,6 +376,233 @@ async def test_source_writer_race_apply_is_rejected_without_mutation(memory, see
         assert await conn.fetchval("SELECT text FROM memory_units WHERE id=$1", seeded.raw) != "curation correction"
         assert await conn.fetchval("SELECT count(*) FROM curation_batches WHERE bank_id=$1", seeded.bank) == 0
         assert await conn.fetchval("SELECT count(*) FROM curation_entity_pins WHERE bank_id=$1", seeded.bank) == 0
+
+
+@pytest.mark.parametrize(
+    "fields",
+    [
+        CurationFields(context="corrected context"),
+        CurationFields(text="corrected fact"),
+        CurationFields(occurred_start=None),
+    ],
+)
+@pytest.mark.parametrize("mentioned", [datetime(2026, 10, 1, 12, 34, 56, 123456, tzinfo=UTC), None])
+async def test_correction_preserves_noneditable_mentioned_at(memory, seeded, fields, mentioned):
+    async with memory._pool.acquire() as conn:
+        await conn.execute("UPDATE memory_units SET mentioned_at=$2 WHERE id=$1", seeded.raw, mentioned)
+    before = await snapshot(memory, seeded)
+    receipt = await apply(memory, seeded, manifest(await preview(memory, seeded), correction=fields))
+    async with memory._pool.acquire() as conn:
+        assert await conn.fetchval("SELECT mentioned_at FROM memory_units WHERE id=$1", seeded.raw) == mentioned
+    await revert(memory, seeded, receipt)
+    assert snapshot_revision(await snapshot(memory, seeded, before.scope)) == snapshot_revision(before)
+
+
+async def test_observation_import_liveness_fences_curation(memory, seeded, monkeypatch):
+    """Pause the real importer after source validation, before its real INSERT."""
+    from hindsight_api.engine.retain import fact_storage
+    from hindsight_api.engine.transfer import importer
+    from hindsight_api.engine.transfer.schema import TransferObservation, TransferObservationSource
+
+    checked_sources = asyncio.Event()
+    release_import = asyncio.Event()
+    original_insert = fact_storage.insert_facts_batch
+
+    async def pause_insert(*args, **kwargs):
+        checked_sources.set()
+        await release_import.wait()
+        return await original_insert(*args, **kwargs)
+
+    request = manifest(await preview(memory, seeded))
+    backend = await memory._get_backend()
+    monkeypatch.setattr(fact_storage, "insert_facts_batch", pause_insert)
+    task = asyncio.create_task(
+        importer._import_observations(
+            backend=backend,
+            embeddings_model=memory.embeddings,
+            bank_id=seeded.bank,
+            observations=[
+                TransferObservation(
+                    source_id="racing-import",
+                    text="Imported during curation",
+                    proof_count=1,
+                    sources=[TransferObservationSource(document_id="source", fact_index=0)],
+                )
+            ],
+            fact_unit_ids={"source": [str(seeded.raw)]},
+            keep_unit_ids={"racing-import"},
+            ops=backend.ops,
+        )
+    )
+    receipt = None
+    conflict = None
+    try:
+        await asyncio.wait_for(checked_sources.wait(), timeout=5)
+        try:
+            receipt = await apply(memory, seeded, request, "import-race")
+        except CurationBatchConflict as exc:
+            conflict = exc
+    finally:
+        release_import.set()
+        outcome = await asyncio.wait_for(task, timeout=5)
+    assert outcome.imported == 1 and outcome.skipped == 0
+    imported_id = uuid.UUID(outcome.remapped_unit_ids["racing-import"])
+    async with memory._pool.acquire() as conn:
+        dangling = await conn.fetch(
+            "SELECT o.id,s.source_id FROM memory_units o "
+            "CROSS JOIN LATERAL unnest(o.source_memory_ids) s(source_id) "
+            "LEFT JOIN memory_units m ON m.id=s.source_id AND m.bank_id=o.bank_id "
+            "WHERE o.bank_id=$1 AND o.fact_type='observation' AND m.id IS NULL",
+            seeded.bank,
+        )
+        assert not dangling, f"import committed dangling observations outside capsule: {dangling}"
+        assert await conn.fetchval("SELECT count(*) FROM curation_batches WHERE bank_id=$1", seeded.bank) == 0
+    assert receipt is None and conflict is not None and "busy" in str(conflict)
+    # A fresh retry captures the committed import, retracts it and can restore it.
+    before = await snapshot(memory, seeded)
+    assert str(imported_id) in {str(row["id"]) for row in before.memories.rows}
+    receipt = await apply(memory, seeded, manifest(await preview(memory, seeded)), "import-race")
+    async with memory._pool.acquire() as conn:
+        assert not await conn.fetchval("SELECT 1 FROM memory_units WHERE id=$1", imported_id)
+        capsule = await store.get_capsule(conn, seeded.bank, "import-race")
+        assert capsule is not None
+        assert str(imported_id) in {str(row["id"]) for row in capsule.before.memories.rows}
+    await revert(memory, seeded, receipt, "import-race")
+    assert snapshot_revision(await snapshot(memory, seeded, before.scope)) == snapshot_revision(before)
+
+
+async def test_observation_import_liveness_fences_curation_first(memory, seeded, monkeypatch):
+    """An importer waiting behind curation must recheck the now-deleted source."""
+    from hindsight_api.engine.transfer import importer
+    from hindsight_api.engine.transfer.schema import TransferObservation, TransferObservationSource
+
+    backend = await memory._get_backend()
+    original_apply = store.apply
+    import_task = None
+    outcome = None
+
+    async def apply_with_waiting_import(conn, *args, **kwargs):
+        nonlocal import_task
+        curator_pid = await conn.fetchval("SELECT pg_backend_pid()")
+        import_task = asyncio.create_task(
+            importer._import_observations(
+                backend=backend,
+                embeddings_model=memory.embeddings,
+                bank_id=seeded.bank,
+                observations=[
+                    TransferObservation(
+                        text="Import waiting behind curation",
+                        proof_count=1,
+                        sources=[TransferObservationSource(document_id="source", fact_index=0)],
+                    )
+                ],
+                fact_unit_ids={"source": [str(seeded.raw)]},
+                keep_unit_ids=set(),
+                ops=backend.ops,
+            )
+        )
+        async with memory._pool.acquire() as observer:
+            async with asyncio.timeout(5):
+                while not await observer.fetchval(
+                    "SELECT EXISTS(SELECT 1 FROM pg_stat_activity WHERE $1=ANY(pg_blocking_pids(pid)))",
+                    curator_pid,
+                ):
+                    await asyncio.sleep(0.01)
+        return await original_apply(conn, *args, **kwargs)
+
+    monkeypatch.setattr(store, "apply", apply_with_waiting_import)
+    try:
+        receipt = await apply(memory, seeded, manifest(await preview(memory, seeded)), "curation-first-import")
+    finally:
+        if import_task is not None:
+            outcome = await asyncio.wait_for(import_task, timeout=5)
+    assert outcome is not None
+    assert outcome.imported == 0 and outcome.skipped == 1
+    async with memory._pool.acquire() as conn:
+        assert not await conn.fetchval(
+            "SELECT 1 FROM memory_units WHERE bank_id=$1 AND text='Import waiting behind curation'",
+            seeded.bank,
+        )
+    await revert(memory, seeded, receipt, "curation-first-import")
+
+
+async def test_cooccurrence_locks_do_not_expand_into_partner_hub(memory, seeded):
+    """Only A-B is incident to target A; B's arbitrarily large hub is not."""
+    hub = uuid.uuid4()
+    a, b = sorted((seeded.entities[0], hub))
+    async with memory._pool.acquire() as conn:
+        await conn.execute(
+            "INSERT INTO entities(id,bank_id,canonical_name,mention_count) VALUES($1,$2,'hub',0)", hub, seeded.bank
+        )
+        await conn.execute(
+            "INSERT INTO entity_cooccurrences(entity_id_1,entity_id_2,cooccurrence_count) VALUES($1,$2,1)", a, b
+        )
+        leaves = await conn.fetch(
+            "INSERT INTO entities(id,bank_id,canonical_name,mention_count) "
+            "SELECT gen_random_uuid(),$1,'hub-leaf-'||g,0 FROM generate_series(1,$2::int) g RETURNING id",
+            seeded.bank,
+            store.MAX_LINKS + 1,
+        )
+        await conn.executemany(
+            "INSERT INTO entity_cooccurrences(entity_id_1,entity_id_2,cooccurrence_count) VALUES($1,$2,1)",
+            [tuple(sorted((hub, row["id"]))) for row in leaves],
+        )
+    leaf_pair = sorted((hub, leaves[0]["id"]))
+    async with memory._pool.acquire() as blocker:
+        async with blocker.transaction():
+            await blocker.execute(
+                "SELECT 1 FROM entity_cooccurrences WHERE entity_id_1=$1 AND entity_id_2=$2 FOR UPDATE",
+                *leaf_pair,
+            )
+            # An ordinary second-hop pair writer must not make this closure busy.
+            before = await snapshot(memory, seeded)
+            assert len(before.cooccurrences.rows) == 2
+    async with memory._pool.acquire() as conn:
+        async with conn.transaction():
+            await store.lock_closure(conn, seeded.bank, before.scope)
+            async with memory._pool.acquire() as writer:
+                async with writer.transaction():
+                    # Conversely curation must not block a later second-hop writer.
+                    await writer.execute(
+                        "SELECT 1 FROM entity_cooccurrences WHERE entity_id_1=$1 AND entity_id_2=$2 FOR UPDATE NOWAIT",
+                        *leaf_pair,
+                    )
+    receipt = await apply(memory, seeded, manifest(await preview(memory, seeded)))
+    await revert(memory, seeded, receipt)
+    assert snapshot_revision(await snapshot(memory, seeded, before.scope)) == snapshot_revision(before)
+
+
+async def test_cooccurrence_lock_cap_checked_before_endpoint_materialization(memory, seeded, monkeypatch):
+    partner = uuid.uuid4()
+    async with memory._pool.acquire() as conn:
+        await conn.execute(
+            "INSERT INTO entities(id,bank_id,canonical_name) VALUES($1,$2,'extra partner')", partner, seeded.bank
+        )
+        await conn.execute(
+            "INSERT INTO entity_cooccurrences(entity_id_1,entity_id_2,cooccurrence_count) VALUES($1,$2,1)",
+            *sorted((seeded.entities[0], partner)),
+        )
+        await conn.execute("DELETE FROM memory_links WHERE bank_id=$1", seeded.bank)
+        scope = await store.discover(conn, seeded.bank, [seeded.raw])
+        monkeypatch.setattr(store, "MAX_LINKS", 1)
+
+        class RecordingConnection:
+            def __init__(self):
+                self.cooccurrence_fetches = []
+
+            def __getattr__(self, name):
+                return getattr(conn, name)
+
+            async def fetch(self, query, *args):
+                if "entity_cooccurrences" in query:
+                    self.cooccurrence_fetches.append(query)
+                return await conn.fetch(query, *args)
+
+        recording = RecordingConnection()
+        async with conn.transaction():
+            with pytest.raises(CurationBatchConflict, match="cap"):
+                await store.lock_closure(cast(DatabaseConnection, recording), seeded.bank, scope)
+        assert recording.cooccurrence_fetches == [], "over-cap pair endpoints must not be transferred"
 
 
 async def test_exact_entity_observation_history_roundtrip(memory, seeded):
