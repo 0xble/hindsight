@@ -238,9 +238,10 @@ class TestWorkerOperationMetrics:
         registration = asyncio.create_task(poller.execute_task(task))
         await asyncio.sleep(0)
         assert poller._current_tasks
+        background = next(iter(poller._current_tasks))
 
         await poller.shutdown_graceful(timeout=0)
-        assert all(background.cancelled() for background in poller._current_tasks)
+        assert background.cancelled()
 
         poller._in_flight_lock.release()
         registration.cancel()
