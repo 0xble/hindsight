@@ -1244,6 +1244,8 @@ class WorkerPoller:
         # task's own contextvar scope inside _execute_task_inner so engine
         # code running under that task sees it via stage.set_stage().
         bg_task = asyncio.create_task(self._execute_task_inner(task, holder))
+        self._current_tasks.add(bg_task)
+        bg_task.add_done_callback(self._current_tasks.discard)
 
         # Track this task as active
         async with self._in_flight_lock:
@@ -2081,34 +2083,31 @@ class WorkerPoller:
         # Wait for in-flight tasks to complete
         drained = False
         start_time = asyncio.get_event_loop().time()
+        # The task set is mutated synchronously on the event-loop thread, so
+        # snapshot it without taking the in-flight registration lock. A task may
+        # be waiting on that lock, and shutdown must still be able to cancel it.
         while asyncio.get_event_loop().time() - start_time < timeout:
-            async with self._in_flight_lock:
-                in_flight = self._in_flight_count
-                active_task_objects = [info.bg_task for info in self._active_tasks.values()]
+            active_task_objects = list(self._current_tasks)
 
-            if in_flight == 0:
+            if not active_task_objects:
                 logger.info(f"Worker {self._worker_id} graceful shutdown complete")
                 drained = True
                 break
 
-            logger.info(f"Worker {self._worker_id} waiting for {in_flight} in-flight tasks")
+            logger.info(f"Worker {self._worker_id} waiting for {len(active_task_objects)} in-flight tasks")
 
             # Wait for at least one task to complete
-            if active_task_objects:
-                done, _ = await asyncio.wait(active_task_objects, timeout=0.5, return_when=asyncio.FIRST_COMPLETED)
-            else:
-                await asyncio.sleep(0.5)
+            done, _ = await asyncio.wait(active_task_objects, timeout=0.5, return_when=asyncio.FIRST_COMPLETED)
 
         if not drained:
             logger.warning(f"Worker {self._worker_id} shutdown timeout after {timeout}s, cancelling remaining tasks")
 
             # Cancel remaining tasks
             cancelled: list[asyncio.Task] = []
-            async with self._in_flight_lock:
-                for operation_id, info in list(self._active_tasks.items()):
-                    if not info.bg_task.done():
-                        info.bg_task.cancel()
-                        cancelled.append(info.bg_task)
+            for task in list(self._current_tasks):
+                if not task.done():
+                    task.cancel()
+                    cancelled.append(task)
 
             # Let the cancellations land before reconciling. asyncio.CancelledError
             # derives from BaseException, so it escapes every `except Exception` in
