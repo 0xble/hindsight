@@ -42,18 +42,64 @@ class TestMainModuleExtensionLoading:
         mock_config.text_search_extension = "none"
 
         before = {signal.SIGINT: signal.getsignal(signal.SIGINT), signal.SIGTERM: signal.getsignal(signal.SIGTERM)}
+        during = {}
+
+        def run_and_capture(**_kwargs):
+            during[signal.SIGINT] = signal.getsignal(signal.SIGINT)
+            during[signal.SIGTERM] = signal.getsignal(signal.SIGTERM)
+
         with (
             patch("hindsight_api.main.MemoryEngine", return_value=MagicMock()),
             patch("hindsight_api.main.create_app", return_value=MagicMock()),
             patch("hindsight_api.main._get_raw_config", return_value=mock_config),
             patch("hindsight_api.main.load_extension", return_value=None),
             patch("hindsight_api.main.print_banner"),
-            patch("uvicorn.run"),
+            patch("uvicorn.run", side_effect=run_and_capture),
             patch.object(sys, "argv", ["hindsight-api"]),
         ):
-            from hindsight_api.main import main
+            import importlib
 
-            main()
+            main_module = importlib.import_module("hindsight_api.main")
+            main_module.main()
+
+        assert during == {signal.SIGINT: main_module._signal_handler, signal.SIGTERM: main_module._signal_handler}
+        assert signal.getsignal(signal.SIGINT) is before[signal.SIGINT]
+        assert signal.getsignal(signal.SIGTERM) is before[signal.SIGTERM]
+
+    def test_main_restores_signal_handlers_when_uvicorn_fails(self, monkeypatch):
+        """Startup failures must not leak the temporary signal handlers."""
+        monkeypatch.setenv("HINDSIGHT_API_WORKERS", "1")
+        mock_config = MagicMock()
+        mock_config.host = "0.0.0.0"
+        mock_config.port = 8888
+        mock_config.log_level = "info"
+        mock_config.workers = 1
+        mock_config.access_log = False
+        mock_config.mcp_enabled = False
+        mock_config.run_migrations_on_startup = False
+        mock_config.database_url = "postgresql://test:***@localhost/test"
+        mock_config.llm_provider = "mock"
+        mock_config.llm_model = "mock"
+        mock_config.embeddings_provider = "mock"
+        mock_config.reranker_provider = "mock"
+        mock_config.vector_extension = "none"
+        mock_config.text_search_extension = "none"
+
+        before = {signal.SIGINT: signal.getsignal(signal.SIGINT), signal.SIGTERM: signal.getsignal(signal.SIGTERM)}
+        with (
+            patch("hindsight_api.main.MemoryEngine", return_value=MagicMock()),
+            patch("hindsight_api.main.create_app", return_value=MagicMock()),
+            patch("hindsight_api.main._get_raw_config", return_value=mock_config),
+            patch("hindsight_api.main.load_extension", return_value=None),
+            patch("hindsight_api.main.print_banner"),
+            patch("uvicorn.run", side_effect=RuntimeError("startup failed")),
+            patch.object(sys, "argv", ["hindsight-api"]),
+        ):
+            import importlib
+
+            main_module = importlib.import_module("hindsight_api.main")
+            with pytest.raises(RuntimeError, match="startup failed"):
+                main_module.main()
 
         assert signal.getsignal(signal.SIGINT) is before[signal.SIGINT]
         assert signal.getsignal(signal.SIGTERM) is before[signal.SIGTERM]
