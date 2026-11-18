@@ -7,6 +7,9 @@ efficient batch operations.
 import asyncio
 from datetime import datetime
 
+from hindsight_api._cross_loop import CrossLoopLock
+from hindsight_api.config import get_config
+
 from .base import DatabaseConnection
 from .ops import (
     ChunkIdOwnedByAnotherBank,
@@ -72,13 +75,15 @@ class PostgreSQLOps(DataAccessOps):
         # deleted at once form a wait cycle Postgres resolves by killing one.
         # A session advisory lock would serialize this across processes too, but
         # advisory locks are banned here (poolers hand sessions around; see the
-        # Database Locking standard). In-process the asyncio lock removes the
-        # cycle outright; across processes the callers' retry-with-backoff
-        # absorbs the (now much rarer) collisions.
-        self._index_ddl_locks: dict[str, asyncio.Lock] = {}
+        # Database Locking standard). In-process exclusion removes the cycle
+        # outright; across processes the callers' retry-with-backoff absorbs
+        # the (now much rarer) collisions. Ops is cached per dialect, so this
+        # state outlives individual engines and event loops. Keep exclusion
+        # across loops too, not one independent lock per loop.
+        self._index_ddl_locks: dict[str, CrossLoopLock] = {}
 
-    def _index_ddl_lock(self, table: str) -> asyncio.Lock:
-        return self._index_ddl_locks.setdefault(table, asyncio.Lock())
+    def _index_ddl_lock(self, table: str) -> CrossLoopLock:
+        return self._index_ddl_locks.setdefault(table, CrossLoopLock())
 
     @property
     def uses_observation_sources_table(self) -> bool:
@@ -1359,6 +1364,8 @@ class PostgreSQLOps(DataAccessOps):
         schema: str,
         internal_id: str,
         fact_types: dict[str, str],
+        *,
+        command_timeout: float | None = None,
     ) -> None:
         # CONCURRENTLY so the drop takes ShareUpdateExclusive, not ACCESS
         # EXCLUSIVE, on the shared memory_units table. A plain DROP INDEX blocks
@@ -1376,11 +1383,23 @@ class PostgreSQLOps(DataAccessOps):
         # cross-process. Both paths retry the transient deadlock (40P01)
         # instead, which is the only lock-free option available — the project
         # forbids advisory locks (unreliable behind poolers, #2817).
-        async with self._index_ddl_lock(f"{schema}.memory_units"):
-            for ft, suffix in fact_types.items():
-                uid = str(internal_id).replace("-", "")[:16]
-                idx = f"idx_mu_emb_{suffix}_{uid}"
-                await conn.execute(f"DROP INDEX CONCURRENTLY IF EXISTS {schema}.{idx}")
+        # Bound the whole drop, including its in-process queue, by the existing
+        # command budget. A parked reader is not a transient deadlock: retrying
+        # its timeout eight times used to hide the cause past the caller's 300s
+        # deadline. RuntimeError is deliberately non-retryable by delete_bank.
+        timeout = command_timeout if command_timeout is not None else get_config().db_command_timeout
+        try:
+            async with asyncio.timeout(timeout):
+                async with self._index_ddl_lock(f"{schema}.memory_units"):
+                    for ft, suffix in fact_types.items():
+                        uid = str(internal_id).replace("-", "")[:16]
+                        idx = f"idx_mu_emb_{suffix}_{uid}"
+                        await conn.execute(f"DROP INDEX CONCURRENTLY IF EXISTS {schema}.{idx}")
+        except TimeoutError as exc:
+            raise RuntimeError(
+                f"Timed out dropping bank vector indexes on {schema}.memory_units "
+                f"for internal_id={internal_id} after {timeout}s; bank data deletion may already be committed"
+            ) from exc
 
     def get_entity_resolution_strategy(self) -> str:
         return "trigram"
