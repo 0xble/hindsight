@@ -1149,7 +1149,10 @@ class PostgreSQLOps(DataAccessOps):
         # 5k observations averaging 113 sources against ~3k connected sources it was
         # ~1.7B element comparisons, 2.6s of one saturated backend (issue #3085).
         # Unnesting once and hash-joining connected_sources makes the work linear in
-        # the number of source ids instead.
+        # the number of source ids instead. Keep the unnested candidate relation
+        # MATERIALIZED: without that planner fence PostgreSQL can still reorder the
+        # scoring join into a nested loop that rescans every candidate for every
+        # connected source.
         #
         # `connected_sources` caps each entity with row_number() rather than the
         # LATERAL + LIMIT that reads more naturally. Do not "simplify" it back

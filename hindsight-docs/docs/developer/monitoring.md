@@ -299,7 +299,7 @@ sum by (model) (hindsight_llm_tokens_input_total + hindsight_llm_tokens_output_t
 
 ### Internal vs API recall operations
 ```promql
-sum by (source) (rate(hindsight_operation_total{operation="recall"}[5m]))
+sum by (source) (rate(hindsight_operation_operations_total{operation="recall"}[5m]))
 ```
 
 ### HTTP requests per second by endpoint
@@ -331,6 +331,61 @@ hindsight_db_pool_size - hindsight_db_pool_idle
 ```promql
 rate(hindsight_process_cpu_seconds{type="user"}[1m])
 ```
+
+## Recovery and Queue Alerts
+
+The backlog gauges are disabled by default because they run periodic per-schema count
+queries. Enable `HINDSIGHT_API_METRICS_BACKLOG_ENABLED=true` when operators need
+queue visibility. These PromQL examples do not require a `bank_id` label and work
+with aggregate or opt-in per-bank gauges. Apply deployment-specific thresholds
+and sustained alert windows before treating queue depth as a stall.
+
+Monitor pending/in-flight async work and alert on stranded failures:
+
+```promql
+hindsight_async_operations{status=~"pending|processing"} > 0
+hindsight_async_operations{status="failed"} > 0
+```
+
+Alert when consolidation has accumulated an actionable backlog:
+
+```promql
+hindsight_consolidation_backlog > 0
+hindsight_consolidation_failed > 0
+```
+
+Alert on worker completion failures and failed LLM calls:
+
+```promql
+sum(rate(hindsight_operation_operations_total{source="worker",success="false"}[15m])) > 0
+sum(rate(hindsight_llm_calls_total{success="false"}[15m])) > 0
+```
+
+Alert when consolidation or refresh latency threatens queue capacity. Both
+histograms top out at a 120s finite bucket, and `histogram_quantile` never returns
+more than that bound, so `>= 120` means the p95 is at or beyond the ceiling:
+
+```promql
+histogram_quantile(
+  0.95,
+  sum by (le) (rate(hindsight_llm_duration_seconds_bucket{scope="consolidation"}[15m]))
+) >= 120
+
+histogram_quantile(
+  0.95,
+  sum by (le) (rate(hindsight_operation_duration_seconds_bucket{
+    operation="refresh_mental_model"
+  }[15m]))
+) >= 120
+```
+
+Use `/health/live` for process liveness and `/health/ready` for database readiness.
+Do not restart a worker solely because the backlog is nonzero. A backlog is expected
+while work is flowing. Combine it with a
+`hindsight_async_operations{status="processing"}` count that stays flat while
+nothing completes, a rising failed-operation count, a stalled
+`seconds_since_last_poll`, or exhausted worker capacity before taking recovery
+action.
 
 ---
 
