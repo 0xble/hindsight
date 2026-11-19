@@ -81,7 +81,7 @@ from ..llm_trace import (
     set_trace_context,
     trace_context_of,
 )
-from ..llm_wrapper import reask_messages, sanitize_llm_output
+from ..llm_wrapper import sanitize_llm_output
 from ..memories import FactRecord, StoredMemory, get_memories
 from ..memories.base import MemoryTextSize
 from ..response_models import Budget
@@ -5348,7 +5348,8 @@ def _classify_batch_failure(exc: Exception) -> _BatchFailureClass:
        character offset. Retrying still costs a full generation, and for a JSON
        parse error that is on top of the four the provider already burned. A
        schema-invalid reply has also already had its one re-ask with the errors
-       (``_call_with_one_reask``), which does vary the input; failing that too, it lands here.
+       (``_schema_correction_feedback``) where eligible, which does vary the input;
+       failing that too, it lands here.
 
     ``FAIL_FAST`` is not "give up": the batch is still reported failed, so the
     caller's adaptive bisection halves it and tries again. That path *does* vary
@@ -5463,7 +5464,7 @@ class _SchemaCorrectionBudget:
 
 
 def _schema_correction_feedback(exc: ValidationError, response_model: type[BaseModel]) -> str | None:
-    """Whitelist expected action-shape errors; never echo model-controlled values.
+    """Whitelist expected batch and action shape errors; never echo model-controlled values.
 
     Pydantic exposes a title rather than model identity on ValidationError. Require
     the exact expected response title AND only known action paths/types. All other
@@ -5485,6 +5486,11 @@ def _schema_correction_feedback(exc: ValidationError, response_model: type[BaseM
     for error in errors:
         loc = list(error["loc"])
         kind = error["type"]
+        # #5572: two consecutive JSON objects can be repaired into a list.
+        # Give that reply the same bounded correction as a malformed action.
+        if not loc and kind == "model_type" and len(errors) == 1:
+            locations.append("(top level): expected one JSON object, not a list or scalar")
+            continue
         if len(loc) < 2 or loc[0] not in fields or type(loc[1]) is not int or loc[1] < 0:
             return None
         nested = (
@@ -5798,41 +5804,6 @@ async def _guard_detail_loss_updates(
     return result
 
 
-async def _call_with_one_reask(
-    llm_config: Any, call_kwargs: dict[str, Any], response_model: type[_FactBatchResponse]
-) -> _FactBatchResponse:
-    """Re-ask only for a wrong top-level response shape.
-
-    Action-shape failures remain on the fork's bounded correction path below, where
-    the shared round budget and provider-attempt boundary apply. A list/object shape
-    failure needs the malformed reply quoted once because the provider otherwise sees
-    the same deterministic request again.
-    """
-    first_call = await llm_config.call(
-        **call_kwargs,
-        **({"skip_validation": True} if not hasattr(llm_config, "_provider_impl") else {}),
-    )
-    first = first_call.content
-    if isinstance(first, response_model):
-        return first
-    try:
-        return response_model.model_validate(first)
-    except ValidationError as exc:
-        errors = exc.errors(include_url=False, include_context=False, include_input=False)
-        if not errors or not all(not error["loc"] for error in errors):
-            raise
-        rendered_errors = "\n".join(
-            f"- {'.'.join(map(str, error['loc'])) or '(top level)'}: {error['msg']}" for error in errors[:10]
-        )
-        correction = (
-            f"Your previous answer was discarded because it did not match the schema:\n{rendered_errors}\n"
-            'Answer again with the same decisions as ONE JSON object, {"facts": [...], "deletes": [...]}, '
-            "following the schema. Not a list, and nothing after the object."
-        )
-        messages = reask_messages(call_kwargs["messages"], first, correction)
-        return (await llm_config.call(**call_kwargs | {"messages": messages})).content
-
-
 async def _consolidate_batch_with_llm(
     llm_config: Any,
     memories: list[dict[str, Any]],
@@ -6074,7 +6045,8 @@ async def _consolidate_batch_with_llm(
             if inner_max_retries is not None:
                 call_kwargs["max_retries"] = inner_max_retries
             try:
-                answer = await _call_with_one_reask(llm_config, call_kwargs, response_model)
+                first = (await llm_config.call(**call_kwargs)).content
+                answer = first if isinstance(first, _FactBatchResponse) else response_model.model_validate(first)
             except ValidationError as schema_exc:
                 feedback = _schema_correction_feedback(schema_exc, response_model)
                 if feedback is None or correction_used:
@@ -6112,10 +6084,14 @@ async def _consolidate_batch_with_llm(
                 # Enforce a single actual completion, including those hidden paths.
                 with single_completion(correction_budget.start) as correction:
                     try:
-                        correction_call = await llm_config.call(**call_kwargs)
-                        answer = correction_call.content
+                        corrected = (await llm_config.call(**call_kwargs)).content
                         if not correction.started:
                             raise CompletionAttemptLimitError("provider did not enforce a correction attempt boundary")
+                        answer = (
+                            corrected
+                            if isinstance(corrected, _FactBatchResponse)
+                            else response_model.model_validate(corrected)
+                        )
                     finally:
                         correction_started = correction.started
                         attempts_made += int(correction_started)
