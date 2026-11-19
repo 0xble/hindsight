@@ -51,8 +51,8 @@ describe("RuntimeCore", () => {
 
       await runtime.onPrompt(sessionId, "What did we decide?");
       const injection = runtime.getInjection(sessionId) ?? "";
-      expect(injection).toContain("1 knowledge page covers");
-      expect(injection).not.toContain("No knowledge pages yet");
+      expect(injection).toContain("1 page covers");
+      expect(injection).not.toContain("No pages yet");
       expect(injection).toContain("A past decision.");
       expect(JSON.parse(readFileSync(cacheFile, "utf8")).turns).toBe(1);
     } finally {
