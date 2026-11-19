@@ -21,6 +21,7 @@ import hashlib
 import json
 import logging
 import math
+import re
 import time
 import uuid
 from collections import defaultdict
@@ -38,6 +39,11 @@ import asyncpg
 from pydantic import AliasChoices, BaseModel, ConfigDict, Field, PrivateAttr, ValidationError, field_validator
 
 from ...config import get_config
+from ...extensions.operation_validator import (
+    ConsolidationActionsContext,
+    ReviewedConsolidationAction,
+    resolve_reviews,
+)
 from ...metrics import get_metrics_collector
 from ...operation_runs import timed_operation
 from ...worker.stage import set_stage
@@ -94,6 +100,7 @@ from .triage import TriageResult, fact_sentence, triage_facts, triage_model
 if TYPE_CHECKING:
     # The engine's connection abstraction, which is what every caller passes; the annotations
     # below named asyncpg's concrete type, which predates it.
+    from ...extensions.operation_validator import OperationValidatorExtension
     from ...models import RequestContext
     from ..db.base import DatabaseConnection
     from ..memories.base import StoredMemory
@@ -1552,7 +1559,7 @@ class _FactBatchResponse(BaseModel):
         code compares the times, gemma-4 got them wrong both ways. ``marked``: the prompt told the
         model so (``(stated after this fact)`` or ``newer_than_input_facts``). A marked change adds
         the fact to the observation as its earlier state, in brackets after the current text, most
-        recent first, and the fact creates nothing — its ``new`` would restate that earlier state as
+        recent first and at most :data:`_MAX_EARLIER_STATES` of them, and the fact creates nothing — its ``new`` would restate that earlier state as
         current. The code writes that note, not the model: asked for it, gemini-3.1-flash-lite
         wrote an older rule as the removal of the newer one ("until it was removed"), or repeated
         the whole observation. An unmarked change was written as if the fact were newer: the
@@ -1625,10 +1632,9 @@ class _FactBatchResponse(BaseModel):
                     text = base
                 elif later:
                     history = True
-                    # Facts come oldest first: each older fact's note goes ahead of the ones before it.
-                    notes.setdefault(oid, []).insert(0, f"({earlier_states[f.fact_id]})")
+                    notes.setdefault(oid, []).append(f"({earlier_states[f.fact_id]})")
                     head = heads.setdefault(oid, base)
-                    text = " ".join([_end_sentence(head), *notes[oid]])
+                    text = _with_earlier_states(head, notes[oid])
                 elif not change.text.strip():
                     text = base
                 else:
@@ -2112,6 +2118,21 @@ def _end_sentence(text: str) -> str:
     """``text`` ending in a full stop, so a note added after it reads apart from it."""
     text = text.strip()
     return text if text[-1:] in ".!?)。！？）" else f"{text}."
+
+
+#: Earlier-state notes an observation keeps. Unbounded, a topic that keeps coming up piles up
+#: near-identical notes, and small models copying them loop until the output cap (#6264).
+_MAX_EARLIER_STATES = 3
+_EARLIER_STATE_START = re.compile(r"\s+(?=\(\d{4}-\d{2}-\d{2} \d{2}:\d{2}: )")
+
+
+def _with_earlier_states(text: str, new_notes: list[str]) -> str:
+    """``text`` with ``new_notes`` added to the notes it already has: newest first, duplicates and
+    all but the newest :data:`_MAX_EARLIER_STATES` dropped. Each note starts with its date, so a
+    plain sort orders them; the dropped facts stay cited by the observation."""
+    head, *old = _EARLIER_STATE_START.split(text.strip())
+    kept = sorted({*old, *new_notes}, reverse=True)[:_MAX_EARLIER_STATES]
+    return " ".join([_end_sentence(head), *kept])
 
 
 def _build_fact_response_model(
@@ -3790,18 +3811,15 @@ async def _process_memory_batch(
         str(memories[i]["id"]): {str(obs.id) for obs in r.results} for i, r in enumerate(per_fact_recalls)
     }
 
-    # Union all observations (deduped by id)
-    seen_ids: set[str] = set()
-    union_observations: list["MemoryFact"] = []
+    # Keep the first observation for each id, in recall order.
+    observations_by_id: dict[str, "MemoryFact"] = {}
     union_source_facts: dict[str, "MemoryFact"] = {}
     for recall_result in per_fact_recalls:
         for obs in recall_result.results:
-            obs_id = str(obs.id)
-            if obs_id not in seen_ids:
-                seen_ids.add(obs_id)
-                union_observations.append(obs)
+            observations_by_id.setdefault(str(obs.id), obs)
         if recall_result.source_facts:
             union_source_facts.update(recall_result.source_facts)
+    union_observations = list(observations_by_id.values())
 
     # Facts and recalled observations are concise, derived memory text. Language
     # validation instead needs the bank-scoped source chunks behind every fact an
@@ -3921,7 +3939,6 @@ async def _process_memory_batch(
     # one place. They are still applied first inside the transaction, so an observation
     # slot freed by a delete is available to a create in the same response.
     prepared_deletes: list[_PreparedDelete] = []
-    pool_ids = {str(obs.id) for obs in union_observations}
     # A response can both UPDATE and DELETE one observation (seen when a fact supersedes it:
     # the model rewrites it to the new state and also deletes "the old one"). Deletes apply
     # first, so the update then found no row and was skipped while its source facts were
@@ -3936,13 +3953,15 @@ async def _process_memory_batch(
             )
             continue
         # Security: the observation must be present in the unioned recall
-        if delete.observation_id not in pool_ids:
+        if delete.observation_id not in observations_by_id:
             logger.debug(
                 f"Batch consolidation: rejected delete — observation {delete.observation_id} not in unioned recall"
             )
             continue
         # A merge target must be one the model was shown, like any other target it names.
-        target = delete.merged_into if delete.merged_into in pool_ids - {delete.observation_id} else None
+        target = delete.merged_into
+        if target == delete.observation_id or target not in observations_by_id:
+            target = None
         prepared_deletes.append(
             _PreparedDelete(observation_id=delete.observation_id, is_merge=bool(delete.merged_into), merged_into=target)
         )
@@ -4162,6 +4181,13 @@ async def _process_memory_batch(
     prepared_creates: list[_PreparedCreate] = await _gather_or_cancel(
         [_bounded(_adjudicate_create(p)) for p in checked_creates]
     )
+
+    # --- Review: the extension may drop an action or replace its tags ---------
+    # After every slow step (so it sees the final decision, folds included) and before the
+    # transaction (so a slow extension holds no locks).
+    if (validator := memory_engine._validator_with_hook("filter_consolidation_actions")) is not None:
+        reviewed = await _review_actions(validator, bank_id, request_context, prepared_updates, prepared_creates)
+        prepared_updates, prepared_creates = reviewed.updates, reviewed.creates
 
     # --- Apply: one transaction for everything this LLM response decided ------
     deleted_count = 0
@@ -4623,6 +4649,63 @@ async def _process_memory_batch(
             results.append({"action": "skipped", "reason": reason})
 
     return results, deleted_count, llm_result.failed
+
+
+@dataclass
+class _ReviewedActions:
+    updates: list[_PreparedUpdate]
+    creates: list[_PreparedCreate]
+
+
+async def _review_actions(
+    validator: "OperationValidatorExtension",
+    bank_id: str,
+    request_context: "RequestContext",
+    updates: list[_PreparedUpdate],
+    creates: list[_PreparedCreate],
+) -> _ReviewedActions:
+    """Run ``filter_consolidation_actions`` over a batch's prepared updates and creates."""
+
+    def _merge_into(dedup: _DedupOutcome | None) -> str | None:
+        return dedup.best_id if dedup is not None and dedup.should_merge else None
+
+    actions = [
+        ReviewedConsolidationAction(
+            kind="update",
+            text=u.update.text,
+            tags=list(u.source_fact_tags or []),
+            source_memory_ids=[str(i) for i in u.source_memory_ids],
+            observation_id=u.update.observation_id,
+            merge_into=_merge_into(u.dedup),
+        )
+        for u in updates
+    ] + [
+        ReviewedConsolidationAction(
+            kind="create",
+            text=c.text,
+            tags=list(c.source_fact_tags or []),
+            source_memory_ids=[str(i) for i in c.source_memory_ids],
+            merge_into=_merge_into(c.dedup),
+        )
+        for c in creates
+    ]
+    if not actions:
+        return _ReviewedActions(updates=updates, creates=creates)
+    ctx = ConsolidationActionsContext(bank_id=bank_id, request_context=request_context, actions=actions)
+    reviews = resolve_reviews(
+        await validator.filter_consolidation_actions(ctx), len(actions), "filter_consolidation_actions"
+    )
+    kept: list[_PreparedUpdate | _PreparedCreate] = []
+    for prepared, review in zip([*updates, *creates], reviews, strict=True):
+        if not review.keep:
+            continue
+        if review.tags is not None:
+            prepared.source_fact_tags = list(review.tags)
+        kept.append(prepared)
+    return _ReviewedActions(
+        updates=[p for p in kept if isinstance(p, _PreparedUpdate)],
+        creates=[p for p in kept if isinstance(p, _PreparedCreate)],
+    )
 
 
 def _min_date(dates: "Any") -> "datetime | None":
@@ -5263,7 +5346,9 @@ def _classify_batch_failure(exc: Exception) -> _BatchFailureClass:
        byte-identical payload, so a re-send asks a greedy decoder the same question
        and gets the same answer — the reporter measured twelve failures at the same
        character offset. Retrying still costs a full generation, and for a JSON
-       parse error that is on top of the four the provider already burned.
+       parse error that is on top of the four the provider already burned. A
+       schema-invalid reply has also already had its one re-ask with the errors
+       (``_call_with_one_reask``), which does vary the input; failing that too, it lands here.
 
     ``FAIL_FAST`` is not "give up": the batch is still reported failed, so the
     caller's adaptive bisection halves it and tries again. That path *does* vary

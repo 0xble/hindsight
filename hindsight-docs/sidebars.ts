@@ -45,9 +45,15 @@ const sidebars: SidebarsConfig = {
         },
         {
           type: 'doc',
-          id: 'developer/knowledge-pages',
-          label: 'Knowledge Pages',
+          id: 'developer/pages',
+          label: 'Pages',
           customProps: { icon: 'lu-book-text' },
+        },
+        {
+          type: 'doc',
+          id: 'developer/decision-models',
+          label: 'Decision Models',
+          customProps: { icon: 'lu-network' },
         },
         {
           type: 'doc',
@@ -112,8 +118,8 @@ const sidebars: SidebarsConfig = {
         },
         {
           type: 'doc',
-          id: 'developer/api/knowledge-pages',
-          label: 'Knowledge Pages',
+          id: 'developer/api/pages',
+          label: 'Pages',
           customProps: { icon: 'lu-book-text' },
         },
         {

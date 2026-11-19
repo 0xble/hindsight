@@ -101,6 +101,18 @@ def _content_with_image(before: str, image_bytes: bytes, after: str):
 
 async def _extract(text: str, loader, context: str):
     config = _get_raw_config()
+    # The engine sends attachment chunks to the VLM slot when one is configured; do the same.
+    vlm_config = None
+    if config.vlm_provider:
+        vlm_config = LLMConfig(
+            provider=config.vlm_provider,
+            api_key=config.vlm_api_key or "",
+            base_url=config.vlm_base_url or "",
+            model=config.vlm_model,
+            vertexai_project_id=config.llm_vertexai_project_id,
+            vertexai_region=config.llm_vertexai_region,
+            vertexai_service_account_key=config.llm_vertexai_service_account_key,
+        )
     facts, _, _ = await extract_facts_from_text(
         text=text,
         event_date=datetime(2024, 6, 1),
@@ -109,6 +121,7 @@ async def _extract(text: str, loader, context: str):
         config=config,
         context=context,
         attachment_loader=loader,
+        vlm_config=vlm_config,
     )
     return "\n".join(f"- [{fact.fact_type}] {fact.fact}" for fact in facts)
 
@@ -122,7 +135,7 @@ async def test_a_fact_is_extracted_from_what_the_image_shows() -> None:
         "After clicking it, wait ten seconds and reconnect.",
     )
 
-    facts_summary = await _extract(text, loader, context="Support knowledge-base article about VPN troubleshooting")
+    facts_summary = await _extract(text, loader, context="Support pages article about VPN troubleshooting")
 
     await assert_meets_criteria(
         response=facts_summary,
@@ -132,7 +145,7 @@ async def test_a_fact_is_extracted_from_what_the_image_shows() -> None:
             "at the image, such as the window being titled 'Network Settings'."
         ),
         context=(
-            "A knowledge-base article was retained as interleaved content: the sentence 'To reset "
+            "A pages article was retained as interleaved content: the sentence 'To reset "
             "the VPN connection, click the button shown below:', then a screenshot of a settings "
             "window with a blue button labelled 'Reset VPN', then 'After clicking it, wait ten "
             "seconds and reconnect.' The screenshot's button label appears nowhere in the text, "
@@ -156,7 +169,7 @@ async def test_the_image_is_read_in_the_context_of_the_prose_around_it() -> None
         "After clicking it, wait ten seconds and reconnect.",
     )
 
-    facts_summary = await _extract(text, loader, context="Support knowledge-base article about VPN troubleshooting")
+    facts_summary = await _extract(text, loader, context="Support pages article about VPN troubleshooting")
 
     await assert_meets_criteria(
         response=facts_summary,
