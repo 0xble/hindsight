@@ -5801,25 +5801,31 @@ async def _guard_detail_loss_updates(
 async def _call_with_one_reask(
     llm_config: Any, call_kwargs: dict[str, Any], response_model: type[_FactBatchResponse]
 ) -> _FactBatchResponse:
-    """The batch's answer, asking once more with the errors when the reply misses the schema.
+    """Re-ask only for a wrong top-level response shape.
 
-    A bad entry is already dropped on its own (``_validate_items``); what lands here is a reply
-    whose overall shape is wrong — a list instead of an object (json_repair's answer to two JSON
-    values back to back, #5572), or a bad delete. Re-sending the same prompt at temperature 0
-    returns the same reply, so the second call carries the errors. It appends to the first
-    request, so the prompt cache still covers it. A second failure raises the ValidationError,
-    and the caller's fail-fast + bisection takes over as before.
+    Action-shape failures remain on the fork's bounded correction path below, where
+    the shared round budget and provider-attempt boundary apply. A list/object shape
+    failure needs the malformed reply quoted once because the provider otherwise sees
+    the same deterministic request again.
     """
-    first = (await llm_config.call(**call_kwargs, skip_validation=True)).content
-    if isinstance(first, _FactBatchResponse):  # a provider (or test double) that built it already
+    first_call = await llm_config.call(
+        **call_kwargs,
+        **({"skip_validation": True} if not hasattr(llm_config, "_provider_impl") else {}),
+    )
+    first = first_call.content
+    if isinstance(first, response_model):
         return first
     try:
         return response_model.model_validate(first)
     except ValidationError as exc:
-        errors = "\n".join(f"- {'.'.join(map(str, e['loc'])) or '(top level)'}: {e['msg']}" for e in exc.errors()[:10])
-        logger.warning(f"[CONSOLIDATION] reply did not match the schema, asking again with the errors:\n{errors}")
+        errors = exc.errors(include_url=False, include_context=False, include_input=False)
+        if not errors or not all(not error["loc"] for error in errors):
+            raise
+        rendered_errors = "\n".join(
+            f"- {'.'.join(map(str, error['loc'])) or '(top level)'}: {error['msg']}" for error in errors[:10]
+        )
         correction = (
-            f"Your previous answer was discarded because it did not match the schema:\n{errors}\n"
+            f"Your previous answer was discarded because it did not match the schema:\n{rendered_errors}\n"
             'Answer again with the same decisions as ONE JSON object, {"facts": [...], "deletes": [...]}, '
             "following the schema. Not a list, and nothing after the object."
         )
