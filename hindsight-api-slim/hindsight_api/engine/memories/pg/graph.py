@@ -701,6 +701,13 @@ async def relink_pass(
             # out a relink, and the relink holds no queue lock until its final
             # delete — a writer it waits on can always reach its own commit.
             async with conn.transaction():
+                # Check curation before claiming. The advisory lock is transaction-scoped,
+                # so the relink transaction below must acquire it again before reading or
+                # writing graph state. This first check prevents claiming work while a
+                # guarded curation transaction owns the bank.
+                if conn.backend_type == "postgresql" and not await try_lock_curation_bank(conn, bank_id):
+                    drained = False
+                    break
                 unit_ids = await ops.claim_graph_maintenance_batch(
                     conn, queue, bank_id, _DRAIN_BATCH_SIZE, claimed_at, claimed_at - _CLAIM_STALE_AFTER
                 )
