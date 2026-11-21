@@ -1473,8 +1473,10 @@ class WorkerPoller:
                     )
                     reason = f"store backpressure (deferral #{defers}): {str(e)[:400]}"
                     metadata = {_STORE_BACKPRESSURE_DEFER_COUNT_KEY: defers}
-                    await self._write_terminal(
-                        task, "deferred", lambda: self._defer_all(task, retry_at, reason, metadata)
+                    await self._release_on_write_failure(
+                        task,
+                        "backpressure defer",
+                        self._defer_all(task, retry_at, reason, metadata),
                     )
                     return
                 stuck_store = (
