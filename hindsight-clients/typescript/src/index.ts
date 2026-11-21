@@ -1053,6 +1053,13 @@ export class HindsightClient {
       mcpEnabledTools?: string[];
       /** Source-language guard for generated output. */
       llmLanguageIntegrity?: "off" | "observe" | "retry" | "reject";
+      /** Knowledge banks linked to this bank: reflect also searches them and treats their
+       *  passages as authoritative. Recall is unchanged. */
+      knowledgeBanks?: string[];
+      /** Media types reflect's knowledge-bank search may return; unset returns all. */
+      reflectKbSearchMediaTypes?: ("document" | "image" | "audio" | "video" | "text")[];
+      /** Filter the knowledge-bank search by the reflect's tags, as its memories are. */
+      reflectKbSearchApplyTags?: boolean;
       /** Gemini/VertexAI safety overrides. */
       llmGeminiSafetySettings?: { category: string; threshold: string }[];
       /** Memory-defense (prompt-injection / secret redaction) settings. */
@@ -1181,8 +1188,13 @@ export class HindsightClient {
     if (options.mcpEnabledTools !== undefined) updates.mcp_enabled_tools = options.mcpEnabledTools;
     if (options.llmLanguageIntegrity !== undefined)
       updates.llm_language_integrity = options.llmLanguageIntegrity;
+    if (options.knowledgeBanks !== undefined) updates.knowledge_banks = options.knowledgeBanks;
+    if (options.reflectKbSearchMediaTypes !== undefined)
+      updates.reflect_kb_search_media_types = options.reflectKbSearchMediaTypes;
+    if (options.reflectKbSearchApplyTags !== undefined)
+      updates.reflect_kb_search_apply_tags = options.reflectKbSearchApplyTags;
     if (options.llmGeminiSafetySettings !== undefined)
-      updates.llm_gemini_safety_settings = options.llmGeminiSafetySettings;
+    updates.llm_gemini_safety_settings = options.llmGeminiSafetySettings;
     if (options.memoryDefense !== undefined) updates.memory_defense = options.memoryDefense;
     if (options.auditLogEnabled !== undefined) updates.audit_log_enabled = options.auditLogEnabled;
 

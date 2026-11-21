@@ -162,6 +162,9 @@ async def test_hierarchical_fields_categorization():
     assert "mental_model_min_refresh_interval_seconds" in configurable
     assert "page_default_trigger" in configurable
     assert "reflect_default_options" in configurable
+    assert "knowledge_banks" in configurable
+    assert "reflect_kb_search_media_types" in configurable
+    assert "reflect_kb_search_apply_tags" in configurable
 
     # Keep the exact surface count, including released recall_decision_model_prune
     # and recall_decision_model_dedup above and the six retained fork settings:
@@ -170,7 +173,7 @@ async def test_hierarchical_fields_categorization():
     # llm_language_integrity, and consolidation_round_correction_budget.
     assert "llm_language_integrity" in configurable
     assert "llm_output_language" in static
-    assert len(configurable) == 66
+    assert len(configurable) == 69
 
     # Verify credential fields (NEVER exposed)
     assert "llm_api_key" in credentials

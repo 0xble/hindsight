@@ -8,6 +8,7 @@ mechanics with a scripted provider; whether the answers hold up is the system
 evals' job.
 """
 
+import asyncio
 from unittest.mock import AsyncMock
 
 import pytest
@@ -568,3 +569,30 @@ async def test_native_timed_results_prune_and_hide_without_losing_timing():
     unused = AsyncMock()
     assert await _prune_round("q", single, unused, "r") is single
     unused.assert_not_awaited()
+
+@pytest.mark.asyncio
+async def test_trace_start_times_put_llm_and_tool_calls_in_the_order_they_ran():
+    """LLM calls are not one per iteration, so the UI orders the two trace lists by start time."""
+
+    async def slow(*_args, **_kwargs):
+        await asyncio.sleep(0.01)
+        return True
+
+    async def slow_recall(*_args, **_kwargs):
+        await asyncio.sleep(0.01)
+        return {"memories": [{"id": "mem-1", "text": "m"}]}
+
+    provider = _ScriptedProvider([_done()])
+    functions = _functions()
+    functions["recall_fn"].side_effect = slow_recall
+
+    result = await _reflect(provider, functions, AsyncMock(side_effect=slow))
+
+    steps = [(c.started_at_ms, c.scope) for c in result.llm_trace] + [
+        (t.started_at_ms, t.tool) for t in result.tool_trace
+    ]
+    assert all(start > 0 for start, _ in steps)
+    ordered = [name for _, name in sorted(steps, key=lambda s: s[0])]
+    assert ordered[0] == "round_query"
+    assert set(ordered[1:4]) == {"search_mental_models", "search_observations", "recall"}
+    assert ordered[4:] == ["decision_sufficiency", "closing_done"]
