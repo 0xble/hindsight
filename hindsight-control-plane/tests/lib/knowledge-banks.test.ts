@@ -161,4 +161,3 @@ describe("isPicturePassage", () => {
     expect(isPicturePassage({ media_type: "video", passage_url: "/p" })).toBe(false);
   });
 });
-
