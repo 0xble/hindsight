@@ -66,6 +66,42 @@ describe("buildSessionStartContext", () => {
     expect(out.systemMessage).not.toContain("plugin uninstall");
   });
 
+  it("configures the bank itself only when the deepen engine is not started", async () => {
+    const configure = vi.fn(async () => {});
+    const client = {
+      listDocumentIds: async () => new Set(["git:a"]),
+      listPages: listPagesOk,
+      configureBankSettings: configure,
+    };
+    const base = {
+      cwd: "/repo/dir",
+      bankId: "bank-1",
+      client,
+      detectLegacyPlugin: () => undefined,
+    };
+    await buildSessionStartContext({ ...base, cfg: resolveConfig({ autoSeed: false }) });
+    expect(configure).toHaveBeenCalledTimes(1);
+    expect(configure).toHaveBeenCalledWith(expect.objectContaining({ extractionMode: "concise" }));
+
+    configure.mockClear();
+    await buildSessionStartContext({
+      ...base,
+      cfg: resolveConfig({ codebaseSurvey: false }),
+      hasGit: () => false,
+    });
+    expect(configure).toHaveBeenCalledTimes(1);
+
+    configure.mockClear();
+    await buildSessionStartContext({
+      ...base,
+      cfg: resolveConfig({ codebaseSurvey: false }),
+      hasGit: () => true,
+      startSeed: vi.fn(),
+      headSha: () => null,
+    });
+    expect(configure).not.toHaveBeenCalled();
+  });
+
   it("cold git repo + autoSeed on -> seeds + surveys, note in systemMessage (user-visible) + roster in additionalContext (model)", async () => {
     const client = {
       listDocumentIds: async () => new Set<string>(),
@@ -92,8 +128,8 @@ describe("buildSessionStartContext", () => {
     // The learning note is USER-VISIBLE (systemMessage), not buried in model context.
     expect(out.systemMessage).toContain("is learning");
     expect(out.systemMessage).toContain("bank-1");
-    // The knowledge preamble is model context, lists live pages, and drops the old static mission.
-    expect(out.additionalContext).toContain("<hindsight_knowledge>");
+    // The pages preamble is model context, lists live pages, and drops the old static mission.
+    expect(out.additionalContext).toContain("<hindsight_pages>");
     expect(out.additionalContext).toContain("deliberately NOT listed here");
     expect(out.additionalContext).not.toContain("agent_knowledge_list_pages");
     // The banner must NOT be duplicated into model context. (The tool guide legitimately
@@ -458,8 +494,8 @@ describe("buildSessionStartContext", () => {
     // Seeding is unaffected by a listPages failure.
     expect(startSeed).toHaveBeenCalledWith("/repo/dir", { limit: 300, harness: "claude-code" });
     // Empty-state roster preamble still renders (no page names, no throw).
-    expect(out.additionalContext).toContain("<hindsight_knowledge>");
-    expect(out.additionalContext).toContain("No knowledge pages yet");
+    expect(out.additionalContext).toContain("<hindsight_pages>");
+    expect(out.additionalContext).toContain("No pages yet");
     expect(out.additionalContext).not.toContain("(p1)");
     // The background-learning note is still user-visible.
     expect(out.systemMessage).toContain("is learning");

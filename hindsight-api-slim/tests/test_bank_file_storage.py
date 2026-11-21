@@ -1,10 +1,11 @@
 """Bank-scoped file storage: the tenant-scoped key prefix, and what deletes the files under it."""
 
 import uuid
+from urllib.parse import quote
 
 import pytest
 
-from hindsight_api.engine.retain.bank_utils import BANK_ID_MAX_BYTES
+from hindsight_api.engine.response_models import ID_MAX_BYTES
 from hindsight_api.engine.storage import bank_storage_prefix, key_segment
 
 
@@ -33,8 +34,8 @@ def test_an_empty_bank_id_is_refused():
 def test_maximum_bank_id_stays_within_object_store_key_budget():
     """The longest bank id creation accepts still leaves room for the rest of an object-store key (#4391)."""
     # Percent-encoding turns every UTF-8 byte of a CJK character into 3 key bytes: the worst case.
-    bank_id = "界" * (BANK_ID_MAX_BYTES // len("界".encode()))
-    assert len(key_segment(bank_id)) == 3 * BANK_ID_MAX_BYTES
+    bank_id = "界" * (ID_MAX_BYTES // len("界".encode()))
+    assert len(key_segment(bank_id)) == 3 * ID_MAX_BYTES
 
     # S3-compatible stores cap object keys at 1,024 bytes. The bank-id limit counts bytes before
     # encoding, so this fails if the limit or the encoding grows past what a file key can hold.
@@ -110,6 +111,42 @@ async def test_deleting_a_bank_deletes_everything_under_its_prefix(api_client, m
     # Same name plus a suffix: a prefix without its trailing "/" would sweep it too.
     assert await memory._file_storage.exists(other_key)
     await memory._file_storage.delete(other_key)
+
+
+@pytest.mark.asyncio
+async def test_whole_bank_transfer_archives_live_under_the_bank_prefix(memory, request_context, monkeypatch):
+    """The whole-bank export's archive and the import's stashed upload sit under the bank's
+    tenant prefix, so deleting the bank takes them too (#6335)."""
+    from hindsight_api.engine.db_utils import acquire_with_retry
+    from hindsight_api.engine.transfer import export_bank
+
+    bank_id = f"files-{uuid.uuid4().hex[:8]}"
+    await memory.retain_async(
+        bank_id=bank_id, content="Alice joined Acme.", document_id="doc", request_context=request_context
+    )
+    submission = await memory.submit_bank_export_async(bank_id, request_context)
+    status = await memory.get_operation_status(bank_id, submission["operation_id"], request_context=request_context)
+    export_key = status["result_metadata"]["storage_key"]
+    assert export_key.startswith(f"{bank_storage_prefix(bank_id)}exports/"), export_key
+
+    stashed: list[str] = []
+    stash = memory._stash_archive
+
+    async def record_key(archive, storage_key, bank):
+        stashed.append(storage_key)
+        await stash(archive, storage_key, bank)
+
+    monkeypatch.setattr(memory, "_stash_archive", record_key)
+    async with acquire_with_retry(await memory._get_backend()) as conn:
+        archive = await export_bank(conn, bank_id)
+    copy = f"{bank_id}-copy"
+    await memory.submit_bank_import_async(bank_id, archive, request_context, target_bank_id=copy)
+    assert [key.startswith(f"{bank_storage_prefix(bank_id)}imports/") for key in stashed] == [True], stashed
+
+    await memory.delete_bank(bank_id, request_context=request_context)
+    await memory.delete_bank(copy, request_context=request_context)
+
+    assert not await memory._file_storage.exists(export_key)
 
 
 @pytest.mark.asyncio
@@ -219,3 +256,24 @@ async def test_download_endpoint_chunked_streaming_and_gzip(api_client, memory):
     finally:
         await memory._file_storage.delete(key)
         await api_client.delete(f"/v1/default/banks/{bank_id}")
+
+
+@pytest.mark.asyncio
+async def test_download_names_the_archive_after_a_non_ascii_bank(api_client, memory):
+    """A bank id outside Latin-1 still downloads, under its own name (#6668)."""
+    bank_id = f"知识库-{uuid.uuid4().hex[:8]}"
+    response = await api_client.put(f"/v1/default/banks/{quote(bank_id)}", json={})
+    assert response.status_code in (200, 201), response.text
+
+    key = f"{bank_storage_prefix(bank_id)}exports/{uuid.uuid4()}/transfer.zip"
+    try:
+        await memory._file_storage.store(b"zip-bytes", key)
+        resp = await api_client.get(f"/v1/default/files/download/{quote(key)}")
+        assert resp.status_code == 200, resp.text
+        assert resp.content == b"zip-bytes"
+        disposition = resp.headers["content-disposition"]
+        assert disposition.startswith("attachment;")
+        assert f"filename*=UTF-8''{quote(f'{bank_id}-documents.zip')}" in disposition
+    finally:
+        await memory._file_storage.delete(key)
+        await api_client.delete(f"/v1/default/banks/{quote(bank_id)}")

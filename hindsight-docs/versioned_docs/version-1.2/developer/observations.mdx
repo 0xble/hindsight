@@ -2,7 +2,13 @@
 sidebar_position: 5
 ---
 
+import Tabs from '@theme/Tabs';
+import TabItem from '@theme/TabItem';
 import CodeSnippet from '@site/src/components/CodeSnippet';
+import treePy from '!!raw-loader!@site/examples/api/observation-tree.py';
+import treeMjs from '!!raw-loader!@site/examples/api/observation-tree.mjs';
+import treeSh from '!!raw-loader!@site/examples/api/observation-tree.sh';
+import treeGo from '!!raw-loader!@site/examples/api/observation-tree.go';
 import recallPy from '!!raw-loader!@site/examples/api/recall.py';
 import memoryBanksPy from '!!raw-loader!@site/examples/api/memory-banks.py';
 import observationsPy from '!!raw-loader!@site/examples/api/observations.py';
@@ -46,6 +52,20 @@ After `retain()` completes, the consolidation engine runs automatically:
 2. **Pattern detection** — Related facts are grouped and synthesized
 3. **Observation creation/update** — New observations are created or existing ones refined
 4. **Evidence tracking** — Each observation maintains references to supporting facts
+
+### Decision-Model Triage {#decision-model-triage}
+
+When a [decision model](./decision-models) is set up for consolidation, it settles the easy facts before the consolidation LLM sees them. For each new fact it asks how the fact relates to the observations recall found for it:
+
+- **It restates an observation** — the fact is attached to that observation as evidence.
+- **It is chatter** — it is skipped.
+- **It changes what an observation says, or adds something new** — it goes to the LLM, as before. The decision model never writes an observation's text.
+
+Facts whose answers disagree, or whose request failed, also go to the LLM, so a decision-model outage only costs the savings. On the consolidation eval this cut LLM calls by about 40% at the same pass rate.
+
+Under a bank's own [observations mission](#observations-mission), chatter is left to the LLM, which applies the mission.
+
+Turn it off for one bank with [`consolidation_use_decision_model: false`](/developer/configuration#observations), or for every bank with `HINDSIGHT_API_CONSOLIDATION_DECISION_MODEL_PROVIDER=none`.
 
 ### Near-Duplicate Reconciliation
 
@@ -339,6 +359,35 @@ The request body is optional. When omitted (or sent as an empty body), all uncon
 | Parameter | Type | Description |
 |-----------|------|-------------|
 | `observation_scopes` | `list[list[str]]` \| `null` | Optional list of tag scopes. Only memories whose tags contain all tags in at least one scope are processed. Omit for a full-bank sweep. |
+
+## Observation Tree {#observation-tree}
+
+The observation tree shows every observation in a bank as a folder of markdown files: one file per topic, and an `index.md` in each folder that says what is inside. An agent can `ls` and `grep` it to see what the bank knows before it has a question to ask. A person can browse it to check what was learned.
+
+Topics are grouped by the entities the observations mention, with no LLM call. The tree is rebuilt on every request, and the same bank always gives the same paths. It follows the [Open Knowledge Format](https://okf.md/spec/), so tools that read OKF can read it as-is.
+
+:::note Experimental
+The endpoint and the file layout may still change.
+:::
+
+In the control plane, open a bank and go to **Pages → Observations** to browse it, search it, or download it as a `.zip`. Over the API, `GET /v1/default/banks/{bank_id}/observations/tree` returns the folders and files, each with its markdown in `content`. Pass `tags`, `tags_match` or `tag_groups` (as in recall) to build it from matching observations only.
+
+<Tabs>
+<TabItem value="python" label="Python">
+<CodeSnippet code={treePy} section="get-tree" language="python" />
+</TabItem>
+<TabItem value="node" label="Node.js">
+<CodeSnippet code={treeMjs} section="get-tree" language="javascript" />
+</TabItem>
+<TabItem value="cli" label="CLI">
+<CodeSnippet code={treeSh} section="get-tree" language="bash" />
+</TabItem>
+<TabItem value="go" label="Go">
+<CodeSnippet code={treeGo} section="get-tree" language="go" />
+</TabItem>
+</Tabs>
+
+---
 
 ## Configuration
 

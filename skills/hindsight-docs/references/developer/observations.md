@@ -55,6 +55,20 @@ After `retain()` completes, the consolidation engine runs automatically:
 3. **Observation creation/update** — New observations are created or existing ones refined
 4. **Evidence tracking** — Each observation maintains references to supporting facts
 
+### Decision-Model Triage {#decision-model-triage}
+
+When a [decision model](./decision-models.md) is set up for consolidation, it settles the easy facts before the consolidation LLM sees them. For each new fact it asks how the fact relates to the observations recall found for it:
+
+- **It restates an observation** — the fact is attached to that observation as evidence.
+- **It is chatter** — it is skipped.
+- **It changes what an observation says, or adds something new** — it goes to the LLM, as before. The decision model never writes an observation's text.
+
+Facts whose answers disagree, or whose request failed, also go to the LLM, so a decision-model outage only costs the savings. On the consolidation eval this cut LLM calls by about 40% at the same pass rate.
+
+Under a bank's own [observations mission](#observations-mission), chatter is left to the LLM, which applies the mission.
+
+Turn it off for one bank with [`consolidation_use_decision_model: false`](configuration.md#observations), or for every bank with `HINDSIGHT_API_CONSOLIDATION_DECISION_MODEL_PROVIDER=none`.
+
 ### Near-Duplicate Reconciliation
 
 Consolidation can still produce two observations that say the same thing in slightly different words — for example when a weaker model writes a near-identical observation instead of refining the existing one, or when refining an observation reshapes its wording so it overlaps another one. Left alone, these near-duplicates clutter recall with redundant beliefs.
@@ -385,6 +399,102 @@ The request body is optional. When omitted (or sent as an empty body), all uncon
 | Parameter | Type | Description |
 |-----------|------|-------------|
 | `observation_scopes` | `list[list[str]]` \| `null` | Optional list of tag scopes. Only memories whose tags contain all tags in at least one scope are processed. Omit for a full-bank sweep. |
+
+## Observation Tree {#observation-tree}
+
+The observation tree shows every observation in a bank as a folder of markdown files: one file per topic, and an `index.md` in each folder that says what is inside. An agent can `ls` and `grep` it to see what the bank knows before it has a question to ask. A person can browse it to check what was learned.
+
+Topics are grouped by the entities the observations mention, with no LLM call. The tree is rebuilt on every request, and the same bank always gives the same paths. It follows the [Open Knowledge Format](https://okf.md/spec/), so tools that read OKF can read it as-is.
+
+> **📝 Experimental**
+>
+The endpoint and the file layout may still change.
+In the control plane, open a bank and go to **Pages → Observations** to browse it, search it, or download it as a `.zip`. Over the API, `GET /v1/default/banks/{bank_id}/observations/tree` returns the folders and files, each with its markdown in `content`. Pass `tags`, `tags_match` or `tag_groups` (as in recall) to build it from matching observations only.
+
+### Python
+
+```python
+# The whole bank: folders, topic files and each folder's index.md.
+tree = await client.memory.get_observation_tree(bank_id=BANK_ID)
+print(f"{tree.observation_count} observations")
+
+def walk(folder):
+    for f in folder.files:
+        print(f"/{f.path} ({f.observation_count})")
+    for sub in folder.folders:
+        walk(sub)
+
+walk(tree)
+
+# Only one scope: the same tag filters as recall.
+platform = await client.memory.get_observation_tree(bank_id=BANK_ID, tags=["team:platform"], tags_match="any_strict")
+walk(platform)
+```
+
+### Node.js
+
+```javascript
+// The whole bank: folders, topic files and each folder's index.md.
+const apiClient = createClient(createConfig({ baseUrl: HINDSIGHT_URL }));
+const { data: tree } = await sdk.getObservationTree({ client: apiClient, path: { bank_id: BANK_ID } });
+console.log(`${tree.observation_count} observations`);
+
+const walk = (folder) => {
+    for (const f of folder.files) console.log(`/${f.path} (${f.observation_count})`);
+    folder.folders.forEach(walk);
+};
+walk(tree);
+
+// Only one scope: the same tag filters as recall.
+const { data: platform } = await sdk.getObservationTree({
+    client: apiClient,
+    path: { bank_id: BANK_ID },
+    query: { tags: ['team:platform'], tags_match: 'any_strict' },
+});
+walk(platform);
+```
+
+### CLI
+
+```bash
+# The whole bank: folders, topic files and each folder's index.md (-o json for the full tree).
+hindsight memory observation-tree "$BANK_ID"
+
+# Only one scope: the same tag filters as recall.
+hindsight memory observation-tree "$BANK_ID" --tags team:platform --tags-match any_strict
+```
+
+### Go
+
+```go
+// The whole bank: folders, topic files and each folder's index.md.
+tree, _, err := client.MemoryAPI.GetObservationTree(ctx, mtBankID).Execute()
+if err != nil {
+	panic(err)
+}
+fmt.Printf("%d observations\n", tree.GetObservationCount())
+
+var walk func(folder hindsight.ObservationTreeFolder)
+walk = func(folder hindsight.ObservationTreeFolder) {
+	for _, f := range folder.GetFiles() {
+		fmt.Printf("/%s (%d)\n", f.GetPath(), f.GetObservationCount())
+	}
+	for _, sub := range folder.GetFolders() {
+		walk(sub)
+	}
+}
+walk(*tree)
+
+// Only one scope: the same tag filters as recall.
+platform, _, err := client.MemoryAPI.GetObservationTree(ctx, mtBankID).
+	Tags([]string{"team:platform"}).TagsMatch("any_strict").Execute()
+if err != nil {
+	panic(err)
+}
+walk(*platform)
+```
+
+---
 
 ## Configuration
 

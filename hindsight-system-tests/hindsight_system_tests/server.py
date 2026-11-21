@@ -11,6 +11,7 @@ from __future__ import annotations
 import contextlib
 import logging
 import os
+import signal
 import socket
 import subprocess
 import threading
@@ -71,6 +72,11 @@ def start_stub_server(stubs: Stubs) -> StubServer:
         port=port,
         log_level="warning",
         access_log=False,
+        # uvicorn closes an idle connection after 5s, but the server's aiohttp pool keeps
+        # it for 15s and may write a request onto it just as the stub closes it
+        # ("Can not write request body", #6298). With retries off (see stub_environment)
+        # that race fails the operation, so the stub outlives the client's pool instead.
+        timeout_keep_alive=60,
     )
     server = uvicorn.Server(config)
     thread = threading.Thread(target=server.run, daemon=True, name="provider-stub")
@@ -97,12 +103,27 @@ class HindsightServer:
     _owned_pg_instance: str | None = None
 
     def stop(self) -> None:
+        self.terminate_like_a_platform(grace=30)
+
+    def terminate_like_a_platform(self, grace: float) -> bool:
+        """SIGTERM, then SIGKILL once ``grace`` seconds pass — what a rollout does.
+
+        True if the process exited on its own within the grace period. Kubernetes and
+        Docker give no more than this: whatever shutdown has not finished by then dies.
+        """
+        # SIGTERM to `uv run` alone: it forwards it to the server, and a second
+        # SIGTERM sent to the group would reach the server twice and force-exit it.
         self._process.terminate()
         try:
-            self._process.wait(timeout=30)
+            self._process.wait(timeout=grace)
+            return True
         except subprocess.TimeoutExpired:
-            self._process.kill()
+            # The whole group: SIGKILL is not forwarded, so killing `uv run` alone
+            # would leave the server itself running as an orphan.
+            with contextlib.suppress(ProcessLookupError):
+                os.killpg(self._process.pid, signal.SIGKILL)
             self._process.wait(timeout=10)
+            return False
         if self._owned_pg_instance is not None:
             subprocess.run(
                 [
@@ -196,6 +217,12 @@ def stub_environment(stub_url: str) -> dict[str, str]:
         # private still fails, which is what keeps the guard under test.
         "HINDSIGHT_API_WEBHOOK_ALLOWED_HOSTS": "127.0.0.1",
         "HINDSIGHT_API_CONSOLIDATION_RECONCILE_INTERVAL_SECONDS": "5",
+        # Knowledge banks are hidden and off by default; the knowledge stories need them on. Their
+        # embedder reuses the memory banks' (the stub's lexical embeddings), so it embeds text only:
+        # texts, and PDFs through their text layer. Nothing else changes for the other stories: the
+        # flag only adds routes, and the knowledge service starts on first use.
+        "HINDSIGHT_API_ENABLE_KB": "true",
+        "HINDSIGHT_API_KB_EMBEDDINGS_PROVIDER": "text",
     }
 
 
@@ -229,6 +256,32 @@ def start_hindsight_worker(
     env = _server_env(stub_url, extra_env)
     command = ["hindsight-worker", "--http-host", "127.0.0.1", "--http-port", str(port)]
     return _start(command, env=env, url=f"http://127.0.0.1:{port}", log_path=log_path)
+
+
+def run_hindsight_admin(
+    args: list[str], *, stub_url: str, log_path: Path, extra_env: dict[str, str] | None = None
+) -> str:
+    """Run one ``hindsight-admin`` command to completion, as an operator would; return its output.
+
+    Same environment and scratch directory as a server, so it reaches the same database and
+    providers. Raises with the output when the command fails.
+    """
+    run_dir = log_path.parent / "run"
+    run_dir.mkdir(parents=True, exist_ok=True)
+    (run_dir / ".env").write_text("# intentionally empty: see start_hindsight_server\n")
+    result = subprocess.run(
+        ["uv", "run", "--project", str(API_DIR), "hindsight-admin", *args],
+        cwd=run_dir,
+        env=_server_env(stub_url, extra_env),
+        capture_output=True,
+        text=True,
+        timeout=SERVER_STARTUP_TIMEOUT,
+    )
+    output = result.stdout + result.stderr
+    log_path.write_text(output)
+    if result.returncode != 0:
+        raise RuntimeError(f"hindsight-admin {' '.join(args)} exited {result.returncode}:\n{output}")
+    return output
 
 
 def _server_env(stub_url: str, extra_env: dict[str, str] | None) -> dict[str, str]:
@@ -287,6 +340,8 @@ def _start(
         env=env,
         stdout=log_file,
         stderr=subprocess.STDOUT,
+        # Its own process group, so a kill reaches the server and not only `uv run`.
+        start_new_session=True,
     )
 
     server = HindsightServer(url=url, log_path=log_path, _process=process, _owned_pg_instance=owned_pg_instance)

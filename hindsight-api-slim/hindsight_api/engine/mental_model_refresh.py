@@ -47,7 +47,9 @@ RefreshOutcome = Literal[
 
 # What a refresh did, as recorded on the operation. A superset of RefreshOutcome:
 # the persist path can still refuse a document the executor accepted, when
-# structured-output extraction fails against a configured response_schema, and
+# structured-output extraction fails against a configured response_schema, an
+# operation validator rejects the finished document
+# (``refresh_failed_candidate_rejected``, #5970), and
 # a refresh can also die on an error rather than refuse to write a document
 # (``refresh_failed_error`` — a retrieval tool raised, the agent produced no
 # answer, or something unforeseen escaped). Kept
@@ -63,6 +65,7 @@ RefreshOperationOutcome = Literal[
     "refresh_failed_empty_candidate",
     "refresh_failed_delta_not_applied",
     "refresh_failed_structured_output",
+    "refresh_failed_candidate_rejected",
     "refresh_failed_error",
 ]
 
@@ -83,6 +86,7 @@ RefreshFailureReason = Literal[
     "delta_ops_all_skipped",
     "delta_not_applied",
     "structured_output_failed",
+    "candidate_rejected",
     "retrieval_failed",
     "no_answer",
     "unexpected_error",
@@ -265,6 +269,12 @@ class MentalModelTraceToolCall(BaseModel):
     result_count: int | None = Field(default=None, description="Number of items the tool returned, when countable.")
     duration_ms: int = Field(description="Execution time in milliseconds.")
     iteration: int = Field(default=0, description="Agent loop iteration (1-based) this call belongs to.")
+    # Epoch milliseconds overflow int32: without format int64 the Go client decodes into int32 and fails.
+    started_at_ms: int = Field(
+        default=0,
+        description="When the call started, in Unix epoch milliseconds.",
+        json_schema_extra={"format": "int64"},
+    )
 
 
 class MentalModelRefreshTrace(BaseModel):

@@ -38,12 +38,13 @@ from hindsight_api.engine.llm_interface import (
     LLMInterface,
     ProviderRateLimitResetError,
     ProviderUnavailableError,
+    merge_extra_body,
 )
 from hindsight_api.engine.llm_trace import LLMResponseUsage, stash_response_usage
 from hindsight_api.engine.llm_transport import build_aiohttp_timeout
 from hindsight_api.engine.providers.llm_debug import dump_request_on_4xx
-from hindsight_api.engine.providers.openai_compatible_llm import _strip_code_fences
-from hindsight_api.engine.providers.openai_responses_llm import _to_responses_content
+from hindsight_api.engine.providers.openai_compatible_llm import _strip_code_fences, record_retried_attempt
+from hindsight_api.engine.providers.openai_responses_llm import _reply_message_index, _to_responses_content
 from hindsight_api.engine.response_models import TokenUsage
 from hindsight_api.engine.structured_output import provider_json_schema, strict_json_schema
 from hindsight_api.metrics import get_metrics_collector
@@ -630,8 +631,6 @@ class CodexLLM(LLMInterface):
             "stream": True,  # SSE streaming
             "prompt_cache_key": _prompt_cache_key(messages),
         }
-        payload.update(self._extra_body)
-
         if strict_schema and schema is not None:
             payload["text"] = {
                 "format": {
@@ -641,6 +640,9 @@ class CodexLLM(LLMInterface):
                     "strict": True,
                 }
             }
+        # Merged, not replaced: a configured {"text": {"verbosity": ...}} or
+        # {"reasoning": {"summary": ...}} keeps the schema and effort Hindsight set (#6640).
+        payload.update(merge_extra_body(payload, self._extra_body))
 
         headers = self._build_request_headers()
         # The ChatGPT backend routes Responses cache affinity on ``session-id``, not on
@@ -656,6 +658,7 @@ class CodexLLM(LLMInterface):
         # separate auth-recovery attempt that shouldn't compete with backoff.
         attempt = 0
         while True:
+            attempt_started = time.perf_counter()
             try:
                 async with attempt_context() if attempt_context is not None else nullcontext():
                     set_stage(f"llm.codex.{scope}.attempt={attempt + 1}/{max_retries + 1}")
@@ -832,6 +835,14 @@ class CodexLLM(LLMInterface):
                 if attempt < max_retries:
                     backoff = min(initial_backoff * (2**attempt), max_backoff)
                     logger.warning(f"Codex connection error (attempt {attempt + 1}/{max_retries + 1}): {e}")
+                    record_retried_attempt(
+                        provider=self.provider,
+                        model=self.model,
+                        scope=scope,
+                        messages=messages,
+                        error=e,
+                        started=attempt_started,
+                    )
                     await asyncio.sleep(backoff)
                     attempt += 1
                     continue
@@ -929,8 +940,13 @@ class CodexLLM(LLMInterface):
         Returns:
             The text content and token usage the stream carried.
         """
-        full_text = ""
-        deltas = ""
+        # Text per output item, in stream order: a reply can hold several assistant
+        # messages, and only one is the answer (``_reply_message_index``, #6347). Deltas
+        # carry the text; a finished item repeats it, so its text is only the fallback
+        # for an item that streamed no deltas.
+        texts: dict[Any, str] = {}
+        streamed: set[Any] = set()
+        phases: dict[Any, str] = {}
         usage: TokenUsage | None = None
         event_type = None
 
@@ -953,32 +969,43 @@ class CodexLLM(LLMInterface):
                     _raise_on_sse_failure(event_type, data)
                     usage = _usage_from_completed_event(event_type, data) or usage
 
-                    # Extract content based on event type. The Responses API streams text
-                    # as ``response.output_text.delta``; the finished items repeat it, so
-                    # they are only the fallback for a stream that sent no deltas.
                     if (
                         event_type
                         in ("response.output_text.delta", "response.text.delta", "response.content_part.delta")
                         and "delta" in data
                     ):
-                        deltas += data["delta"]
-                    # Check for item content
-                    elif "item" in data:
+                        key = data.get("output_index", data.get("item_id"))
+                        texts[key] = texts.get(key, "") + data["delta"]
+                        streamed.add(key)
+                    # Only message items are the reply: a reasoning item can carry content too.
+                    elif (
+                        isinstance(data.get("item"), dict)
+                        and data["item"].get("type") == "message"
+                        and "content" in data["item"]
+                    ):
                         item = data["item"]
-                        if "content" in item:
+                        key = data.get("output_index", item.get("id"))
+                        if isinstance(item.get("phase"), str):
+                            phases[key] = item["phase"]
+                        if key not in streamed:
                             content = item["content"]
                             if isinstance(content, list):
-                                for part in content:
-                                    if isinstance(part, dict) and "text" in part:
-                                        full_text += part["text"]
-                            elif isinstance(content, str):
-                                full_text += content
+                                text = "".join(
+                                    part["text"] for part in content if isinstance(part, dict) and "text" in part
+                                )
+                            else:
+                                text = content if isinstance(content, str) else ""
+                            texts[key] = text
 
                 except json.JSONDecodeError:
                     # Skip malformed JSON events
                     pass
 
-        return _CodexStreamReply(text=deltas or full_text, usage=usage)
+        if not texts:
+            return _CodexStreamReply(text="", usage=usage)
+        keys = list(texts)
+        reply_key = keys[_reply_message_index([phases.get(key) for key in keys])]
+        return _CodexStreamReply(text=texts[reply_key], usage=usage)
 
     async def cleanup(self) -> None:
         """Clean up HTTP sessions."""

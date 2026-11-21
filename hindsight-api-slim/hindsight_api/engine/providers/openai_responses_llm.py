@@ -15,7 +15,7 @@ reasoning and function tools coexist. This provider issues requests against
 - the flat ``reasoning_effort`` scalar → a ``reasoning={"effort": ...}`` object,
 - ``response_format`` → ``text={"format": {...}}``,
 
-and reads ``response.output_text``. No request carries tools: reflect's tool calls
+and reads the reply message (``_reply_text``). No request carries tools: reflect's tool calls
 are replies to a response schema (see ``tools_via_schema``).
 
 It is OpenAI-only (unlike the multi-vendor ``OpenAICompatibleLLM``, it carries no
@@ -44,6 +44,7 @@ from hindsight_api.engine.cache_affinity import apply_opencode_session
 from hindsight_api.engine.llm_interface import (
     LLMInterface,
     OutputTooLongError,
+    merge_extra_body,
 )
 from hindsight_api.engine.llm_trace import LLMResponseUsage, stash_response_usage
 from hindsight_api.engine.llm_transport import build_sdk_timeout, describe_llm_error
@@ -57,6 +58,7 @@ from hindsight_api.engine.providers.openai_compatible_llm import (
     _raise_provider_quota_defer,
     _strip_code_fences,
     _strip_reasoning_tags,
+    record_retried_attempt,
 )
 from hindsight_api.engine.remote_retry import jittered_backoff
 from hindsight_api.engine.response_models import TokenUsage
@@ -74,6 +76,28 @@ class RetryableResponsesError(Exception):
 
     ``_run_with_retries`` backs off and retries it like a connection error.
     """
+
+
+def _reply_message_index(phases: list[str | None]) -> int:
+    """Which of a response's assistant messages (at least one) is the reply, given each
+    one's ``phase``.
+
+    Codex-family models stream a ``commentary`` preamble before the ``final_answer``
+    message (#6347). Under a strict schema both are JSON, so joining them, as the SDK's
+    ``output_text`` does, is not a reply. Without phase labels the last message answers.
+    """
+    finals = [i for i, phase in enumerate(phases) if phase == "final_answer"]
+    return finals[-1] if finals else len(phases) - 1
+
+
+def _reply_text(response: Any) -> str:
+    """The text of the response's reply message (see ``_reply_message_index``)."""
+    messages = [item for item in (response.output or []) if getattr(item, "type", None) == "message"]
+    if len(messages) < 2:
+        # One message is the whole reply, and ``output_text`` is exactly its text.
+        return response.output_text or ""
+    reply = messages[_reply_message_index([getattr(m, "phase", None) for m in messages])]
+    return "".join(part.text for part in reply.content if getattr(part, "type", None) == "output_text")
 
 
 def _to_responses_content(content: Any, role: str | None) -> Any:
@@ -351,6 +375,7 @@ class OpenAIResponsesLLM(LLMInterface):
         """
         last_exception: Exception | None = None
         for attempt in range(max_retries + 1):
+            attempt_started = time.perf_counter()
             try:
                 async with attempt_context() if attempt_context is not None else nullcontext():
                     set_stage(f"llm.{self.provider}.{scope}.attempt={attempt + 1}/{max_retries + 1}")
@@ -391,6 +416,14 @@ class OpenAIResponsesLLM(LLMInterface):
                     f"attempt {attempt + 1}/{max_retries + 1}): {describe_llm_error(e)}"
                 )
                 if attempt < max_retries:
+                    record_retried_attempt(
+                        provider=self.provider,
+                        model=self.model,
+                        scope=scope,
+                        messages=params["input"],
+                        error=e,
+                        started=attempt_started,
+                    )
                     await asyncio.sleep(min(initial_backoff * (2**attempt), max_backoff))
                     continue
                 raise
@@ -458,9 +491,6 @@ class OpenAIResponsesLLM(LLMInterface):
             params["reasoning"] = {"effort": self.reasoning_effort}
         if self.openai_service_tier:
             params["service_tier"] = self.openai_service_tier
-        if self._config_extra_body:
-            params["extra_body"] = {**self._config_extra_body}
-
         # Structured output: strict grammar-enforced schema, or the soft
         # schema-in-prompt + json_object fallback.
         if response_format is not None and hasattr(response_format, "model_json_schema"):
@@ -478,6 +508,11 @@ class OpenAIResponsesLLM(LLMInterface):
                 params["input"] = _ensure_json_word_in_user_message(_inject_schema_into_input(input_items, schema))
                 params["text"] = {"format": {"type": "json_object"}}
 
+        # After the schema is set: a configured {"text": {"verbosity": ...}} or
+        # {"reasoning": {"summary": ...}} adds to Hindsight's object instead of replacing it (#6640).
+        if self._config_extra_body:
+            params["extra_body"] = merge_extra_body(params, self._config_extra_body)
+
         apply_bank_attribution(params)
         # opencode-go's /v1/responses requires x-opencode-session the same way
         # /v1/chat/completions does (#4071); the host check inside decides.
@@ -487,7 +522,7 @@ class OpenAIResponsesLLM(LLMInterface):
             self._raise_if_truncated(response)
             usage = self._extract_usage(response)
             duration = time.perf_counter() - start_time
-            content = _strip_reasoning_tags(response.output_text or "")
+            content = _strip_reasoning_tags(_reply_text(response))
 
             if response_format is not None:
                 json_data = json.loads(_strip_code_fences(content))

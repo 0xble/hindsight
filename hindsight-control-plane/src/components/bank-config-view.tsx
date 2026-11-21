@@ -4,6 +4,7 @@ import { useState, useEffect, useRef, useMemo, type ReactNode } from "react";
 import { useTranslations } from "next-intl";
 import { useBank } from "@/lib/bank-context";
 import { useFeatures } from "@/lib/features-context";
+import { LinkedKnowledgeBanksPicker } from "@/components/linked-knowledge-banks";
 import { client, type BankAliasEntry } from "@/lib/api";
 import { PreviewPromptButton } from "@/components/prompt-preview-dialog";
 import { TagFilterInput } from "@/components/tag-filter-input";
@@ -59,6 +60,7 @@ import {
   suggestedTags,
   textToScopes,
 } from "@/lib/observations-config";
+import { RECALL_FIELDS, recallSlice, type RecallEdits } from "@/lib/recall-config";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
@@ -120,6 +122,18 @@ type MCPEdits = {
   default_timezone: string | null;
 };
 
+// The Knowledge Banks section: what this bank links, and how reflect searches it.
+type KnowledgeEdits = {
+  // Knowledge banks reflect also searches; null = none linked.
+  knowledge_banks: string[] | null;
+  // How reflect searches them. Read from the overrides: null = inherit the server default.
+  reflect_kb_search_media_types: string[] | null;
+  reflect_kb_search_apply_tags: boolean | null;
+};
+
+const KB_MEDIA_TYPES = ["document", "image", "audio", "video", "text"] as const;
+const KB_SEARCH_FIELDS = ["reflect_kb_search_media_types", "reflect_kb_search_apply_tags"] as const;
+
 type GeminiSafetySetting = {
   category: string;
   threshold: string;
@@ -141,7 +155,7 @@ type DocStorageEdits = {
   store_document_text: boolean | null;
 };
 
-// Mental models and the knowledge pages backed by them. null = inherit the
+// Mental models and the pages backed by them. null = inherit the
 // server default.
 type MentalModelsEdits = {
   mental_model_min_refresh_interval_seconds: number | null;
@@ -156,10 +170,10 @@ type ReflectOptionsEdits = {
   reflect_search_mental_models_max_tokens: number | null;
 };
 
-// The server's built-in knowledge-page trigger (MemoryEngine.KNOWLEDGE_PAGE_DEFAULT_TRIGGER).
+// The server's built-in page trigger (MemoryEngine.PAGE_DEFAULT_TRIGGER).
 // The configured default merges over it, so the form starts from the pair to show
 // what a new page actually gets.
-const KNOWLEDGE_PAGE_BUILTIN_TRIGGER = {
+const PAGE_BUILTIN_TRIGGER = {
   mode: "delta",
   fact_types: ["observation"],
   exclude_mental_models: true,
@@ -167,24 +181,13 @@ const KNOWLEDGE_PAGE_BUILTIN_TRIGGER = {
 } as const;
 
 function effectivePageTrigger(configured: Record<string, any> | null | undefined): TriggerForm {
-  const merged: Record<string, any> = { ...KNOWLEDGE_PAGE_BUILTIN_TRIGGER, ...configured };
+  const merged: Record<string, any> = { ...PAGE_BUILTIN_TRIGGER, ...configured };
   // Same exclusivity rule as the server's merge: a configured cron replaces the
   // built-in refresh-after-consolidation.
   if (configured?.refresh_cron && configured.refresh_after_consolidation === undefined)
     merged.refresh_after_consolidation = false;
   return triggerFormFromTrigger(merged);
 }
-
-// Recall pipeline stages. null = inherit the server default (all four ship
-// enabled); explicit false switches that stage off for this bank, trading
-// recall breadth for latency. Semantic always runs — it is the baseline arm.
-type RecallEdits = {
-  enable_text_search: boolean | null;
-  enable_temporal_retrieval: boolean | null;
-  enable_graph_retrieval: boolean | null;
-  enable_reranking: boolean | null;
-  recall_prefer_observations: boolean | null;
-};
 
 // ─── Gemini safety settings catalogue ────────────────────────────────────────
 
@@ -281,16 +284,16 @@ function getMcpToolGroups(t: (key: string) => string): McpToolGroup[] {
     },
     { key: "tags", label: t("mcpGroupTags"), tools: ["list_tags"] },
     {
-      key: "knowledgeBase",
-      label: t("mcpGroupKnowledgeBase"),
+      key: "pages",
+      label: t("mcpGroupPages"),
       tools: [
-        "get_knowledge_base_tree",
-        "search_knowledge_base",
-        "get_knowledge_page",
-        "create_knowledge_folder",
-        "create_knowledge_page",
-        "update_knowledge_node",
-        "delete_knowledge_node",
+        "get_page_tree",
+        "search_pages",
+        "get_page",
+        "create_page_folder",
+        "create_page",
+        "update_page_node",
+        "delete_page_node",
       ],
     },
   ];
@@ -329,15 +332,32 @@ const MCP_ALL_TOOLS: string[] = [
   "get_operation",
   "cancel_operation",
   "list_tags",
-  "get_knowledge_base_tree",
-  "search_knowledge_base",
-  "get_knowledge_page",
-  "create_knowledge_folder",
-  "create_knowledge_page",
-  "update_knowledge_node",
-  "delete_knowledge_node",
+  "get_page_tree",
+  "search_pages",
+  "get_page",
+  "create_page_folder",
+  "create_page",
+  "update_page_node",
+  "delete_page_node",
 ];
 const ALL_TOOLS: string[] = MCP_ALL_TOOLS;
+
+// Old MCP tool names a stored allow-list may still hold; the server maps them to
+// the new names, so show them checked under the new name. Remove in 2.x.
+const MCP_RENAMED_TOOLS: Record<string, string> = {
+  get_knowledge_base_tree: "get_page_tree",
+  search_knowledge_base: "search_pages",
+  get_knowledge_page: "get_page",
+  create_knowledge_folder: "create_page_folder",
+  create_knowledge_page: "create_page",
+  update_knowledge_node: "update_page_node",
+  delete_knowledge_node: "delete_page_node",
+};
+
+function normalizeMcpTools(tools: string[] | null | undefined): string[] | null {
+  if (!tools) return null;
+  return [...new Set(tools.map((tool) => MCP_RENAMED_TOOLS[tool] ?? tool))];
+}
 
 // ─── Slice helpers ────────────────────────────────────────────────────────────
 
@@ -369,8 +389,19 @@ function strategiesSlice(config: Record<string, any>): StrategiesEdits {
 
 function mcpSlice(config: Record<string, any>, overrides: Record<string, any>): MCPEdits {
   return {
-    mcp_enabled_tools: config.mcp_enabled_tools ?? null,
+    mcp_enabled_tools: normalizeMcpTools(config.mcp_enabled_tools),
     default_timezone: overrides.default_timezone ?? null,
+  };
+}
+
+function knowledgeSlice(
+  config: Record<string, any>,
+  overrides: Record<string, any>
+): KnowledgeEdits {
+  return {
+    knowledge_banks: config.knowledge_banks?.length ? config.knowledge_banks : null,
+    reflect_kb_search_media_types: overrides.reflect_kb_search_media_types ?? null,
+    reflect_kb_search_apply_tags: overrides.reflect_kb_search_apply_tags ?? null,
   };
 }
 
@@ -444,16 +475,6 @@ function reflectOptionsSlice(overrides: Record<string, any>): ReflectOptionsEdit
   };
 }
 
-function recallSlice(overrides: Record<string, any>): RecallEdits {
-  return {
-    enable_text_search: overrides.enable_text_search ?? null,
-    enable_temporal_retrieval: overrides.enable_temporal_retrieval ?? null,
-    enable_graph_retrieval: overrides.enable_graph_retrieval ?? null,
-    enable_reranking: overrides.enable_reranking ?? null,
-    recall_prefer_observations: overrides.recall_prefer_observations ?? null,
-  };
-}
-
 const DEFAULT_PROFILE: ProfileData = {
   reflect_mission: "",
   disposition_skepticism: 3,
@@ -486,7 +507,7 @@ export function BankConfigView() {
   );
   const [reflectEdits, setReflectEdits] = useState<ProfileData>(DEFAULT_PROFILE);
   // Reflect's default options are edited in their own dialog and saved from
-  // there, apart from the section's Save — same as the knowledge-page trigger.
+  // there, apart from the section's Save — same as the page trigger.
   const [reflectOptionsOpen, setReflectOptionsOpen] = useState(false);
   const [reflectOptionsForm, setReflectOptionsForm] = useState<ReflectOptionsEdits>(
     reflectOptionsSlice({})
@@ -494,6 +515,7 @@ export function BankConfigView() {
   const [reflectOptionsSaving, setReflectOptionsSaving] = useState(false);
   const [reflectOptionsError, setReflectOptionsError] = useState<string | null>(null);
   const [mcpEdits, setMcpEdits] = useState<MCPEdits>(mcpSlice({}, {}));
+  const [knowledgeEdits, setKnowledgeEdits] = useState<KnowledgeEdits>(knowledgeSlice({}, {}));
   const [geminiEdits, setGeminiEdits] = useState<GeminiEdits>(geminiSlice({}));
   const [auditEdits, setAuditEdits] = useState<AuditEdits>(auditSlice({}));
   const [docStorageEdits, setDocStorageEdits] = useState<DocStorageEdits>(docStorageSlice({}));
@@ -501,7 +523,7 @@ export function BankConfigView() {
   const [mentalModelsEdits, setMentalModelsEdits] = useState<MentalModelsEdits>(
     mentalModelsSlice({})
   );
-  // The knowledge-page default trigger is edited in its own dialog and saved
+  // The page default trigger is edited in its own dialog and saved
   // from there, apart from the section's Save.
   const [pageTriggerOpen, setPageTriggerOpen] = useState(false);
   const [pageTriggerForm, setPageTriggerForm] = useState<TriggerForm>(() =>
@@ -515,6 +537,7 @@ export function BankConfigView() {
   const [observationsSaving, setObservationsSaving] = useState(false);
   const [reflectSaving, setReflectSaving] = useState(false);
   const [mcpSaving, setMcpSaving] = useState(false);
+  const [knowledgeSaving, setKnowledgeSaving] = useState(false);
   const [geminiSaving, setGeminiSaving] = useState(false);
   const [securityPrivacySaving, setSecurityPrivacySaving] = useState(false);
   const [recallSaving, setRecallSaving] = useState(false);
@@ -523,6 +546,7 @@ export function BankConfigView() {
   const [observationsError, setObservationsError] = useState<string | null>(null);
   const [reflectError, setReflectError] = useState<string | null>(null);
   const [mcpError, setMcpError] = useState<string | null>(null);
+  const [knowledgeError, setKnowledgeError] = useState<string | null>(null);
   const [geminiError, setGeminiError] = useState<string | null>(null);
   const [securityPrivacyError, setSecurityPrivacyError] = useState<string | null>(null);
   const [recallError, setRecallError] = useState<string | null>(null);
@@ -548,6 +572,11 @@ export function BankConfigView() {
   const mcpDirty = useMemo(
     () => JSON.stringify(mcpEdits) !== JSON.stringify(mcpSlice(baseConfig, baseOverrides)),
     [mcpEdits, baseConfig, baseOverrides]
+  );
+  const knowledgeDirty = useMemo(
+    () =>
+      JSON.stringify(knowledgeEdits) !== JSON.stringify(knowledgeSlice(baseConfig, baseOverrides)),
+    [knowledgeEdits, baseConfig, baseOverrides]
   );
   const geminiDirty = useMemo(
     () => JSON.stringify(geminiEdits) !== JSON.stringify(geminiSlice(baseConfig)),
@@ -597,6 +626,7 @@ export function BankConfigView() {
       setReflectEdits(prof);
       setReflectOptionsForm(reflectOptionsSlice(cfg));
       setMcpEdits(mcpSlice(cfg, overrides));
+      setKnowledgeEdits(knowledgeSlice(cfg, overrides));
       setGeminiEdits(geminiSlice(cfg));
       setAuditEdits(auditSlice(overrides));
       setDocStorageEdits(docStorageSlice(overrides));
@@ -720,6 +750,28 @@ export function BankConfigView() {
     }
   };
 
+  const saveKnowledge = async () => {
+    if (!bankId) return;
+    setKnowledgeSaving(true);
+    setKnowledgeError(null);
+    try {
+      await client.updateBankConfig(bankId, knowledgeEdits);
+      setBaseConfig((prev) => ({ ...prev, knowledge_banks: knowledgeEdits.knowledge_banks }));
+      setBaseOverrides((prev) => {
+        const next = { ...prev };
+        for (const field of KB_SEARCH_FIELDS) {
+          if (knowledgeEdits[field] === null) delete next[field];
+          else next[field] = knowledgeEdits[field];
+        }
+        return next;
+      });
+    } catch (err: any) {
+      setKnowledgeError(err.message || t("knowledgeFailedToSave"));
+    } finally {
+      setKnowledgeSaving(false);
+    }
+  };
+
   const saveGemini = async () => {
     if (!bankId) return;
     setGeminiSaving(true);
@@ -767,13 +819,7 @@ export function BankConfigView() {
       await client.updateBankConfig(bankId, { ...recallEdits });
       setBaseOverrides((prev) => {
         const next = { ...prev };
-        for (const key of [
-          "enable_text_search",
-          "enable_temporal_retrieval",
-          "enable_graph_retrieval",
-          "enable_reranking",
-          "recall_prefer_observations",
-        ] as const) {
+        for (const [key] of RECALL_FIELDS) {
           if (recallEdits[key] === null) delete next[key];
           else next[key] = recallEdits[key];
         }
@@ -809,7 +855,7 @@ export function BankConfigView() {
   };
 
   const openPageTrigger = () => {
-    setPageTriggerForm(effectivePageTrigger(baseConfig.knowledge_page_default_trigger));
+    setPageTriggerForm(effectivePageTrigger(baseConfig.page_default_trigger));
     setPageTriggerError(null);
     setPageTriggerOpen(true);
   };
@@ -826,12 +872,12 @@ export function BankConfigView() {
     setPageTriggerSaving(true);
     setPageTriggerError(null);
     try {
-      await client.updateBankConfig(bankId, { knowledge_page_default_trigger: trigger });
+      await client.updateBankConfig(bankId, { page_default_trigger: trigger });
       if (reset) {
         await loadAll();
       } else {
-        setBaseConfig((prev) => ({ ...prev, knowledge_page_default_trigger: trigger }));
-        setBaseOverrides((prev) => ({ ...prev, knowledge_page_default_trigger: trigger }));
+        setBaseConfig((prev) => ({ ...prev, page_default_trigger: trigger }));
+        setBaseOverrides((prev) => ({ ...prev, page_default_trigger: trigger }));
       }
       setPageTriggerOpen(false);
     } catch (err: any) {
@@ -1053,7 +1099,7 @@ export function BankConfigView() {
               <ReflectOptionsSummary options={reflectOptionsSlice(baseConfig)} />
             </div>
             <Button variant="outline" size="sm" className="shrink-0" onClick={openReflectOptions}>
-              {t("knowledgePageDefaultTriggerEdit")}
+              {t("pageDefaultTriggerEdit")}
             </Button>
           </div>
           <Dialog
@@ -1208,7 +1254,7 @@ export function BankConfigView() {
           />
         </ConfigSection>
 
-        {/* Mental Models & Knowledge Pages Section */}
+        {/* Mental Models & Pages Section */}
         <ConfigSection
           title={t("mentalModelsTitle")}
           description={t("mentalModelsDescription")}
@@ -1239,24 +1285,22 @@ export function BankConfigView() {
           <div className="px-6 py-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between sm:gap-6">
             <div className="min-w-0 space-y-2">
               <div>
-                <p className="text-sm font-medium">{t("knowledgePageDefaultTriggerLabel")}</p>
+                <p className="text-sm font-medium">{t("pageDefaultTriggerLabel")}</p>
                 <p className="text-xs text-muted-foreground mt-0.5">
-                  {t("knowledgePageDefaultTriggerDescription")}
+                  {t("pageDefaultTriggerDescription")}
                 </p>
               </div>
-              <TriggerSummary
-                form={effectivePageTrigger(baseConfig.knowledge_page_default_trigger)}
-              />
+              <TriggerSummary form={effectivePageTrigger(baseConfig.page_default_trigger)} />
             </div>
             <Button variant="outline" size="sm" className="shrink-0" onClick={openPageTrigger}>
-              {t("knowledgePageDefaultTriggerEdit")}
+              {t("pageDefaultTriggerEdit")}
             </Button>
           </div>
           <Dialog open={pageTriggerOpen} onOpenChange={(o) => !o && setPageTriggerOpen(false)}>
             <DialogContent className="sm:max-w-4xl max-h-[90vh] flex flex-col">
               <DialogHeader>
-                <DialogTitle>{t("knowledgePageDefaultTriggerDialogTitle")}</DialogTitle>
-                <DialogDescription>{t("knowledgePageDefaultTriggerDialogHint")}</DialogDescription>
+                <DialogTitle>{t("pageDefaultTriggerDialogTitle")}</DialogTitle>
+                <DialogDescription>{t("pageDefaultTriggerDialogHint")}</DialogDescription>
               </DialogHeader>
               <div className="flex-1 overflow-y-auto px-1.5 py-2">
                 <MentalModelTriggerFields value={pageTriggerForm} onChange={setPageTriggerForm} />
@@ -1269,7 +1313,7 @@ export function BankConfigView() {
               )}
               <DialogFooter className="sm:justify-between">
                 <div>
-                  {baseOverrides.knowledge_page_default_trigger && (
+                  {baseOverrides.page_default_trigger && (
                     <Button
                       variant="ghost"
                       onClick={() => savePageTrigger(true)}
@@ -1355,6 +1399,41 @@ export function BankConfigView() {
           )}
         </ConfigSection>
 
+        {/* Knowledge Banks Section — the knowledge banks reflect reads, and how it searches them.
+            Only when the feature is on: otherwise these fields are not ours to touch. */}
+        {features?.knowledge_banks && (
+          <ConfigSection
+            title={t("knowledgeSectionTitle")}
+            description={t("knowledgeSectionDescription")}
+            error={knowledgeError}
+            dirty={knowledgeDirty}
+            saving={knowledgeSaving}
+            onSave={saveKnowledge}
+          >
+            <FieldRow
+              label={t("linkedKnowledgeBanksLabel")}
+              description={t("linkedKnowledgeBanksDescription")}
+            >
+              <LinkedKnowledgeBanksPicker
+                value={knowledgeEdits.knowledge_banks ?? []}
+                onChange={(ids) =>
+                  setKnowledgeEdits((prev) => ({
+                    ...prev,
+                    knowledge_banks: ids.length ? ids : null,
+                  }))
+                }
+              />
+            </FieldRow>
+            {knowledgeEdits.knowledge_banks && (
+              <ReflectKbSearchRows
+                values={knowledgeEdits}
+                resolved={baseConfig}
+                onChange={(patch) => setKnowledgeEdits((prev) => ({ ...prev, ...patch }))}
+              />
+            )}
+          </ConfigSection>
+        )}
+
         {/* Security & Privacy Section — audit logging + document-text storage */}
         <ConfigSection
           title={t("securityPrivacyTitle")}
@@ -1437,15 +1516,7 @@ export function BankConfigView() {
           saving={recallSaving}
           onSave={saveRecall}
         >
-          {(
-            [
-              ["enable_text_search", "recallTextSearch"],
-              ["enable_temporal_retrieval", "recallTemporalRetrieval"],
-              ["enable_graph_retrieval", "recallGraphRetrieval"],
-              ["enable_reranking", "recallReranking"],
-              ["recall_prefer_observations", "recallPreferObservations"],
-            ] as const
-          ).map(([field, key]) => (
+          {RECALL_FIELDS.map(([field, key]) => (
             <FieldRow key={field} label={t(`${key}Label`)} description={t(`${key}Description`)}>
               {/* Tri-state: inherit the server default, or override per bank. */}
               <Select
@@ -1553,6 +1624,73 @@ function getExtractionModes(t: (key: string) => string): { value: string; label:
   ];
 }
 const INHERIT_SENTINEL = "__inherit__";
+
+type KbSearchEdits = Pick<KnowledgeEdits, (typeof KB_SEARCH_FIELDS)[number]>;
+
+/** How reflect searches the linked knowledge banks: each row inherits the server default until set. */
+function ReflectKbSearchRows({
+  values,
+  resolved,
+  onChange,
+}: {
+  values: KbSearchEdits;
+  resolved: Record<string, any>;
+  onChange: (patch: Partial<KbSearchEdits>) => void;
+}) {
+  const t = useTranslations("bankConfig");
+  const mediaTypes: string[] = values.reflect_kb_search_media_types ??
+    resolved.reflect_kb_search_media_types ?? [...KB_MEDIA_TYPES];
+  const toggleMediaType = (type: string, on: boolean) => {
+    const next = KB_MEDIA_TYPES.filter((m) => (m === type ? on : mediaTypes.includes(m)));
+    // Every type ticked is the same as no limit: clear the override rather than pin the list.
+    onChange({
+      reflect_kb_search_media_types: next.length === KB_MEDIA_TYPES.length ? null : next,
+    });
+  };
+  const triState = (field: "reflect_kb_search_apply_tags") => (
+    <Select
+      value={values[field] === null ? INHERIT_SENTINEL : String(values[field])}
+      onValueChange={(v) => onChange({ [field]: v === INHERIT_SENTINEL ? null : v === "true" })}
+    >
+      <SelectTrigger>
+        <SelectValue />
+      </SelectTrigger>
+      <SelectContent>
+        <SelectItem value={INHERIT_SENTINEL}>
+          {t("auditServerDefault", {
+            state: resolved[field] === false ? t("disabled") : t("enabled"),
+          })}
+        </SelectItem>
+        <SelectItem value="true">{t("enabled")}</SelectItem>
+        <SelectItem value="false">{t("disabled")}</SelectItem>
+      </SelectContent>
+    </Select>
+  );
+  return (
+    <>
+      <FieldRow
+        label={t("kbSearchMediaTypesLabel")}
+        description={t("kbSearchMediaTypesDescription")}
+      >
+        <div className="flex flex-wrap items-center gap-3 justify-end">
+          {KB_MEDIA_TYPES.map((type) => (
+            <label key={type} className="flex items-center gap-1.5 text-sm">
+              <Checkbox
+                checked={mediaTypes.includes(type)}
+                disabled={mediaTypes.length === 1 && mediaTypes.includes(type)}
+                onCheckedChange={(on) => toggleMediaType(type, on === true)}
+              />
+              {t(`kbMediaType_${type}`)}
+            </label>
+          ))}
+        </div>
+      </FieldRow>
+      <FieldRow label={t("kbSearchApplyTagsLabel")} description={t("kbSearchApplyTagsDescription")}>
+        {triState("reflect_kb_search_apply_tags")}
+      </FieldRow>
+    </>
+  );
+}
 
 function RetainStrategyForm({
   values,
@@ -1962,7 +2100,7 @@ function ToolSelector({
 
 // ─── ConfigSection ────────────────────────────────────────────────────────────
 
-function ConfigSection({
+export function ConfigSection({
   title,
   description,
   children,
@@ -2211,7 +2349,7 @@ function BankAliasRows({ bankId }: { bankId: string | null }) {
 
 // ─── FieldRow (2-column layout for number / select / boolean) ─────────────────
 
-function FieldRow({
+export function FieldRow({
   label,
   description,
   children,

@@ -74,7 +74,12 @@ class LocalRuntimeStatus:
     reason: str | None = None
 
 
-def _check_local_runtime() -> LocalRuntimeStatus:
+# What every mode imports in this process; local_embedded also needs the daemon manager.
+_CLIENT_MODULES = ("hindsight_client",)
+_LOCAL_RUNTIME_MODULES = (*_CLIENT_MODULES, "hindsight_embed.daemon_embed_manager")
+
+
+def _check_local_runtime(modules: tuple[str, ...] = _LOCAL_RUNTIME_MODULES) -> LocalRuntimeStatus:
     """Whether what local_embedded needs IN THIS PROCESS imports cleanly: an HTTP client and
     the daemon manager. Nothing else belongs here.
 
@@ -88,7 +93,7 @@ def _check_local_runtime() -> LocalRuntimeStatus:
     are declared in this plugin's pyproject and conflict with nothing.
     """
     try:
-        for module in ("hindsight_client", "hindsight_embed.daemon_embed_manager"):
+        for module in modules:
             importlib.import_module(module)
         return LocalRuntimeStatus(available=True)
     except Exception as exc:
@@ -107,7 +112,8 @@ def _local_runtime_hint(reason: str | None) -> str:
     if "no module named" in text and any(m in text for m in ("hindsight_client", "hindsight_embed")):
         return (
             " The plugin's own packages (hindsight-client, hindsight-embed) are missing from "
-            "this environment: run 'hermes pm repair' and restart Hermes to rebuild them. The Hindsight server itself is NOT needed here — it runs as a "
+            "this environment: run 'hermes pm repair', then 'hermes gateway restart' (restarting the app alone keeps "
+            "a running gateway on the old environment). The Hindsight server itself is NOT needed here — it runs as a "
             "separate process."
         )
     return ""
@@ -149,18 +155,34 @@ def _embed_scrubs_parent_env() -> bool:
         return False
 
 
+def _hermes_root() -> Path:
+    """The Hermes root that holds ``tools/``: honours HERMES_HOME (a profile home maps back to its
+    root) and the Windows default ``%LOCALAPPDATA%\\hermes`` (#6524). Hermes builds without
+    ``get_default_hermes_root`` fall back to ``~/.hermes``."""
+    try:
+        from hermes_constants import get_default_hermes_root
+
+        return Path(get_default_hermes_root())
+    except Exception:
+        return Path.home() / ".hermes"
+
+
 def _managed_uvx_dir(path: str) -> str | None:
     """Directory of the ``uvx`` Hermes installed for itself, when *path* has none.
 
     The daemon manager falls back to ``uvx hindsight-api`` when no server is installed, and a
-    package-manager Hermes keeps its uvx under ``~/.hermes/tools/uv-*/``, which is not always on
-    PATH (#5192). Only the helper's env gets it; the parent's PATH is left alone."""
+    package-manager Hermes keeps its uvx under ``<hermes root>/tools/uv-*/``, which is not always on
+    PATH (#5192). That root was hardcoded to ``~/.hermes`` until #6524, which missed HERMES_HOME
+    and Windows' ``%LOCALAPPDATA%\\hermes``. Only the helper's env gets it; the parent's PATH is
+    left alone."""
     if shutil.which("uvx", path=path):
         return None
     # The Docker image keeps its uv under the install root instead (/opt/hermes/tools, next to the
     # /opt/hermes/.venv this interpreter runs from) while HOME is /opt/data (#5580). Hermes' own
     # pm.install.uv_launcher would name it directly, but the plugin must not import pm.
-    for tools in (Path.home() / ".hermes" / "tools", Path(sys.prefix).parent / "tools"):
+    for tools in dict.fromkeys(
+        (_hermes_root() / "tools", Path.home() / ".hermes" / "tools", Path(sys.prefix).parent / "tools")
+    ):
         for candidate in sorted(tools.glob("uv-*"), reverse=True):
             if shutil.which("uvx", path=str(candidate)):
                 return str(candidate)
@@ -170,7 +192,9 @@ def _managed_uvx_dir(path: str) -> str | None:
 def _start_daemon_in_clean_child(config: dict[str, str], profile: str) -> bool:
     """Start the daemon from a short-lived child that never had our interpreter's PYTHONPATH.
 
-    Workaround for hindsight-embed <= 0.10.2, which copies ``os.environ`` into the daemon process.
+    Used for hindsight-embed <= 0.10.2, which copies ``os.environ`` into the daemon process, and on
+    any embed when uvx is reachable only through Hermes' managed copy, since this child's PATH is
+    the one place that copy is added (#6451).
     Hermes' package-manager install exports ``PYTHONPATH=<repo>:<its 3.14 generation>``
     (pm/environments.py), and the daemon usually runs through ``uvx hindsight-api`` on whatever
     Python uv picks. When those minor versions differ the server imports Hermes' pydantic and dies
@@ -196,6 +220,8 @@ def _start_daemon_in_clean_child(config: dict[str, str], profile: str) -> bool:
             capture_output=True,
             text=True,
             timeout=_DAEMON_START_TIMEOUT,
+            # A windowless Hermes on Windows would otherwise flash a console for the helper.
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
         )
     except (OSError, subprocess.SubprocessError) as exc:
         logger.warning("Could not start the Hindsight daemon helper for profile %r: %s", profile, exc)
@@ -242,7 +268,10 @@ def _start_daemon(config: dict[str, str], profile: str) -> str:
     from hindsight_embed import get_embed_manager
 
     manager = get_embed_manager()
-    if _embed_scrubs_parent_env():
+    # A scrubbing embed can start the daemon in-process, but only when uvx is already on PATH: the
+    # manager's uvx fallback resolves against this process's PATH, and the managed uvx only ever
+    # reaches the helper child's env (#6451).
+    if _embed_scrubs_parent_env() and not _managed_uvx_dir(os.environ.get("PATH", "")):
         started = manager.ensure_running(config, profile)
     else:
         started = manager.is_running(profile) or _start_daemon_in_clean_child(config, profile)
@@ -356,6 +385,7 @@ _PLUGIN_PROFILE_ENV_KEYS = frozenset(
         "HINDSIGHT_API_LOG_LEVEL",
         "HINDSIGHT_API_LLM_BASE_URL",
         "HINDSIGHT_EMBED_DAEMON_IDLE_TIMEOUT",
+        "HINDSIGHT_EMBED_API_DATABASE_URL",
     }
 )
 
@@ -395,7 +425,28 @@ def _build_embedded_profile_env(config: dict[str, Any], *, llm_api_key: str | No
         idle_timeout = os.environ.get("HINDSIGHT_IDLE_TIMEOUT")
     if idle_timeout is not None and idle_timeout != "":
         env_values["HINDSIGHT_EMBED_DAEMON_IDLE_TIMEOUT"] = str(_parse_int_setting(idle_timeout, _DEFAULT_IDLE_TIMEOUT))
+    if database_url := _embedded_database_url(config):
+        env_values["HINDSIGHT_EMBED_API_DATABASE_URL"] = database_url
     return env_values
+
+
+# Either name says where the daemon's database is; hindsight-embed before 1.2 honours only the first.
+_DATABASE_URL_KEYS = ("HINDSIGHT_EMBED_API_DATABASE_URL", "HINDSIGHT_API_DATABASE_URL")
+
+
+def _embedded_database_url(config: dict[str, Any]) -> str:
+    """The database the user pointed Hindsight at, from a scoped secret, else the profile env itself
+    (a URL set there by hand must survive a rewrite). Without it the daemon owns a pg0 of its own,
+    and starting that against a cluster that outlived the last daemon fails with "Instance already
+    running" on every restart (#6093). The process environment the daemon inherits anyway."""
+    for key in _DATABASE_URL_KEYS:
+        try:
+            if url := get_secret(key, ""):
+                return str(url)
+        except UnscopedSecretError:
+            pass
+    on_disk = _load_simple_env(_embedded_profile_env_path(config))
+    return next((url for key in _DATABASE_URL_KEYS if (url := on_disk.get(key))), "")
 
 
 def _secure_write_profile_env(profile_env: Path, content: str) -> None:

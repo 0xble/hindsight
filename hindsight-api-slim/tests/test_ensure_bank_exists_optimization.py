@@ -20,6 +20,7 @@ import pytest_asyncio
 from hindsight_api import RequestContext
 from hindsight_api.engine.db_utils import acquire_with_retry
 from hindsight_api.engine.memory_engine import MemoryEngine
+from hindsight_api.engine.response_models import ID_MAX_BYTES
 from hindsight_api.engine.retain import bank_utils
 from hindsight_api.extensions import CreateBankContext, OperationValidationError, ValidationResult
 
@@ -120,7 +121,7 @@ async def test_missing_bank_probes_once_then_inserts_once(
     validator = TrackingValidator()
     memory._operation_validator = validator
 
-    probes = spy_on(bank_utils, "bank_exists_on_conn" if on_conn else "bank_exists", bank_id, monkeypatch)
+    probes = spy_on(bank_utils, "bank_kind_on_conn" if on_conn else "bank_kind", bank_id, monkeypatch)
     inserts = spy_on(bank_utils, "create_bank_row_on_conn", bank_id, monkeypatch)
 
     async def ensure() -> bool:
@@ -166,13 +167,13 @@ async def test_validator_rejection_creates_no_row(
     "bad_id",
     # "é" is 2 bytes: 194 > 192. No NUL case: PG cannot encode 0x00 in text, so such an id fails
     # at the existence probe on every endpoint, before creation is ever reached.
-    ["", "é" * 97, "tab\tin-id", "line\nbreak", "_reserved"],
-    ids=["empty", "too-many-bytes", "tab", "newline", "underscore-prefix"],
+    ["", "é" * 97, "tab\tin-id", "line\nbreak", "_reserved", "team/standup"],
+    ids=["empty", "too-many-bytes", "tab", "newline", "underscore-prefix", "slash"],
 )
 async def test_invalid_new_bank_id_is_rejected_before_insert(
     memory: MemoryEngine, request_context: RequestContext, bad_id: str
 ) -> None:
-    """A new bank id that is empty, over the byte limit, has control characters or starts with `_` is a 400."""
+    """A new bank id that is empty, over the byte limit, has control characters or "/", or starts with `_` is a 400."""
     backend = await memory._get_backend()
     with pytest.raises(OperationValidationError) as exc_info:
         await memory._ensure_bank_exists(bad_id, request_context)
@@ -186,9 +187,9 @@ async def test_bank_id_limit_counts_bytes_and_spares_existing_banks(
 ) -> None:
     """Exactly the byte limit is accepted; a longer id that already exists stays usable."""
     at_limit = bank_name("x")
-    at_limit += "é" * ((bank_utils.BANK_ID_MAX_BYTES - len(at_limit.encode())) // 2)
-    at_limit += "a" * (bank_utils.BANK_ID_MAX_BYTES - len(at_limit.encode()))
-    assert len(at_limit.encode()) == bank_utils.BANK_ID_MAX_BYTES
+    at_limit += "é" * ((ID_MAX_BYTES - len(at_limit.encode())) // 2)
+    at_limit += "a" * (ID_MAX_BYTES - len(at_limit.encode()))
+    assert len(at_limit.encode()) == ID_MAX_BYTES
     assert await memory._ensure_bank_exists(at_limit, request_context) is True
 
     # A bank created before the limit existed: inserted directly, bypassing the check.
@@ -260,7 +261,7 @@ class _CreationRace:
 
         self._monkeypatch.setattr(self.memory, "_apply_default_bank_template", spy_apply)
 
-        real_probe = bank_utils.bank_exists
+        real_probe = bank_utils.bank_kind
 
         async def spy_probe(pool, b_id):
             result = await real_probe(pool, b_id)
@@ -268,7 +269,7 @@ class _CreationRace:
                 self.caller2_probed.set()
             return result
 
-        self._monkeypatch.setattr(bank_utils, "bank_exists", spy_probe)
+        self._monkeypatch.setattr(bank_utils, "bank_kind", spy_probe)
 
         race = self
 

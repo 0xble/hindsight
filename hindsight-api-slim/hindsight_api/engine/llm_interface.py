@@ -14,9 +14,28 @@ from datetime import datetime
 from enum import StrEnum
 from typing import Any, Callable, Self
 
-from .response_models import LLMCallResult
+from .response_models import BatchRequest, BatchResult, BatchStatus, BatchSubmission, LLMCallResult
 
 logger = logging.getLogger(__name__)
+
+
+def merge_extra_body(params: dict[str, Any], extra_body: dict[str, Any]) -> dict[str, Any]:
+    """Return ``extra_body`` with each key that is a dict on both sides deep-merged into ``params``' value.
+
+    Operator extra-body params override the request, but only key by key: a configured
+    ``{"output_config": {"effort": "low"}}`` must add ``effort`` next to the
+    ``output_config.format`` schema Hindsight set, not replace the whole object and drop the
+    schema (#6640). On a conflicting leaf the operator's value still wins. The result can be
+    sent as the SDK's ``extra_body`` (which replaces top-level keys) or ``update``-ed into a raw body.
+    """
+    merged: dict[str, Any] = {}
+    for key, value in extra_body.items():
+        base = params.get(key)
+        if isinstance(base, dict) and isinstance(value, dict):
+            merged[key] = {**base, **merge_extra_body(base, value)}
+        else:
+            merged[key] = value
+    return merged
 
 
 class LLMToolChoiceMode(StrEnum):
@@ -271,6 +290,18 @@ class LLMInterface(ABC):
 
     # ── Prompt prefix caching (optional, per-provider) ─────────────────────────
 
+    def caches_marked_prefix(self) -> bool:
+        """Whether this provider caches the prompt up to a ``cache_control`` marker on a
+        content part, and keeps that cache only while the response schema stays the same.
+
+        Claude does both (Anthropic API, and Bedrock or Vertex through LiteLLM). For such a
+        provider a tool conversation holds every turn to one reply shape and marks the end of
+        what the next turn will resend (see ``LLMProvider.call_with_tools``): a reflect's
+        turns then read the conversation so far back from the cache instead of resending it at
+        the full input rate.
+        """
+        return False
+
     def supports_prompt_caching(self) -> bool:
         """Whether this provider can cache a reusable prompt prefix.
 
@@ -308,55 +339,32 @@ class LLMInterface(ABC):
         """
         return None
 
-    async def submit_batch(
-        self,
-        requests: list[dict[str, Any]],
-        endpoint: str = "/v1/chat/completions",
-        completion_window: str = "24h",
-    ) -> dict[str, Any]:
-        """
-        Submit a batch of requests to the provider's batch API.
+    async def submit_batch(self, requests: list[BatchRequest]) -> BatchSubmission:
+        """Submit requests to the provider's batch API.
 
-        Args:
-            requests: List of request dicts in JSONL format (custom_id, method, url, body)
-            endpoint: API endpoint for the batch (e.g., "/v1/chat/completions")
-            completion_window: Completion window (e.g., "24h")
-
-        Returns:
-            Dict with batch metadata: {"batch_id": str, "status": str, ...}
+        Called only when ``supports_batch_api()`` is True. Each request's ``body`` is an
+        OpenAI chat-completions body; a provider with another wire format translates it.
 
         Raises:
-            NotImplementedError: If provider doesn't support batch API
+            NotImplementedError: If the provider has no batch API.
         """
         raise NotImplementedError(f"Batch API not supported for provider: {self.provider}")
 
-    async def get_batch_status(self, batch_id: str) -> dict[str, Any]:
-        """
-        Get the status of a batch job.
-
-        Args:
-            batch_id: Batch identifier returned from submit_batch
-
-        Returns:
-            Dict with status info: {"batch_id": str, "status": str, "completed_at": str, ...}
+    async def get_batch_status(self, batch_id: str) -> BatchStatus:
+        """Report where a submitted batch is (see ``BatchStatus.status`` for the values).
 
         Raises:
-            NotImplementedError: If provider doesn't support batch API
+            NotImplementedError: If the provider has no batch API.
         """
         raise NotImplementedError(f"Batch API not supported for provider: {self.provider}")
 
-    async def retrieve_batch_results(self, batch_id: str) -> list[dict[str, Any]]:
-        """
-        Retrieve completed batch results.
+    async def retrieve_batch_results(self, batch_id: str) -> list[BatchResult]:
+        """Download the results of a completed batch, one per request (matched by custom_id).
 
-        Args:
-            batch_id: Batch identifier returned from submit_batch
-
-        Returns:
-            List of result dicts (one per request, matched by custom_id)
+        A request that failed is returned with ``error`` set, not dropped.
 
         Raises:
-            NotImplementedError: If provider doesn't support batch API
+            NotImplementedError: If the provider has no batch API.
         """
         raise NotImplementedError(f"Batch API not supported for provider: {self.provider}")
 

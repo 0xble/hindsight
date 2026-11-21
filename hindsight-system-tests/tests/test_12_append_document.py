@@ -38,6 +38,14 @@ async def _fact_texts(client, bank: str, document_id: str | None = None) -> list
 
 @pytest.fixture
 async def appended(client, llm, bank_id, settled):
+    # Declared first because rules match in order: an append chunks the stored turn and the
+    # new one as ONE text, so the tail chunk holds both turns (#6293).
+    llm.on_step("extract_facts", contains=["Berlin", "cello"]).returns(
+        extracted(
+            fact("Alice moved to Berlin", who="Alice", entities=["Alice", "Berlin"]),
+            fact("Alice plays cello", who="Alice", entities=["Alice", "cello"]),
+        )
+    )
     llm.on_step("extract_facts", contains="Berlin").returns(
         extracted(fact("Alice moved to Berlin", who="Alice", entities=["Alice", "Berlin"]))
     )
@@ -150,11 +158,10 @@ async def appended_under_a_strategy(client, llm, bank_id, settled):
     berlin = fact("Alice moved to Berlin", who="Alice", entities=["Alice", "Berlin"])
     cello = fact("Alice plays cello", who="Alice", entities=["Alice", "cello"])
 
-    # Declared first because rules match in order, and the two chunkings differ:
-    # the append extracts each turn as its own content item, while a reprocess
-    # re-reads the stored document as one. Without this rule the joined chunk
-    # would match the Berlin rule alone and the cello fact would vanish into what
-    # looks like a product bug.
+    # Declared first because rules match in order: both the append and a reprocess
+    # chunk the stored document as one text (#6293), so the joined chunk holds both
+    # turns. Without this rule it would match the Berlin rule alone and the cello
+    # fact would vanish into what looks like a product bug.
     llm.on_step("extract_facts", contains=[STRATEGY_MARKER, "Berlin", "cello"]).returns(extracted(berlin, cello))
     llm.on_step("extract_facts", contains=[STRATEGY_MARKER, "Berlin"]).returns(extracted(berlin))
     llm.on_step("extract_facts", contains=[STRATEGY_MARKER, "cello"]).returns(extracted(cello))
@@ -298,3 +305,41 @@ async def test_an_append_without_a_document_is_refused_up_front(client, bank_id,
 
     operations = await client.operations.list_operations(bank_id)
     assert operations.total == 0
+
+
+# ---------------------------------------------------------------------------
+# A document owns its tags, and an append is a new turn, not a restatement of them.
+# An append that left `tags` out used to clear the document's tags, and the relabel of
+# its surviving memories then cleared theirs too, though their text never changed (#6551).
+# ---------------------------------------------------------------------------
+
+TAGS = ["pin:x", "topic:one"]
+
+
+@pytest.mark.parametrize("retain_async", [False, True])
+async def test_an_append_without_tags_keeps_the_document_tags(client, llm, bank_id, settled, retain_async):
+    """Both paths: the queued worker must read the document's tags as they are when it runs."""
+    llm.on_step("extract_facts", contains=["Berlin", "cello"]).returns(
+        extracted(
+            fact("Alice moved to Berlin", who="Alice", entities=["Alice", "Berlin"]),
+            fact("Alice plays cello", who="Alice", entities=["Alice", "cello"]),
+        )
+    )
+    llm.on_step("extract_facts", contains="Berlin").returns(
+        extracted(fact("Alice moved to Berlin", who="Alice", entities=["Alice", "Berlin"]))
+    )
+    llm.on_step("consolidate").returns(consolidation())
+
+    await client.aretain(bank_id=bank_id, content=FIRST, document_id=DOCUMENT_ID, tags=TAGS)
+    await settled(bank_id)
+    await client.aretain(
+        bank_id=bank_id, content=SECOND, document_id=DOCUMENT_ID, update_mode="append", retain_async=retain_async
+    )
+    await settled(bank_id)
+
+    document = await client.documents.get_document(bank_id, DOCUMENT_ID)
+    assert sorted(document.tags or []) == TAGS
+    memories = await client.memory.list_memories(bank_id, document_id=DOCUMENT_ID, limit=100)
+    valid = [item for item in memories.items if item.state == "valid"]
+    assert sorted(item.text for item in valid) == sorted([BERLIN, CELLO])
+    assert all(sorted(item.tags or []) == TAGS for item in valid), [(item.text, item.tags) for item in valid]

@@ -13,6 +13,7 @@ Tests cover:
 import asyncio
 import json
 import os
+import time
 import uuid
 from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -607,6 +608,53 @@ class TestWorkerPoller:
         assert run.task_id == my_claims[0].operation_id and run.queued_at == my_claims[0].queued_at
 
     @pytest.mark.asyncio
+    async def test_claimed_task_takes_its_bank_and_operation_from_the_row(self, pool, backend, clean_operations):
+        """The job runs for the bank, operation and schema its row was claimed from.
+
+        The row is the one source of truth; the payload only carries the task's arguments.
+        """
+        from hindsight_api.worker import WorkerPoller
+        from hindsight_api.worker.poller import ClaimedTask
+
+        bank_id = f"test-worker-{uuid.uuid4().hex[:8]}"
+        await _ensure_bank(pool, bank_id)
+        op_id = uuid.uuid4()
+        payload = {
+            "type": "test_task",
+            "bank_id": "some-other-bank",
+            "operation_id": str(uuid.uuid4()),
+            "_schema": "some_other_schema",
+        }
+        await pool.execute(
+            """
+            INSERT INTO async_operations (operation_id, bank_id, operation_type, status, task_payload)
+            VALUES ($1, $2, 'test', 'pending', $3::jsonb)
+            """,
+            op_id,
+            bank_id,
+            json.dumps(payload),
+        )
+
+        executed: list[dict] = []
+
+        async def executor(task_dict):
+            executed.append(dict(task_dict))
+
+        poller = WorkerPoller(backend=backend, worker_id="test-worker-row", executor=executor)
+        claimed = [c for c in await poller.claim_batch() if c.operation_id == str(op_id)]
+        assert len(claimed) == 1
+        assert claimed[0].task_dict["bank_id"] == bank_id
+        assert claimed[0].task_dict["operation_id"] == str(op_id)
+
+        # A task claimed from the default schema (None) runs without the payload's schema.
+        await poller._execute_task_inner(
+            ClaimedTask(operation_id=str(op_id), task_dict=claimed[0].task_dict, schema=None)
+        )
+        assert len(executed) == 1
+        assert "_schema" not in executed[0]
+        assert executed[0]["bank_id"] == bank_id
+
+    @pytest.mark.asyncio
     async def test_claim_batch_cannot_see_rows_outside_this_files_schema(self, pool, clean_operations):
         """Rows in ``public`` are invisible here, so they can never crowd out our claims (#3963).
 
@@ -1052,6 +1100,74 @@ class TestWorkerPoller:
             assert metadata["append_conflict_defers"] == expected_count
 
     @pytest.mark.asyncio
+    async def test_a_store_shed_defers_counts_up_and_fails_at_the_cap(
+        self, pool, backend, clean_operations, monkeypatch
+    ):
+        """A retain the store sheds stays pending with its retries untouched (#6528) — until the
+        store has refused it so many times it is stuck, not busy, and then it fails saying so (#6529).
+        """
+        from hindsight_api.worker import WorkerPoller, poller as poller_module
+        from hindsight_api.worker.poller import ClaimedTask
+
+        monkeypatch.setattr(poller_module, "_STORE_BACKPRESSURE_MAX_DEFERS", 2)
+        bank_id = f"test-worker-{uuid.uuid4().hex[:8]}"
+        op_id = uuid.uuid4()
+        payload = json.dumps({"type": "batch_retain", "operation_id": str(op_id), "bank_id": bank_id})
+        await _ensure_bank(pool, bank_id)
+
+        async def shedding_executor(task_dict):
+            raise RuntimeError("StatusCode.UNAVAILABLE: writes are shed while the fold catches up")
+
+        notified: list[str] = []
+
+        async def on_failure_the_engine_never_saw(task_dict, schema, message, stage):
+            notified.append(stage)
+
+        poller = WorkerPoller(
+            backend=backend,
+            worker_id="test-worker-1",
+            executor=shedding_executor,
+            on_wall_timeout=on_failure_the_engine_never_saw,
+        )
+
+        async def run_once():
+            await pool.execute(
+                """
+                INSERT INTO async_operations
+                    (operation_id, bank_id, operation_type, status, task_payload, worker_id, claimed_at, retry_count)
+                VALUES ($1, $2, 'retain', 'processing', $3::jsonb, 'test-worker-1', now(), 0)
+                ON CONFLICT (operation_id) DO UPDATE
+                    SET status = 'processing', worker_id = 'test-worker-1', claimed_at = now()
+                """,
+                op_id,
+                bank_id,
+                payload,
+            )
+            await poller.execute_task(ClaimedTask(operation_id=str(op_id), task_dict=json.loads(payload), schema=None))
+            assert await poller.wait_for_active_tasks(timeout=5.0), "Task did not complete within timeout"
+            return await pool.fetchrow(
+                "SELECT status, retry_count, error_message, result_metadata FROM async_operations "
+                "WHERE operation_id = $1",
+                op_id,
+            )
+
+        for expected_count in (1, 2):
+            row = await run_once()
+            assert row["status"] == "pending", "a store shed must be deferred, not failed"
+            assert row["retry_count"] == 0, "a store shed must not spend a retry"
+            metadata = row["result_metadata"]
+            if isinstance(metadata, str):
+                metadata = json.loads(metadata)
+            assert metadata["store_backpressure_defers"] == expected_count
+
+        row = await run_once()
+        assert row["status"] == "failed", "a store that never accepts the write must fail the task"
+        assert "kept shedding" in row["error_message"]
+        # The engine never saw the failure, so its notifications (consolidation webhook, failed
+        # refresh record) fire from here — once, and as a temporary failure that pauses nothing.
+        assert notified == ["store_backpressure.backoff"]
+
+    @pytest.mark.asyncio
     async def test_deferred_task_not_picked_up_until_exec_date(self, pool, backend, clean_operations):
         """A deferred task is invisible to claim_batch until next_retry_at <= NOW()."""
         from datetime import datetime, timedelta, timezone
@@ -1279,6 +1395,7 @@ class TestWorkerPoller:
         from datetime import UTC, datetime, timedelta
 
         from hindsight_api.engine.llm_interface import ProviderRateLimitResetError
+        from hindsight_api.models import RequestContext
         from hindsight_api.worker.exceptions import DeferOperation, RetryTaskAt
 
         retry_at = (datetime.now(UTC) + timedelta(hours=5)).replace(microsecond=0)
@@ -1287,12 +1404,15 @@ class TestWorkerPoller:
             raise ProviderRateLimitResetError(retry_at=retry_at, message="quota resets later")
 
         monkeypatch.setattr(memory, "_handle_batch_retain", quota_limited_retain)
+        # A retain job only runs for a bank that exists: one for a missing bank is skipped (#6344).
+        bank_id = f"test-provider-quota-defer-{uuid.uuid4().hex[:8]}"
+        await memory.ensure_bank_profile(bank_id, request_context=RequestContext(internal=True))
 
         with pytest.raises(DeferOperation) as exc_info:
             await memory.execute_task(
                 {
                     "type": "batch_retain",
-                    "bank_id": "test-provider-quota-defer",
+                    "bank_id": bank_id,
                     "contents": [{"content": "x"}],
                 }
             )
@@ -2446,6 +2566,42 @@ class TestTaskReleaseOnStop:
         )
         assert row["status"] == "completed"
         assert row["retry_count"] == 0, "a completed task must not be charged a retry"
+
+    @pytest.mark.asyncio
+    async def test_drain_budget_counts_from_begin_shutdown(self, pool, backend, clean_operations):
+        """The drain clock starts at the signal, not when the teardown gets round to it (#6021).
+
+        In the API, uvicorn drains HTTP before the lifespan teardown calls shutdown_graceful;
+        that time must come out of the drain budget, or release lands after the grace period.
+        """
+        from hindsight_api.worker import WorkerPoller
+
+        bank_id = f"test-worker-{uuid.uuid4().hex[:8]}"
+        await _ensure_bank(pool, bank_id)
+        op_id = await self._insert_pending(pool, bank_id)
+
+        started = asyncio.Event()
+
+        async def never_ending_executor(task_dict):
+            started.set()
+            await asyncio.Event().wait()
+
+        poller = WorkerPoller(backend=backend, worker_id="release-worker", executor=never_ending_executor)
+        task = await self._claim_ours(poller, op_id)
+        await poller.execute_task(task)
+        await asyncio.wait_for(started.wait(), timeout=5)
+
+        poller.begin_shutdown()
+        assert poller.is_shutdown, "the signal must stop intake at once"
+        await asyncio.sleep(2.0)  # the HTTP drain, already as long as the budget below
+
+        t0 = time.monotonic()
+        await poller.shutdown_graceful(timeout=2.0)
+        assert time.monotonic() - t0 < 1.5, "the drain must not restart its clock at teardown"
+
+        row = await pool.fetchrow("SELECT status, worker_id FROM async_operations WHERE operation_id = $1", op_id)
+        assert row["status"] == "pending"
+        assert row["worker_id"] is None
 
     @pytest.mark.asyncio
     async def test_shutdown_does_not_touch_other_workers(self, pool, backend, clean_operations):
@@ -6431,3 +6587,24 @@ async def test_finished_task_wakes_the_idle_poll_at_once():
 
     poller._shutdown.set()
     await asyncio.wait_for(polling, timeout=1)
+
+
+def test_sigterm_stops_poller_intake_then_runs_previous_handler():
+    """The API's SIGTERM stops the embedded poller's claims before uvicorn's own drain (#6021)."""
+    import signal
+
+    from hindsight_api.api.http import _stop_claiming_on_sigterm
+
+    server_calls: list[int] = []
+    original = signal.signal(signal.SIGTERM, lambda signum, frame: server_calls.append(signum))
+    loop = asyncio.new_event_loop()
+    try:
+        poller = MagicMock()
+        _stop_claiming_on_sigterm(poller, loop)
+        signal.raise_signal(signal.SIGTERM)
+        loop.run_until_complete(asyncio.sleep(0))
+        poller.begin_shutdown.assert_called_once_with()
+        assert server_calls == [signal.SIGTERM], "uvicorn's handler must still run"
+    finally:
+        signal.signal(signal.SIGTERM, original)
+        loop.close()

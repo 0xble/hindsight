@@ -33,6 +33,23 @@ SettleFn = Callable[[str], Awaitable[None]]
 BANK_PREFIX = "systest-"
 
 
+def pytest_addoption(parser: pytest.Parser) -> None:
+    # Accept `-n` and ignore it. A shell or agent that exports `PYTEST_ADDOPTS=-n 3` to tame the
+    # api-slim suite otherwise aborts this one with "unrecognized arguments: -n": pytest-xdist is
+    # not installed here, and running in parallel would be wrong anyway, since every worker would
+    # start its own server on the one fixed pg0 port. `_addoption` because pytest reserves
+    # lowercase short flags for itself; it is the same call pytest-xdist makes to register `-n`.
+    parser.getgroup("system-tests")._addoption("-n", dest="ignored_numprocesses", default=None)
+
+
+def pytest_configure(config: pytest.Config) -> None:
+    if config.getoption("ignored_numprocesses") is not None:
+        config.issue_config_time_warning(
+            pytest.PytestConfigWarning("-n is ignored: the system tests run serially against one server."),
+            stacklevel=2,
+        )
+
+
 @pytest.fixture(scope="session")
 def stubs() -> Stubs:
     return Stubs()
@@ -92,6 +109,32 @@ def typesafe_server(stub_server, tmp_path_factory: pytest.TempPathFactory) -> It
     server.stop()
 
 
+#: The query-side model of ``split_embeddings_server``. The stub's embeddings are
+#: model-agnostic, so both sides land in one vector space, as a real pairing must.
+QUERY_EMBEDDINGS_MODEL = "stub-embeddings-query"
+
+
+@pytest.fixture(scope="session")
+def split_embeddings_server(stub_server, tmp_path_factory: pytest.TempPathFactory) -> Iterator[object]:
+    """A server whose recall queries embed with their own model (#6078, Constella).
+
+    Only the query side is specialized: it inherits the main embeddings config and
+    overrides the model, so every other setting is the default server's. HTTP only, like
+    ``decision_model_server``: the servers share one database.
+    """
+    log_path: Path = tmp_path_factory.mktemp("split-embeddings-server") / "server.log"
+    server = start_hindsight_server(
+        stub_url=stub_server.url,
+        log_path=log_path,
+        extra_env={
+            "HINDSIGHT_API_QUERY_EMBEDDINGS_OPENAI_MODEL": QUERY_EMBEDDINGS_MODEL,
+            "HINDSIGHT_API_WORKER_ENABLED": "false",
+        },
+    )
+    yield server
+    server.stop()
+
+
 @pytest.fixture(scope="session")
 def decision_model_server(stub_server, tmp_path_factory: pytest.TempPathFactory) -> Iterator[object]:
     """A server with a decision model set up, pointed at the stub: recall ranks with it.
@@ -116,6 +159,25 @@ def decision_model_server(stub_server, tmp_path_factory: pytest.TempPathFactory)
 
 
 @pytest.fixture(scope="session")
+def knowledge_reranker_server(stub_server, tmp_path_factory: pytest.TempPathFactory) -> Iterator[object]:
+    """A server whose knowledge-bank search reranks with the stub's Cohere-style /rerank, pictures
+    included. Only knowledge search: recall keeps its own reranker. HTTP only, as ``decision_model_server``."""
+    log_path: Path = tmp_path_factory.mktemp("knowledge-reranker-server") / "server.log"
+    server = start_hindsight_server(
+        stub_url=stub_server.url,
+        log_path=log_path,
+        extra_env={
+            "HINDSIGHT_API_KB_RERANKER_URL": f"{stub_server.url}/rerank",
+            "HINDSIGHT_API_KB_RERANKER_API_KEY": "stub-key",
+            "HINDSIGHT_API_KB_RERANKER_MODEL": "stub-reranker",
+            "HINDSIGHT_API_WORKER_ENABLED": "false",
+        },
+    )
+    yield server
+    server.stop()
+
+
+@pytest.fixture(scope="session")
 def decision_model_prune_server(stub_server, tmp_path_factory: pytest.TempPathFactory) -> Iterator[object]:
     """``decision_model_server`` with recall's prune flag on. A process of its own for the
     same reason: the flag is server-level."""
@@ -128,6 +190,26 @@ def decision_model_prune_server(stub_server, tmp_path_factory: pytest.TempPathFa
             "HINDSIGHT_API_DECISION_MODEL_API_KEY": "stub-key",
             "HINDSIGHT_API_DECISION_MODEL_BASE_URL": stub_server.url,
             "HINDSIGHT_API_RECALL_DECISION_MODEL_PRUNE": "true",
+            "HINDSIGHT_API_WORKER_ENABLED": "false",
+        },
+    )
+    yield server
+    server.stop()
+
+
+@pytest.fixture(scope="session")
+def decision_model_fallback_server(stub_server, tmp_path_factory: pytest.TempPathFactory) -> Iterator[object]:
+    """``decision_model_server`` with recall's fallback on: a recall the decision model fails
+    is ranked by the configured reranker (the stub's /rerank). Server-level, so a process."""
+    log_path: Path = tmp_path_factory.mktemp("decision-model-fallback-server") / "server.log"
+    server = start_hindsight_server(
+        stub_url=stub_server.url,
+        log_path=log_path,
+        extra_env={
+            "HINDSIGHT_API_DECISION_MODEL_PROVIDER": "typesafe",
+            "HINDSIGHT_API_DECISION_MODEL_API_KEY": "stub-key",
+            "HINDSIGHT_API_DECISION_MODEL_BASE_URL": stub_server.url,
+            "HINDSIGHT_API_RECALL_DECISION_MODEL_FALLBACK": "true",
             "HINDSIGHT_API_WORKER_ENABLED": "false",
         },
     )
@@ -173,6 +255,27 @@ def wif_server(stub_server, tmp_path_factory: pytest.TempPathFactory) -> Iterato
 
 
 @pytest.fixture(scope="session")
+def custom_llm_server(stub_server, tmp_path_factory: pytest.TempPathFactory) -> Iterator[object]:
+    """A server whose LLM is an operator's own class, named by its import path.
+
+    The LLM provider is server-level, hence a process. HTTP only, for the same reason
+    as ``typesafe_server``: a worker here would run the other servers' queued work
+    with this server's provider.
+    """
+    server = start_hindsight_server(
+        stub_url=stub_server.url,
+        log_path=tmp_path_factory.mktemp("custom-llm-server") / "server.log",
+        extra_env={
+            "HINDSIGHT_API_LLM_PROVIDER": "marked_llm:MarkedOpenAILLM",
+            "PYTHONPATH": str(Path(__file__).resolve().parent.parent / "server_extensions"),
+            "HINDSIGHT_API_WORKER_ENABLED": "false",
+        },
+    )
+    yield server
+    server.stop()
+
+
+@pytest.fixture(scope="session")
 def logged_out_primary_server(stub_server, tmp_path_factory: pytest.TempPathFactory) -> Iterator[object]:
     """A failover chain whose primary is a ChatGPT plan with no sign-in (issue #6095).
 
@@ -188,6 +291,34 @@ def logged_out_primary_server(stub_server, tmp_path_factory: pytest.TempPathFact
             "HINDSIGHT_API_LLM_PROVIDER": "chatgpt",
             "HINDSIGHT_API_LLM_MODEL": "gpt-5",
             "HINDSIGHT_API_LLM_CHATGPT_HOME": str(run_dir / "chatgpt"),
+            "HINDSIGHT_API_LLM_STRATEGY": '{"mode": "failover"}',
+            "HINDSIGHT_API_LLM_1_PROVIDER": "openai",
+            "HINDSIGHT_API_LLM_1_MODEL": "stub-model",
+            "HINDSIGHT_API_LLM_1_API_KEY": "stub-key",
+            "HINDSIGHT_API_LLM_1_BASE_URL": f"{stub_server.url}/v1",
+            "HINDSIGHT_API_WORKER_ENABLED": "false",
+        },
+    )
+    yield server
+    server.stop()
+
+
+@pytest.fixture(scope="session")
+def echo_primary_server(stub_server, tmp_path_factory: pytest.TempPathFactory) -> Iterator[object]:
+    """A failover chain of two stub models, with no retry budget.
+
+    The story answers member 0 (``stub-echo``) with the JSON schema instead of the facts,
+    as Gemma 4 on vLLM sometimes does, and member 1 (``stub-model``) with the facts. With
+    retries at 0 there is no re-ask, so only the chain can save the document. The chain
+    is server-level, hence a process; HTTP only, for the same reason as ``wif_server``.
+    """
+    run_dir = tmp_path_factory.mktemp("echo-primary-server")
+    server = start_hindsight_server(
+        stub_url=stub_server.url,
+        log_path=run_dir / "server.log",
+        extra_env={
+            "HINDSIGHT_API_LLM_MODEL": "stub-echo",
+            "HINDSIGHT_API_LLM_MAX_RETRIES": "0",
             "HINDSIGHT_API_LLM_STRATEGY": '{"mode": "failover"}',
             "HINDSIGHT_API_LLM_1_PROVIDER": "openai",
             "HINDSIGHT_API_LLM_1_MODEL": "stub-model",
@@ -218,6 +349,49 @@ def scoped_server(stub_server, tmp_path_factory: pytest.TempPathFactory) -> Iter
     )
     yield server
     server.stop()
+
+
+#: The schema of the publication-rules server. Its own, because the hook it tests runs in
+#: the worker: on the shared schema the default server's worker (no validator) claimed its
+#: refreshes about half the time and stored the page the validator would have refused.
+PUBLISHING_SCHEMA = "systest_publishing"
+
+
+@pytest.fixture(scope="session")
+def publishing_server(stub_server, tmp_path_factory: pytest.TempPathFactory) -> Iterator[object]:
+    """A server whose operation validator refuses mental-model pages that break a rule.
+
+    The validator (``server_extensions/publication_rules_validator.py``) is server-level, so
+    it costs a process of its own. Session-scoped and started lazily, like ``typesafe_server``.
+    """
+    log_path: Path = tmp_path_factory.mktemp("publishing-server") / "server.log"
+    server = start_hindsight_server(
+        stub_url=stub_server.url,
+        log_path=log_path,
+        extra_env={
+            "HINDSIGHT_API_DATABASE_SCHEMA": PUBLISHING_SCHEMA,
+            "HINDSIGHT_API_OPERATION_VALIDATOR_EXTENSION": "publication_rules_validator:PublicationRules",
+            "PYTHONPATH": str(Path(__file__).resolve().parent.parent / "server_extensions"),
+        },
+    )
+    yield server
+    server.stop()
+
+
+@pytest.fixture
+async def publishing_client(publishing_server) -> AsyncIterator[Hindsight]:
+    client = Hindsight(base_url=publishing_server.url)
+    yield client
+    await client.aclose()
+
+
+@pytest.fixture
+async def publishing_bank(publishing_client: Hindsight) -> AsyncIterator[str]:
+    """A bank of this test's own on ``publishing_server``, deleted when the test ends."""
+    name = f"{BANK_PREFIX}{uuid.uuid4().hex[:12]}"
+    yield name
+    with contextlib.suppress(Exception):
+        await publishing_client.banks.delete_bank(name)
 
 
 @pytest.fixture(scope="session")
@@ -379,8 +553,22 @@ async def wif_client(wif_server) -> AsyncIterator[Hindsight]:
 
 
 @pytest.fixture
+async def custom_llm_client(custom_llm_server) -> AsyncIterator[Hindsight]:
+    client = Hindsight(base_url=custom_llm_server.url)
+    yield client
+    await client.aclose()
+
+
+@pytest.fixture
 async def logged_out_primary_client(logged_out_primary_server) -> AsyncIterator[Hindsight]:
     client = Hindsight(base_url=logged_out_primary_server.url)
+    yield client
+    await client.aclose()
+
+
+@pytest.fixture
+async def echo_primary_client(echo_primary_server) -> AsyncIterator[Hindsight]:
+    client = Hindsight(base_url=echo_primary_server.url)
     yield client
     await client.aclose()
 
@@ -426,8 +614,29 @@ async def typesafe_client(typesafe_server) -> AsyncIterator[Hindsight]:
 
 
 @pytest.fixture
+async def split_embeddings_client(split_embeddings_server) -> AsyncIterator[Hindsight]:
+    client = Hindsight(base_url=split_embeddings_server.url)
+    yield client
+    await client.aclose()
+
+
+@pytest.fixture
 async def decision_model_client(decision_model_server) -> AsyncIterator[Hindsight]:
     client = Hindsight(base_url=decision_model_server.url)
+    yield client
+    await client.aclose()
+
+
+@pytest.fixture
+async def knowledge_reranker_client(knowledge_reranker_server) -> AsyncIterator[Hindsight]:
+    client = Hindsight(base_url=knowledge_reranker_server.url)
+    yield client
+    await client.aclose()
+
+
+@pytest.fixture
+async def decision_model_fallback_client(decision_model_fallback_server) -> AsyncIterator[Hindsight]:
+    client = Hindsight(base_url=decision_model_fallback_server.url)
     yield client
     await client.aclose()
 

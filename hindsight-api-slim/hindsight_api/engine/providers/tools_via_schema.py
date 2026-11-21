@@ -36,6 +36,10 @@ def _closed(schema: dict[str, Any]) -> dict[str, Any]:
     """The strict subset every schema-enforcing API accepts: each object closed, each property
     required, a property the tool left optional made nullable (and dropped from the reply).
 
+    Nullable is written ``anyOf: [<prop>, {"type": "null"}]``, not ``"type": [<type>, "null"]``:
+    MiniMax answers a type list with HTTP 400 (#6321) and Anthropic refuses one beside
+    ``items`` (#6305). Every other structured call already sends the ``anyOf`` form.
+
     No string bounds are added: under xgrammar a bounded string admits no escape sequence,
     so a markdown page could not hold a single line break.
     """
@@ -47,7 +51,7 @@ def _closed(schema: dict[str, Any]) -> dict[str, Any]:
                 required = set(node.get("required") or [])
                 for name, prop in node["properties"].items():
                     if name not in required and isinstance(prop, dict) and isinstance(prop.get("type"), str):
-                        prop["type"] = [prop["type"], "null"]
+                        node["properties"][name] = {"anyOf": [prop, {"type": "null"}]}
                 node["required"] = list(node["properties"])
                 node["additionalProperties"] = False
             for value in node.values():
@@ -129,14 +133,31 @@ def forced_tool(tools: list[dict[str, Any]], tool_choice: LLMToolChoice) -> dict
     return matches[0]
 
 
-def turn_request(tools: list[dict[str, Any]], tool_choice: LLMToolChoice) -> str:
-    """The user turn that asks for this turn's call in words."""
+def turn_request(tools: list[dict[str, Any]], tool_choice: LLMToolChoice, *, as_call: bool = False) -> str:
+    """The user turn that asks for this turn's call in words.
+
+    ``as_call`` asks a forced turn for the free turn's ``{"call": ...}`` shape, for a reply held
+    to that shared schema (see ``with_cached_turn_request``).
+    """
     if tool_choice.mode is LLMToolChoiceMode.NAMED:
         function = _function(forced_tool(tools, tool_choice))
         purpose = (function.get("description") or "").split(". ")[0].strip().rstrip(".")
+        if as_call:
+            return (
+                f"Call `{function['name']}` now{f' ({purpose})' if purpose else ''}. Reply with one JSON object, "
+                f'{{"call": {{"name": "{function["name"]}", "arguments": {{...}}}}}}.'
+            )
         return (
             f"Call `{function['name']}` now{f' ({purpose})' if purpose else ''}. "
             "Reply with only its arguments, as one JSON object."
+        )
+    # Held to the shared schema, a free turn's reply may name any declared function, so the
+    # ones this turn allows are named here (reflect leaves ``done`` out of its free turns).
+    if as_call:
+        names = ", ".join(f"`{_function(t)['name']}`" for t in tools)
+        return (
+            f"Decide your next step: call exactly ONE of the functions this turn allows ({names}). "
+            'Reply with one JSON object, {"call": {"name": <function name>, "arguments": {...}}}.'
         )
     return (
         "Decide your next step: call exactly ONE of the declared functions. Reply with one JSON object, "
@@ -169,6 +190,43 @@ def calls_from_reply(content: str | None, tools: list[dict[str, Any]], tool_choi
     else:
         arguments = {k: v for k, v in arguments.items() if v is not None}
     return [LLMToolCall(id=f"call_{name}_{uuid.uuid4().hex[:12]}", name=name, arguments=arguments)]
+
+
+def reply_violation(content: str | None, calls: list[LLMToolCall], tools: list[dict[str, Any]]) -> str | None:
+    """How a reply fails to be a call, in words the model can correct; ``None`` if it is one.
+
+    Only the schema keeps a reply in shape, and not every endpoint enforces one (Ollama Cloud
+    does not; Gemini ignores ``additionalProperties``). Unchecked, a call whose arguments are
+    not there reached the agent as a successful call: ``done`` with its answer beside the
+    name (``{"call": {"name": "done", "answer": ...}}``, #6420) failed reflect as "no
+    answer", and arguments sent as a string (#6302) as "requires a query".
+
+    Only the call's shape is checked, not each argument against the tool's schema: a tool's
+    ``required`` holds fields the agent does without (``reason`` is a debugging note, the cited
+    ids default to none), required so an enforcing endpoint fills them. Re-asking for those cost
+    a non-enforcing endpoint a call a turn; a missing argument the agent needs is still the
+    tool's own error, which the model reads as the call's result.
+    """
+    if not calls:
+        return 'the reply names no function; reply as {"call": {"name": <function name>, "arguments": {...}}}'
+    call = calls[0]
+    tool = next((t for t in tools if _function(t).get("name") == call.name), None)
+    if tool is None:
+        allowed = ", ".join(f"`{_function(t).get('name')}`" for t in tools)
+        return f"`{call.name}` can't be called on this turn; call one of {allowed}"
+    if set(call.arguments) == {"_raw"}:
+        try:
+            json.loads(content or "")
+        except json.JSONDecodeError:
+            return None  # JSON that does not parse: the caller's repair judges it (#5272)
+        return f'the arguments of `{call.name}` must be one JSON object, under "arguments"'
+    declared = set((_function(tool).get("parameters") or {}).get("properties") or {})
+    if declared and call.arguments and not declared & set(call.arguments):
+        return (
+            f"the arguments of `{call.name}` are its parameters ({', '.join(sorted(declared))}); "
+            f"the reply has none of them, only {', '.join(sorted(call.arguments))}"
+        )
+    return None
 
 
 def _unwrapped(reply: Any, name: str) -> Any:
@@ -219,6 +277,40 @@ def schema_format(held: ResponseSchema) -> type[SchemaFormat]:
     return type(held.name, (SchemaFormat,), {"schema": held.schema})
 
 
+def native_call_reply(response_format: Any, tool_calls: Any) -> str | None:
+    """A tool turn answered with a native call, as the reply the schema asked for.
+
+    The turn sends no ``tools``, but it describes the functions and asks for one by name,
+    and some models answer that with a native call whatever the request declares: gpt-oss
+    did on every forced reflect step, on Bedrock and on Ollama (#6520), leaving ``content``
+    empty. The call is the answer in another envelope, so it is read as the free-turn shape
+    ``{"call": {"name", "arguments"}}`` — which ``calls_from_reply`` reads on a named turn too
+    — and judged by ``reply_violation`` like any other reply.
+
+    ``None`` for any call that is not a tool turn's, or with no call: the caller's own
+    empty-content handling stands. Takes OpenAI-shaped objects (SDK, LiteLLM) and Ollama's
+    dicts, whose arguments arrive already parsed.
+
+    Used by the providers that can serve gpt-oss: OpenAI-compatible (Ollama included) and
+    LiteLLM (Bedrock). GitHub Copilot answers through an agent session with no tool-call field,
+    and xAI's typed reply parses none; neither serves a model seen doing this.
+    """
+    if not (isinstance(response_format, type) and issubclass(response_format, SchemaFormat)) or not tool_calls:
+        return None
+    first = tool_calls[0]
+    function = first.get("function") if isinstance(first, dict) else getattr(first, "function", None)
+    name = function.get("name") if isinstance(function, dict) else getattr(function, "name", None)
+    arguments = function.get("arguments") if isinstance(function, dict) else getattr(function, "arguments", None)
+    if not name:
+        return None
+    if isinstance(arguments, str):
+        try:
+            arguments = json.loads(arguments)
+        except json.JSONDecodeError:
+            pass  # rides as a string: reply_violation asks for one JSON object
+    return json.dumps({"call": {"name": name, "arguments": arguments}}, ensure_ascii=False)
+
+
 def _declarations(tools: list[dict[str, Any]]) -> str:
     functions = [{k: v for k, v in _function(t).items() if k in ("name", "description", "parameters")} for t in tools]
     return "## Functions\n\nYou act by calling these functions:\n\n" + json.dumps(
@@ -226,12 +318,24 @@ def _declarations(tools: list[dict[str, Any]]) -> str:
     )
 
 
-def as_text_messages(messages: list[dict[str, Any]], tools: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def as_text_messages(
+    messages: list[dict[str, Any]], tools: list[dict[str, Any]], *, keep_parts: bool = False
+) -> list[dict[str, Any]]:
     """The conversation as plain role/content turns, with the functions declared in the system prompt.
 
     An earlier call is the assistant's reply as it was written (``{"call": {...}}``); its result
-    is a user turn naming the function. Turns are not merged, so the prefix of a longer
-    conversation renders to the prefix of its text.
+    is a user turn naming the function.
+
+    Back-to-back user turns are joined into one: a tool result followed by the next request,
+    the question followed by the first request, or several results of one reply. OpenAI takes
+    two user turns in a row, but the chat template of many open models (Gemma's, under
+    llama.cpp or vLLM) refuses them with "Conversation roles must alternate", so every reflect
+    failed on its first call there (#6349). A turn is only ever joined onto the end of the one
+    before it, so the prefix of a longer conversation still renders to the prefix of its text.
+
+    ``keep_parts`` joins them as parts instead of text, for a provider that caches up to a
+    marked part: a result the previous turn sent (and cached) then stays the same part when a
+    later turn joins a request after it, as the closing ``done`` request is.
     """
     names: dict[str, str] = {}
     out: list[dict[str, Any]] = []
@@ -260,9 +364,55 @@ def as_text_messages(messages: list[dict[str, Any]], tools: list[dict[str, Any]]
             out.append({"role": "user", "content": f"Result of `{name}`:\n{message.get('content') or ''}"})
         else:
             out.append({k: v for k, v in message.items() if k in ("role", "content")})
+    out = _joined_user_turns(out, keep_parts=keep_parts)
     declarations = _declarations(tools)
     if out and out[0].get("role") == "system":
         out[0] = {"role": "system", "content": f"{out[0].get('content') or ''}\n\n{declarations}"}
     else:
         out.insert(0, {"role": "system", "content": declarations})
     return out
+
+
+def with_cached_turn_request(messages: list[dict[str, Any]], request: str) -> list[dict[str, Any]]:
+    """The text conversation with this turn's request added, and a cache marker before it.
+
+    For a provider that caches up to a ``cache_control`` part (``caches_marked_prefix``). The
+    marker goes on the end of what the next turn sends again; the request, which the next turn
+    does not resend, rides as a part of its own after it. Joined into the last result as text
+    (``as_text_messages``), the request changed that turn's text on the next call, so no cache
+    was ever read back.
+    """
+    *head, last = messages
+    if last.get("role") == "system":
+        return [*messages, {"role": "user", "content": request}]
+    parts = [*_as_parts(last.get("content"))]
+    parts[-1] = {**parts[-1], "cache_control": {"type": "ephemeral"}}
+    if last.get("role") == "user":
+        return [*head, {**last, "content": [*parts, {"type": "text", "text": request}]}]
+    return [*head, {**last, "content": parts}, {"role": "user", "content": request}]
+
+
+def _joined_user_turns(messages: list[dict[str, Any]], *, keep_parts: bool = False) -> list[dict[str, Any]]:
+    out: list[dict[str, Any]] = []
+    for message in messages:
+        if out and message.get("role") == "user" and out[-1].get("role") == "user":
+            first, second = out[-1].get("content"), message.get("content")
+            if keep_parts:
+                first, second = _as_parts(first), _as_parts(second)
+            out[-1] = {"role": "user", "content": _joined(first, second)}
+        else:
+            out.append(message)
+    return out
+
+
+def _joined(first: Any, second: Any) -> Any:
+    """Two turns' content as one: text joined by a blank line, part lists (images) concatenated."""
+    if isinstance(first, str) and isinstance(second, str):
+        return f"{first}\n\n{second}"
+    return [*_as_parts(first), *_as_parts(second)]
+
+
+def _as_parts(content: Any) -> list[Any]:
+    if isinstance(content, list):
+        return content
+    return [{"type": "text", "text": content or ""}]

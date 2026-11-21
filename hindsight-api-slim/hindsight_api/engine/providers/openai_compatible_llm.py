@@ -28,6 +28,7 @@ import time
 from contextlib import AbstractAsyncContextManager, nullcontext
 from datetime import UTC, datetime, timedelta
 from email.utils import parsedate_to_datetime
+from types import SimpleNamespace
 from typing import Any, Callable, Literal
 from urllib.parse import parse_qs, urlparse, urlunparse
 
@@ -59,13 +60,30 @@ from hindsight_api.engine.llm_transport import (
 from hindsight_api.engine.llm_wrapper import parse_llm_json
 from hindsight_api.engine.providers.llm_debug import dump_request_on_4xx
 from hindsight_api.engine.providers.openai_compatible_headers import with_openai_compatible_user_agent
+from hindsight_api.engine.providers.tools_via_schema import native_call_reply
 from hindsight_api.engine.remote_retry import jittered_backoff
-from hindsight_api.engine.response_models import TokenUsage
+from hindsight_api.engine.response_models import (
+    BatchRequest,
+    BatchRequestCounts,
+    BatchResult,
+    BatchStatus,
+    BatchSubmission,
+    TokenUsage,
+)
 from hindsight_api.engine.structured_output import provider_json_schema, strict_json_schema
 from hindsight_api.metrics import get_metrics_collector
 from hindsight_api.worker.stage import set_stage
 
 from ..response_models import LLMCallResult
+
+# The line that introduces the schema pasted into the prompt on the soft path. It was "You
+# must respond with valid JSON matching this schema:", and Gemma 4 on vLLM, writing retain
+# unconstrained, sometimes answered with the schema itself instead of the facts: 6 of 2,278
+# retain chunks. Worded as a description the answer must not repeat, 0 of 1,615.
+_SCHEMA_INSTRUCTION = (
+    "Respond with one JSON object holding your answer, shaped as this JSON Schema describes. "
+    "The schema is a description, not the answer: never repeat it."
+)
 
 logger = logging.getLogger(__name__)
 
@@ -73,6 +91,7 @@ logger = logging.getLogger(__name__)
 DEFAULT_LLM_SEED = 4242
 JSON_MODE_USER_HINT = "Return valid json only."
 DEFAULT_VERIFICATION_MAX_COMPLETION_TOKENS = 512
+OPENAI_BATCH_ENDPOINT: Literal["/v1/chat/completions"] = "/v1/chat/completions"
 
 
 def _validate_ollama_num_ctx(value: Any) -> int | None:
@@ -383,10 +402,10 @@ def record_retried_attempt(
     model: str,
     scope: str,
     messages: list[dict[str, Any]],
-    error: ProviderResponseError,
+    error: BaseException,
     started: float,
 ) -> None:
-    """Trace an attempt that came back unusable and is about to be retried.
+    """Trace an attempt that failed (an unusable reply, a timeout, a dropped connection) and is about to be retried.
 
     The final failure is traced by the wrapper, but a retried attempt otherwise leaves
     only a log line: it was still billed (often for reasoning tokens), and counting
@@ -395,6 +414,9 @@ def record_retried_attempt(
     from hindsight_api.tracing import get_span_recorder
 
     usage = current_response_usage()
+    # Consumed here: a later attempt that dies before any reply (a timeout) would
+    # otherwise attach this attempt's tokens again and count them twice.
+    stash_response_usage(None)
     duration = time.perf_counter() - started
     get_metrics_collector().record_llm_call(
         provider=provider,
@@ -419,7 +441,7 @@ def record_retried_attempt(
         thoughts_tokens=usage.thoughts_tokens if usage else 0,
         duration=duration,
         error=error,
-        served_by=error.served_by,
+        served_by=getattr(error, "served_by", None),
     )
 
 
@@ -428,7 +450,9 @@ def _is_openrouter(provider: str, base_url: str | None) -> bool:
     return provider == "openrouter" or urlparse(base_url or "").hostname == "openrouter.ai"
 
 
-def _content_or_error(response: Any, *, provider: str, model: str, scope: str) -> tuple[str, Any]:
+def _content_or_error(
+    response: Any, *, provider: str, model: str, scope: str, response_format: Any = None
+) -> tuple[str, Any]:
     """Extract message.content, turning provider shape issues into useful errors.
 
     Raises ``OutputTooLongError`` on a token-limit truncation and
@@ -468,6 +492,9 @@ def _content_or_error(response: Any, *, provider: str, model: str, scope: str) -
     content = _message_content(message)
     if content is None or content == "":
         tool_calls = _message_tool_calls(message)
+        native = native_call_reply(response_format, tool_calls)
+        if native is not None:
+            return native, choice
         refusal = _message_refusal(message)
         retryable = finish_reason not in {"content_filter"}
         raise ProviderResponseError(
@@ -573,6 +600,57 @@ def visible_token_usage(response: Any) -> TokenUsage:
     )
 
 
+def batch_result_from_chat_completion(custom_id: str, body: dict[str, Any] | None, error: Any = None) -> BatchResult:
+    """One batch output line, given as an OpenAI chat-completion ``body`` (or an ``error``), as a BatchResult.
+
+    Shared by the providers whose batch output is OpenAI-shaped. A line whose body is
+    an error response (non-2xx, no choices) is a failed request, not an empty answer.
+    """
+    if error:
+        return BatchResult(custom_id=custom_id, error=str(error))
+    body = body or {}
+    choices = body.get("choices") or []
+    if not choices and body.get("error"):
+        return BatchResult(custom_id=custom_id, error=str(body["error"]))
+    content = (choices[0].get("message") or {}).get("content") if choices else None
+    usage = TokenUsage()
+    if body.get("usage"):
+        # The same usage block a live call returns, read the same way (cached and reasoning tokens included).
+        usage_obj = json.loads(json.dumps(body["usage"]), object_hook=lambda d: SimpleNamespace(**d))
+        usage = visible_token_usage(SimpleNamespace(usage=usage_obj))
+    return BatchResult(custom_id=custom_id, content=content, usage=usage)
+
+
+_TEXT_PART_TYPES = ("text", "input_text")
+
+
+def _content_text(content: Any) -> str:
+    """The text of a message, whether its content is a string or a list of parts."""
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        return " ".join(p.get("text", "") for p in content if isinstance(p, dict) and p.get("type") in _TEXT_PART_TYPES)
+    return ""
+
+
+def _prepend_text(content: Any, text: str) -> Any:
+    """``text`` put in front of a message's text, keeping any image/file parts.
+
+    A part list (multimodal) gets it in its first text part, or in a new text part when
+    the message is images only.
+    """
+    if isinstance(content, str):
+        return f"{text}\n\n{content}"
+    parts = list(content)
+    for i, part in enumerate(parts):
+        if isinstance(part, dict) and part.get("type") in _TEXT_PART_TYPES:
+            parts[i] = {**part, "text": f"{text}\n\n{part.get('text', '')}"}
+            return parts
+    # Responses-API parts are typed input_*; chat parts are plain.
+    responses_shape = any(isinstance(p, dict) and str(p.get("type", "")).startswith("input_") for p in parts)
+    return [{"type": "input_text" if responses_shape else "text", "text": text}, *parts]
+
+
 def _ensure_json_word_in_user_message(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Some OpenAI-compatible gateways require 'json' in a user message for json_object mode."""
 
@@ -580,17 +658,21 @@ def _ensure_json_word_in_user_message(messages: list[dict[str, Any]]) -> list[di
     user_indexes = [
         index
         for index, message in enumerate(normalized)
-        if message.get("role") == "user" and isinstance(message.get("content"), str)
+        # A multimodal turn (a retained image) counts too. When only string turns
+        # counted, an image-only conversation got the hint as a new user turn after the
+        # image one, and strict chat templates refuse two user turns in a row with
+        # "Conversation roles must alternate" (#6349).
+        if message.get("role") == "user" and isinstance(message.get("content"), (str, list))
     ]
     if not user_indexes:
         normalized.append({"role": "user", "content": JSON_MODE_USER_HINT})
         return normalized
 
-    if any("json" in normalized[index]["content"] for index in user_indexes):
+    if any("json" in _content_text(normalized[index]["content"]) for index in user_indexes):
         return normalized
 
     last_user = user_indexes[-1]
-    normalized[last_user]["content"] = f"{JSON_MODE_USER_HINT}\n\n{normalized[last_user]['content']}"
+    normalized[last_user]["content"] = _prepend_text(normalized[last_user]["content"], JSON_MODE_USER_HINT)
     return normalized
 
 
@@ -1320,9 +1402,14 @@ class OpenAICompatibleLLM(LLMInterface):
                     },
                 }
             else:
-                # Soft enforcement: add schema to prompt and use json_object mode
+                # Soft enforcement: the schema in the prompt, plus json_object, or, with
+                # ENV_LLM_OPENAI_COMPATIBLE_ENFORCE_SCHEMA, the schema enforced by the backend.
+                # The prompt keeps the schema either way: a grammar forces only the required
+                # fields, and without the text Gemma 4 never wrote the optional ones it is not
+                # told about (event dates on 0 of 390 facts, 252 of 402 with the text).
+                enforce = schema is not None and self._supports_json_mode(scope) and self._enforces_schema()
                 if schema is not None:
-                    schema_msg = f"\n\nYou must respond with valid JSON matching this schema:\n{json.dumps(schema, indent=2, ensure_ascii=False)}"
+                    schema_msg = f"\n\n{_SCHEMA_INSTRUCTION}\n{json.dumps(schema, indent=2, ensure_ascii=False)}"
 
                     if call_params["messages"] and call_params["messages"][0].get("role") == "system":
                         first_msg = call_params["messages"][0]
@@ -1332,7 +1419,12 @@ class OpenAICompatibleLLM(LLMInterface):
                         first_msg = call_params["messages"][0]
                         if isinstance(first_msg, dict) and isinstance(first_msg.get("content"), str):
                             first_msg["content"] = schema_msg + "\n\n" + first_msg["content"]
-                if self._supports_json_mode():
+                if enforce:
+                    call_params["response_format"] = {
+                        "type": "json_schema",
+                        "json_schema": {"name": "response", "strict": False, "schema": schema},
+                    }
+                elif self._supports_json_mode(scope):
                     call_params["messages"] = _ensure_json_word_in_user_message(call_params["messages"])
                     call_params["response_format"] = {"type": "json_object"}
 
@@ -1359,6 +1451,7 @@ class OpenAICompatibleLLM(LLMInterface):
         last_exception = None
 
         for attempt in range(max_retries + 1):
+            attempt_started = time.perf_counter()
             # Surface attempt count in worker stage so JSON-schema retry loops
             # are visible from logs (small models on strict structured output
             # often loop here). Cheap no-op outside worker context.
@@ -1376,6 +1469,7 @@ class OpenAICompatibleLLM(LLMInterface):
                         provider=self.provider,
                         model=self.model,
                         scope=scope,
+                        response_format=response_format,
                     )
 
                     # Strip reasoning model thinking tags (closed and unclosed).
@@ -1453,6 +1547,7 @@ class OpenAICompatibleLLM(LLMInterface):
                         provider=self.provider,
                         model=self.model,
                         scope=scope,
+                        response_format=response_format,
                     )
 
                     # Free-form (non-structured) output also leaks reasoning tags:
@@ -1541,6 +1636,14 @@ class OpenAICompatibleLLM(LLMInterface):
                 )
                 logger.warning(f"Connection error (HTTP {status_code}), attempt {attempt + 1}: {describe_llm_error(e)}")
                 if attempt < max_retries:
+                    record_retried_attempt(
+                        provider=self.provider,
+                        model=self.model,
+                        scope=scope,
+                        messages=messages,
+                        error=e,
+                        started=attempt_started,
+                    )
                     backoff = min(initial_backoff * (2**attempt), max_backoff)
                     await asyncio.sleep(backoff)
                     continue
@@ -1640,7 +1743,7 @@ class OpenAICompatibleLLM(LLMInterface):
                         scope=scope,
                         messages=messages,
                         error=e,
-                        started=start_time,
+                        started=attempt_started,
                     )
                     logger.warning(
                         f"Provider response error ({self.provider}/{self.model}, scope={scope}, "
@@ -1743,6 +1846,7 @@ class OpenAICompatibleLLM(LLMInterface):
 
         session = self._ollama_http.get()
         for attempt in range(max_retries + 1):
+            attempt_started = time.perf_counter()
             try:
                 async with attempt_context() if attempt_context is not None else nullcontext():
                     set_stage(f"llm.ollama_native.{scope}.attempt={attempt + 1}/{max_retries + 1}")
@@ -1764,6 +1868,8 @@ class OpenAICompatibleLLM(LLMInterface):
                     )
                 )
                 content = result.get("message", {}).get("content", "")
+                if not content:
+                    content = native_call_reply(response_format, result.get("message", {}).get("tool_calls")) or ""
 
                 # Same case as the OpenAI-compatible path, different key: Ollama
                 # reports a token cap as done_reason "length". Raised ahead of the
@@ -1902,7 +2008,7 @@ class OpenAICompatibleLLM(LLMInterface):
                         scope=scope,
                         messages=messages,
                         error=e,
-                        started=start_time,
+                        started=attempt_started,
                     )
                     logger.warning(f"Ollama response error (attempt {attempt + 1}/{max_retries + 1}): {e}")
                     backoff = min(initial_backoff * (2**attempt), max_backoff)
@@ -1928,6 +2034,14 @@ class OpenAICompatibleLLM(LLMInterface):
                 last_exception = e
                 if attempt < max_retries:
                     logger.warning(f"Ollama connection error (attempt {attempt + 1}/{max_retries + 1}): {e}")
+                    record_retried_attempt(
+                        provider=self.provider,
+                        model=self.model,
+                        scope=scope,
+                        messages=messages,
+                        error=e,
+                        started=attempt_started,
+                    )
                     backoff = min(initial_backoff * (2**attempt), max_backoff)
                     await asyncio.sleep(backoff)
                     continue
@@ -1957,11 +2071,19 @@ class OpenAICompatibleLLM(LLMInterface):
         """
         return self.provider != "deepseek"
 
-    def _supports_json_mode(self) -> bool:
+    def _enforces_schema(self) -> bool:
+        """Whether the soft path asks the backend to enforce the schema rather than json_object."""
+        from hindsight_api.config import get_config
+
+        return get_config().llm_openai_compatible_enforce_schema
+
+    def _supports_json_mode(self, scope: str) -> bool:
         """Whether to send ``json_object`` on the soft path, or the schema in the prompt only."""
         from hindsight_api.config import get_config
 
         config = get_config()
+        if scope.startswith("retain") and config.retain_llm_openai_compatible_json_mode is not None:
+            return config.retain_llm_openai_compatible_json_mode
         if config.llm_openai_compatible_json_mode is not None:
             return config.llm_openai_compatible_json_mode
         if self.provider == "llamacpp":
@@ -1989,137 +2111,76 @@ class OpenAICompatibleLLM(LLMInterface):
         # Only OpenAI and Groq support batch API
         return self.provider in ("openai", "groq")
 
-    async def submit_batch(
-        self,
-        requests: list[dict[str, Any]],
-        # The SDK's own literals: batch creation accepts exactly these, and a plain `str` here
-        # let a typo reach the API as a runtime error instead of failing at the call site.
-        endpoint: Literal["/v1/responses", "/v1/chat/completions", "/v1/embeddings", "/v1/completions"] = (
-            "/v1/chat/completions"
-        ),
-        completion_window: Literal["24h"] = "24h",
-    ) -> dict[str, Any]:
-        """
-        Submit a batch of requests to OpenAI/Groq Batch API.
-
-        Args:
-            requests: List of request dicts with custom_id, method, url, body
-            endpoint: API endpoint (e.g., "/v1/chat/completions")
-            completion_window: Completion window (e.g., "24h")
-
-        Returns:
-            Dict with batch metadata including batch_id
-
-        Raises:
-            NotImplementedError: If provider doesn't support batch API
-        """
+    async def submit_batch(self, requests: list[BatchRequest]) -> BatchSubmission:
+        """Upload the requests as a JSONL file and create an OpenAI/Groq batch over it."""
         if not await self.supports_batch_api():
             raise NotImplementedError(f"Batch API not supported for provider: {self.provider}")
 
         logger.info(f"Submitting batch with {len(requests)} requests to {self.provider}")
 
-        # Format requests as JSONL
-        jsonl_content = "\n".join(json.dumps(req, ensure_ascii=False) for req in requests)
-
-        # Upload file to provider (wrap in BytesIO with filename)
+        jsonl_content = "\n".join(
+            json.dumps(
+                {"custom_id": req.custom_id, "method": "POST", "url": OPENAI_BATCH_ENDPOINT, "body": req.body},
+                ensure_ascii=False,
+            )
+            for req in requests
+        )
         file_bytes = io.BytesIO(jsonl_content.encode("utf-8"))
         file_bytes.name = "batch_input.jsonl"  # OpenAI SDK needs a filename
 
-        file_response = await self._client.files.create(
-            file=file_bytes,
-            purpose="batch",
-        )
-
+        file_response = await self._client.files.create(file=file_bytes, purpose="batch")
         logger.debug(f"Uploaded batch file: {file_response.id}")
 
-        # Create batch
         batch_response = await self._client.batches.create(
             input_file_id=file_response.id,
-            endpoint=endpoint,
-            completion_window=completion_window,
+            endpoint=OPENAI_BATCH_ENDPOINT,
+            completion_window="24h",
+        )
+        logger.info(f"Batch submitted: {batch_response.id}, status={batch_response.status}")
+        return BatchSubmission(batch_id=batch_response.id, status=batch_response.status)
+
+    async def get_batch_status(self, batch_id: str) -> BatchStatus:
+        """Get the status of an OpenAI/Groq batch."""
+        if not await self.supports_batch_api():
+            raise NotImplementedError(f"Batch API not supported for provider: {self.provider}")
+
+        batch = await self._client.batches.retrieve(batch_id)
+        counts = batch.request_counts
+        return BatchStatus(
+            batch_id=batch.id,
+            status=batch.status,
+            request_counts=BatchRequestCounts(
+                total=counts.total if counts else 0,
+                completed=counts.completed if counts else 0,
+                failed=counts.failed if counts else 0,
+            ),
+            error=str(batch.errors) if batch.errors else None,
         )
 
-        logger.info(f"Batch submitted: {batch_response.id}, status={batch_response.status}")
-
-        return {
-            "batch_id": batch_response.id,
-            "status": batch_response.status,
-            "input_file_id": file_response.id,
-            "created_at": batch_response.created_at,
-            "request_count": len(requests),
-        }
-
-    async def get_batch_status(self, batch_id: str) -> dict[str, Any]:
-        """
-        Get the status of a batch job.
-
-        Args:
-            batch_id: Batch identifier
-
-        Returns:
-            Dict with status info (batch_id, status, completed_at, etc.)
-        """
+    async def retrieve_batch_results(self, batch_id: str) -> list[BatchResult]:
+        """Download a completed OpenAI/Groq batch's output file."""
         if not await self.supports_batch_api():
             raise NotImplementedError(f"Batch API not supported for provider: {self.provider}")
 
         batch = await self._client.batches.retrieve(batch_id)
-
-        result = {
-            "batch_id": batch.id,
-            "status": batch.status,
-            "created_at": batch.created_at,
-            "request_counts": {
-                "total": batch.request_counts.total if batch.request_counts else 0,
-                "completed": batch.request_counts.completed if batch.request_counts else 0,
-                "failed": batch.request_counts.failed if batch.request_counts else 0,
-            },
-        }
-
-        if batch.completed_at:
-            result["completed_at"] = batch.completed_at
-        if batch.output_file_id:
-            result["output_file_id"] = batch.output_file_id
-        if batch.error_file_id:
-            result["error_file_id"] = batch.error_file_id
-        if batch.errors:
-            result["errors"] = batch.errors
-
-        return result
-
-    async def retrieve_batch_results(self, batch_id: str) -> list[dict[str, Any]]:
-        """
-        Retrieve completed batch results.
-
-        Args:
-            batch_id: Batch identifier
-
-        Returns:
-            List of result dicts (one per request, matched by custom_id)
-        """
-        if not await self.supports_batch_api():
-            raise NotImplementedError(f"Batch API not supported for provider: {self.provider}")
-
-        # Get batch status
-        batch = await self._client.batches.retrieve(batch_id)
-
         if batch.status != "completed":
             raise ValueError(f"Batch {batch_id} is not completed yet (status: {batch.status})")
-
         if not batch.output_file_id:
             raise ValueError(f"Batch {batch_id} has no output file")
 
-        # Download results file
         logger.debug(f"Downloading results for batch {batch_id} from file {batch.output_file_id}")
         file_content = await self._client.files.content(batch.output_file_id)
 
-        # Parse JSONL results
         results = []
         for line in file_content.text.strip().split("\n"):
             if line:
-                results.append(json.loads(line))
+                entry = json.loads(line)
+                response = entry.get("response") or {}
+                results.append(
+                    batch_result_from_chat_completion(entry["custom_id"], response.get("body"), entry.get("error"))
+                )
 
         logger.info(f"Retrieved {len(results)} results for batch {batch_id}")
-
         return results
 
     async def cleanup(self) -> None:

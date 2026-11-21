@@ -8,8 +8,11 @@ import pytest
 from aiohttp import web
 
 from hindsight_api.config import DecisionModelConfig, HindsightConfig
+from hindsight_api.engine.aiohttp_session import UpstreamHTTPError
 from hindsight_api.engine.decision_model import (
+    MAX_REQUEST_BYTES,
     DecisionAnswer,
+    DecisionAsset,
     DecisionModel,
     DecisionQuestion,
     DecisionRefusedError,
@@ -75,6 +78,23 @@ def test_operation_override_wins_and_falls_back_per_setting(monkeypatch):
     recall = config.decision_model_config("recall")
     assert recall is not None
     assert (recall.model, recall.api_key) == ("jev-latest", "global-key")
+
+
+def test_the_knowledge_reranker_is_any_cohere_rerank_endpoint(monkeypatch):
+    config = _config(monkeypatch, {})
+    assert config.kb_reranker_url is None
+    # Sized for a long-window reranker that reads pictures: what the published runs use.
+    assert (config.kb_reranker_max_tokens, config.kb_reranker_images) == (120_000, True)
+    assert config.kb_reranker_query_images is False  # a reranker that takes only a string query keeps working
+    assert _config(monkeypatch, {"HINDSIGHT_API_KB_RERANKER_QUERY_IMAGES": "true"}).kb_reranker_query_images is True
+    url = {"HINDSIGHT_API_KB_RERANKER_URL": "https://rerank.test/v1/rerank"}
+    with pytest.raises(ValueError, match="KB_RERANKER_MODEL"):
+        _config(monkeypatch, url).validate()
+    config = _config(
+        monkeypatch, {**url, "HINDSIGHT_API_KB_RERANKER_MODEL": "m", "HINDSIGHT_API_KB_RERANKER_IMAGES": "0"}
+    )
+    config.validate()
+    assert (config.kb_reranker_model, config.kb_reranker_images) == ("m", False)
 
 
 def test_operation_can_opt_out(monkeypatch):
@@ -155,6 +175,7 @@ def test_keys_and_endpoints_are_credentials():
     for prefix in ("", "recall_", "reflect_", "consolidation_"):
         assert f"{prefix}decision_model_api_key" in credentials
         assert f"{prefix}decision_model_base_url" in credentials
+    assert {"kb_reranker_api_key", "kb_reranker_url"} <= credentials
 
 
 _QUESTIONS = {
@@ -230,6 +251,52 @@ async def test_typesafe_speaks_system_one():
     assert upstream.paths == ["/v1/systemone"]
     assert upstream.auth == ["Bearer k"]
     assert upstream.bodies == [{"model": "jev-preview", "state": {"fact": "x"}, "questions": _SYSTEM_ONE_QUESTIONS}]
+
+
+async def test_a_question_looking_at_an_image_goes_alone_with_its_image():
+    seen: list[tuple[Any, str | None]] = []
+
+    async def handle(request: web.Request) -> web.StreamResponse:
+        body = await request.json()
+        seen.append((body, request.headers.get("TypeSafe-Danger-Zone-Images")))
+        return web.json_response({"answers": {key: {"type": "noul", "noul": 0.5} for key in body["questions"]}})
+
+    photo = DecisionAsset(format="jpg", data_base64="aGk=")
+    questions = {
+        "m0": DecisionQuestion(type="noul", instructions={"memory": "img-0"}),
+        "m1": DecisionQuestion(type="noul", instructions={"memory": "plain text"}),
+        "m2": DecisionQuestion(type="noul", instructions={"memory": "more text"}),
+    }
+    async with stub_server(handle) as base_url:
+        answers = await _client("typesafe", base_url, "jev").ask_all(
+            "q", questions, scope="decision_test", assets={"img-0": photo}
+        )
+
+    assert set(answers) == {"m0", "m1", "m2"}
+    with_image = [(body, header) for body, header in seen if "assets" in body]
+    assert with_image == [
+        (
+            {
+                "model": "jev",
+                "state": "q",
+                "questions": {"m0": {"type": "noul", "instructions": {"memory": "img-0"}}},
+                "assets": {"img-0": {"type": "image", "format": "jpg", "data_base64": "aGk="}},
+            },
+            "true",
+        )
+    ]
+    # The text questions still share one request, with no image and no opt-in header.
+    assert [(set(body["questions"]), header) for body, header in seen if "assets" not in body] == [({"m1", "m2"}, None)]
+
+
+async def test_openai_takes_no_images():
+    with pytest.raises(ValueError, match="no images"):
+        await _client("openai", "http://unused", "gpt").ask(
+            "q",
+            {"m0": DecisionQuestion(type="noul", instructions="img-0")},
+            scope="decision_test",
+            assets={"img-0": DecisionAsset(format="jpg", data_base64="aGk=")},
+        )
 
 
 async def test_cloudflare_posts_system_one_to_the_workers_ai_model_and_unwraps_the_envelope():
@@ -324,10 +391,11 @@ def test_typesafe_counts_in_jevs_own_vocabulary_by_default(monkeypatch):
     assert _config(monkeypatch, _GLOBAL).decision_model_config("recall").tokenizer == "jev"
 
 
-def test_the_tokenizer_follows_the_model_not_the_provider(monkeypatch):
+@pytest.mark.parametrize("tokenizer", ["qwen3.5", "hs-decide-1-flash"])
+def test_the_tokenizer_follows_the_model_not_the_provider(monkeypatch, tokenizer):
     """A System One endpoint serving another model names that model's vocabulary."""
-    config = _config(monkeypatch, {**_GLOBAL, "HINDSIGHT_API_DECISION_MODEL_TOKENIZER": "qwen3.5"})
-    assert config.decision_model_config("recall").tokenizer == "qwen3.5"
+    config = _config(monkeypatch, {**_GLOBAL, "HINDSIGHT_API_DECISION_MODEL_TOKENIZER": tokenizer})
+    assert config.decision_model_config("recall").tokenizer == tokenizer
 
 
 def test_an_unknown_tokenizer_fails_at_setup(monkeypatch):
@@ -403,9 +471,11 @@ class _Answering:
         return web.json_response({"answers": {key: {"noul": 0.5} for key in body["questions"]}})
 
 
-def _splitting_client(base_url: str, max_request_tokens: int = 26_000) -> DecisionModel:
+def _splitting_client(
+    base_url: str, max_request_tokens: int | None = 26_000, provider: str = "typesafe"
+) -> DecisionModel:
     return DecisionModel(
-        provider="typesafe",
+        provider=provider,
         api_key="k",
         model="jev-latest",
         base_url=base_url,
@@ -440,6 +510,35 @@ async def test_a_pool_over_the_question_cap_is_split():
     async with stub_server(upstream.handle) as base_url:
         await _splitting_client(base_url).ask_all("q", _nouls(MAX_QUESTIONS + 5, "x"), scope="decision_test")
     assert sorted(len(body["questions"]) for body in upstream.bodies) == [5, MAX_QUESTIONS]
+
+
+async def test_hindsight_sends_a_recall_pool_in_one_request():
+    """Hindsight Inference fits each request to its model's window, so the client does not
+    split by tokens: a 250-candidate pool that typesafe's ceiling splits goes out whole."""
+    questions = _nouls(250, "memory about the storage layer " * 20)
+    hindsight, typesafe = _Answering(), _Answering()
+    async with stub_server(hindsight.handle) as base_url:
+        answers = await _splitting_client(base_url, max_request_tokens=None, provider="hindsight").ask_all(
+            "q", questions, scope="decision_test"
+        )
+    async with stub_server(typesafe.handle) as base_url:
+        await _splitting_client(base_url).ask_all("q", questions, scope="decision_test")
+    assert len(hindsight.bodies) == 1
+    assert list(answers) == list(questions)
+    assert len(typesafe.bodies) > 1
+
+
+async def test_hindsight_splits_a_pool_only_to_stay_under_the_body_size_limit():
+    upstream = _Answering()
+    questions = _nouls(300, "é" * 1_500)  # sent as \u00e9: 6 bytes each, ~2.7 MB in all
+    # Hindsight Inference's gateway refuses a body over 2,000,000 bytes.
+    async with stub_server(upstream.handle, max_body_bytes=2_000_000) as base_url:
+        await _splitting_client(base_url, max_request_tokens=None, provider="hindsight").ask_all(
+            "q", questions, scope="decision_test"
+        )
+    assert len(upstream.bodies) > 1
+    assert all(len(json.dumps(body)) <= MAX_REQUEST_BYTES for body in upstream.bodies)
+    assert sorted(key for body in upstream.bodies for key in body["questions"]) == sorted(questions)
 
 
 async def test_a_rate_limited_request_is_retried():

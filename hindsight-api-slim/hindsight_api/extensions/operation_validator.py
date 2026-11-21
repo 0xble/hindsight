@@ -44,6 +44,9 @@ class ValidationResult:
     allowed: bool
     reason: str | None = None
     status_code: int = 403  # Default to Forbidden
+    # Only read by validate_mental_model_candidate: True asks the refresh for a new
+    # draft, with ``reason`` in its prompt, instead of failing for good.
+    retry: bool = False
     # Optional enrichment fields — returned by validator, used by engine if present.
     # None means "no modification" (engine uses original values).
     contents: list[dict] | None = None  # Enriched retain contents (e.g., injected tags/strategy)
@@ -79,9 +82,12 @@ class ValidationResult:
         )
 
     @classmethod
-    def reject(cls, reason: str, status_code: int = 403) -> "ValidationResult":
-        """Create a rejected validation result with a reason and HTTP status code."""
-        return cls(allowed=False, reason=reason, status_code=status_code)
+    def reject(cls, reason: str, status_code: int = 403, *, retry: bool = False) -> "ValidationResult":
+        """Create a rejected validation result with a reason and HTTP status code.
+
+        ``retry`` only matters for ``validate_mental_model_candidate``: see there.
+        """
+        return cls(allowed=False, reason=reason, status_code=status_code, retry=retry)
 
 
 # =============================================================================
@@ -377,6 +383,94 @@ class ConsolidateResult:
 
 
 # =============================================================================
+# Memory Review Contexts (filter_retain_facts / filter_consolidation_actions)
+# =============================================================================
+
+
+@dataclass
+class MemoryReview:
+    """An extension's verdict on one extracted memory or one consolidation action.
+
+    Deliberately small: an extension may drop the item or replace its tags, nothing else.
+    Rewriting text is not offered — the text is what the embedding, entities and links
+    are built from, and a rewrite would have to redo all of them. Add fields here when a
+    concrete need comes up, not before.
+    """
+
+    #: False drops the item: the memory is not stored, the observation is not written.
+    keep: bool = True
+    #: The item's new tag set, replacing the one shown. None leaves the tags as they are.
+    tags: list[str] | None = None
+
+
+@dataclass
+class ReviewedFact:
+    """One memory extracted by a retain, before it is stored."""
+
+    text: str
+    fact_type: str
+    #: The tags the memory will be stored with (the item's and document's tags).
+    tags: list[str]
+    entities: list[str]
+
+
+@dataclass
+class RetainFactsContext:
+    """The memories extracted from one batch of a retain's chunks.
+
+    A large document is extracted and stored in batches, so one retain can call the hook
+    several times, each with a slice of the document's memories. Memories of chunks that
+    did not change on a re-retain are kept as they are and never shown.
+    """
+
+    bank_id: str
+    document_id: str | None
+    request_context: "RequestContext"
+    facts: list[ReviewedFact]
+
+
+@dataclass
+class ReviewedConsolidationAction:
+    """One observation write a consolidation batch decided, before it is applied."""
+
+    #: "create" writes a new observation; "update" rewrites ``observation_id``.
+    kind: Literal["create", "update"]
+    text: str
+    #: Tags the action writes. A create gets exactly these; an update adds them to the
+    #: observation's current tags (it never removes any).
+    tags: list[str]
+    #: The memories this observation is built from.
+    source_memory_ids: list[str]
+    observation_id: str | None = None
+    #: Set when the action will instead be folded into this existing near-duplicate
+    #: observation. A fold keeps the twin's tags, so ``MemoryReview.tags`` has no effect on
+    #: the twin; dropping the action still prevents the fold.
+    merge_into: str | None = None
+
+
+@dataclass
+class ConsolidationActionsContext:
+    """The creates and updates decided for one consolidation batch.
+
+    Dropping an action does not send its source memories back to the queue: they are
+    marked consolidated with the rest of the batch.
+    """
+
+    bank_id: str
+    request_context: "RequestContext"
+    actions: list[ReviewedConsolidationAction]
+
+
+def resolve_reviews(reviews: "list[MemoryReview] | None", count: int, hook: str) -> list[MemoryReview]:
+    """One review per item: None means keep everything; a wrong-length answer is a bug."""
+    if reviews is None:
+        return [MemoryReview() for _ in range(count)]
+    if len(reviews) != count:
+        raise ValueError(f"{hook} returned {len(reviews)} reviews for {count} items")
+    return reviews
+
+
+# =============================================================================
 # Bank Management Contexts
 # =============================================================================
 
@@ -441,7 +535,6 @@ class BankWriteOperation(StrEnum):
     DELETE_OPERATION = "delete_operation"
     DELETE_WEBHOOK = "delete_webhook"
     IMPORT_DOCUMENTS = "import_documents"
-    MERGE_BANK_MISSION = "merge_bank_mission"
     MOVE_KNOWLEDGE_NODE = "move_knowledge_node"
     RENAME_KNOWLEDGE_NODE = "rename_knowledge_node"
     REPROCESS_DOCUMENT = "reprocess_document"
@@ -579,6 +672,31 @@ class MentalModelRefreshContext:
 
 
 @dataclass
+class MentalModelCandidateContext:
+    """The document a refresh is about to publish, before it replaces the stored one.
+
+    ``candidate_content`` is the final markdown exactly as it would be stored —
+    after delta operations were applied and the document was rendered.
+    """
+
+    bank_id: str
+    mental_model_id: str
+    request_context: "RequestContext"
+    name: str
+    source_query: str
+    max_tokens: int
+    refresh_mode: "RefreshMode"
+    current_content: str
+    candidate_content: str
+    candidate_structured: "StructuredDocument | None"
+    # 0 for the refresh's first draft; n for the n-th redraft asked for with
+    # ``reject(reason, retry=True)``.
+    attempt: int = 0
+    # The reasons earlier drafts of this same refresh were rejected, oldest first.
+    previous_rejections: list[str] = field(default_factory=list)
+
+
+@dataclass
 class MentalModelGetResult:
     """Result context for post-mental-model-GET hook."""
 
@@ -663,6 +781,118 @@ class MemoryUpdateResult:
 # =============================================================================
 # File Conversion Post-operation Context
 # =============================================================================
+
+
+# =============================================================================
+# Knowledge Bank Contexts
+# =============================================================================
+# Knowledge banks (banks of files, searched by meaning and exact text) have hooks of their own:
+# none of the memory-bank hooks above runs for them, so a validator written for memory banks
+# never applies to a knowledge bank by accident. Each hook below allows everything by default.
+
+
+class KnowledgeBankReadOperation(StrEnum):
+    """Knowledge-bank read operation names passed to validate_knowledge_bank_read."""
+
+    GET_KNOWLEDGE_BANK = "get_knowledge_bank"
+    LIST_KNOWLEDGE_BANK_DOCUMENTS = "list_knowledge_bank_documents"
+    #: A document, its original file, or a passage's page image or clip.
+    GET_KNOWLEDGE_BANK_DOCUMENT = "get_knowledge_bank_document"
+    #: Also checked, as the caller, for each knowledge bank a memory bank links when reflect reads it.
+    SEARCH_KNOWLEDGE_BANK = "search_knowledge_bank"
+    #: The bank's ingest settings (``GET /knowledge-banks/{bank_id}/config``).
+    GET_KNOWLEDGE_BANK_CONFIG = "get_knowledge_bank_config"
+    #: The bank's document tags with their counts (``GET /knowledge-banks/{bank_id}/tags``).
+    LIST_KNOWLEDGE_BANK_TAGS = "list_knowledge_bank_tags"
+
+
+class KnowledgeBankWriteOperation(StrEnum):
+    """Knowledge-bank write operation names passed to validate_knowledge_bank_write."""
+
+    INGEST_KNOWLEDGE_BANK = "ingest_knowledge_bank"
+    DELETE_KNOWLEDGE_BANK_DOCUMENT = "delete_knowledge_bank_document"
+    DELETE_KNOWLEDGE_BANK = "delete_knowledge_bank"
+    UPDATE_KNOWLEDGE_BANK_CONFIG = "update_knowledge_bank_config"
+    RESET_KNOWLEDGE_BANK_CONFIG = "reset_knowledge_bank_config"
+
+
+@dataclass
+class KnowledgeBankReadContext:
+    bank_id: str
+    operation: KnowledgeBankReadOperation
+    request_context: "RequestContext"
+
+
+@dataclass
+class KnowledgeBankWriteContext:
+    bank_id: str
+    operation: KnowledgeBankWriteOperation
+    request_context: "RequestContext"
+
+
+@dataclass
+class CreateKnowledgeBankContext:
+    bank_id: str
+    request_context: "RequestContext"
+
+
+@dataclass
+class KnowledgeBankListContext:
+    """The knowledge banks matching a list request (post-query), newest first."""
+
+    #: Each with ``bank_id`` and ``created_at``.
+    banks: list[dict]
+    request_context: "RequestContext"
+
+
+@dataclass
+class KnowledgeBankSearchResult:
+    """Result context for the post-search hook.
+
+    Fired after a knowledge-bank search returns, so an extension can meter it by
+    what the results weigh. ``results_tokens`` is the same figure a trace reports as
+    ``tokens_used`` (the tokens of the returned passages' text), whether or not the
+    caller asked for a trace. Fired only for a search that returned.
+    """
+
+    bank_id: str
+    query: str
+    request_context: "RequestContext"
+    results_tokens: int
+    result_count: int
+
+
+@dataclass
+class KnowledgeBankIngestResult:
+    """Result context for the post-ingest hook.
+
+    Fired after a batch of knowledge-bank documents commits, with how many passages became
+    searchable (``passages``), so an extension can meter ingestion by passage. Ingestion runs
+    in the worker, which has no RequestContext, so the tenant is carried directly (from the
+    caller recorded when the ingest was queued).
+    """
+
+    bank_id: str
+    tenant_id: str | None
+    api_key_id: str | None
+    passages: int
+    #: The document(s)' billable content size (text tokens, or media bytes at a fixed rate).
+    content_tokens: int = 0
+
+
+@dataclass
+class KnowledgeBankDeleteResult:
+    """Result context for the post-delete hook.
+
+    Fired after a knowledge-bank document (or a whole bank) is deleted, with how many passages
+    went with it (``passages``), so an extension that tracks stored passages can decrement.
+    """
+
+    bank_id: str
+    request_context: "RequestContext"
+    passages: int
+    #: The content tokens that went with the deleted passages, for storage metering to decrement.
+    content_tokens: int = 0
 
 
 @dataclass
@@ -941,6 +1171,32 @@ class OperationValidatorExtension(Extension, ABC):
         pass
 
     # =========================================================================
+    # Memory review hooks (optional - default keeps everything)
+    # =========================================================================
+
+    async def filter_retain_facts(self, ctx: RetainFactsContext) -> list[MemoryReview] | None:
+        """
+        Review the memories a retain extracted, before they are embedded and stored.
+
+        Return one ``MemoryReview`` per ``ctx.facts`` item, in order, to drop a memory or
+        replace its tags; return None to keep them all unchanged. Runs once per extraction
+        batch (see ``RetainFactsContext``). Dropping every memory of a chunk still stores
+        the chunk itself.
+        """
+        return None
+
+    async def filter_consolidation_actions(self, ctx: ConsolidationActionsContext) -> list[MemoryReview] | None:
+        """
+        Review the observation creates and updates of one consolidation batch, before they
+        are written.
+
+        Return one ``MemoryReview`` per ``ctx.actions`` item, in order, to drop an action or
+        replace its tags; return None to keep them all unchanged. Runs before the batch's
+        write transaction, so it may be slow without holding locks.
+        """
+        return None
+
+    # =========================================================================
     # File Conversion - Post-operation hook (optional - override to implement)
     # =========================================================================
 
@@ -1078,6 +1334,30 @@ class OperationValidatorExtension(Extension, ABC):
         """
         return ValidationResult.accept()
 
+    async def validate_mental_model_candidate(self, ctx: MentalModelCandidateContext) -> ValidationResult:
+        """
+        Check the document a refresh produced before it replaces the stored one.
+
+        Runs on every non-empty candidate (full and delta refreshes), not on the
+        dry run. Accepting stores the candidate unchanged. Rejecting keeps the
+        stored document, its structured document and its watermark; the refusal
+        is recorded on the operation and in the model's history
+        (``failure_reason == "candidate_rejected"``), and automatic refreshes
+        pause until an explicit one succeeds.
+
+        A rejection is final by default: the operation fails and the worker does
+        not retry it, since the same input would make the same kind of document.
+        Return ``ValidationResult.reject(reason, retry=True)`` to get another
+        draft instead: the refresh writes a new full document straight away,
+        with ``reason`` added to the prompt, and calls this hook again with
+        ``ctx.attempt`` one higher and the reasons so far in
+        ``ctx.previous_rejections``. After 3 redrafts a rejection is final
+        whatever ``retry`` says.
+
+        If this hook raises, the candidate is not stored either.
+        """
+        return ValidationResult.accept()
+
     # =========================================================================
     # Mental Model - Post-operation hooks (optional - override to implement)
     # =========================================================================
@@ -1170,7 +1450,7 @@ class OperationValidatorExtension(Extension, ABC):
         Validate a bank read operation before execution.
 
         Override to implement custom validation logic for bank reads
-        (get_bank_profile, get_bank_stats, and the knowledge-base reads —
+        (get_bank_profile, get_bank_stats, and the page reads —
         knowledge_base_tree / get_knowledge_page / search_knowledge_base /
         export_knowledge_base, which expose mental-model content).
 
@@ -1191,7 +1471,7 @@ class OperationValidatorExtension(Extension, ABC):
 
         Override to implement custom validation logic for bank writes
         (delete_bank, update_bank, update_bank_disposition, set_bank_mission,
-        merge_bank_mission, clear_observations, clear_observations_for_memory,
+        clear_observations, clear_observations_for_memory,
         and the knowledge-base writes — create_knowledge_folder /
         create_knowledge_page / update_knowledge_page / rename_knowledge_node /
         move_knowledge_node / delete_knowledge_node).
@@ -1283,6 +1563,57 @@ class OperationValidatorExtension(Extension, ABC):
             BankListResult with the filtered list of banks.
         """
         return BankListResult(banks=ctx.banks)
+
+    # =========================================================================
+    # Knowledge Banks - Validation hooks (optional - override to implement)
+    # =========================================================================
+
+    async def validate_knowledge_bank_read(self, ctx: KnowledgeBankReadContext) -> ValidationResult:
+        """Validate a knowledge-bank read before it runs (see KnowledgeBankReadOperation).
+
+        A reflect on a memory bank that links a knowledge bank runs SEARCH_KNOWLEDGE_BANK for it,
+        with the caller's context, and leaves out a knowledge bank this rejects instead of failing.
+        """
+        return ValidationResult.accept()
+
+    async def validate_knowledge_bank_write(self, ctx: KnowledgeBankWriteContext) -> ValidationResult:
+        """Validate a knowledge-bank write before it runs (see KnowledgeBankWriteOperation)."""
+        return ValidationResult.accept()
+
+    async def validate_create_knowledge_bank(self, ctx: CreateKnowledgeBankContext) -> ValidationResult:
+        """Validate the creation of a knowledge bank before its row is inserted."""
+        return ValidationResult.accept()
+
+    async def knowledge_bank_list_scope(self, request_context: "RequestContext") -> BankListScope | None:
+        """Which knowledge banks this request's list may show, declared before the list is read.
+
+        Same contract as bank_list_scope. The default, every knowledge bank, never calls
+        filter_knowledge_bank_list; return None to filter the full list there instead.
+        """
+        return BankListScope()
+
+    async def filter_knowledge_bank_list(self, ctx: KnowledgeBankListContext) -> BankListResult:
+        """Filter the knowledge bank list; runs only when knowledge_bank_list_scope returns None."""
+        return BankListResult(banks=ctx.banks)
+
+    async def on_knowledge_bank_search_complete(self, result: KnowledgeBankSearchResult) -> None:
+        """Called after a knowledge-bank search returns, with what its results weigh.
+
+        The read gate (validate_knowledge_bank_read) runs before the search and sees only the
+        bank and operation; this fires after, so an extension that meters search by its output
+        tokens (``result.results_tokens``) has the figure it needs. Default: do nothing.
+        """
+        return None
+
+    async def on_knowledge_bank_ingest_complete(self, result: KnowledgeBankIngestResult) -> None:
+        """Called after a batch of knowledge-bank documents commits, with how many passages
+        became searchable, so an extension can meter ingestion by passage. Default: do nothing."""
+        return None
+
+    async def on_knowledge_bank_delete_complete(self, result: KnowledgeBankDeleteResult) -> None:
+        """Called after a knowledge-bank document or bank is deleted, with how many passages went
+        with it, so an extension tracking stored passages can decrement. Default: do nothing."""
+        return None
 
     async def filter_mcp_tools(
         self,

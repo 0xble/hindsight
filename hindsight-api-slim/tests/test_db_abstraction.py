@@ -274,7 +274,8 @@ class TestPostgreSQLDialect:
             text_search_extension="vchord",
         )
         assert (
-            "-(search_vector <&> to_bm25query('idx_memory_units_text_search', tokenize($4, 'llmlingua2'))) > 0" in arm
+            "-(search_vector <&> (SELECT to_bm25query('idx_memory_units_text_search', tokenize($4, 'llmlingua2')))) > 0"
+            in arm
         )
 
     def test_build_bm25_arm_vchord_honors_custom_min_score(self, d):
@@ -571,7 +572,7 @@ class TestOracleQueryRewriter:
         assert ":2" in query2
 
     def test_left_becomes_dbms_lob_substr(self):
-        # LEFT() does not exist in Oracle (ORA-00904); knowledge-page snippets use it.
+        # LEFT() does not exist in Oracle (ORA-00904); the rewrite keeps PG-style SQL portable.
         from hindsight_api.engine.db.oracle import _rewrite_pg_to_oracle
 
         query, _, _ = _rewrite_pg_to_oracle("SELECT LEFT(mm.content, 280) AS snippet FROM t LEFT JOIN u ON 1=1")
@@ -615,6 +616,15 @@ class TestOracleQueryRewriter:
         assert "::text" not in query
         assert "::uuid" not in query
         assert "::varchar[]" not in query
+
+    def test_array_contained_by(self):
+        # #6585: the exact tag match emits `tags <@ $N`, which Oracle cannot parse (ORA-00936).
+        from hindsight_api.engine.db.oracle import _rewrite_pg_to_oracle
+
+        query, _, _ = _rewrite_pg_to_oracle("WHERE bank_id = $1 AND (tags @> $2 AND tags <@ $2)")
+        assert "<@" not in query
+        assert "NOT EXISTS (SELECT 1 FROM JSON_TABLE(tags," in query
+        assert "JSON_TABLE(:2," in query
 
     def test_jsonb_merge_returns_clob(self):
         # Without RETURNING CLOB, JSON_MERGEPATCH returns VARCHAR2(4000) with

@@ -14,8 +14,9 @@ from dataclasses import replace
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any, cast
 
+from ..decision_rerank_interface import EvidenceImage
 from ..prompt_utils import truncate_context_for_prompt
-from ..response_models import MemoryFact
+from ..response_models import KnowledgeDocumentHit, MemoryFact
 from ..schema import fq_table
 from ..search.tags import TagGroup, TagsMatch, tag_filter_active, tags_satisfy_groups
 from ..source_scope import ids_passing, visible_document_ids
@@ -30,10 +31,6 @@ if TYPE_CHECKING:
     from ..memory_engine import MemoryEngine
 
 logger = logging.getLogger(__name__)
-
-#: Snippet length for a mental-model search hit, matching the knowledge-page search
-#: API's own ``LEFT(content, 280)`` so both surfaces show a page the same way.
-_SNIPPET_CHARS = 280
 
 #: Default token budget for the pages ``search_mental_models`` returns whole. Pages are
 #: packed in rank order until it is spent; a page that does not fit comes back as a
@@ -169,7 +166,7 @@ async def tool_search_mental_models(
     Returns:
         Dict with matching mental models including content and freshness info
     """
-    from ..memory_engine import _knowledge_snippet, _mental_model_stale_scope_from_row
+    from ..memory_engine import _mental_model_stale_scope_from_row, _page_snippet
     from ..search.tags import build_tag_groups_where_clause, build_tags_where_clause
 
     # Build filters dynamically
@@ -211,7 +208,7 @@ async def tool_search_mental_models(
 
     store = get_memories()
     if store.store_owned_for(bank_id):
-        matches = await store.search_knowledge_pages_semantic(
+        matches = await store.search_pages_semantic(
             bank_id,
             embedding=list(query_embedding),
             limit=max_results,
@@ -293,7 +290,7 @@ async def tool_search_mental_models(
             {
                 "id": str(row["id"]),
                 "name": row["name"],
-                # Past the budget, a snippet like the knowledge-page search this mirrors:
+                # Past the budget, a snippet like the page search this mirrors:
                 # five unbounded whole pages measured 8.7-19k tokens and were re-sent on
                 # every later turn of the loop, the largest single item in a reflect's
                 # floor (#4533). The model reads the ones it wants with
@@ -301,11 +298,11 @@ async def tool_search_mental_models(
                 **(
                     {"content": content}
                     if whole
-                    # ``_knowledge_snippet`` so a page with no body reads as
+                    # ``_page_snippet`` so a page with no body reads as
                     # empty-on-purpose rather than as a blank match — the same
-                    # wording the knowledge-page search gives for the same state.
+                    # wording the page search gives for the same state.
                     else {
-                        "snippet": _knowledge_snippet(content)[:_SNIPPET_CHARS].strip(),
+                        "snippet": _page_snippet(content),
                         "content_chars": len(content),
                     }
                 ),
@@ -402,7 +399,6 @@ async def tool_search_observations(
     tags: list[str] | None = None,
     tags_match: TagsMatch = "any",
     tag_groups: "list | None" = None,
-    last_consolidated_at: datetime | None = None,
     pending_consolidation: int = 0,
     source_facts_max_tokens: int = -1,
     include_entities: bool = True,
@@ -423,7 +419,6 @@ async def tool_search_observations(
         max_tokens: Maximum tokens for results (default 5000)
         tags: Optional tags to filter observations
         tags_match: How to match tags - "any", "all", "any_strict", "all_strict", or "exact"
-        last_consolidated_at: When consolidation last ran (for staleness check)
         pending_consolidation: Number of memories waiting to be consolidated
         source_facts_max_tokens: Token budget for source facts (-1 = disabled, 0+ = enabled with limit)
         include_entities: Attach resolved entity names to each observation (see below)
@@ -501,6 +496,8 @@ async def tool_recall(
     include_chunks: bool = True,
     created_after: datetime | None = None,
     created_before: datetime | None = None,
+    include_documents: bool = False,
+    kb_images: int = 0,
 ) -> dict[str, Any]:
     """
     Search memories using TEMPR retrieval.
@@ -520,6 +517,8 @@ async def tool_recall(
         max_chunk_tokens: Maximum tokens for raw source chunk text (default 1000)
         fact_types: Optional filter for fact types to retrieve. Defaults to ["experience", "world"].
         include_chunks: Whether to fetch raw chunk text alongside facts (default True).
+        kb_images: The most knowledge-bank pictures (an image, a PDF page) to hand the model, under
+            ``KB_IMAGES_KEY``; 0 hands none (the model cannot read images, or the bank said no).
 
     Returns:
         Dict with list of matching memories including raw chunk text (when include_chunks)
@@ -546,12 +545,17 @@ async def tool_recall(
         _quiet=True,  # Suppress logging for internal operations
         include_chunks=include_chunks,
         max_chunk_tokens=max_chunk_tokens,
+        include_documents=include_documents,
     )
 
     # A chunk is raw source text: "I signed up yesterday" means nothing without the date it was
     # said on. Its facts carry that date, so the chunk borrows it from the first one.
     chunk_dates = {m.chunk_id: m.mentioned_at for m in reversed(result.results) if m.chunk_id and m.mentioned_at}
+    pictures = await _knowledge_pictures(memory_engine, result.documents, kb_images, request_context)
+    documents = _knowledge_documents(result.documents, pictures)
     return {
+        **({KB_IMAGES_KEY: list(pictures.values())} if pictures else {}),
+        **documents,
         "query": query,
         "memories": [_drop_unread_fields(_prune_nulls(m.model_dump())) for m in result.results],
         # ``chunks`` is deliberately not trimmed: ChunkInfo carries only
@@ -563,6 +567,86 @@ async def tool_recall(
             for k, v in (result.chunks or {}).items()
         },
     }
+
+
+_DOCUMENTS_NOTE = (
+    "These documents come from the knowledge banks linked to this memory bank: authoritative product "
+    "documentation. When a document and a memory disagree, the document is right; answer from the document "
+    "and say the memory is outdated."
+)
+
+
+#: Where ``tool_recall`` puts the knowledge-bank pictures (``EvidenceImage``s): the agent pops them before
+#: anything else reads the output, and shows them to the model (and a decision model that reads images).
+KB_IMAGES_KEY = "_kb_images"
+#: A picture bigger than this is not sent: the strictest provider (Anthropic) refuses one over 5 MB.
+_MAX_PICTURE_BYTES = 5 * 1024 * 1024
+
+
+def _picture_label(hit: KnowledgeDocumentHit) -> str:
+    source = hit.filename or hit.document_id
+    return f"Picture of {source}, page {hit.page}" if hit.page is not None else f"Picture of {source}"
+
+
+async def _knowledge_pictures(
+    engine: "MemoryEngine",
+    hits: list[KnowledgeDocumentHit] | None,
+    limit: int,
+    request_context: "RequestContext",
+) -> dict[int, EvidenceImage]:
+    """The pictures behind the first ``limit`` image and PDF-page hits, by the hit's place in ``hits``.
+
+    Read on the caller's behalf, as the search was. A picture that cannot be read, or is too big,
+    is left out: its hit still reaches the agent as text.
+    """
+    if limit <= 0 or not hits:
+        return {}
+    from ...knowledge.service import get_knowledge_service
+
+    service = get_knowledge_service(engine)
+    caller = replace(request_context, internal=False)
+    pictures: dict[int, EvidenceImage] = {}
+    for position, hit in enumerate(hits):
+        if len(pictures) >= limit:
+            break
+        if hit.passage_url is None or hit.media_type not in ("image", "document"):
+            continue
+        try:
+            opened = await service.open_passage_media(hit.bank_id, hit.document_id, hit.passage_index, caller)
+            if not opened.content_type.startswith("image/"):
+                continue
+            data = b"".join([chunk async for chunk in opened.stream])
+        except Exception as exc:
+            logger.warning(f"Knowledge picture {hit.bank_id}/{hit.document_id}#{hit.passage_index} not read: {exc!r}")
+            continue
+        if len(data) > _MAX_PICTURE_BYTES:
+            continue
+        pictures[position] = EvidenceImage(label=_picture_label(hit), media_type=opened.content_type, data=data)
+    return pictures
+
+
+def _knowledge_documents(hits: list[KnowledgeDocumentHit] | None, pictures: dict[int, EvidenceImage]) -> dict[str, Any]:
+    """The linked knowledge banks' passages, for the agent: what it can read of them, plus who wins."""
+    if not hits:
+        return {}
+    docs = [
+        _prune_nulls(
+            {
+                "source": h.filename or h.document_id,
+                "document_id": h.document_id,
+                "page": h.page,
+                "start_ms": h.start_ms,
+                "end_ms": h.end_ms,
+                "media_type": h.media_type,
+                # A page image or a clip has no text the agent can read; it still learns the doc matched.
+                "text": h.text or f"[{h.media_type} passage: no text]",
+                # Its picture follows the results, under this label.
+                "picture": pictures[position].label if position in pictures else None,
+            }
+        )
+        for position, h in enumerate(hits)
+    ]
+    return {"documents_note": _DOCUMENTS_NOTE, "documents": docs}
 
 
 def _iso(value: datetime | None) -> str | None:

@@ -13,14 +13,19 @@ The changes/ends followed by a recalled repeat regression is covered in
 Upstream #3783 (`ad6312a512119c45a5dd67c43dccb6d391de2609`) keeps
 schema validation fail-fast. This fork permits one changed-prompt, whole-response
 correction for expected consolidation response action `missing`/`model_type`
-errors only. Upstream #3003 closed without repair; #3137 rejected per-item salvage.
-Do not replace this boundary with coercion, dropped invalid actions, defaults,
-empty-response repair, routing changes, or fabricated references.
+errors or a single top-level `model_type` error. Upstream #3003 closed without
+repair, and #3137 rejected per-item salvage. Do not replace this boundary with
+coercion, dropped invalid actions, defaults, empty-response repair, routing
+changes, or fabricated references.
 
-[Issue #5572](https://github.com/vectorize-io/hindsight/issues/5572) is closed as
-completed by [PR #6374](https://github.com/vectorize-io/hindsight/pull/6374), merged
-after the selected v1.2.0 release. That unreleased correction is not part of this
-sync and does not replace the fork's job-wide completion budget or widen it.
+[Issue #5572](https://github.com/vectorize-io/hindsight/issues/5572) was fixed by
+[PR #6374](https://github.com/vectorize-io/hindsight/pull/6374)
+(`5ca25d07daa6d54255f3d66289e47fa64ef527e6`), released in `v1.2.1`. Adapt the
+released wrong-shape re-ask through the fork's existing correction path rather
+than call a second helper. Keep provider validation on so malformed completions
+remain traced as failures, and send only schema feedback without quoting the
+rejected reply. The top-level correction uses the same shared completion budget
+as action-shape and detail corrections.
 
 - **Surfaces:** `consolidation/consolidator.py`, `llm_wrapper.py`,
   `llm_attempt_limit.py` under `hindsight-api-slim/hindsight_api/engine/`.

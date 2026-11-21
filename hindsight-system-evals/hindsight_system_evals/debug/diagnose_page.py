@@ -1,4 +1,4 @@
-"""Where does a wrong knowledge page come from: the synthesis, or the edit?
+"""Where does a wrong page come from: the synthesis, or the edit?
 
 A page that is right after wave 1 and wrong after wave 2 has two candidate
 causes, and they need opposite fixes:
@@ -39,6 +39,7 @@ from hindsight_client_api.models.llm_request_list_response import LLMRequestList
 from hindsight_system_evals.pages import create_page, facts, prepare_bank, questions, read_page, split_into_waves
 from hindsight_system_evals.server import start_eval_server
 from hindsight_system_evals.waiting import wait_until_settled
+
 
 def _excerpt(text: str, limit: int = 400) -> str:
     flat = " ".join((text or "").split())

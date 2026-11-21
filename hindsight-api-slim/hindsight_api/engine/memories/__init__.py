@@ -21,13 +21,17 @@ from .base import (
     DeletePredicate,
     FactRecord,
     FullRecallRequest,
-    KnowledgePageEntry,
-    KnowledgePageMatch,
-    KnowledgePageRef,
+    KnowledgePageEntry,  # deprecated alias, remove in 2.x
+    KnowledgePageMatch,  # deprecated alias, remove in 2.x
+    KnowledgePageRef,  # deprecated alias, remove in 2.x
     MemoriesExtension,
     MemoryPatch,
     MemoryScopeWatermark,
+    PageEntry,
+    PageMatch,
+    PageRef,
     RecallArms,
+    ReflectFreshness,
     ScanPage,
     StoredMemory,
     WriteBatch,
@@ -163,12 +167,16 @@ __all__ = [
     "CausalEdgeRecord",
     "DeletePredicate",
     "FactRecord",
-    "KnowledgePageEntry",
-    "KnowledgePageMatch",
-    "KnowledgePageRef",
+    "KnowledgePageEntry",  # deprecated alias, remove in 2.x
+    "KnowledgePageMatch",  # deprecated alias, remove in 2.x
+    "KnowledgePageRef",  # deprecated alias, remove in 2.x
+    "PageEntry",
+    "PageMatch",
+    "PageRef",
     "MemoriesExtension",
     "MemoryPatch",
     "MemoryScopeWatermark",
+    "ReflectFreshness",
     "FullRecallRequest",
     "RecallArms",
     "ScanPage",

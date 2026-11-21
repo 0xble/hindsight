@@ -113,9 +113,12 @@ class TestUpgrade:
             new_results = resp.json()["results"]
             assert len(new_results) > 0, f"No results from recall after upgrade. Bank: {bank_id}"
 
-            # Verify Alice is found
-            found_alice = any("Alice" in r.get("text", "") for r in new_results)
-            assert found_alice, f"Alice not found in results after upgrade: {new_results}"
+            # Verify Alice is still found, if the old version stored her. The old
+            # version's real-LLM extraction sometimes drops that fact, which is not
+            # an upgrade regression (#6397).
+            if any("Alice" in r.get("text", "") for r in old_results):
+                found_alice = any("Alice" in r.get("text", "") for r in new_results)
+                assert found_alice, f"Alice not found in results after upgrade: {new_results}"
 
             # Verify reflect works
             resp = client.post(
@@ -288,13 +291,16 @@ class TestUpgrade:
             server = new.start()
             client = httpx.Client(base_url=server.url, timeout=60)
 
-            # Verify profile is preserved
-            resp = client.get(f"/v1/default/banks/{bank_id}/profile")
+            # Verify the disposition is preserved. The profile endpoints are retired (410), and
+            # bank config shows only per-bank config overrides, not the legacy banks.disposition
+            # column an old version wrote. The bank list returns the resolved traits (config
+            # over that column), which is what reflect uses.
+            resp = client.get("/v1/default/banks", params={"q": bank_id})
             assert resp.status_code == 200
-            new_profile = resp.json()
-            assert new_profile["disposition"]["skepticism"] == 4, "Skepticism not preserved"
-            assert new_profile["disposition"]["literalism"] == 2, "Literalism not preserved"
-            assert new_profile["disposition"]["empathy"] == 5, "Empathy not preserved"
+            [bank] = [b for b in resp.json()["banks"] if b["bank_id"] == bank_id]
+            assert bank["disposition"]["skepticism"] == 4, "Skepticism not preserved"
+            assert bank["disposition"]["literalism"] == 2, "Literalism not preserved"
+            assert bank["disposition"]["empathy"] == 5, "Empathy not preserved"
 
             # Cleanup
             resp = client.delete(f"/v1/default/banks/{bank_id}")

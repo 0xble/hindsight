@@ -3,6 +3,7 @@
 import asyncio
 import ssl
 import uuid
+from contextlib import nullcontext
 from datetime import UTC, datetime
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
@@ -19,10 +20,16 @@ from hindsight_api.worker.exceptions import RetryTaskAt
 
 
 @pytest.fixture
-def engine():
+def engine(monkeypatch):
     engine = MemoryEngine.__new__(MemoryEngine)
     engine._audit_logger = None
-    engine._get_backend = AsyncMock(side_effect=RuntimeError("no database in this unit test"))
+    # _execute_task now binds bank-scoped jobs before dispatching them. Keep this
+    # unit suite database-free while still exercising the dispatch error policy.
+    engine._get_backend = AsyncMock(side_effect=[RuntimeError("no database in this unit test"), object()])
+    monkeypatch.setattr(
+        "hindsight_api.engine.memory_engine.bind_job_bank",
+        AsyncMock(return_value=nullcontext()),
+    )
     engine._handle_file_convert_retain = AsyncMock()
     engine._mark_operation_failed = AsyncMock()
     return engine

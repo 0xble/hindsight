@@ -12,7 +12,7 @@ const umamiWebsiteId = process.env.UMAMI_WEBSITE_ID;
 // points at the thing we want people to do, not off-site. The paper used to live
 // here and now sits in the homepage hero, which is where a visitor who wants
 // evidence is already looking.
-const ANNOUNCEMENT_BAR = 'New: <strong>Introducing Hindsight Memlake</strong>, serving 100M memories at &lt;100ms p99 on object storage. <a href="/blog/2026/10/13/memlake">Read the post →</a>';
+const ANNOUNCEMENT_BAR = 'New: <strong>Introducing Hindsight Models</strong>: memory 2.5x cheaper and 2x faster, with better answers. <a href="/blog/2026/11/03/hindsight-models">Read the post →</a>';
 
 const config: Config = {
   title: 'Hindsight',
@@ -208,6 +208,8 @@ const config: Config = {
     // Indexes src/pages/changelog/integrations/*.md at build time so the
     // Integrations Hub knows which integrations have a changelog page.
     './plugins/integration-changelogs',
+    // Redirects from the old URLs of renamed docs pages.
+    './plugins/renamed-docs',
     [
       '@docusaurus/plugin-content-docs',
       {
@@ -259,7 +261,7 @@ const config: Config = {
   themeConfig: {
     ...(ANNOUNCEMENT_BAR && {
       announcementBar: {
-        id: 'memlake-launch',
+        id: 'inference-launch',
         content: ANNOUNCEMENT_BAR,
         backgroundColor: '#0074d9',
         textColor: '#ffffff',
