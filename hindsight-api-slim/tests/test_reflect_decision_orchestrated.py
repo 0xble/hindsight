@@ -570,6 +570,7 @@ async def test_native_timed_results_prune_and_hide_without_losing_timing():
     assert await _prune_round("q", single, unused, "r") is single
     unused.assert_not_awaited()
 
+
 @pytest.mark.asyncio
 async def test_trace_start_times_put_llm_and_tool_calls_in_the_order_they_ran():
     """LLM calls are not one per iteration, so the UI orders the two trace lists by start time."""

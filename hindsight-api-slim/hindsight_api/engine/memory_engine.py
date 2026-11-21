@@ -5440,9 +5440,9 @@ class MemoryEngine(MemoryEngineInterface):
 
                 error_traceback = traceback.format_exc()
 
-                if (
-                    task_type == "file_convert_retain" and not is_retryable_file_transport_error(e)
-                ) or (task_type == "knowledge_ingest" and isinstance(e, ValueError)):
+                if (task_type == "file_convert_retain" and not is_retryable_file_transport_error(e)) or (
+                    task_type == "knowledge_ingest" and isinstance(e, ValueError)
+                ):
                     # Deterministic parser/admission errors remain terminal. OCR
                     # transport errors use the normal worker retry cap/backoff.
                     # Stable metadata distinguishes evidence exclusions from

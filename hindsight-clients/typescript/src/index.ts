@@ -1194,7 +1194,7 @@ export class HindsightClient {
     if (options.reflectKbSearchApplyTags !== undefined)
       updates.reflect_kb_search_apply_tags = options.reflectKbSearchApplyTags;
     if (options.llmGeminiSafetySettings !== undefined)
-    updates.llm_gemini_safety_settings = options.llmGeminiSafetySettings;
+      updates.llm_gemini_safety_settings = options.llmGeminiSafetySettings;
     if (options.memoryDefense !== undefined) updates.memory_defense = options.memoryDefense;
     if (options.auditLogEnabled !== undefined) updates.audit_log_enabled = options.auditLogEnabled;
 
