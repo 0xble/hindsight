@@ -69,9 +69,11 @@ trace total after every query-bearing provider call, its fact and its `done`
 tool call have landed. A private read must leave that total unchanged and must
 not appear in any row. The following public reflect must increase it.
 
-The v1.1.0 engine harness stubs `_bank_freshness`, the released internal read
-used after reflect authenticates, rather than the public `get_bank_freshness`
-method. Its diagnostic connection supports released `executemany` trace writes.
+The v1.1.0 engine harness stubs `_reflect_freshness` with
+`ReflectFreshness(pending=0, last_memory_write_at=None)`, the released internal
+read used after reflect authenticates, rather than the public
+`get_bank_freshness` method. Its diagnostic connection supports released
+`executemany` trace writes.
 This preserves native authentication, reflection, retrieval and all public/private
 sink assertions. The stale-double explanation is falsified by an acquire failure
 or missing positive public trace with these released boundaries supplied. No
