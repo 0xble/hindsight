@@ -285,7 +285,7 @@ async def test_triage_restate_onto_sibling_recall_stays_pending(memory, request_
     triage = TriageResult(restates={str(fresh): shown_id}, chatter={str(sibling)})
     with (
         patch.object(c, "_find_related_observations", recall),
-        patch.object(c, "triage_model", lambda _config: object()),
+        patch.object(c, "triage_model", return_value=object()),
         patch.object(c, "triage_facts", AsyncMock(return_value=triage)),
     ):
         await c._process_memory_batch(
