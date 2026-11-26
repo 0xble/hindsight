@@ -166,8 +166,9 @@ export function KnowledgeAddDocumentDialog({
           }
         );
         for (const f of batch) update(f.key, { state: "done", progress: 1 });
-        unchanged += result.unchanged_document_ids.length;
-        ok += batch.length - result.unchanged_document_ids.length;
+        const unchangedCount = result.unchanged_document_ids?.length ?? 0;
+        unchanged += unchangedCount;
+        ok += batch.length - unchangedCount;
       } catch (e) {
         const reason = (e as Error).message;
         for (const f of batch) update(f.key, { state: "failed", error: reason });
@@ -197,7 +198,7 @@ export function KnowledgeAddDocumentDialog({
         ...(documentId.trim() ? { document_id: documentId.trim() } : {}),
         tags: parseTags(tags),
       });
-      if (result.unchanged_document_ids.length > 0) toast.info(t("writtenUnchanged"));
+      if (result.unchanged_document_ids?.length) toast.info(t("writtenUnchanged"));
       else toast.success(t("written"));
       onOpenChange(false);
       onWritten();
@@ -515,7 +516,12 @@ export function KnowledgeAddDocumentDialog({
             </Button>
           ) : (
             <Button onClick={uploadAll} disabled={busy || pending.length === 0}>
-              {busy ? tAdd("uploading") : tAdd("uploadFiles", { count: pending.length })}
+              {busy
+                ? tAdd("uploading")
+                : // "Upload 0 Files" read oddly before any file is picked.
+                  pending.length === 0
+                  ? tAdd("tabUploadFiles")
+                  : tAdd("uploadFiles", { count: pending.length })}
             </Button>
           )}
         </DialogFooter>

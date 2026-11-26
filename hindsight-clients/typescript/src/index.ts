@@ -75,6 +75,16 @@ import type {
   PageResponse,
   PageSearchResponse,
   PageTreeResponse,
+  KnowledgeBankConfigResponse,
+  KnowledgeBankListResponse,
+  KnowledgeBankResponse,
+  KnowledgeDeletedResponse,
+  KnowledgeDocumentDetailResponse,
+  KnowledgeDocumentListResponse,
+  KnowledgeIngestResponse,
+  KnowledgeIngestTextItem,
+  KnowledgeSearchResponse,
+  KnowledgeTagsResponse,
   LabelGroupInput,
   ListDocumentsResponse,
   MentalModelListResponse,
@@ -932,7 +942,6 @@ export class HindsightClient {
       /** Max inline attachments one extraction chunk may carry. `retainChunkSize`
        *  budgets text only, so this is what bounds attachments. */
       retainMaxAttachmentsPerChunk?: number;
-      fileDeleteAfterRetain?: boolean;
       /**
        * Controlled vocabulary for entity labels. Each group classifies a fact under a
        * `key`: `"value"`/`"multi-values"` pick from the group's declared `values`, while
@@ -989,16 +998,8 @@ export class HindsightClient {
       consolidationLlmBatchSize?: number;
       /** Concurrent LLM calls during consolidation. */
       consolidationLlmParallelism?: number;
-      /** Concurrent LLM calls per consolidation lane. */
-      consolidationLaneLlmParallelism?: number;
-      /** Fetch the oldest facts of many observation-scope groups per consolidation round. */
-      consolidationFairGroupSelection?: boolean;
       /** Memories consolidated per round. */
       consolidationMaxMemoriesPerRound?: number;
-      /** Max schema/detail-loss correction completions per consolidation round; unset uses the round-size formula. */
-      consolidationRoundCorrectionBudget?: number;
-      /** Pre-call input budget before adaptive splitting. */
-      consolidationMaxContextTokens?: number;
       /** Max tokens for source facts across all observations in a pass. */
       consolidationSourceFactsMaxTokens?: number;
       /** Max tokens of source facts per observation in the prompt. */
@@ -1051,8 +1052,9 @@ export class HindsightClient {
       recallBudgetMax?: number;
       /** MCP tool names enabled for this bank. */
       mcpEnabledTools?: string[];
-      /** Source-language guard for generated output. */
-      llmLanguageIntegrity?: "off" | "observe" | "retry" | "reject";
+      /** Instructions sent to MCP clients when they connect to this bank's single-bank
+       *  endpoint, in the initialize response. */
+      mcpServerInstructions?: string;
       /** Knowledge banks linked to this bank: reflect also searches them and treats their
        *  passages as authoritative. Recall is unchanged. */
       knowledgeBanks?: string[];
@@ -1081,8 +1083,6 @@ export class HindsightClient {
       updates.retain_structured_chunk_size = options.retainStructuredChunkSize;
     if (options.retainMaxAttachmentsPerChunk !== undefined)
       updates.retain_max_attachments_per_chunk = options.retainMaxAttachmentsPerChunk;
-    if (options.fileDeleteAfterRetain !== undefined)
-      updates.file_delete_after_retain = options.fileDeleteAfterRetain;
     if (options.entityLabels !== undefined) updates.entity_labels = options.entityLabels;
     if (options.entitiesAllowFreeForm !== undefined)
       updates.entities_allow_free_form = options.entitiesAllowFreeForm;
@@ -1128,16 +1128,8 @@ export class HindsightClient {
       updates.consolidation_llm_batch_size = options.consolidationLlmBatchSize;
     if (options.consolidationLlmParallelism !== undefined)
       updates.consolidation_llm_parallelism = options.consolidationLlmParallelism;
-    if (options.consolidationLaneLlmParallelism !== undefined)
-      updates.consolidation_lane_llm_parallelism = options.consolidationLaneLlmParallelism;
-    if (options.consolidationFairGroupSelection !== undefined)
-      updates.consolidation_fair_group_selection = options.consolidationFairGroupSelection;
     if (options.consolidationMaxMemoriesPerRound !== undefined)
       updates.consolidation_max_memories_per_round = options.consolidationMaxMemoriesPerRound;
-    if (options.consolidationRoundCorrectionBudget !== undefined)
-      updates.consolidation_round_correction_budget = options.consolidationRoundCorrectionBudget;
-    if (options.consolidationMaxContextTokens !== undefined)
-      updates.consolidation_max_context_tokens = options.consolidationMaxContextTokens;
     if (options.consolidationSourceFactsMaxTokens !== undefined)
       updates.consolidation_source_facts_max_tokens = options.consolidationSourceFactsMaxTokens;
     if (options.consolidationSourceFactsMaxTokensPerObservation !== undefined)
@@ -1186,8 +1178,8 @@ export class HindsightClient {
     if (options.recallBudgetMin !== undefined) updates.recall_budget_min = options.recallBudgetMin;
     if (options.recallBudgetMax !== undefined) updates.recall_budget_max = options.recallBudgetMax;
     if (options.mcpEnabledTools !== undefined) updates.mcp_enabled_tools = options.mcpEnabledTools;
-    if (options.llmLanguageIntegrity !== undefined)
-      updates.llm_language_integrity = options.llmLanguageIntegrity;
+    if (options.mcpServerInstructions !== undefined)
+      updates.mcp_server_instructions = options.mcpServerInstructions;
     if (options.knowledgeBanks !== undefined) updates.knowledge_banks = options.knowledgeBanks;
     if (options.reflectKbSearchMediaTypes !== undefined)
       updates.reflect_kb_search_media_types = options.reflectKbSearchMediaTypes;
@@ -1779,6 +1771,323 @@ export class HindsightClient {
     return this.validateResponse(response, "exportPages");
   }
 
+  // Knowledge bank methods
+
+  /**
+   * Create a knowledge bank: authoritative files, split into passages and searched as written.
+   * It shares the id space of memory banks.
+   */
+  async createKnowledgeBank(
+    bankId: string,
+    options?: { signal?: AbortSignal }
+  ): Promise<KnowledgeBankResponse> {
+    const response = await sdk.createKnowledgeBank({
+      client: this.client,
+      body: { bank_id: bankId },
+      signal: options?.signal,
+    });
+
+    return this.validateResponse(response, "createKnowledgeBank");
+  }
+
+  /**
+   * Get a knowledge bank with its document counts.
+   */
+  async getKnowledgeBank(
+    bankId: string,
+    options?: { signal?: AbortSignal }
+  ): Promise<KnowledgeBankResponse> {
+    const response = await sdk.getKnowledgeBank({
+      client: this.client,
+      path: { bank_id: bankId },
+      signal: options?.signal,
+    });
+
+    return this.validateResponse(response, "getKnowledgeBank");
+  }
+
+  /**
+   * List knowledge banks.
+   */
+  async listKnowledgeBanks(options?: {
+    /** Part of the bank id, case-insensitive */
+    q?: string;
+    limit?: number;
+    offset?: number;
+    signal?: AbortSignal;
+  }): Promise<KnowledgeBankListResponse> {
+    const response = await sdk.listKnowledgeBanks({
+      client: this.client,
+      query: { q: options?.q, limit: options?.limit, offset: options?.offset },
+      signal: options?.signal,
+    });
+
+    return this.validateResponse(response, "listKnowledgeBanks");
+  }
+
+  /**
+   * Delete a knowledge bank and every document in it.
+   */
+  async deleteKnowledgeBank(
+    bankId: string,
+    options?: { signal?: AbortSignal }
+  ): Promise<KnowledgeDeletedResponse> {
+    const response = await sdk.deleteKnowledgeBank({
+      client: this.client,
+      path: { bank_id: bankId },
+      signal: options?.signal,
+    });
+
+    return this.validateResponse(response, "deleteKnowledgeBank");
+  }
+
+  /**
+   * Ingest text documents into a knowledge bank. Each item becomes one document; re-ingesting a
+   * document id replaces it. Returns once every document is searchable, unless `ingestAsync`
+   * queues them and returns their operations at once.
+   */
+  async ingestKnowledgeTexts(
+    bankId: string,
+    items: KnowledgeIngestTextItem[],
+    options?: { ingestAsync?: boolean; signal?: AbortSignal }
+  ): Promise<KnowledgeIngestResponse> {
+    const response = await sdk.ingestKnowledgeTexts({
+      client: this.client,
+      path: { bank_id: bankId },
+      body: { items, async: options?.ingestAsync },
+      signal: options?.signal,
+    });
+
+    return this.validateResponse(response, "ingestKnowledgeTexts");
+  }
+
+  /**
+   * Upload files (PDF, images, audio, video, text, Office) into a knowledge bank. Each file becomes
+   * one document, split and embedded in the background: poll the document's status (or the
+   * returned operation) to know when it is searchable.
+   */
+  async ingestKnowledgeFiles(
+    bankId: string,
+    files: Array<File | Blob>,
+    options?: {
+      /** Per-file options, one per file when given. */
+      filesOptions?: Array<{ document_id?: string; tags?: string[]; strategy?: string }>;
+      signal?: AbortSignal;
+    }
+  ): Promise<KnowledgeIngestResponse> {
+    const filesOptions = options?.filesOptions;
+    if (filesOptions && filesOptions.length !== files.length) {
+      throw new HindsightError(
+        "ingestKnowledgeFiles failed: filesOptions must have one entry per file"
+      );
+    }
+    const response = await sdk.ingestKnowledgeFiles({
+      client: this.client,
+      path: { bank_id: bankId },
+      body: {
+        files,
+        ...(filesOptions?.length ? { request: JSON.stringify({ files: filesOptions }) } : {}),
+      },
+      signal: options?.signal,
+    });
+
+    return this.validateResponse(response, "ingestKnowledgeFiles");
+  }
+
+  /**
+   * Search a knowledge bank. Give at least one of `query`, `queryImage`, `queryVideo`. Hits come
+   * best first, each text hit with the passages around it joined into its `text`.
+   */
+  async searchKnowledgeBank(
+    bankId: string,
+    options: {
+      query?: string;
+      /** Image to search by, as a data URL or base64 */
+      queryImage?: string;
+      /** Video to search by, as a data URL or base64 */
+      queryVideo?: string;
+      /** How deep the search ranks before `maxTokens` picks from it. Default: 'mid' */
+      budget?: Budget;
+      /** What the results may weigh in all, in tokens of their text. Default: 4096 */
+      maxTokens?: number;
+      tags?: string[];
+      /** How to match tags: 'any' (default), 'all', 'any_strict', 'all_strict', 'exact' */
+      tagsMatch?: "any" | "all" | "any_strict" | "all_strict" | "exact";
+      /** Compound boolean tag filter, same shape as recall's `tagGroups` */
+      tagGroups?: Array<TagGroupLeaf | TagGroupAndInput | TagGroupOrInput | TagGroupNotInput>;
+      documentIds?: string[];
+      mediaTypes?: Array<"document" | "image" | "audio" | "video" | "text">;
+      /** Rerank with the cross-encoder; omitted uses the bank's setting */
+      enableReranking?: boolean;
+      /** Also return how the search ranked and what the token budget kept */
+      trace?: boolean;
+      signal?: AbortSignal;
+    }
+  ): Promise<KnowledgeSearchResponse> {
+    const response = await sdk.searchKnowledgeBank({
+      client: this.client,
+      path: { bank_id: bankId },
+      body: {
+        query: options.query,
+        query_image: options.queryImage,
+        query_video: options.queryVideo,
+        budget: options.budget,
+        max_tokens: options.maxTokens,
+        tags: options.tags,
+        tags_match: options.tagsMatch,
+        tag_groups: options.tagGroups,
+        document_ids: options.documentIds,
+        media_types: options.mediaTypes,
+        enable_reranking: options.enableReranking,
+        trace: options.trace,
+      },
+      signal: options.signal,
+    });
+
+    return this.validateResponse(response, "searchKnowledgeBank");
+  }
+
+  /**
+   * List a knowledge bank's documents.
+   */
+  async listKnowledgeDocuments(
+    bankId: string,
+    options?: {
+      /** Substring of the document id or filename */
+      q?: string;
+      status?: string;
+      mediaType?: string;
+      tags?: string[];
+      limit?: number;
+      offset?: number;
+      signal?: AbortSignal;
+    }
+  ): Promise<KnowledgeDocumentListResponse> {
+    const response = await sdk.listKnowledgeDocuments({
+      client: this.client,
+      path: { bank_id: bankId },
+      query: {
+        q: options?.q,
+        status: options?.status,
+        media_type: options?.mediaType,
+        tags: options?.tags,
+        limit: options?.limit,
+        offset: options?.offset,
+      },
+      signal: options?.signal,
+    });
+
+    return this.validateResponse(response, "listKnowledgeDocuments");
+  }
+
+  /**
+   * Get one knowledge document with its status (`ready` once it is searchable).
+   */
+  async getKnowledgeDocument(
+    bankId: string,
+    documentId: string,
+    options?: { signal?: AbortSignal }
+  ): Promise<KnowledgeDocumentDetailResponse> {
+    const response = await sdk.getKnowledgeDocument({
+      client: this.client,
+      path: { bank_id: bankId, document_id: documentId },
+      signal: options?.signal,
+    });
+
+    return this.validateResponse(response, "getKnowledgeDocument");
+  }
+
+  /**
+   * Delete one knowledge document.
+   */
+  async deleteKnowledgeDocument(
+    bankId: string,
+    documentId: string,
+    options?: { signal?: AbortSignal }
+  ): Promise<KnowledgeDeletedResponse> {
+    const response = await sdk.deleteKnowledgeDocument({
+      client: this.client,
+      path: { bank_id: bankId, document_id: documentId },
+      signal: options?.signal,
+    });
+
+    return this.validateResponse(response, "deleteKnowledgeDocument");
+  }
+
+  /**
+   * List the tags on a knowledge bank's documents.
+   */
+  async listKnowledgeBankTags(
+    bankId: string,
+    options?: {
+      /** Wildcard pattern to filter tags (e.g. 'team:*'), case-insensitive */
+      q?: string;
+      limit?: number;
+      offset?: number;
+      signal?: AbortSignal;
+    }
+  ): Promise<KnowledgeTagsResponse> {
+    const response = await sdk.listKnowledgeBankTags({
+      client: this.client,
+      path: { bank_id: bankId },
+      query: { q: options?.q, limit: options?.limit, offset: options?.offset },
+      signal: options?.signal,
+    });
+
+    return this.validateResponse(response, "listKnowledgeBankTags");
+  }
+
+  /**
+   * Get a knowledge bank's settings: the resolved `config` and the bank's `overrides`.
+   */
+  async getKnowledgeBankConfig(
+    bankId: string,
+    options?: { signal?: AbortSignal }
+  ): Promise<KnowledgeBankConfigResponse> {
+    const response = await sdk.getKnowledgeBankConfig({
+      client: this.client,
+      path: { bank_id: bankId },
+      signal: options?.signal,
+    });
+
+    return this.validateResponse(response, "getKnowledgeBankConfig");
+  }
+
+  /**
+   * Override a knowledge bank's settings, named as in `config` (e.g. `{ text_passage_tokens: 256 }`);
+   * a null value clears that override. A change applies to files ingested after it.
+   */
+  async updateKnowledgeBankConfig(
+    bankId: string,
+    updates: Record<string, unknown>,
+    options?: { signal?: AbortSignal }
+  ): Promise<KnowledgeBankConfigResponse> {
+    const response = await sdk.updateKnowledgeBankConfig({
+      client: this.client,
+      path: { bank_id: bankId },
+      body: { updates },
+      signal: options?.signal,
+    });
+
+    return this.validateResponse(response, "updateKnowledgeBankConfig");
+  }
+
+  /**
+   * Drop every override of a knowledge bank's settings, going back to the server's.
+   */
+  async resetKnowledgeBankConfig(
+    bankId: string,
+    options?: { signal?: AbortSignal }
+  ): Promise<KnowledgeBankConfigResponse> {
+    const response = await sdk.resetKnowledgeBankConfig({
+      client: this.client,
+      path: { bank_id: bankId },
+      signal: options?.signal,
+    });
+
+    return this.validateResponse(response, "resetKnowledgeBankConfig");
+  }
+
   // Deprecated names from when pages were called "knowledge pages". Remove in 2.x.
 
   /** @deprecated Use {@link HindsightClient.getPageTree}. Removed in 2.x. */
@@ -2323,6 +2632,31 @@ export type {
   UpdateDocumentResponse,
   VersionResponse,
 };
+
+export type {
+  KnowledgeBankConfigResponse,
+  KnowledgeBankListResponse,
+  KnowledgeBankOverrides,
+  KnowledgeBankResponse,
+  KnowledgeBankSettings,
+  KnowledgeDeletedResponse,
+  KnowledgeDocumentDetailResponse,
+  KnowledgeDocumentListResponse,
+  KnowledgeDocumentResponse,
+  KnowledgeIngestRequest,
+  KnowledgeIngestResponse,
+  KnowledgeIngestTextItem,
+  KnowledgePassageResponse,
+  KnowledgeSearchRequest,
+  KnowledgeSearchResponse,
+  KnowledgeSearchResult,
+  KnowledgeSearchTrace,
+  KnowledgeSearchTraceHit,
+  KnowledgeTagsResponse,
+  KnowledgeTimeseriesBucket,
+  KnowledgeTimeseriesResponse,
+  KnowledgeTraceBudgetStep,
+} from "../generated/types.gen";
 
 // Deprecated type names from when pages were called "knowledge pages". Remove in 2.x.
 /** @deprecated Use {@link PageNode}. */
