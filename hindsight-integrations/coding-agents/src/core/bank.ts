@@ -201,8 +201,17 @@ function configuredDir(dir: string): string {
   return normalize(expanded).replace(new RegExp(`\\${sep}+$`), "");
 }
 
-/** Whether `directory` IS `configured`, or lives under it. */
-function isWithin(directory: string, configured: string): boolean {
+/** Whether `directory` IS `configured`, or lives under it. Windows paths are case-insensitive, and
+ *  a host's cwd often differs from the configured path in the drive letter alone (#6356). */
+export function isWithin(
+  directory: string,
+  configured: string,
+  platform: NodeJS.Platform = process.platform
+): boolean {
+  if (platform === "win32") {
+    directory = directory.toLowerCase();
+    configured = configured.toLowerCase();
+  }
   return directory === configured || directory.startsWith(configured + sep);
 }
 
@@ -332,7 +341,7 @@ export function deriveBankId(
  * with this name, so the two can never disagree; a bank id that does NOT come from the directory —
  * a static `bankId`, a `mapPathToBank` destination, a template keyed on `{channel}` — can collect
  * several repositories, and naming one of them after whichever session happened to run last is how
- * the seeded knowledge pages ended up flipping their scope sentence between repos on every session
+ * the seeded pages ended up flipping their scope sentence between repos on every session
  * start (#4146). Callers write this into per-BANK state, so it may only be answered when the bank
  * and the repository are the same unit; `undefined` means "this bank is not one repo's" and leaves
  * the caller to name it some other way.

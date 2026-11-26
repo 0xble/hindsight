@@ -6,23 +6,26 @@ order is final: recall applies none of the recency, temporal or proof-count boos
 applies to a cross-encoder's scores.
 
 It replaces the deprecated ``typesafe`` reranker provider (``HINDSIGHT_API_RERANKER_PROVIDER``):
-configure the shared ``HINDSIGHT_API_DECISION_MODEL_*`` settings instead. This one is read by
-``HindsightConfig.decision_model_config("recall")`` and talks to the endpoint through the
-shared :class:`~hindsight_api.engine.decision_model.DecisionModel` client.
+configure the shared ``HINDSIGHT_API_DECISION_MODEL_*`` settings instead. It is handed the
+shared :class:`~hindsight_api.engine.decision_model.DecisionModel` client that
+``decision_engine("recall")`` returns. The deprecated provider itself runs here too, on an
+engine built from its own settings: :class:`ListwiseDecisionReranker`.
 """
 
 from __future__ import annotations
 
 import asyncio
 import contextvars
+import logging
 from dataclasses import dataclass
 
 import numpy as np
 
-from ...config import DecisionModelConfig
 from ..cross_encoder import CrossEncoderModel
 from ..decision_model import DecisionModel, DecisionQuestion
 from ..decision_rerank_interface import ALIKE_FROM
+
+logger = logging.getLogger(__name__)
 
 PROVIDER_NAME = "decision_model"
 
@@ -86,11 +89,8 @@ class DecisionModelReranker(CrossEncoderModel):
     traces_calls = False
 
     def __init__(self, client: DecisionModel):
+        # The shared engine (decision_model.decision_engine("recall")), injected.
         self._client = client
-
-    @classmethod
-    def from_config(cls, config: DecisionModelConfig) -> DecisionModelReranker:
-        return cls(DecisionModel.from_config(config))
 
     @property
     def provider_name(self) -> str:
@@ -99,19 +99,20 @@ class DecisionModelReranker(CrossEncoderModel):
     async def initialize(self) -> None:
         pass
 
-    async def _rerank(self, query: str, docs: list[str], indices: list[int], scores: list[float]) -> None:
+    async def _rerank(
+        self,
+        query: str,
+        docs: list[str],
+        indices: list[int],
+        scores: list[float],
+    ) -> None:
         """Scores ``indices`` by position, best first."""
         rerank = self._client.rerank_interface()
         options = rerank_options.get()
         subset = [docs[index] for index in indices]
-        asked = rerank.questions(subset)
-        questions = {question.key: DecisionQuestion.model_validate(question.system_one()) for question in asked}
         state = rerank.state(query, rerank_shared_context.get())
-        # Every memory is capped (see DecisionRerank.questions), so no single question can
-        # outgrow the window: a failed request now raises instead of ranking its candidates last.
-        answers = await self._client.ask_all(state, questions, scope="decision_recall_rerank")
+        nouls = await self._judge(query, subset)
         # Stable on the caller's input order, so equal answers keep their RRF order.
-        nouls = [answers[question.key].noul if question.key in answers else None for question in asked]
         ranked = rerank.pruned(nouls) if options.prune else rerank.scores(nouls)
         if options.dedup:
             # The second request: its pairs depend on the ranking answers above.
@@ -126,6 +127,18 @@ class DecisionModelReranker(CrossEncoderModel):
                 ranked = rerank.deduped(ranked, repeats, {key: answer.noul for key, answer in found.items()})
         for slot, score in enumerate(ranked):
             scores[indices[slot]] = score
+
+    async def _judge(self, query: str, docs: list[str]) -> list[float | None]:
+        """One Noul per doc, in one batch of requests: whether showing it would help answer ``query``."""
+        rerank = self._client.rerank_interface()
+        asked = rerank.questions(docs)
+        questions = {question.key: DecisionQuestion.model_validate(question.system_one()) for question in asked}
+        # Every memory is capped (see DecisionRerank.questions), so no single question can
+        # outgrow the window: a failed request now raises instead of ranking its candidates last.
+        answers = await self._client.ask_all(
+            rerank.state(query, rerank_shared_context.get()), questions, scope="decision_recall_rerank"
+        )
+        return [answers[question.key].noul if question.key in answers else None for question in asked]
 
     @staticmethod
     async def _alike(
@@ -159,4 +172,57 @@ class DecisionModelReranker(CrossEncoderModel):
             by_query.setdefault(query, []).append(index)
         scores = [0.0] * len(pairs)
         await asyncio.gather(*(self._rerank(query, docs, indices, scores) for query, indices in by_query.items()))
+        return scores
+
+
+class ListwiseDecisionReranker(CrossEncoderModel):
+    """The deprecated ``typesafe`` reranker provider (``HINDSIGHT_API_RERANKER_PROVIDER=typesafe``),
+    on the decision engine: each query's pool ranked by one listwise Choice
+    (:meth:`DecisionModel.rank`), and with ``prune`` cut where relevance ends.
+
+    The scores are positions, not confidences, and a
+    candidate past the cut scores exactly 0.0, which is how :attr:`prunes_candidates` tells
+    recall to leave it out.
+    """
+
+    # Its decision-model requests are traced one by one; a rerank row would count them twice.
+    traces_calls = False
+
+    def __init__(self, client: DecisionModel, *, prune: bool = False):
+        self._client = client
+        self.prunes_candidates = prune
+
+    @property
+    def provider_name(self) -> str:
+        return "typesafe"
+
+    @property
+    def model(self) -> str:
+        return self._client.model
+
+    @property
+    def timeout(self) -> float:
+        return self._client.timeout
+
+    async def initialize(self) -> None:
+        logger.info(
+            f"Reranker: initializing TypeSafe provider at {self._client.base_url} with model {self.model} "
+            f"(prune_candidates={self.prunes_candidates})"
+        )
+
+    async def _predict(self, pairs: list[tuple[str, str]]) -> list[float]:
+        # A Choice ranks against one question, so each query's candidates are their own pool.
+        by_query: dict[str, list[int]] = {}
+        for index, (query, _) in enumerate(pairs):
+            by_query.setdefault(query, []).append(index)
+        ranked = await asyncio.gather(
+            *(
+                self._client.rank(query, [pairs[index][1] for index in indices], prune=self.prunes_candidates)
+                for query, indices in by_query.items()
+            )
+        )
+        scores = [0.0] * len(pairs)
+        for indices, pool in zip(by_query.values(), ranked):
+            for index, score in zip(indices, pool):
+                scores[index] = score
         return scores

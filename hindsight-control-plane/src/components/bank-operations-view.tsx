@@ -4,7 +4,7 @@ import { useState, useEffect, useCallback, useRef } from "react";
 import { useTranslations } from "next-intl";
 import { toast } from "sonner";
 import { useBank } from "@/lib/bank-context";
-import { client, type OperationProgress } from "@/lib/api";
+import { client, type ControlPlaneClient, type OperationProgress } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import {
   Table,
@@ -128,6 +128,7 @@ const OPERATION_TYPE_VALUES = [
   "export_bank",
   "import_bank",
   "clone_bank",
+  "knowledge_ingest",
 ] as const;
 
 const STATUS_FILTER_VALUES = [
@@ -139,9 +140,47 @@ const STATUS_FILTER_VALUES = [
   "cancelled",
 ] as const;
 
-export function BankOperationsView() {
+// The five job calls, from the memory-bank API or the knowledge-bank one: the same job table and
+// shapes, but a knowledge bank's jobs are only served under /knowledge-banks.
+// Looked up on each call, not bound at load: tests swap `client` for a partial fake.
+type Ops = {
+  list: ControlPlaneClient["listOperations"];
+  get: ControlPlaneClient["getOperationStatus"];
+  cancel: ControlPlaneClient["cancelOperation"];
+  retry: ControlPlaneClient["retryOperation"];
+  remove: ControlPlaneClient["deleteOperation"];
+};
+const MEMORY_BANK_OPS: Ops = {
+  list: (...a) => client.listOperations(...a),
+  get: (...a) => client.getOperationStatus(...a),
+  cancel: (...a) => client.cancelOperation(...a),
+  retry: (...a) => client.retryOperation(...a),
+  remove: (...a) => client.deleteOperation(...a),
+};
+const KNOWLEDGE_BANK_OPS: Ops = {
+  list: (...a) => client.listKnowledgeBankOperations(...a),
+  get: (...a) => client.getKnowledgeBankOperation(...a),
+  cancel: (...a) => client.cancelKnowledgeBankOperation(...a),
+  retry: (...a) => client.retryKnowledgeBankOperation(...a),
+  remove: (...a) => client.deleteKnowledgeBankOperation(...a),
+};
+
+export function BankOperationsView({
+  bankId,
+  knowledgeBank = false,
+  hideTypeFilter = false,
+}: {
+  /** A bank outside the bank context: a knowledge bank, whose page keeps the context empty. */
+  bankId?: string;
+  /** `bankId` is a knowledge bank: its jobs come from the knowledge-bank API. */
+  knowledgeBank?: boolean;
+  /** For a bank with one kind of operation (a knowledge bank only ingests), where the filter has nothing to pick. */
+  hideTypeFilter?: boolean;
+} = {}) {
   const t = useTranslations("bankOperations");
-  const { currentBank } = useBank();
+  const { currentBank: contextBank } = useBank();
+  const currentBank = bankId ?? contextBank;
+  const ops = knowledgeBank ? KNOWLEDGE_BANK_OPS : MEMORY_BANK_OPS;
   const [operations, setOperations] = useState<Operation[]>([]);
   const [totalOperations, setTotalOperations] = useState(0);
   const [statusFilter, setStatusFilter] = useState<string | null>(null);
@@ -187,6 +226,7 @@ export function BankOperationsView() {
     export_bank: t("operationType.exportBank"),
     import_bank: t("operationType.importBank"),
     clone_bank: t("operationType.cloneBank"),
+    knowledge_ingest: t("operationType.knowledgeIngest"),
   };
 
   const formatStatus = (status: string | null | undefined) =>
@@ -375,7 +415,7 @@ export function BankOperationsView() {
 
       setLoading(true);
       try {
-        const opsData = await client.listOperations(currentBank, {
+        const opsData = await ops.list(currentBank, {
           status: newStatusFilter || undefined,
           type: newTaskTypeFilter || undefined,
           limit,
@@ -393,7 +433,7 @@ export function BankOperationsView() {
         setLoading(false);
       }
     },
-    [currentBank, statusFilter, offset, taskTypeFilter, limit]
+    [ops, currentBank, statusFilter, offset, taskTypeFilter, limit]
   );
 
   const handleFilterChange = (newFilter: string | null) => {
@@ -418,7 +458,7 @@ export function BankOperationsView() {
 
     setCancellingOpId(operationId);
     try {
-      await client.cancelOperation(currentBank, operationId);
+      await ops.cancel(currentBank, operationId);
       await loadOperations();
     } catch (error) {
       // Error toast is shown automatically by the API client interceptor
@@ -432,7 +472,7 @@ export function BankOperationsView() {
 
     setRetryingOpId(operationId);
     try {
-      await client.retryOperation(currentBank, operationId);
+      await ops.retry(currentBank, operationId);
       await loadOperations();
     } catch (error) {
       // Error toast is shown automatically by the API client interceptor
@@ -460,7 +500,7 @@ export function BankOperationsView() {
     let done = 0;
     for (const op of failed) {
       try {
-        await client.retryOperation(currentBank, op.id);
+        await ops.retry(currentBank, op.id);
         done++;
       } catch {
         // Error toast is shown automatically by the API client interceptor
@@ -478,7 +518,7 @@ export function BankOperationsView() {
 
     setDeletingOpId(operationId);
     try {
-      await client.deleteOperation(currentBank, operationId);
+      await ops.remove(currentBank, operationId);
       if (selectedOperation?.operation_id === operationId) {
         setDialogOpen(false);
         setSelectedOperation(null);
@@ -498,7 +538,7 @@ export function BankOperationsView() {
     setDialogOpen(true);
     setPayloadLoadedFor(null);
     try {
-      const details = await client.getOperationStatus(currentBank, operationId);
+      const details = await ops.get(currentBank, operationId);
       setSelectedOperation(details);
     } catch (error) {
       console.error("Error loading operation details:", error);
@@ -514,7 +554,7 @@ export function BankOperationsView() {
     setLoadingPayload(true);
     try {
       const opId = selectedOperation.operation_id;
-      const details = await client.getOperationStatus(currentBank, opId, {
+      const details = await ops.get(currentBank, opId, {
         includePayload: true,
       });
       setSelectedOperation(details);
@@ -609,26 +649,28 @@ export function BankOperationsView() {
               {t("action.retryAll", { count: failedOnPage })}
             </Button>
           )}
-          <Select
-            value={taskTypeFilter ?? "all"}
-            onValueChange={(val) => handleTaskTypeFilterChange(val === "all" ? null : val)}
-          >
-            <SelectTrigger className="h-9 w-[180px] text-sm">
-              <SelectValue placeholder={t("allTypes")} />
-            </SelectTrigger>
-            <SelectContent>
-              {OPERATION_TYPE_VALUES.map((value) => (
-                <SelectItem key={value} value={value}>
-                  <div>
-                    <div>{operationTypeLabels[value]}</div>
-                    {value !== "all" && (
-                      <div className="text-xs text-muted-foreground font-mono">{value}</div>
-                    )}
-                  </div>
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
+          {!hideTypeFilter && (
+            <Select
+              value={taskTypeFilter ?? "all"}
+              onValueChange={(val) => handleTaskTypeFilterChange(val === "all" ? null : val)}
+            >
+              <SelectTrigger className="h-9 w-[180px] text-sm">
+                <SelectValue placeholder={t("allTypes")} />
+              </SelectTrigger>
+              <SelectContent>
+                {OPERATION_TYPE_VALUES.map((value) => (
+                  <SelectItem key={value} value={value}>
+                    <div>
+                      <div>{operationTypeLabels[value]}</div>
+                      {value !== "all" && (
+                        <div className="text-xs text-muted-foreground font-mono">{value}</div>
+                      )}
+                    </div>
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          )}
           <div className="flex max-w-full gap-1 overflow-x-auto bg-muted p-1 rounded-lg">
             {STATUS_FILTER_VALUES.map((filter) => (
               <button

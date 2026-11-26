@@ -6,6 +6,7 @@ columns can't appear in GROUP BY).
 """
 
 import json
+import re
 import uuid as uuid_mod
 from datetime import UTC, datetime
 from typing import cast
@@ -21,10 +22,12 @@ from .ops import (
     key_serialization_sql,
     memory_unit_columns,
 )
+from .oracle import ORACLE_IN_LIST_LIMIT, OracleConnection
 from .result import DictResultRow as ResultRow
 from .result import ResultRow as DatabaseResultRow
 
-ORACLE_IN_LIST_LIMIT = 1000
+# ORA-02291 on a memory_links -> memory_units FK: the link's endpoint was deleted.
+_VANISHED_UNIT_FK = re.compile(r"ORA-02291\b.*\.FK_ML_(?:FROM|TO)\)", re.IGNORECASE)
 
 
 class OracleOps(DataAccessOps):
@@ -222,29 +225,53 @@ class OracleOps(DataAccessOps):
         sorted_links: list[tuple],
         bank_id: str,
         nil_entity_uuid: str,
-        exists_clause: str,
         chunk_size: int = 5000,
     ) -> None:
-        # The backend rewrites ON CONFLICT DO NOTHING for duplicate suppression.
-        # WHERE EXISTS checks are intentionally skipped: executemany does not support
-        # correlated subqueries in this form, and callers guarantee unit validity.
-        from_ids = [lnk[0] for lnk in sorted_links]
-        to_ids = [lnk[1] for lnk in sorted_links]
-        types = [lnk[2] for lnk in sorted_links]
-        weights = [lnk[3] for lnk in sorted_links]
-        entity_ids = [lnk[4] for lnk in sorted_links]
-
-        await conn.executemany(
-            f"""
+        # A link can point at a unit read before this transaction (an ANN or
+        # temporal neighbor) that a concurrent writer — consolidation pruning, a
+        # document re-retain — has deleted since. Like PostgreSQL, such links are
+        # dropped instead of failing the whole batch with ORA-02291 (#6440). Oracle's
+        # FK is immediate, so the insert itself is the existence check: array DML with
+        # batcherrors=True sends one round-trip per chunk inside a savepoint, dropping
+        # only ORA-00001 duplicates and ORA-02291 on the unit FKs while rolling back
+        # and raising on any unexpected batch error. A link that does land holds back
+        # a concurrent DELETE of its endpoint until commit, so no window remains and
+        # no parent lock is needed. (A FOR UPDATE parent lock was tried first and
+        # dropped: Oracle's only row lock is exclusive, so concurrent retains linking
+        # to the same neighbors queued behind each other. One execute() per link came
+        # next and cost a round-trip each: 730 ms -> 108 ms for 300 links, #6587.)
+        if not sorted_links:
+            return
+        query = f"""
             INSERT INTO {table}
                 (from_unit_id, to_unit_id, link_type, weight, entity_id, bank_id)
             VALUES ($1, $2, $3, $4, $5, $6)
             ON CONFLICT (from_unit_id, to_unit_id, link_type,
                          COALESCE(entity_id, '{nil_entity_uuid}'::uuid))
             DO NOTHING
-            """,
-            [(from_ids[i], to_ids[i], types[i], weights[i], entity_ids[i], bank_id) for i in range(len(sorted_links))],
-        )
+            """
+        if isinstance(conn, OracleConnection):
+            step = max(1, chunk_size)
+            for start in range(0, len(sorted_links), step):
+                chunk = sorted_links[start : start + step]
+                rows = [
+                    (from_id, to_id, link_type, weight, entity_id, bank_id)
+                    for from_id, to_id, link_type, weight, entity_id in chunk
+                ]
+                await conn.executemany_filtered(
+                    query,
+                    rows,
+                    is_ignored_error=lambda err: bool(_VANISHED_UNIT_FK.search(str(getattr(err, "message", err)))),
+                )
+            return
+
+        # Any other DatabaseConnection has no batcherrors: one statement per link.
+        for from_id, to_id, link_type, weight, entity_id in sorted_links:
+            try:
+                await conn.execute(query, from_id, to_id, link_type, weight, entity_id, bank_id)
+            except Exception as e:
+                if not _VANISHED_UNIT_FK.search(str(e)):
+                    raise
 
     async def bulk_insert_entities(
         self,
@@ -369,27 +396,20 @@ class OracleOps(DataAccessOps):
         if not unit_ids:
             return
         # Locking upsert (#3034), the Oracle analogue of the PG
-        # ``ON CONFLICT DO UPDATE``. The old IGNORE_ROW_ON_DUPKEY_INDEX insert
-        # skipped duplicates WITHOUT locking the existing row, so a mutation
-        # re-enqueueing an already-queued unit could not block a worker from
-        # concurrently claiming (deleting) that row and processing the unit's
-        # pre-mutation state — the re-enqueue signal was silently lost. MERGE
-        # WHEN MATCHED takes an exclusive row lock on the existing queue row
-        # (the SET is a deliberate no-op that preserves enqueued_at); WHEN NOT
-        # MATCHED inserts a fresh row. That serialises the mutation against the
-        # worker's claim for the same (bank_id, unit_id).
+        # ``ON CONFLICT DO UPDATE``: WHEN MATCHED keeps enqueued_at, clears any
+        # claim (so a worker relinking the unit right now leaves the row queued
+        # for one more pass) and takes the row's lock; WHEN NOT MATCHED inserts.
+        # Callers run it just before commit (#6417), so the lock is brief.
         #
-        # Sort to enforce a global (bank_id, unit_id) lock-acquisition order,
-        # matching claim_graph_maintenance_batch's delete order, so overlapping
-        # mutation/worker sets acquire the shared row locks ascending and cannot
-        # cycle.
+        # Sorted, so overlapping enqueues take the shared row locks ascending —
+        # the order the claim and the finishing delete use too — and cannot cycle.
         sorted_unit_ids = sorted(unit_ids)
         await conn.executemany(
             f"""
             MERGE INTO {table} q
             USING (SELECT $1 AS bank_id, $2 AS unit_id FROM dual) s
             ON (q.bank_id = s.bank_id AND q.unit_id = s.unit_id)
-            WHEN MATCHED THEN UPDATE SET q.enqueued_at = q.enqueued_at
+            WHEN MATCHED THEN UPDATE SET q.claimed_at = NULL
             WHEN NOT MATCHED THEN INSERT (bank_id, unit_id) VALUES (s.bank_id, s.unit_id)
             """,
             [(bank_id, uid) for uid in sorted_unit_ids],
@@ -401,35 +421,53 @@ class OracleOps(DataAccessOps):
         table: str,
         bank_id: str,
         limit: int,
+        claimed_at: datetime,
+        stale_before: datetime,
     ) -> list[str]:
-        # Two-step claim: select the batch, then delete by exact keys. Oracle's
-        # DELETE ... RETURNING doesn't accept a multi-row subquery, so we can't
-        # do it in one statement like the PG version.
+        # Pick the oldest claimable batch, then stamp it one row per statement in
+        # ascending unit_id order (an Oracle multi-row UPDATE locks in no set
+        # order). The stamp re-checks claimability, so a row another worker took
+        # in between is skipped; reading back by stamp returns what we got.
         rows = await conn.fetch(
             f"""
             SELECT unit_id FROM {table}
-            WHERE bank_id = $1
+            WHERE bank_id = $1 AND (claimed_at IS NULL OR claimed_at < $3)
             ORDER BY enqueued_at
             FETCH FIRST $2 ROWS ONLY
             """,
             bank_id,
             limit,
+            stale_before,
         )
-        # Ordered locking (#3034): the per-row DELETE takes the queue rows'
-        # exclusive locks in executemany array order. Sort the claimed keys by
-        # unit_id so those locks are acquired in the same (bank_id, unit_id)
-        # order the enqueue MERGE uses — overlapping mutation/worker sets then
-        # lock the shared rows ascending and cannot cycle. (The batch is still
-        # *chosen* oldest-first by enqueued_at above; only the lock/delete order
-        # is normalised.) The Pass 1 retry wrap in run_graph_maintenance_job is
-        # the ORA-00060 backstop for any residual interleaving.
-        claimed = sorted(str(row["unit_id"]) for row in rows)
-        if claimed:
-            await conn.executemany(
-                f"DELETE FROM {table} WHERE bank_id = $1 AND unit_id = $2",
-                [(bank_id, uid) for uid in claimed],
-            )
-        return claimed
+        if not rows:
+            return []
+        await conn.executemany(
+            f"""
+            UPDATE {table} SET claimed_at = $1
+            WHERE bank_id = $2 AND unit_id = $3 AND (claimed_at IS NULL OR claimed_at < $4)
+            """,
+            [(claimed_at, bank_id, uid, stale_before) for uid in sorted(str(r["unit_id"]) for r in rows)],
+        )
+        claimed = await conn.fetch(
+            f"SELECT unit_id FROM {table} WHERE bank_id = $1 AND claimed_at = $2",
+            bank_id,
+            claimed_at,
+        )
+        return sorted(str(r["unit_id"]) for r in claimed)
+
+    async def finish_graph_maintenance_batch(
+        self,
+        conn: DatabaseConnection,
+        table: str,
+        bank_id: str,
+        unit_ids: list[str],
+        claimed_at: datetime,
+    ) -> None:
+        # One row per statement, ascending — the enqueue MERGE's lock order.
+        await conn.executemany(
+            f"DELETE FROM {table} WHERE bank_id = $1 AND unit_id = $2 AND claimed_at = $3",
+            [(bank_id, uid, claimed_at) for uid in sorted(unit_ids)],
+        )
 
     async def release_entity_postings(
         self,
@@ -633,19 +671,15 @@ class OracleOps(DataAccessOps):
         mu_table: str,
         unit_ids: list[str],
     ) -> list[ResultRow]:
-        # No ANY() array binding; query each unit individually
+        # One query per 1000 ids, not one per id: the rewriter expands ANY($1) into an
+        # IN list, which Oracle caps at 1000 items (ORA-01795).
         rows: list[ResultRow] = []
-        for uid in unit_ids:
-            row = await conn.fetchrow(
-                f"""
-                SELECT id, event_date, fact_type
-                FROM {mu_table}
-                WHERE id = $1
-                """,
-                uid,
+        for start in range(0, len(unit_ids), ORACLE_IN_LIST_LIMIT):
+            batch = await conn.fetch(
+                f"SELECT id, event_date, fact_type FROM {mu_table} WHERE id = ANY($1)",
+                unit_ids[start : start + ORACLE_IN_LIST_LIMIT],
             )
-            if row:
-                rows.append(cast(ResultRow, row))
+            rows.extend(cast(list[ResultRow], batch))
         return rows
 
     async def fetch_temporal_neighbors(
@@ -841,23 +875,15 @@ class OracleOps(DataAccessOps):
         # query behind an 'entity' source discriminator, like the non-observation
         # combined expansion, so a normal call performs one fetch instead of two.
         # Every predicate, score expression, ordering, limit, and the window bind
-        # positions are exactly the two previous statements', now sharing one
-        # snapshot. The caller splits the unioned rows by `source`.
+        # positions are preserved, and the caller splits the unioned rows by `source`.
         #
-        # Two PostgreSQL fixes are deliberately NOT mirrored here, because neither
-        # was measured against Oracle and both are tuned to PostgreSQL's planner:
-        #   - #3085 made PG score set-wise; the scoring below is still the
-        #     correlated per-observation COUNT(*). On Oracle that counts rows of
-        #     the indexed observation_sources junction table rather than scanning
-        #     an unpruned array, so it is a much weaker version of that problem.
-        #   - #3510 replaced PG's `DISTINCT` over a `LATERAL ... LIMIT` with a
-        #     row_number() window, because PostgreSQL cannot estimate the row count
-        #     of that shape and mis-planned the scoring join into a nested loop.
-        #     `connected_sources` below has the same shape, so the same collapse is
-        #     structurally possible, but Oracle's cardinality estimation differs and
-        #     no Oracle instance was available to measure it.
-        # If observation recall is reported slow on Oracle, start by capturing the
-        # plan for connected_sources and checking its estimated vs actual rows.
+        # Like PostgreSQL (#3085, #3510), entity expansion ranks per-entity unit
+        # fan-out with ROW_NUMBER() rather than CROSS JOIN LATERAL and aggregates
+        # shared-source scores set-wise over observation_sources (hitting
+        # IDX_OBS_SOURCES_SOURCE_ID) before joining memory_units by PK. The old
+        # LATERAL + correlated EXISTS/COUNT(*) plan triggered nested loops across
+        # observations and timed out at >10s (>3.7M logical reads on ADB 26ai);
+        # this plan completes in ~0.25s (~6.5k logical reads) with identical output.
         from ..schema import fq_table
 
         obs_sources_table = fq_table("observation_sources")
@@ -873,39 +899,40 @@ class OracleOps(DataAccessOps):
                 FROM seed_sources ss
                 JOIN {ue_table} ue_seed ON ue_seed.unit_id = ss.source_id
             ),
-            connected_sources AS (
-                SELECT DISTINCT t.unit_id AS source_id
+            entity_units_ranked AS (
+                SELECT ue_target.unit_id,
+                       ROW_NUMBER() OVER (
+                           PARTITION BY ue_target.entity_id
+                           ORDER BY ue_target.unit_id DESC
+                       ) AS rn
                 FROM source_entities se
-                CROSS JOIN LATERAL (
-                    SELECT ue_target.unit_id
-                    FROM {ue_table} ue_target
-                    WHERE ue_target.entity_id = se.entity_id
-                    ORDER BY ue_target.unit_id DESC
-                    FETCH FIRST {per_entity_limit} ROWS ONLY
-                ) t
-                WHERE NOT EXISTS (
-                    SELECT 1 FROM seed_sources ss WHERE ss.source_id = t.unit_id
-                )
+                JOIN {ue_table} ue_target ON ue_target.entity_id = se.entity_id
+            ),
+            connected_sources AS (
+                SELECT DISTINCT eur.unit_id AS source_id
+                FROM entity_units_ranked eur
+                WHERE eur.rn <= {per_entity_limit}
+                  AND NOT EXISTS (
+                      SELECT 1 FROM seed_sources ss WHERE ss.source_id = eur.unit_id
+                  )
+            ),
+            obs_scores AS (
+                SELECT os.observation_id, COUNT(DISTINCT cs.source_id) AS score
+                FROM connected_sources cs
+                JOIN {obs_sources_table} os ON os.source_id = cs.source_id
+                WHERE os.observation_id != ALL($1::uuid[])
+                GROUP BY os.observation_id
             ),
             observation_entity_expanded AS (
                 SELECT
                     {memory_unit_columns("mu", indent=20)},
-                    (SELECT COUNT(*)
-                     FROM {obs_sources_table} os2
-                     WHERE os2.observation_id = mu.id
-                       AND os2.source_id IN (SELECT source_id FROM connected_sources)
-                    ) AS score,
+                    s.score,
                     'entity' AS source
-                FROM {mu_table} mu
+                FROM obs_scores s
+                JOIN {mu_table} mu ON mu.id = s.observation_id
                 WHERE mu.fact_type = 'observation'
-                  AND mu.id != ALL($1::uuid[])
-                  AND EXISTS (
-                      SELECT 1 FROM {obs_sources_table} os3
-                      WHERE os3.observation_id = mu.id
-                        AND os3.source_id IN (SELECT source_id FROM connected_sources)
-                  )
                   {window.clause("mu")}
-                ORDER BY score DESC
+                ORDER BY s.score DESC
                 FETCH FIRST $2 ROWS ONLY
             ),
             sem_scores AS (

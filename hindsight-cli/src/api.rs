@@ -138,24 +138,47 @@ pub struct MemoryPutResult {
     pub operation_id: Option<String>,
 }
 
+/// One file to upload: its name, the document id to store it under, and its bytes.
+pub struct FileUpload {
+    pub filename: String,
+    pub document_id: String,
+    pub content: Vec<u8>,
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 pub struct FileRetainResult {
     pub operation_ids: Vec<String>,
 }
 
-/// Tag filter for the knowledge-base tree and search, with recall's semantics.
+/// Tag filter for the page tree and page search, with recall's semantics.
 #[derive(Debug, Default)]
-pub struct KnowledgeTagFilter {
+pub struct PageTagFilter {
     pub tags: Vec<String>,
     pub tags_match: Option<types::TagsMatch>,
     /// JSON-encoded `tag_groups`, passed through as the query param the server parses.
     pub tag_groups: Option<String>,
 }
 
-impl KnowledgeTagFilter {
+impl PageTagFilter {
     fn tags(&self) -> Option<&Vec<String>> {
         (!self.tags.is_empty()).then_some(&self.tags)
     }
+}
+
+/// How a document update changes its tags: a full replacement (`tags`), or tags added and
+/// removed while the rest stay.
+pub struct TagChange {
+    pub tags: Option<Vec<String>>,
+    pub add_tags: Option<Vec<String>>,
+    pub remove_tags: Option<Vec<String>>,
+}
+
+/// Which kind of bank an operation belongs to: memory banks and knowledge banks keep their
+/// background operations behind separate endpoints that answer with the same shapes.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum BankKind {
+    Memory,
+    Knowledge,
 }
 
 #[derive(Clone)]
@@ -337,7 +360,7 @@ impl ApiClient {
     pub fn file_retain(
         &self,
         bank_id: &str,
-        files: Vec<(String, Vec<u8>)>,
+        files: Vec<FileUpload>,
         context: Option<String>,
         strategy: Option<String>,
         verbose: bool,
@@ -350,7 +373,7 @@ impl ApiClient {
 
             let files_metadata: Vec<serde_json::Value> = files
                 .iter()
-                .map(|(name, _)| {
+                .map(|file| {
                     let mut meta = serde_json::json!({});
                     if let Some(ctx) = &context {
                         meta["context"] = serde_json::Value::String(ctx.clone());
@@ -358,13 +381,7 @@ impl ApiClient {
                     if let Some(strat) = &strategy {
                         meta["strategy"] = serde_json::Value::String(strat.clone());
                     }
-                    // Use filename stem as document_id for deduplication
-                    if let Some(stem) = std::path::Path::new(name)
-                        .file_stem()
-                        .and_then(|s| s.to_str())
-                    {
-                        meta["document_id"] = serde_json::Value::String(stem.to_string());
-                    }
+                    meta["document_id"] = serde_json::Value::String(file.document_id.clone());
                     meta
                 })
                 .collect();
@@ -376,9 +393,9 @@ impl ApiClient {
             let mut form =
                 reqwest::multipart::Form::new().text("request", request_json.to_string());
 
-            for (filename, content) in files {
-                let part = reqwest::multipart::Part::bytes(content)
-                    .file_name(filename)
+            for file in files {
+                let part = reqwest::multipart::Part::bytes(file.content)
+                    .file_name(file.filename)
                     .mime_str("application/octet-stream")?;
                 form = form.part("files", part);
             }
@@ -574,13 +591,29 @@ impl ApiClient {
         })
     }
 
-    pub fn list_operations(&self, agent_id: &str, _verbose: bool) -> Result<OperationsResponse> {
+    pub fn list_operations(
+        &self,
+        agent_id: &str,
+        kind: BankKind,
+        _verbose: bool,
+    ) -> Result<OperationsResponse> {
         self.runtime.block_on(async {
-            let response = self
-                .client
-                .list_operations(agent_id, None, None, None, None, None, None)
-                .humanized()
-                .await?;
+            let response = match kind {
+                BankKind::Memory => {
+                    self.client
+                        .list_operations(agent_id, None, None, None, None, None, None)
+                        .humanized()
+                        .await?
+                }
+                BankKind::Knowledge => {
+                    self.client
+                        .list_knowledge_bank_operations(
+                            agent_id, None, None, None, None, None, None,
+                        )
+                        .humanized()
+                        .await?
+                }
+            };
             let value = response.into_inner();
             // Convert to JSON Value first, then parse into our type
             let json_value = serde_json::to_value(&value)?;
@@ -593,14 +626,24 @@ impl ApiClient {
         &self,
         agent_id: &str,
         operation_id: &str,
+        kind: BankKind,
         _verbose: bool,
     ) -> Result<types::DeleteResponse> {
         self.runtime.block_on(async {
-            let response = self
-                .client
-                .cancel_operation(agent_id, operation_id, None)
-                .humanized()
-                .await?;
+            let response = match kind {
+                BankKind::Memory => {
+                    self.client
+                        .cancel_operation(agent_id, operation_id, None)
+                        .humanized()
+                        .await?
+                }
+                BankKind::Knowledge => {
+                    self.client
+                        .cancel_knowledge_bank_operation(agent_id, operation_id, None)
+                        .humanized()
+                        .await?
+                }
+            };
             let value = response.into_inner();
             // Convert typed response to DeleteResponse
             Ok(types::DeleteResponse {
@@ -728,6 +771,30 @@ impl ApiClient {
             let response = self
                 .client
                 .get_memory(bank_id, memory_id, None)
+                .humanized()
+                .await?;
+            Ok(response.into_inner())
+        })
+    }
+
+    /// The bank's observations as a tree of topic files, optionally for one tag scope.
+    pub fn get_observation_tree(
+        &self,
+        bank_id: &str,
+        tags: &[String],
+        tags_match: Option<types::TagsMatch>,
+    ) -> Result<types::ObservationTreeFolder> {
+        let tags = tags.to_vec();
+        self.runtime.block_on(async {
+            let response = self
+                .client
+                .get_observation_tree(
+                    bank_id,
+                    None, // tag_groups
+                    (!tags.is_empty()).then_some(&tags),
+                    tags_match,
+                    None, // authorization
+                )
                 .humanized()
                 .await?;
             Ok(response.into_inner())
@@ -912,14 +979,24 @@ impl ApiClient {
         &self,
         bank_id: &str,
         operation_id: &str,
+        kind: BankKind,
         _verbose: bool,
     ) -> Result<types::OperationStatusResponse> {
         self.runtime.block_on(async {
-            let response = self
-                .client
-                .get_operation_status(bank_id, operation_id, None, None)
-                .humanized()
-                .await?;
+            let response = match kind {
+                BankKind::Memory => {
+                    self.client
+                        .get_operation_status(bank_id, operation_id, None, None)
+                        .humanized()
+                        .await?
+                }
+                BankKind::Knowledge => {
+                    self.client
+                        .get_knowledge_bank_operation(bank_id, operation_id, None, None)
+                        .humanized()
+                        .await?
+                }
+            };
             Ok(response.into_inner())
         })
     }
@@ -963,7 +1040,17 @@ impl ApiClient {
         self.runtime.block_on(async {
             let response = self
                 .client
-                .list_mental_models(bank_id, Some(detail), None, None, None, None, None, None)
+                .list_mental_models(
+                    bank_id,
+                    Some(detail),
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                )
                 .humanized()
                 .await?;
             Ok(response.into_inner())
@@ -1088,18 +1175,18 @@ impl ApiClient {
         })
     }
 
-    // --- Knowledge Base Methods ---
+    // --- Pages Methods ---
 
-    pub fn get_knowledge_base_tree(
+    pub fn get_page_tree(
         &self,
         bank_id: &str,
-        filter: &KnowledgeTagFilter,
+        filter: &PageTagFilter,
         _verbose: bool,
-    ) -> Result<types::KnowledgeTreeResponse> {
+    ) -> Result<types::PageTreeResponse> {
         self.runtime.block_on(async {
             let response = self
                 .client
-                .get_knowledge_base_tree(
+                .get_page_tree(
                     bank_id,
                     filter.tag_groups.as_deref(),
                     filter.tags(),
@@ -1112,66 +1199,66 @@ impl ApiClient {
         })
     }
 
-    pub fn create_knowledge_folder(
+    pub fn create_page_folder(
         &self,
         bank_id: &str,
         request: &types::CreateFolderRequest,
         _verbose: bool,
-    ) -> Result<types::KnowledgeNode> {
+    ) -> Result<types::PageNode> {
         self.runtime.block_on(async {
             let response = self
                 .client
-                .create_knowledge_folder(bank_id, None, request)
+                .create_page_folder(bank_id, None, request)
                 .humanized()
                 .await?;
             Ok(response.into_inner())
         })
     }
 
-    pub fn create_knowledge_page(
+    pub fn create_page(
         &self,
         bank_id: &str,
         request: &types::CreatePageRequest,
         _verbose: bool,
-    ) -> Result<types::CreateKnowledgePageResponse> {
+    ) -> Result<types::CreatePageResponse> {
         self.runtime.block_on(async {
             let response = self
                 .client
-                .create_knowledge_page(bank_id, None, request)
+                .create_page(bank_id, None, request)
                 .humanized()
                 .await?;
             Ok(response.into_inner())
         })
     }
 
-    pub fn get_knowledge_page(
+    pub fn get_page(
         &self,
         bank_id: &str,
         page_id: &str,
         _verbose: bool,
-    ) -> Result<types::KnowledgePageResponse> {
+    ) -> Result<types::PageResponse> {
         self.runtime.block_on(async {
             let response = self
                 .client
-                .get_knowledge_page(bank_id, page_id, None)
+                .get_page(bank_id, page_id, None)
                 .humanized()
                 .await?;
             Ok(response.into_inner())
         })
     }
 
-    pub fn search_knowledge_base(
+    pub fn search_pages(
         &self,
         bank_id: &str,
         query: &types::Q,
         limit: Option<std::num::NonZeroU64>,
-        filter: &KnowledgeTagFilter,
+        filter: &PageTagFilter,
         _verbose: bool,
-    ) -> Result<types::KnowledgePageSearchResponse> {
+    ) -> Result<types::PageSearchResponse> {
         self.runtime.block_on(async {
             let response = self
                 .client
-                .search_knowledge_base(
+                .search_pages(
                     bank_id,
                     limit,
                     query,
@@ -1186,24 +1273,24 @@ impl ApiClient {
         })
     }
 
-    pub fn update_knowledge_node(
+    pub fn update_page_node(
         &self,
         bank_id: &str,
         node_id: &str,
         request: &types::UpdateNodeRequest,
         _verbose: bool,
-    ) -> Result<types::KnowledgeNode> {
+    ) -> Result<types::PageNode> {
         self.runtime.block_on(async {
             let response = self
                 .client
-                .update_knowledge_node(bank_id, node_id, None, request)
+                .update_page_node(bank_id, node_id, None, request)
                 .humanized()
                 .await?;
             Ok(response.into_inner())
         })
     }
 
-    pub fn delete_knowledge_node(
+    pub fn delete_page_node(
         &self,
         bank_id: &str,
         node_id: &str,
@@ -1212,24 +1299,16 @@ impl ApiClient {
         self.runtime.block_on(async {
             let response = self
                 .client
-                .delete_knowledge_node(bank_id, node_id, None)
+                .delete_page_node(bank_id, node_id, None)
                 .humanized()
                 .await?;
             Ok(response.into_inner())
         })
     }
 
-    pub fn export_knowledge_base(
-        &self,
-        bank_id: &str,
-        _verbose: bool,
-    ) -> Result<types::KnowledgePageBundleResponse> {
+    pub fn export_pages(&self, bank_id: &str, _verbose: bool) -> Result<types::PageBundleResponse> {
         self.runtime.block_on(async {
-            let response = self
-                .client
-                .export_knowledge_base(bank_id, None)
-                .humanized()
-                .await?;
+            let response = self.client.export_pages(bank_id, None).humanized().await?;
             Ok(response.into_inner())
         })
     }
@@ -1512,10 +1591,14 @@ impl ApiClient {
         limit: Option<i64>,
         _verbose: bool,
     ) -> Result<types::WebhookDeliveryListResponse> {
+        // The API takes a limit of at least 1; zero or negative falls back to its default.
+        let limit_nz = limit
+            .and_then(|l| u64::try_from(l).ok())
+            .and_then(std::num::NonZeroU64::new);
         self.runtime.block_on(async {
             let response = self
                 .client
-                .list_webhook_deliveries(bank_id, webhook_id, cursor, limit, None)
+                .list_webhook_deliveries(bank_id, webhook_id, cursor, limit_nz, None)
                 .humanized()
                 .await?;
             Ok(response.into_inner())
@@ -1642,7 +1725,7 @@ impl ApiClient {
         &self,
         bank_id: &str,
         document_id: &str,
-        tags: Option<Vec<String>>,
+        tag_change: TagChange,
         observation_scopes: Option<serde_json::Value>,
         _verbose: bool,
     ) -> Result<types::UpdateDocumentResponse> {
@@ -1650,7 +1733,9 @@ impl ApiClient {
             // Through serde so the CLI does not depend on the generated union's variant names.
             let request: types::UpdateDocumentRequest =
                 serde_json::from_value(serde_json::json!({
-                    "tags": tags,
+                    "tags": tag_change.tags,
+                    "add_tags": tag_change.add_tags,
+                    "remove_tags": tag_change.remove_tags,
                     "observation_scopes": observation_scopes,
                 }))?;
             let response = self
@@ -1702,14 +1787,24 @@ impl ApiClient {
         &self,
         bank_id: &str,
         operation_id: &str,
+        kind: BankKind,
         _verbose: bool,
     ) -> Result<types::RetryOperationResponse> {
         self.runtime.block_on(async {
-            let response = self
-                .client
-                .retry_operation(bank_id, operation_id, None)
-                .humanized()
-                .await?;
+            let response = match kind {
+                BankKind::Memory => {
+                    self.client
+                        .retry_operation(bank_id, operation_id, None)
+                        .humanized()
+                        .await?
+                }
+                BankKind::Knowledge => {
+                    self.client
+                        .retry_knowledge_bank_operation(bank_id, operation_id, None)
+                        .humanized()
+                        .await?
+                }
+            };
             Ok(response.into_inner())
         })
     }
@@ -1718,14 +1813,24 @@ impl ApiClient {
         &self,
         bank_id: &str,
         operation_id: &str,
+        kind: BankKind,
         _verbose: bool,
     ) -> Result<types::DeleteOperationResponse> {
         self.runtime.block_on(async {
-            let response = self
-                .client
-                .delete_operation(bank_id, operation_id, None)
-                .humanized()
-                .await?;
+            let response = match kind {
+                BankKind::Memory => {
+                    self.client
+                        .delete_operation(bank_id, operation_id, None)
+                        .humanized()
+                        .await?
+                }
+                BankKind::Knowledge => {
+                    self.client
+                        .delete_knowledge_bank_operation(bank_id, operation_id, None)
+                        .humanized()
+                        .await?
+                }
+            };
             Ok(response.into_inner())
         })
     }
@@ -1765,6 +1870,333 @@ impl ApiClient {
         ]);
         self.update_bank_config(bank_id, updates, verbose)
     }
+}
+
+// --- Knowledge banks ---
+//
+// Each method is named after the operation it calls, so the CLI coverage check finds the three
+// that bypass the generated client (multipart upload and the two byte downloads, which progenitor
+// does not model).
+
+/// A knowledge bank upload or download can be far bigger than any JSON call, so it gets its own
+/// deadline instead of the client's 2 minutes.
+const KB_TRANSFER_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(6 * 60 * 60);
+
+/// Options for one file of a knowledge bank file ingest.
+#[derive(Debug, Default, Serialize)]
+pub struct KnowledgeFileOptions {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub document_id: Option<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub tags: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub strategy: Option<String>,
+}
+
+impl ApiClient {
+    pub fn list_knowledge_banks(
+        &self,
+        q: Option<&str>,
+        limit: u64,
+        offset: u64,
+    ) -> Result<types::KnowledgeBankListResponse> {
+        self.runtime.block_on(async {
+            Ok(self
+                .client
+                .list_knowledge_banks(Some(limit), Some(offset), q, None)
+                .humanized()
+                .await?
+                .into_inner())
+        })
+    }
+
+    pub fn create_knowledge_bank(&self, bank_id: &str) -> Result<types::KnowledgeBankResponse> {
+        let body = types::CreateKnowledgeBankRequest {
+            bank_id: bank_id.to_string(),
+        };
+        self.runtime.block_on(async {
+            Ok(self
+                .client
+                .create_knowledge_bank(None, &body)
+                .humanized()
+                .await?
+                .into_inner())
+        })
+    }
+
+    pub fn get_knowledge_bank(&self, bank_id: &str) -> Result<types::KnowledgeBankResponse> {
+        self.runtime.block_on(async {
+            Ok(self
+                .client
+                .get_knowledge_bank(bank_id, None)
+                .humanized()
+                .await?
+                .into_inner())
+        })
+    }
+
+    pub fn delete_knowledge_bank(&self, bank_id: &str) -> Result<types::KnowledgeDeletedResponse> {
+        self.runtime.block_on(async {
+            Ok(self
+                .client
+                .delete_knowledge_bank(bank_id, None)
+                .humanized()
+                .await?
+                .into_inner())
+        })
+    }
+
+    pub fn get_knowledge_bank_config(
+        &self,
+        bank_id: &str,
+    ) -> Result<types::KnowledgeBankConfigResponse> {
+        self.runtime.block_on(async {
+            Ok(self
+                .client
+                .get_knowledge_bank_config(bank_id, None)
+                .humanized()
+                .await?
+                .into_inner())
+        })
+    }
+
+    pub fn update_knowledge_bank_config(
+        &self,
+        bank_id: &str,
+        updates: serde_json::Map<String, serde_json::Value>,
+    ) -> Result<types::KnowledgeBankConfigResponse> {
+        let body = types::KnowledgeBankConfigUpdate { updates };
+        self.runtime.block_on(async {
+            Ok(self
+                .client
+                .update_knowledge_bank_config(bank_id, None, &body)
+                .humanized()
+                .await?
+                .into_inner())
+        })
+    }
+
+    pub fn reset_knowledge_bank_config(
+        &self,
+        bank_id: &str,
+    ) -> Result<types::KnowledgeBankConfigResponse> {
+        self.runtime.block_on(async {
+            Ok(self
+                .client
+                .reset_knowledge_bank_config(bank_id, None)
+                .humanized()
+                .await?
+                .into_inner())
+        })
+    }
+
+    /// Upload one file to a knowledge bank, streamed from disk (files can be gigabytes).
+    pub fn ingest_knowledge_files(
+        &self,
+        bank_id: &str,
+        path: &std::path::Path,
+        options: &KnowledgeFileOptions,
+        verbose: bool,
+    ) -> Result<types::KnowledgeIngestResponse> {
+        let url = format!(
+            "{}/v1/default/knowledge-banks/{}/files/ingest",
+            self.base_url, bank_id
+        );
+        let request = serde_json::json!({ "files": [options] }).to_string();
+        if verbose {
+            eprintln!("POST {} request={}", url, request);
+        }
+        self.runtime.block_on(async {
+            let form = reqwest::multipart::Form::new()
+                .text("request", request)
+                .file("files", path)
+                .await
+                .map_err(|e| anyhow::anyhow!("Failed to read {}: {}", path.display(), e))?;
+            let response = self
+                .http_client
+                .post(&url)
+                .timeout(KB_TRANSFER_TIMEOUT)
+                .multipart(form)
+                .send()
+                .await?;
+            json_or_error(response).await
+        })
+    }
+
+    pub fn ingest_knowledge_texts(
+        &self,
+        bank_id: &str,
+        body: &types::KnowledgeIngestRequest,
+    ) -> Result<types::KnowledgeIngestResponse> {
+        self.runtime.block_on(async {
+            Ok(self
+                .client
+                .ingest_knowledge_texts(bank_id, None, body)
+                .humanized()
+                .await?
+                .into_inner())
+        })
+    }
+
+    pub fn search_knowledge_bank(
+        &self,
+        bank_id: &str,
+        body: &types::KnowledgeSearchRequest,
+        verbose: bool,
+    ) -> Result<types::KnowledgeSearchResponse> {
+        if verbose {
+            eprintln!(
+                "Request body: {}",
+                serde_json::to_string_pretty(body).unwrap_or_default()
+            );
+        }
+        self.runtime.block_on(async {
+            Ok(self
+                .client
+                .search_knowledge_bank(bank_id, None, body)
+                .humanized()
+                .await?
+                .into_inner())
+        })
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn list_knowledge_documents(
+        &self,
+        bank_id: &str,
+        q: Option<&str>,
+        status: Option<&str>,
+        media_type: Option<&str>,
+        tags: &Vec<String>,
+        limit: u64,
+        offset: u64,
+    ) -> Result<types::KnowledgeDocumentListResponse> {
+        self.runtime.block_on(async {
+            Ok(self
+                .client
+                .list_knowledge_documents(
+                    bank_id,
+                    std::num::NonZeroU64::new(limit),
+                    media_type,
+                    Some(offset),
+                    q,
+                    status,
+                    (!tags.is_empty()).then_some(tags),
+                    None,
+                )
+                .humanized()
+                .await?
+                .into_inner())
+        })
+    }
+
+    pub fn get_knowledge_document(
+        &self,
+        bank_id: &str,
+        document_id: &str,
+    ) -> Result<types::KnowledgeDocumentDetailResponse> {
+        self.runtime.block_on(async {
+            Ok(self
+                .client
+                .get_knowledge_document(bank_id, document_id, None)
+                .humanized()
+                .await?
+                .into_inner())
+        })
+    }
+
+    pub fn delete_knowledge_document(
+        &self,
+        bank_id: &str,
+        document_id: &str,
+    ) -> Result<types::KnowledgeDeletedResponse> {
+        self.runtime.block_on(async {
+            Ok(self
+                .client
+                .delete_knowledge_document(bank_id, document_id, None)
+                .humanized()
+                .await?
+                .into_inner())
+        })
+    }
+
+    pub fn list_knowledge_bank_tags(
+        &self,
+        bank_id: &str,
+        q: Option<&str>,
+        limit: u64,
+        offset: u64,
+    ) -> Result<types::KnowledgeTagsResponse> {
+        self.runtime.block_on(async {
+            Ok(self
+                .client
+                .list_knowledge_bank_tags(bank_id, Some(limit), Some(offset), q, None)
+                .humanized()
+                .await?
+                .into_inner())
+        })
+    }
+
+    /// Stream a document's original file into `out`; returns the bytes written.
+    pub fn get_knowledge_document_file(
+        &self,
+        bank_id: &str,
+        document_id: &str,
+        out: &mut dyn std::io::Write,
+    ) -> Result<u64> {
+        let url = format!(
+            "{}/v1/default/knowledge-banks/{}/documents/{}/file",
+            self.base_url, bank_id, document_id
+        );
+        self.download(&url, out)
+    }
+
+    /// Stream one passage's media (a page image, an image, an audio or video window) into `out`.
+    pub fn get_knowledge_passage_media(
+        &self,
+        bank_id: &str,
+        document_id: &str,
+        index: i64,
+        out: &mut dyn std::io::Write,
+    ) -> Result<u64> {
+        let url = format!(
+            "{}/v1/default/knowledge-banks/{}/documents/{}/passages/{}/media",
+            self.base_url, bank_id, document_id, index
+        );
+        self.download(&url, out)
+    }
+
+    fn download(&self, url: &str, out: &mut dyn std::io::Write) -> Result<u64> {
+        self.runtime.block_on(async {
+            let mut response = self
+                .http_client
+                .get(url)
+                .timeout(KB_TRANSFER_TIMEOUT)
+                .send()
+                .await?;
+            if !response.status().is_success() {
+                let status = response.status();
+                let body = response.text().await.unwrap_or_default();
+                anyhow::bail!("API request failed ({}): {}", status, body);
+            }
+            let mut written = 0u64;
+            while let Some(chunk) = response.chunk().await? {
+                out.write_all(&chunk)?;
+                written += chunk.len() as u64;
+            }
+            out.flush()?;
+            Ok(written)
+        })
+    }
+}
+
+async fn json_or_error<T: serde::de::DeserializeOwned>(response: reqwest::Response) -> Result<T> {
+    let status = response.status();
+    if !status.is_success() {
+        let body = response.text().await.unwrap_or_default();
+        anyhow::bail!("API request failed ({}): {}", status, body);
+    }
+    Ok(response.json().await?)
 }
 
 // Re-export types from the generated client for use in commands

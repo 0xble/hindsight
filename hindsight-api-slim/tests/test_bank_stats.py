@@ -16,6 +16,7 @@ import pytest_asyncio
 from hindsight_api import RequestContext
 from hindsight_api.api import create_app
 from hindsight_api.engine.memory_engine import get_current_schema
+from hindsight_api.engine.schema import fq_table
 
 
 @pytest_asyncio.fixture
@@ -59,7 +60,7 @@ async def test_bank_stats_exposes_memory_write_watermark(api_client, memory, tes
     """/stats must carry the bank's newest memory write time.
 
     It rides along on the consolidation aggregate for free, and is what the
-    mental-models card and the knowledge tree compare each `last_refreshed_at`
+    mental-models card and the page tree compare each `last_refreshed_at`
     against — the alternative being a scan of the bank's memories per model.
     """
     try:
@@ -378,7 +379,7 @@ async def test_reflect_uses_freshness_not_bank_stats(memory, test_bank_id):
 
     Counts calls to `_compute_bank_stats` (the heavy loader) during a reflect
     invocation; it must stay at zero — reflect should route through
-    the freshness read (`_bank_freshness`) instead.
+    the store's `reflect_freshness` instead.
     """
     from hindsight_api.extensions import RequestContext
 
@@ -398,7 +399,7 @@ async def test_reflect_uses_freshness_not_bank_stats(memory, test_bank_id):
         try:
             await memory._bank_stats_cache.invalidate(get_current_schema(), test_bank_id)
             try:
-                await memory.reflect(
+                await memory.reflect_async(
                     test_bank_id,
                     "What do you know about this bank?",
                     request_context=RequestContext(internal=True),
@@ -413,6 +414,61 @@ async def test_reflect_uses_freshness_not_bank_stats(memory, test_bank_id):
             memory._compute_bank_stats = original_compute  # type: ignore[method-assign]
     finally:
         await memory._bank_stats_cache.invalidate(get_current_schema(), test_bank_id)
+        async with memory._pool.acquire() as conn:
+            await conn.execute("DELETE FROM memory_units WHERE bank_id = $1", test_bank_id)
+
+
+@pytest.mark.asyncio
+async def test_default_reflect_freshness_is_the_exact_freshness(memory, test_bank_id):
+    """A store that does not override `reflect_freshness` answers it exactly, from `consolidation_freshness`."""
+    from hindsight_api.engine.memories import ReflectFreshness, get_memories
+
+    store = get_memories()
+    await _insert_memory(memory, test_bank_id, "Pending one.", failed=False)
+    try:
+        async with memory._pool.acquire() as conn:
+            exact = await store.consolidation_freshness(conn=conn, fq_table=fq_table, bank_id=test_bank_id)
+            rough = await store.reflect_freshness(conn=conn, fq_table=fq_table, bank_id=test_bank_id)
+        assert rough == ReflectFreshness(pending=exact["pending"], last_memory_write_at=exact["last_memory_write_at"])
+        assert rough.pending == 1
+        assert rough.last_memory_write_at is not None
+    finally:
+        async with memory._pool.acquire() as conn:
+            await conn.execute("DELETE FROM memory_units WHERE bank_id = $1", test_bank_id)
+
+
+@pytest.mark.asyncio
+async def test_reflect_reads_the_stores_reflect_freshness(memory, test_bank_id, monkeypatch):
+    """reflect() asks the store's `reflect_freshness`, never the exact `consolidation_freshness`.
+
+    The split is what lets a store answer reflect from a cheaper read: the exact one is for the
+    gates that act on `pending`, and reflect waits on whichever it calls before it starts.
+    """
+    from hindsight_api.engine.memories import get_memories
+
+    class _Reached(Exception):
+        pass
+
+    store = get_memories()
+    exact_calls = 0
+
+    async def reflect_freshness(**kwargs):
+        # Stop reflect here: everything after this needs an LLM, and this is the read under test.
+        raise _Reached
+
+    async def consolidation_freshness(**kwargs):
+        nonlocal exact_calls
+        exact_calls += 1
+        return {"last_consolidated_at": None, "last_memory_write_at": None, "pending": 0, "failed": 0}
+
+    monkeypatch.setattr(store, "reflect_freshness", reflect_freshness)
+    monkeypatch.setattr(store, "consolidation_freshness", consolidation_freshness)
+    await _insert_memory(memory, test_bank_id, "Reflect seed.", failed=False)
+    try:
+        with pytest.raises(_Reached):
+            await memory.reflect_async(test_bank_id, "What do you know?", request_context=RequestContext(internal=True))
+        assert exact_calls == 0
+    finally:
         async with memory._pool.acquire() as conn:
             await conn.execute("DELETE FROM memory_units WHERE bank_id = $1", test_bank_id)
 
@@ -453,5 +509,36 @@ async def test_bank_stats_served_from_cache_on_repeat_call(api_client, memory, t
         finally:
             memory._compute_bank_stats = original  # type: ignore[method-assign]
             await memory._bank_stats_cache.invalidate(get_current_schema(), test_bank_id)
+    finally:
+        await api_client.delete(f"/v1/default/banks/{test_bank_id}")
+
+
+@pytest.mark.asyncio
+@pytest.mark.memory_backend_incompatible
+async def test_bank_stats_counts_entity_links_per_unit(api_client, memory, test_bank_id):
+    """Every unit sharing an entity counts its own capped neighbours (#6430).
+
+    Entities mentioned by 2, 4 and 13 units give 2*1 + 4*3 + 13*10 = 144 directed
+    links (the per-unit cap is 10). Counting each entity once gave 1 + 3 + 10 = 14.
+    """
+    try:
+        # Seeded with SQL because retain lets the LLM pick entities, so it cannot
+        # produce exact mention counts. The assertion still goes through /stats.
+        async with memory._pool.acquire() as conn:
+            for mentions in (2, 4, 13):
+                entity_id = await conn.fetchval(
+                    "INSERT INTO entities (bank_id, canonical_name) VALUES ($1, $2) RETURNING id",
+                    test_bank_id,
+                    f"entity-{mentions}",
+                )
+                for i in range(mentions):
+                    unit_id = await _insert_memory(memory, test_bank_id, f"Mention {i} of entity-{mentions}.")
+                    await conn.execute(
+                        "INSERT INTO unit_entities (unit_id, entity_id) VALUES ($1::uuid, $2)", unit_id, entity_id
+                    )
+
+        response = await api_client.get(f"/v1/default/banks/{test_bank_id}/stats")
+        assert response.status_code == 200
+        assert response.json()["links_by_link_type"]["entity"] == 144
     finally:
         await api_client.delete(f"/v1/default/banks/{test_bank_id}")

@@ -195,7 +195,7 @@
             }
           ],
           "default": null,
-          "description": "The same, for knowledge-page refreshes",
+          "description": "The same, for page refreshes",
           "title": "Mental Model Refresh Use Decision Model"
         },
         "mental_model_delta_use_decision_model": {
@@ -208,7 +208,7 @@
             }
           ],
           "default": null,
-          "description": "When the server has a decision model, a delta knowledge-page refresh asks it which new memories could change the page instead of running reflect",
+          "description": "When the server has a decision model, a delta page refresh asks it which new memories could change the page instead of running reflect",
           "title": "Mental Model Delta Use Decision Model"
         },
         "disposition_skepticism": {
@@ -354,6 +354,71 @@
           "description": "MCP tool allowlist for this bank (None = all tools)",
           "title": "Mcp Enabled Tools"
         },
+        "mcp_server_instructions": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Instructions sent to MCP clients in the initialize response when they connect to this bank",
+          "title": "Mcp Server Instructions"
+        },
+        "knowledge_banks": {
+          "anyOf": [
+            {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Knowledge banks whose passages this bank's reflect reads",
+          "title": "Knowledge Banks"
+        },
+        "reflect_kb_search_media_types": {
+          "anyOf": [
+            {
+              "items": {
+                "enum": [
+                  "document",
+                  "image",
+                  "audio",
+                  "video",
+                  "text"
+                ],
+                "type": "string"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Media types reflect's knowledge-bank search may return (None = all)",
+          "title": "Reflect Kb Search Media Types"
+        },
+        "reflect_kb_search_apply_tags": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Filter the knowledge-bank search by the reflect's tags, as its memories are",
+          "title": "Reflect Kb Search Apply Tags"
+        },
         "consolidation_llm_batch_size": {
           "anyOf": [
             {
@@ -480,6 +545,20 @@
           "description": "Max tokens of source facts per reflect call",
           "title": "Reflect Source Facts Max Tokens"
         },
+        "page_default_trigger": {
+          "anyOf": [
+            {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Trigger fields merged over the built-in page default when a page is created (e.g. {\"refresh_cron\": \"0 * * * *\"}). A trigger sent with the create request still wins.",
+          "title": "Page Default Trigger"
+        },
         "knowledge_page_default_trigger": {
           "anyOf": [
             {
@@ -491,7 +570,8 @@
             }
           ],
           "default": null,
-          "description": "Trigger fields merged over the built-in knowledge-page default when a page is created (e.g. {\"refresh_cron\": \"0 * * * *\"}). A trigger sent with the create request still wins.",
+          "deprecated": true,
+          "description": "Deprecated alias of page_default_trigger. Remove in 2.x.",
           "title": "Knowledge Page Default Trigger"
         },
         "reflect_default_options": {
@@ -505,7 +585,7 @@
             }
           ],
           "default": null,
-          "description": "Default reflect options for this bank (e.g. {\"reflect_search_observations_max_tokens\": 3000, \"reflect_search_observations_include_entities\": false}). Applied to every reflect in the bank -- API, MCP and mental-model refresh -- whenever the request (or the model's trigger) leaves the option unset.",
+          "description": "Default reflect options for this bank (e.g. {\"reflect_search_observations_max_tokens\": 3000, \"reflect_search_observations_include_entities\": false}). Applied to every reflect request in the bank (API and MCP) that leaves the option unset. Mental-model refreshes do not read it: they take these options from their own trigger, defaulted per bank by page_default_trigger.",
           "title": "Reflect Default Options"
         },
         "mental_model_min_refresh_interval_seconds": {
@@ -708,7 +788,7 @@
             }
           ],
           "default": null,
-          "description": "IANA zone (e.g. 'Europe/Rome') a retain timestamp, or a time the LLM extracts, is read in when it carries no UTC offset.",
+          "description": "IANA zone (e.g. 'Europe/Rome') a retain timestamp, or a time the LLM extracts, is read in when it carries no UTC offset, and the zone the LLM reads memory times in.",
           "title": "Default Timezone"
         },
         "enable_auto_consolidation": {
@@ -960,7 +1040,7 @@
       "description": "A mental model definition within a bank template manifest.",
       "properties": {
         "id": {
-          "description": "Unique ID for the mental model (alphanumeric lowercase with hyphens)",
+          "description": "Unique ID for the mental model (same rules as a bank id: at most 192 bytes of UTF-8, no '/' and no control characters)",
           "title": "Id",
           "type": "string"
         },
@@ -1223,7 +1303,7 @@
       "type": "object"
     },
     "MentalModelTrigger": {
-      "description": "Trigger settings for a mental model.\n\nA refresh is not an ad-hoc reflect with different arguments: it synthesizes a\nwhole document, so it wants its own retrieval and iteration settings. This\ntrigger is therefore the only source for them \u2014 a bank's\n``reflect_default_options`` deliberately does not reach a refresh. The\nper-bank default for these fields is ``knowledge_page_default_trigger``,\nwhich is merged over this same shape when a page is created.",
+      "description": "Trigger settings for a mental model.\n\nA refresh is not an ad-hoc reflect with different arguments: it synthesizes a\nwhole document, so it wants its own retrieval and iteration settings. This\ntrigger is therefore the only source for them \u2014 a bank's\n``reflect_default_options`` deliberately does not reach a refresh. The\nper-bank default for these fields is ``page_default_trigger``,\nwhich is merged over this same shape when a page is created.",
       "properties": {
         "budget": {
           "anyOf": [

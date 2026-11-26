@@ -19,6 +19,7 @@ from typing import TYPE_CHECKING, Any, Literal, Union, get_args, get_origin
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from hindsight_api.config import (
+    MCP_SERVER_INSTRUCTIONS_MAX_CHARS,
     RECALL_BUDGET_FUNCTIONS,
     HindsightConfig,
     _get_raw_config,
@@ -646,8 +647,8 @@ class ConfigResolver:
 
         # Both of these are merged into a request the API also accepts directly, so
         # hold them to the same contract as the request that carries those fields.
-        if normalized_updates.get("knowledge_page_default_trigger") is not None:
-            _validate_knowledge_page_default_trigger(normalized_updates["knowledge_page_default_trigger"])
+        if normalized_updates.get("page_default_trigger") is not None:
+            _validate_page_default_trigger(normalized_updates["page_default_trigger"])
         if normalized_updates.get("reflect_default_options") is not None:
             _validate_reflect_default_options(normalized_updates["reflect_default_options"])
 
@@ -689,6 +690,14 @@ class ConfigResolver:
         # Validate recall budget fields
         _validate_recall_budget_updates(normalized_updates)
 
+        # Clients put these instructions in the model's context on every connection.
+        instructions = normalized_updates.get("mcp_server_instructions")
+        if isinstance(instructions, str) and len(instructions) > MCP_SERVER_INSTRUCTIONS_MAX_CHARS:
+            raise ValueError(
+                f"mcp_server_instructions must be at most {MCP_SERVER_INSTRUCTIONS_MAX_CHARS} characters, "
+                f"got {len(instructions)}"
+            )
+
         # A zone name nothing can load would break every retain on the bank.
         if normalized_updates.get("default_timezone") is not None:
             try:
@@ -701,6 +710,7 @@ class ConfigResolver:
 
         # Validate disposition trait fields (1-5 integer scale)
         _validate_disposition_updates(normalized_updates)
+        _validate_reflect_kb_search_updates(normalized_updates)
 
         # Constraints spanning several fields need the whole projected
         # configuration, not just the update. This check is the early one, so a
@@ -908,9 +918,9 @@ def _validate_against_model(key: str, value: dict[str, Any], model: "type[BaseMo
         raise ValueError(f"Invalid {key}: {problems}") from e
 
 
-def _validate_knowledge_page_default_trigger(value: dict[str, Any]) -> None:
+def _validate_page_default_trigger(value: dict[str, Any]) -> None:
     """Reject unknown trigger fields and values ``MentalModelTrigger`` refuses."""
-    _validate_against_model("knowledge_page_default_trigger", value, MentalModelTrigger, "trigger")
+    _validate_against_model("page_default_trigger", value, MentalModelTrigger, "trigger")
 
 
 def _validate_reflect_default_options(value: dict[str, Any]) -> None:
@@ -1136,6 +1146,19 @@ def _validate_disposition_updates(updates: dict[str, Any]) -> None:
                 continue
             if not isinstance(value, int) or isinstance(value, bool) or not (1 <= value <= 5):
                 raise ValueError(f"{key} must be an integer between 1 and 5, got {value!r}")
+
+
+def _validate_reflect_kb_search_updates(updates: dict[str, Any]) -> None:
+    """Values the type check cannot catch: an unknown media type."""
+    from .knowledge.media import MEDIA_TYPES
+
+    media_types = updates.get("reflect_kb_search_media_types")
+    if media_types is not None:
+        unknown = sorted(set(media_types) - set(MEDIA_TYPES))
+        if unknown:
+            raise ValueError(
+                f"reflect_kb_search_media_types: unknown media types {unknown} (expected some of {list(MEDIA_TYPES)})"
+            )
 
 
 def apply_strategy(config: HindsightConfig, strategy_name: str) -> HindsightConfig:

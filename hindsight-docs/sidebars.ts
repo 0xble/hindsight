@@ -45,8 +45,20 @@ const sidebars: SidebarsConfig = {
         },
         {
           type: 'doc',
-          id: 'developer/knowledge-pages',
-          label: 'Knowledge Pages',
+          id: 'developer/pages',
+          label: 'Pages',
+          customProps: { icon: 'lu-book-text' },
+        },
+        {
+          type: 'doc',
+          id: 'developer/decision-models',
+          label: 'Decision Models',
+          customProps: { icon: 'lu-network' },
+        },
+        {
+          type: 'doc',
+          id: 'developer/knowledge-banks',
+          label: 'Knowledge Banks',
           customProps: { icon: 'lu-book-text' },
         },
         {
@@ -112,8 +124,8 @@ const sidebars: SidebarsConfig = {
         },
         {
           type: 'doc',
-          id: 'developer/api/knowledge-pages',
-          label: 'Knowledge Pages',
+          id: 'developer/api/pages',
+          label: 'Pages',
           customProps: { icon: 'lu-book-text' },
         },
         {
@@ -151,6 +163,12 @@ const sidebars: SidebarsConfig = {
           id: 'developer/api/bank-templates',
           label: 'Bank Templates',
           customProps: { icon: 'lu-file-json' },
+        },
+        {
+          type: 'doc',
+          id: 'developer/api/knowledge-banks',
+          label: 'Knowledge Banks',
+          customProps: { icon: 'lu-book-text' },
         },
         {
           type: 'link',

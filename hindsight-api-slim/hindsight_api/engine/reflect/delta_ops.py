@@ -49,7 +49,9 @@ from typing import Annotated, Any, Literal, Union, cast
 
 from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, ValidationError, field_validator
 
-from hindsight_api.engine.llm_wrapper import ConfiguredLLMProvider, parse_llm_json
+from hindsight_api.config import get_config
+from hindsight_api.engine.llm_wrapper import ConfiguredLLMProvider, OutputTooLongError, parse_llm_json, reask_messages
+from hindsight_api.engine.response_models import LLMCallResult
 
 from .structured_doc import (
     Block,
@@ -58,6 +60,7 @@ from .structured_doc import (
     make_block_id,
     make_unique_id,
     normalize_block_text,
+    promote_embedded_headings,
     slugify_heading,
 )
 
@@ -169,7 +172,7 @@ class RemoveBlockOp(_OpBase):
 
 
 class AddSectionOp(_OpBase):
-    """Add a new section with its blocks, after after_section_id (an existing section's id) or at the end when omitted."""
+    """Add a new section with its blocks, after after_section_id (an existing section's id) or at the end when null."""
 
     # ``new_id``, when omitted, is the heading slugified and disambiguated
     # against the ids already in use.
@@ -478,6 +481,14 @@ def _unreachable_correction_prompt(
             continue
         lines += ["", f"The blocks of section {section.id} are:"]
         lines += [f"- {block.id}: {block.text[:80]!r}" for block in section.blocks]
+    # A section the reply adds is not in the list above, so a chain of new
+    # sections can only be fixed by naming them by heading (#6583).
+    if any(e.get("op") == "add_section" for e in skipped):
+        lines += [
+            "",
+            "A section this reply adds has no id yet: to place a new section after it, "
+            "set ``after_section_id`` to its heading exactly as you wrote it.",
+        ]
     lines += [
         "",
         "Send the COMPLETE list again, with every section_id and block_id copied "
@@ -487,31 +498,21 @@ def _unreachable_correction_prompt(
     return "\n".join(lines)
 
 
-def _replayed_reply_text(content: Any) -> str:
-    """The refused reply as text, for the retry's assistant turn.
+async def _call_resampling_a_runaway(
+    llm: ConfiguredLLMProvider, messages: list[dict[str, Any]], scope: str, **call_kwargs: Any
+) -> LLMCallResult:
+    """``llm.call``, sampled once more when the reply runs to the output cap.
 
-    ``content`` is not necessarily the text the model wrote. A provider only
-    parses the body when the call set a ``response_format`` — a dict under
-    ``skip_validation``, the validated model otherwise — and the delta call site
-    sets one. Replaying that object unchanged put it in ``messages[N].content``,
-    which every strict request-body validator types as a string or a list of
-    content blocks, so the retry was refused with a 422 before it was ever sent;
-    the caller's own retry ladder then re-sent the identical body and the delta
-    was dropped under a refresh that reported success (#4965).
-
-    Serialized, not stringified, so the model reads back the document it wrote
-    rather than a repr of it; and passed through untouched when it already is
-    text, so a provider that returned text still sees the exact bytes it sent.
+    An operation list is short; a reply that reaches the cap is the model stuck
+    repeating one bullet, not a long answer (#6265). That loop is a sampling
+    accident — about 1 in 120 identical requests — so the same request, once more,
+    comes back whole. A second runaway raises, so the refresh fails as before.
     """
-    if isinstance(content, str):
-        return content
-    if isinstance(content, BaseModel):
-        return content.model_dump_json()
-    if content is None:
-        return ""
-    if isinstance(content, (dict, list)):
-        return json.dumps(content, ensure_ascii=False)
-    return str(content)
+    try:
+        return await llm.call(messages=messages, scope=scope, **call_kwargs)
+    except OutputTooLongError:
+        logger.warning("[STRUCTURED_DELTA] %s reply hit the token cap; sampling once more", scope)
+        return await llm.call(messages=messages, scope=scope, **call_kwargs)
 
 
 async def request_delta_operations(
@@ -540,11 +541,18 @@ async def request_delta_operations(
     preserved and the task retries with a fresh reflect behind it, a better use
     of the next attempt.
 
+    A reply that runs to the output cap is a different failure and is answered
+    differently: the same request, sampled once more (``_call_resampling_a_runaway``),
+    on either ask. That is not the #3421 case — a loop to the cap is not decided by
+    the input, about 1 identical request in 120 hits it (#6265) — and with no reply
+    there is nothing to correct. Before this, the cap error raised straight out and
+    the model stayed stale, since a failover chain does not move on for it either.
+
     The retry APPENDS to the first request and never rewrites it, so the system
     prompt and the whole document stay a byte-identical prefix and the provider's
     prompt cache still covers them on the second call. The one appended turn the
     caller has to rebuild is the model's own reply, and it is rebuilt as text —
-    see ``_replayed_reply_text`` for why a parsed reply cannot be replayed as one.
+    see ``reask_messages`` for why a parsed reply cannot be replayed as one.
 
     ``document``, when given, also refuses a reply that parses but cannot fully
     land: an operation names a section or block the document does not have — all
@@ -554,8 +562,18 @@ async def request_delta_operations(
     block ids. Only the refresh's edit pass passes it — for the retraction pass,
     touching nothing is a legitimate answer.
     """
+    # The schema travels on every delta-shaped call, set here rather than by each
+    # caller: the retraction pass once omitted it and ran unconstrained, so a model
+    # with native grammar decoding (Ollama) produced off-schema ops there (#6569).
+    # ``skip_validation`` keeps the raw JSON for the op-by-op parser below.
+    call_kwargs = {
+        "response_format": DeltaOperationList,
+        "strict_schema": get_config().llm_strict_schema_reflect,
+        "skip_validation": True,
+        **call_kwargs,
+    }
     messages = [{"role": "system", "content": system_prompt}, {"role": "user", "content": user_prompt}]
-    first = await llm.call(messages=messages, scope=scope, **call_kwargs)
+    first = await _call_resampling_a_runaway(llm, messages, scope, **call_kwargs)
     try:
         op_list = parse_delta_operation_list(first.content)
     except (ValueError, TypeError) as exc:  # DeltaOperationsInvalidError and JSON errors are ValueErrors
@@ -580,12 +598,9 @@ async def request_delta_operations(
             len(op_list.operations),
         )
         correction = _unreachable_correction_prompt(unreachable, document, any_applied=bool(outcome.applied))
-    retry_messages = [
-        *messages,
-        {"role": "assistant", "content": _replayed_reply_text(first.content)},
-        {"role": "user", "content": correction},
-    ]
-    second = await llm.call(messages=retry_messages, scope=scope, **call_kwargs)
+    second = await _call_resampling_a_runaway(
+        llm, reask_messages(messages, first.content, correction), scope, **call_kwargs
+    )
     return parse_delta_operation_list(second.content)
 
 
@@ -840,4 +855,4 @@ def apply_operations(
 
         skip(op, f"unhandled op type: {type(op).__name__}")  # pragma: no cover
 
-    return AppliedDelta(document=new_doc, applied=applied, skipped=skipped)
+    return AppliedDelta(document=promote_embedded_headings(new_doc, reserved_ids), applied=applied, skipped=skipped)

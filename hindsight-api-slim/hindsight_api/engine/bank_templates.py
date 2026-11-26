@@ -4,10 +4,9 @@ Shared by the HTTP import/export endpoints and by ``MemoryEngine``, which applie
 server's default template (``HINDSIGHT_API_DEFAULT_BANK_TEMPLATE``) to every new bank.
 """
 
-import re
 from typing import TYPE_CHECKING, Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
 
 from hindsight_api.config import RETAIN_EXTRACTION_MODES, get_config
 from hindsight_api.engine.interface import BankTemplateImportWrite
@@ -17,6 +16,7 @@ from hindsight_api.engine.response_models import (
     ConsolidationStrategySpec,
     FieldWithDefault,
     MentalModelTrigger,
+    check_mental_model_id,
 )
 from hindsight_api.engine.retain.entity_labels import LabelGroup, migrate_entity_labels_input
 from hindsight_api.extensions.operation_validator import BankWriteOperation
@@ -32,7 +32,12 @@ BANK_TEMPLATE_CURRENT_VERSION = "1"
 class BankTemplateMentalModel(BaseModel):
     """A mental model definition within a bank template manifest."""
 
-    id: str = Field(description="Unique ID for the mental model (alphanumeric lowercase with hyphens)")
+    id: str = Field(
+        description=(
+            "Unique ID for the mental model (same rules as a bank id: at most 192 bytes of UTF-8, "
+            "no '/' and no control characters)"
+        )
+    )
     name: str = Field(description="Human-readable name for the mental model")
     source_query: str = Field(description="The query to run to generate content")
     tags: list[str] = FieldWithDefault(list, description="Tags for scoped visibility")
@@ -42,11 +47,7 @@ class BankTemplateMentalModel(BaseModel):
     @field_validator("id")
     @classmethod
     def validate_id(cls, v: str) -> str:
-        if not re.match(r"^[a-z0-9][a-z0-9-]*$", v):
-            raise ValueError(
-                f"Mental model id '{v}' must be alphanumeric lowercase with hyphens, starting with a letter or digit."
-            )
-        return v
+        return check_mental_model_id(v)
 
 
 class BankTemplateConfig(BaseModel):
@@ -93,11 +94,11 @@ class BankTemplateConfig(BaseModel):
         description="When the server has a decision model, reflect lets it prune evidence and decide when to stop",
     )
     mental_model_refresh_use_decision_model: bool | None = Field(
-        default=None, description="The same, for knowledge-page refreshes"
+        default=None, description="The same, for page refreshes"
     )
     mental_model_delta_use_decision_model: bool | None = Field(
         default=None,
-        description="When the server has a decision model, a delta knowledge-page refresh asks it which new "
+        description="When the server has a decision model, a delta page refresh asks it which new "
         "memories could change the page instead of running reflect",
     )
     disposition_skepticism: int | None = Field(default=None, ge=1, le=5, description="Skepticism trait (1-5)")
@@ -122,6 +123,19 @@ class BankTemplateConfig(BaseModel):
     )
     mcp_enabled_tools: list[str] | None = Field(
         default=None, description="MCP tool allowlist for this bank (None = all tools)"
+    )
+    mcp_server_instructions: str | None = Field(
+        default=None,
+        description="Instructions sent to MCP clients in the initialize response when they connect to this bank",
+    )
+    knowledge_banks: list[str] | None = Field(
+        default=None, description="Knowledge banks whose passages this bank's reflect reads"
+    )
+    reflect_kb_search_media_types: list[Literal["document", "image", "audio", "video", "text"]] | None = Field(
+        default=None, description="Media types reflect's knowledge-bank search may return (None = all)"
+    )
+    reflect_kb_search_apply_tags: bool | None = Field(
+        default=None, description="Filter the knowledge-bank search by the reflect's tags, as its memories are"
     )
     consolidation_llm_batch_size: int | None = Field(
         default=None, description="LLM batch size for observation consolidation"
@@ -178,20 +192,29 @@ class BankTemplateConfig(BaseModel):
     reflect_source_facts_max_tokens: int | None = Field(
         default=None, description="Max tokens of source facts per reflect call"
     )
-    knowledge_page_default_trigger: dict[str, Any] | None = Field(
+    page_default_trigger: dict[str, Any] | None = Field(
         default=None,
         description=(
-            "Trigger fields merged over the built-in knowledge-page default when a page is created "
+            "Trigger fields merged over the built-in page default when a page is created "
             '(e.g. {"refresh_cron": "0 * * * *"}). A trigger sent with the create request still wins.'
         ),
+    )
+    # A real field rather than a validation alias, so templates exported here still
+    # carry the old key: older servers and clients only know that one. Kept equal to
+    # page_default_trigger by _sync_deprecated_page_trigger. Remove in 2.x.
+    knowledge_page_default_trigger: dict[str, Any] | None = Field(
+        default=None,
+        deprecated=True,
+        description="Deprecated alias of page_default_trigger. Remove in 2.x.",
     )
     reflect_default_options: dict[str, Any] | None = Field(
         default=None,
         description=(
             "Default reflect options for this bank "
             '(e.g. {"reflect_search_observations_max_tokens": 3000, "reflect_search_observations_include_entities": false}). '
-            "Applied to every reflect in the bank -- API, MCP and mental-model refresh -- whenever "
-            "the request (or the model's trigger) leaves the option unset."
+            "Applied to every reflect request in the bank (API and MCP) that leaves the option unset. "
+            "Mental-model refreshes do not read it: they take these options from their own trigger, "
+            "defaulted per bank by page_default_trigger."
         ),
     )
     mental_model_min_refresh_interval_seconds: int | None = Field(
@@ -245,7 +268,7 @@ class BankTemplateConfig(BaseModel):
     default_timezone: str | None = Field(
         default=None,
         description="IANA zone (e.g. 'Europe/Rome') a retain timestamp, or a time the LLM extracts, "
-        "is read in when it carries no UTC offset.",
+        "is read in when it carries no UTC offset, and the zone the LLM reads memory times in.",
     )
     enable_auto_consolidation: bool | None = Field(
         default=None, description="Automatically consolidate observations after retain"
@@ -299,9 +322,20 @@ class BankTemplateConfig(BaseModel):
         description="Memory Defense policy for this bank (validated against the DefensePolicy schema on write)",
     )
 
+    @model_validator(mode="after")
+    def _sync_deprecated_page_trigger(self) -> "BankTemplateConfig":
+        # Deprecated alias, remove in 2.x: either key may come in; both go out.
+        # Through __dict__ because reading a deprecated field emits a DeprecationWarning.
+        value = self.page_default_trigger or self.__dict__["knowledge_page_default_trigger"]
+        self.page_default_trigger = value
+        self.__dict__["knowledge_page_default_trigger"] = value
+        return self
+
     def get_config_updates(self) -> dict[str, Any]:
         """Return only the fields that were explicitly set (non-None)."""
-        return {k: v for k, v in self.model_dump().items() if v is not None}
+        # The deprecated alias would only repeat page_default_trigger. Remove in 2.x.
+        dumped = self.model_dump(exclude={"knowledge_page_default_trigger"})
+        return {k: v for k, v in dumped.items() if v is not None}
 
 
 class BankTemplateDirective(BaseModel):

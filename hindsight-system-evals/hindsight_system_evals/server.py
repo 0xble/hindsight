@@ -8,8 +8,10 @@ cannot do that. Stub the model and you score the stub.
 
 The consequences follow from that and are not worked around:
 
-* provider credentials are REQUIRED, so these evals cannot run on fork PRs, and
-  the CI job has to be gated on secrets — unlike ``test-system``;
+* a real provider is REQUIRED, with its credentials when it takes any (a
+  subscription or local provider such as ``cursor`` or ``ollama`` takes none), so
+  these evals cannot run on fork PRs, and the CI job has to be gated on secrets —
+  unlike ``test-system``;
 * results are rates, not equalities, because the same request can produce a
   different answer twice running.
 """
@@ -17,6 +19,7 @@ The consequences follow from that and are not worked around:
 from __future__ import annotations
 
 import contextlib
+import importlib.util
 import os
 import subprocess
 import time
@@ -58,7 +61,8 @@ def pg0_instance() -> str:
     return os.getenv("HINDSIGHT_EVAL_PG0_INSTANCE") or f"{PG0_INSTANCE_PREFIX}{uuid.uuid4().hex[:8]}"
 
 
-SERVER_STARTUP_TIMEOUT = 180.0
+#: A loaded machine (other servers, a training run) can take minutes just to start pg0 and load models.
+SERVER_STARTUP_TIMEOUT = float(os.getenv("HINDSIGHT_EVAL_SERVER_STARTUP_TIMEOUT", "180"))
 
 
 @dataclass
@@ -71,6 +75,11 @@ class EvalServer:
     #: caller that chose its own via ``HINDSIGHT_EVAL_PG0_INSTANCE`` owns it, and
     #: may still want to open it once the server is gone.
     drop_pg0_on_stop: bool = False
+
+    @property
+    def pid(self) -> int:
+        """The server's process id, for measuring what it uses (memory, CPU)."""
+        return self._process.pid
 
     def logs(self) -> str:
         return self.log_path.read_text(encoding="utf-8", errors="replace")
@@ -106,6 +115,20 @@ def free_port() -> int:
     with socket.socket() as sock:
         sock.bind(("127.0.0.1", 0))
         return int(sock.getsockname()[1])
+
+
+def _requires_api_key(provider: str) -> bool:
+    """The server's own answer (``hindsight_api.provider_auth``), loaded by path.
+
+    That module is a dependency-free leaf, so loading the file alone avoids pulling
+    the whole API package into the eval runner.
+    """
+    path = API_DIR / "hindsight_api" / "provider_auth.py"
+    spec = importlib.util.spec_from_file_location("_hindsight_provider_auth", path)
+    assert spec and spec.loader
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return bool(module.requires_api_key(provider))
 
 
 def provider_environment() -> dict[str, str]:
@@ -153,14 +176,17 @@ def provider_environment() -> dict[str, str]:
     else:
         if api_key := pick("LLM_API_KEY"):
             env["HINDSIGHT_API_LLM_API_KEY"] = api_key
-        credentialed = "HINDSIGHT_API_LLM_API_KEY" in env
+        # Subscription and local providers (cursor, claude-code, ollama, ...) run with
+        # no key; ask the server which ones need one rather than keeping a second list.
+        # `mock` is keyless too, but it is a stub, and a stub would score the stub.
+        credentialed = "HINDSIGHT_API_LLM_API_KEY" in env or (provider != "mock" and not _requires_api_key(provider))
 
     if not (provider and model and credentialed):
         raise RuntimeError(
-            "System evals need a real model. Set HINDSIGHT_EVAL_LLM_PROVIDER / _MODEL and either "
-            "_API_KEY or, for vertexai, _VERTEXAI_SERVICE_ACCOUNT_KEY (HINDSIGHT_API_ equivalents "
-            "also work). A stub cannot be used here: it would score the stub. The one exception is "
-            "HINDSIGHT_EVAL_LLM_PROVIDER=none, for a suite that makes no model call at all."
+            "System evals need a real model. Set HINDSIGHT_EVAL_LLM_PROVIDER / _MODEL and, for a "
+            "provider that needs one, _API_KEY or, for vertexai, _VERTEXAI_SERVICE_ACCOUNT_KEY "
+            "(HINDSIGHT_API_ equivalents also work). A stub cannot be used here: it would score the stub. "
+            "The one exception is HINDSIGHT_EVAL_LLM_PROVIDER=none, for a suite that makes no model call at all."
         )
     # Optional knobs that change what the model emits (a provider's thinking
     # switch, the sampling temperature). A bug that only shows at temperature 0
@@ -198,6 +224,9 @@ def start_eval_server(*, log_path: Path) -> EvalServer:
             "HINDSIGHT_API_HOST": "127.0.0.1",
             "HINDSIGHT_API_PORT": str(port),
             "HINDSIGHT_API_LOG_LEVEL": "info",
+            # Knowledge banks are off by default; the flag only adds their routes, and the
+            # knowledge service (and its embedder) starts on first use, so other suites pay nothing.
+            "HINDSIGHT_API_ENABLE_KB": "true",
             # The debug tools replay a captured delta-ops request verbatim, and the
             # default 50k-char cap truncates a large one mid-document. A replay of a
             # truncated prompt is a different prompt.

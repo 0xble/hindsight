@@ -172,6 +172,35 @@ def test_fail_on_extraction_errors_reads_true_from_env(monkeypatch):
     assert config.fail_on_extraction_errors is True
 
 
+def test_recency_alpha_defaults_to_historical_value(monkeypatch):
+    """Unset keeps the old ±10% recency weight (issue #6579)."""
+    from hindsight_api.config import ENV_RECENCY_ALPHA, HindsightConfig
+
+    monkeypatch.delenv(ENV_RECENCY_ALPHA, raising=False)
+    monkeypatch.setenv("HINDSIGHT_API_LLM_PROVIDER", "mock")
+
+    assert HindsightConfig.from_env().recency_alpha == 0.2
+
+
+def test_recency_alpha_reads_from_env(monkeypatch):
+    from hindsight_api.config import ENV_RECENCY_ALPHA, HindsightConfig
+
+    monkeypatch.setenv("HINDSIGHT_API_LLM_PROVIDER", "mock")
+    for value in ("0", "0.6", "1"):
+        monkeypatch.setenv(ENV_RECENCY_ALPHA, value)
+        assert HindsightConfig.from_env().recency_alpha == float(value)
+
+
+def test_recency_alpha_rejects_out_of_range(monkeypatch):
+    from hindsight_api.config import ENV_RECENCY_ALPHA, HindsightConfig
+
+    monkeypatch.setenv("HINDSIGHT_API_LLM_PROVIDER", "mock")
+    for bad in ("-0.1", "1.5"):
+        monkeypatch.setenv(ENV_RECENCY_ALPHA, bad)
+        with pytest.raises(ValueError, match="recency_alpha"):
+            HindsightConfig.from_env()
+
+
 def test_entity_intrabatch_merge_similarity_defaults_to_half(monkeypatch):
     """In-batch entity dedup merge cutoff defaults to 0.5 (issue #3107)."""
     from hindsight_api.config import ENV_ENTITY_INTRABATCH_MERGE_SIMILARITY, HindsightConfig
@@ -1009,10 +1038,12 @@ def test_worker_reserved_slots_parse(monkeypatch):
 
     monkeypatch.setenv("HINDSIGHT_API_LLM_PROVIDER", "mock")
     monkeypatch.setenv("HINDSIGHT_API_WORKER_RETAIN_RESERVED_SLOTS", "2")
+    monkeypatch.setenv("HINDSIGHT_API_WORKER_KNOWLEDGE_INGEST_RESERVED_SLOTS", "1")
 
     config = HindsightConfig.from_env()
 
     assert config.worker_slot_reservations["retain"] == 2
+    assert config.worker_slot_reservations["knowledge_ingest"] == 1
 
 
 def test_worker_legacy_max_slots_is_deprecated_alias_for_reserved(monkeypatch, caplog):

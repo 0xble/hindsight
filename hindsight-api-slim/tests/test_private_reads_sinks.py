@@ -332,7 +332,7 @@ def test_private_memory_extension_rejects_before_import_but_public_loads(monkeyp
     from tests.test_memories_extension import InMemoryMemories
 
     monkeypatch.setenv("HINDSIGHT_API_MEMORIES_EXTENSION", "tests.test_memories_extension:InMemoryMemories")
-    with patch.object(loader, "_resolve_extension_class", side_effect=AssertionError("must not import")):
+    with patch.object(loader, "resolve_class_path", side_effect=AssertionError("must not import")):
         with private_read_scope(), pytest.raises(PrivateReadUnsupportedError):
             memories.create_memories()
     assert type(memories.create_memories()) is InMemoryMemories

@@ -14,12 +14,14 @@ Supports multi-tenant schema isolation via ALTER SESSION SET CURRENT_SCHEMA.
 """
 
 import datetime
+import functools
 import inspect
+import itertools
 import json
 import logging
 import re
 import uuid as _uuid_mod
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
 from typing import Any, NamedTuple, cast
 
@@ -49,7 +51,8 @@ class RewriteResult(NamedTuple):
 
     query: str
     ignore_dup: bool
-    returning_cols: list[str] | None
+    # A tuple: results are cached and shared between callers.
+    returning_cols: tuple[str, ...] | None
 
 
 # ---------------------------------------------------------------------------
@@ -90,6 +93,11 @@ _JSON_ARROW_TEXT_RE = re.compile(r'("?\w+"?)\s*->>\s*\'(\w+)\'')  # handles both
 _JSON_HAS_KEY_RE = re.compile(r"(\"?\w+\"?)\s*\?\s*'(\w+)'")
 _JSONB_CONTAINS_RE = re.compile(r"(\w+)\s*@>\s*:(\d+)")
 _RESULT_METADATA_CONTAINS_RE = re.compile(r"((?:\w+\.)?result_metadata)\s*@>\s*:(\d+)", re.IGNORECASE)
+
+# Oracle caps an IN list at 1000 expressions (ORA-01795); IN lists up to that
+# size are padded to one of these, so a query has at most 11 distinct SQL texts.
+ORACLE_IN_LIST_LIMIT = 1000
+_ORACLE_IN_BUCKETS = (1, 2, 4, 8, 16, 32, 64, 128, 256, 512, ORACLE_IN_LIST_LIMIT)
 
 # ---------------------------------------------------------------------------
 # Argument conversion helpers
@@ -341,6 +349,11 @@ def _rewrite_upsert_to_merge(query: str) -> str | None:
     return merge_query
 
 
+# The rewrite is a pure function of the query text and the same few hundred query
+# shapes repeat, so caching it skips re-running ~60 regexes on every statement.
+# Table names carry the tenant schema, so each tenant adds its own copy of every
+# shape: the cap leaves room for a few dozen tenants before entries start evicting.
+@functools.lru_cache(maxsize=8192)
 def _rewrite_pg_to_oracle(query: str) -> RewriteResult:
     """Rewrite PostgreSQL-style SQL to Oracle-compatible SQL.
 
@@ -349,7 +362,7 @@ def _rewrite_pg_to_oracle(query: str) -> RewriteResult:
     - returning_cols: column names from RETURNING clause (None if no RETURNING)
     """
     ignore_dup = False
-    returning_cols: list[str] | None = None
+    returning_cols: tuple[str, ...] | None = None
 
     # $N → :N
     query = _PG_PARAM_RE.sub(r":\1", query)
@@ -611,6 +624,19 @@ def _rewrite_pg_to_oracle(query: str) -> RewriteResult:
 
     query = re.sub(r"(\w+)\s*&&\s*(:\w+)", _rewrite_array_overlap, query)
 
+    # PG array contained-by: tags <@ :N → Oracle: no element of col is missing from param.
+    # The exact tag match emits it as `tags @> :N AND tags <@ :N` (#6585).
+    def _rewrite_array_contained_by(m):
+        col = m.group(1)
+        param = m.group(2)
+        return (
+            f"NOT EXISTS (SELECT 1 FROM JSON_TABLE({col}, '$[*]' COLUMNS (val VARCHAR2(256) PATH '$')) c "
+            f"WHERE NOT EXISTS (SELECT 1 FROM JSON_TABLE({param}, '$[*]' COLUMNS (val VARCHAR2(256) PATH '$')) p "
+            f"WHERE p.val = c.val))"
+        )
+
+    query = re.sub(r"(\w+)\s*<@\s*(:\w+)", _rewrite_array_contained_by, query)
+
     # PG array containment: tags @> :N → Oracle: all elements from param exist in col
     # (Override the JSONB contains regex which doesn't work for array containment)
     # Already handled by _JSONB_CONTAINS_RE above, but that generates wrong SQL for arrays.
@@ -701,7 +727,7 @@ def _rewrite_pg_to_oracle(query: str) -> RewriteResult:
         m = _RETURNING_RE.search(query)
         if m:
             ret_cols_str = m.group(1).strip()
-            returning_cols = [c.strip() for c in ret_cols_str.split(",") if c.strip()]
+            returning_cols = tuple(c.strip() for c in ret_cols_str.split(",") if c.strip())
             into_vars = ", ".join(f":ret_{i}" for i in range(len(returning_cols)))
             query = query[: m.start()] + f"RETURNING {ret_cols_str} INTO {into_vars}" + query[m.end() :]
 
@@ -789,12 +815,18 @@ class OracleConnection(DatabaseConnection):
         return "oracle"
 
     def __init__(self, conn: Any) -> None:
+        super().__init__()
         self._conn = conn
+
+    def _commit_is_ahead(self) -> bool:
+        # oracledb runs every statement in a transaction the backend commits when
+        # the acquire()/transaction() block that made this wrapper closes.
+        return True
 
     # -- helpers ----------------------------------------------------------
 
     def _make_bind_params(
-        self, cursor: Any, args: tuple[Any, ...], returning_cols: list[str] | None
+        self, cursor: Any, args: tuple[Any, ...], returning_cols: tuple[str, ...] | None
     ) -> dict[str, Any] | None:
         """Build bind params as a dict (named binding).
 
@@ -914,8 +946,6 @@ class OracleConnection(DatabaseConnection):
         if sizes:
             cursor.setinputsizes(**sizes)
 
-    _expand_counter = 0
-
     @staticmethod
     def _resolve_list_param(params: dict[str, Any], key: str) -> list | None:
         """Resolve a parameter that may be a list or a JSON-encoded list string."""
@@ -944,7 +974,10 @@ class OracleConnection(DatabaseConnection):
         Converts: col /*NOT_LIKE_ALL:1:col*/ with params["1"] = [a, b]
         Into:     (col NOT LIKE :nlk_0 AND col NOT LIKE :nlk_1)
 
-        Uses a unique prefix to avoid name collisions with other bind vars.
+        Bind names are numbered per query (``any0_*``, ``any1_*``...), not by a global
+        counter, and an IN list of up to 1000 items is padded with its last item to
+        the next power of two. Both keep the SQL text the same across calls, so
+        Oracle reuses the parsed cursor instead of hard-parsing a new one each time.
         The original param is kept (for other references to :N in the query).
         """
         if params is None or "/*" not in query:
@@ -952,6 +985,7 @@ class OracleConnection(DatabaseConnection):
 
         expand_re = re.compile(r"/\*EXPAND:(\d+)\*/")
         keys_to_remove: set[str] = set()
+        slots = {"any": itertools.count(), "lk": itertools.count(), "nlk": itertools.count(), "ap": itertools.count()}
 
         def _replace(m):
             param_key = m.group(1)
@@ -976,8 +1010,11 @@ class OracleConnection(DatabaseConnection):
                 return f":{param_key}"
             if len(val) == 0:
                 return "NULL"
-            OracleConnection._expand_counter += 1
-            prefix = f"any{OracleConnection._expand_counter}"
+            prefix = f"any{next(slots['any'])}"
+            if len(val) <= ORACLE_IN_LIST_LIMIT:
+                # Repeating an item leaves IN / NOT IN semantics unchanged.
+                bucket = next(b for b in _ORACLE_IN_BUCKETS if b >= len(val))
+                val = list(val) + [val[-1]] * (bucket - len(val))
             expanded_keys = []
             for i, item in enumerate(val):
                 k = f"{prefix}_{i}"
@@ -998,8 +1035,7 @@ class OracleConnection(DatabaseConnection):
             val = OracleConnection._resolve_list_param(params, param_key)
             if val is None or len(val) == 0:
                 return "1=0"  # no patterns → no match
-            OracleConnection._expand_counter += 1
-            prefix = f"lk{OracleConnection._expand_counter}"
+            prefix = f"lk{next(slots['lk'])}"
             clauses = []
             for i, item in enumerate(val):
                 k = f"{prefix}_{i}"
@@ -1020,8 +1056,7 @@ class OracleConnection(DatabaseConnection):
             val = OracleConnection._resolve_list_param(params, param_key)
             if val is None or len(val) == 0:
                 return "1=1"  # no patterns → everything matches
-            OracleConnection._expand_counter += 1
-            prefix = f"nlk{OracleConnection._expand_counter}"
+            prefix = f"nlk{next(slots['nlk'])}"
             clauses = []
             for i, item in enumerate(val):
                 k = f"{prefix}_{i}"
@@ -1043,8 +1078,7 @@ class OracleConnection(DatabaseConnection):
             val = OracleConnection._resolve_list_param(params, param_key)
             if not val:
                 return "NULL"
-            OracleConnection._expand_counter += 1
-            prefix = f"ap{OracleConnection._expand_counter}"
+            prefix = f"ap{next(slots['ap'])}"
             whens = []
             for i, item in enumerate(val):
                 # Same UUID handling as /*EXPAND*/: JSON-serialized UUIDs bind as RAW(16).
@@ -1067,7 +1101,9 @@ class OracleConnection(DatabaseConnection):
 
         return query, params
 
-    async def _read_returning_values(self, returning_cols: list[str], params: dict[str, Any]) -> dict[str, Any] | None:
+    async def _read_returning_values(
+        self, returning_cols: tuple[str, ...], params: dict[str, Any]
+    ) -> dict[str, Any] | None:
         """Read values from RETURNING INTO output variables after execute."""
         row: dict[str, Any] = {}
         for i, col in enumerate(returning_cols):
@@ -1221,6 +1257,49 @@ class OracleConnection(DatabaseConnection):
                     raise
         finally:
             cursor.close()
+
+    async def executemany_filtered(
+        self,
+        query: str,
+        args: list[tuple[Any, ...]],
+        *,
+        is_ignored_error: Callable[[Any], bool],
+    ) -> None:
+        """Run ``executemany(..., batcherrors=True)`` inside a savepoint.
+
+        Tolerated per-row errors (duplicates when ``ON CONFLICT DO NOTHING`` is
+        rewritten, or errors matched by *is_ignored_error*) are dropped per row;
+        any unexpected error rolls back the savepoint and raises
+        ``oracledb.DatabaseError``.
+        """
+        if not args:
+            return
+        query, ignore_dup, _ = _rewrite_pg_to_oracle(query)
+        converted = _convert_args_list(args)
+        converted_dicts = [{str(i + 1): v for i, v in enumerate(row)} for row in converted]
+        oracledb = _import_oracledb()
+        async with self.transaction():
+            cursor = self._conn.cursor()
+            try:
+                clob_keys = {k for row in converted_dicts for k, v in row.items() if _needs_clob_bind(v)}
+                if clob_keys:
+                    cursor.setinputsizes(**dict.fromkeys(clob_keys, oracledb.DB_TYPE_CLOB))
+                await cursor.executemany(query, converted_dicts, batcherrors=True)
+                for err in cursor.getbatcherrors():
+                    if (ignore_dup and getattr(err, "code", None) == 1) or is_ignored_error(err):
+                        continue
+                    logger.error(
+                        "Oracle batch error at offset %s. Query: %s\nError: %s",
+                        getattr(err, "offset", "?"),
+                        query[:500],
+                        getattr(err, "message", err),
+                    )
+                    exc = oracledb.DatabaseError(err)
+                    exc.code = getattr(err, "code", None)
+                    exc.offset = getattr(err, "offset", None)
+                    raise exc
+            finally:
+                cursor.close()
 
     async def bulk_insert_from_arrays(
         self,
@@ -1535,7 +1614,9 @@ class OracleBackend(DatabaseBackend):
         )
         try:
             await self._set_session_schema(conn)
-            yield OracleConnection(conn)
+            wrapper = OracleConnection(conn)
+            yield wrapper
+            await wrapper._run_before_commit()
             # Auto-commit on clean exit (asyncpg uses autocommit by default;
             # oracledb does not, so we must commit explicitly)
             await conn.commit()
@@ -1553,7 +1634,9 @@ class OracleBackend(DatabaseBackend):
         )
         try:
             await self._set_session_schema(conn)
-            yield OracleConnection(conn)
+            wrapper = OracleConnection(conn)
+            yield wrapper
+            await wrapper._run_before_commit()
             await conn.commit()
         except Exception:
             await conn.rollback()

@@ -518,6 +518,37 @@ api_path.write_text("\n".join(line.rstrip() for line in api_path.read_text().spl
 
 PY
 
+# Pages used to be "knowledge pages": keep the old model names importable, from the
+# package, from hindsight_client_api.models and from their old module paths. Remove in 2.x.
+echo "Adding deprecated knowledge-page model aliases to Python client..."
+python3 - "$PYTHON_CLIENT_DIR/hindsight_client_api" << 'PATCH_ALIASES_SCRIPT'
+import sys
+from pathlib import Path
+
+pkg = Path(sys.argv[1])
+renamed = {  # old class -> (new class, new module, old module)
+    "KnowledgeNode": ("PageNode", "page_node", "knowledge_node"),
+    "KnowledgeTreeResponse": ("PageTreeResponse", "page_tree_response", "knowledge_tree_response"),
+    "CreateKnowledgePageResponse": ("CreatePageResponse", "create_page_response", "create_knowledge_page_response"),
+    "KnowledgePageResponse": ("PageResponse", "page_response", "knowledge_page_response"),
+    "KnowledgePageBundleFile": ("PageBundleFile", "page_bundle_file", "knowledge_page_bundle_file"),
+    "KnowledgePageBundleResponse": ("PageBundleResponse", "page_bundle_response", "knowledge_page_bundle_response"),
+    "KnowledgePageSearchResult": ("PageSearchResult", "page_search_result", "knowledge_page_search_result"),
+    "KnowledgePageSearchResponse": ("PageSearchResponse", "page_search_response", "knowledge_page_search_response"),
+}
+lines = "\n# Deprecated names from before pages were renamed. Remove in 2.x.\n" + "".join(
+    f"{old} = {new}\n" for old, (new, _, _) in renamed.items()
+)
+for init in (pkg / "__init__.py", pkg / "models" / "__init__.py"):
+    init.write_text(init.read_text() + lines)
+for old, (new, new_mod, old_mod) in renamed.items():
+    (pkg / "models" / f"{old_mod}.py").write_text(
+        '"""Deprecated module from before pages were renamed. Remove in 2.x."""\n\n'
+        f"from hindsight_client_api.models.{new_mod} import {new}\n\n{old} = {new}\n"
+    )
+print("  ✓ aliases added")
+PATCH_ALIASES_SCRIPT
+
 echo "✓ Python client generated at $PYTHON_CLIENT_DIR"
 echo ""
 
@@ -713,12 +744,14 @@ PY
         fi
     done
 
-    # Fix known generator issue: api_files.go uses os.File but generator omits "os" import
-    if [ -f "api_files.go" ] && grep -q 'os\.File' api_files.go && ! grep -q '"os"' api_files.go; then
-        echo "Patching api_files.go: adding missing 'os' import..."
-        sed -i.bak 's|"net/url"|"net/url"\n\t"os"|' api_files.go
-        rm -f api_files.go.bak
-    fi
+    # Fix known generator issue: an API with file uploads uses os.File but the generator omits the "os" import
+    for f in api_*.go; do
+        if grep -q 'os\.File' "$f" && ! grep -q '"os"' "$f"; then
+            echo "Patching $f: adding missing 'os' import..."
+            sed -i.bak 's|"net/url"|"net/url"\n\t"os"|' "$f"
+            rm -f "$f.bak"
+        fi
+    done
 
     # Nullable operation-detail unions must decode by operation_type, not shape.
     # Apply after copying fresh Go output (the earlier Python patch cannot own it).

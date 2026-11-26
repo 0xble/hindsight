@@ -63,6 +63,7 @@ def test_openai_compatible_provider_impl_receives_timeout():
         ("gemini", {}),
         ("github-copilot", {}),
         ("cursor", {}),
+        ("antigravity", {}),
         ("llamacpp", {}),
     ],
 )
@@ -89,6 +90,7 @@ async def test_every_network_provider_receives_the_resolved_timeout(provider, ex
         patch.object(CodexLLM, "_load_codex_refresh_token", return_value=None),
         # The cursor provider resolves its CLI at construction; CI has no cursor-agent.
         patch("hindsight_api.engine.providers.cursor_llm.shutil.which", return_value="/usr/bin/cursor-agent"),
+        patch("hindsight_api.engine.providers.antigravity_llm.shutil.which", return_value="/usr/bin/agy"),
     ):
         llm = LLMConfig(provider=provider, api_key="k", base_url="", model="m", timeout=222.0, **extra)
     try:
@@ -146,12 +148,17 @@ def test_codex_deadline_falls_back_when_unconfigured():
     assert llm._provider_impl._request_timeout == _DEFAULT_CODEX_TIMEOUT
 
 
-def test_timeout_none_falls_back_to_provider_default():
+def test_timeout_none_falls_back_to_provider_default(monkeypatch):
     """No timeout passed -> provider falls back to its env/DEFAULT_LLM_TIMEOUT default.
 
     Guards against a regression where threading the value would override the
     long-standing default for callers that never configured a timeout.
+
+    The env var is cleared first: the default is read off the config, so a
+    ``HINDSIGHT_API_LLM_TIMEOUT`` from the shell, a ``.env`` or a test that loaded
+    one made this fail only in some runs (#6684).
     """
+    monkeypatch.delenv(ENV_LLM_TIMEOUT, raising=False)
     llm = LLMConfig(provider="litellm", api_key="k", base_url="", model="gpt-4o-mini")
     assert llm._provider_impl.timeout == DEFAULT_LLM_TIMEOUT
 

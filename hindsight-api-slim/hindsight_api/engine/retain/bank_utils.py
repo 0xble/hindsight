@@ -5,7 +5,6 @@ bank profile utilities for disposition and mission management.
 import asyncio
 import json
 import logging
-import unicodedata
 import uuid
 from contextlib import aclosing
 from dataclasses import dataclass
@@ -18,7 +17,7 @@ from ..._vector_index import index_using_clause, per_bank_indexes_are_eager, use
 from ...config import get_config
 from ...schema_context import get_current_schema
 from ..db_utils import acquire_with_retry, retry_with_backoff
-from ..response_models import DispositionTraits
+from ..response_models import DispositionTraits, id_problem
 from ..schema import fq_table
 
 if TYPE_CHECKING:
@@ -257,6 +256,29 @@ async def bank_exists_on_conn(conn: "DatabaseConnection", bank_id: str) -> bool:
     return await conn.fetchval(f"SELECT 1 FROM {fq_table('banks')} WHERE bank_id = $1", bank_id) is not None
 
 
+async def bank_kind_on_conn(conn: "DatabaseConnection", bank_id: str) -> str | None:
+    """The bank's kind ('memory' or 'knowledge'), or None when there is no such bank."""
+    return await conn.fetchval(f"SELECT kind FROM {fq_table('banks')} WHERE bank_id = $1", bank_id)
+
+
+async def bank_kind(pool, bank_id: str) -> str | None:
+    async with acquire_with_retry(pool) as conn:
+        return await bank_kind_on_conn(conn, bank_id)
+
+
+async def bank_kind_cached(pool, bank_id: str) -> str | None:
+    """:func:`bank_kind` through ``bank_info_cache`` -- for the per-request routing check, where an
+    uncached read would cost every request a pooled connection. Misses are never cached."""
+    from .. import bank_info_cache
+
+    async def _load() -> dict:
+        kind = await bank_kind(pool, bank_id)
+        return {"kind": kind} if kind else {}
+
+    row = await bank_info_cache.get_or_load(bank_id, "kind", _load)
+    return row.get("kind")
+
+
 async def bank_exists(pool, bank_id: str) -> bool:
     """Dedicated-connection variant of ``bank_exists_on_conn``.
 
@@ -333,24 +355,13 @@ async def get_bank_profile_if_exists(pool, bank_id: str) -> BankProfile | None:
     )
 
 
-# Bytes, not characters: storage keys percent-encode the bank id (up to 3x per UTF-8 byte), so
-# 192 bytes is at most 576 encoded bytes, under S3's 1,024-byte key limit with room for the
-# tenant, the prefix and the file name, while still fitting 64 CJK characters (#4391).
-BANK_ID_MAX_BYTES = 192
-
-
 def validate_new_bank_id(bank_id: str) -> None:
     """Reject a bank id that must not be created. Existing banks are never re-checked."""
     from hindsight_api.extensions import OperationValidationError
 
-    if not bank_id:
-        raise OperationValidationError("Bank id must not be empty", status_code=400)
-    if len(bank_id.encode("utf-8")) > BANK_ID_MAX_BYTES:
-        raise OperationValidationError(
-            f"Bank id is too long: at most {BANK_ID_MAX_BYTES} bytes of UTF-8 are allowed", status_code=400
-        )
-    if any(unicodedata.category(ch) == "Cc" for ch in bank_id):
-        raise OperationValidationError("Bank id must not contain control characters", status_code=400)
+    problem = id_problem(bank_id, "Bank id")
+    if problem:
+        raise OperationValidationError(problem, status_code=400)
     # Reserved so a store-owned backend can keep its own bookkeeping objects (`_index`, `_meta`, ...)
     # next to a bank's objects without escaping bank names. Existing banks are not re-checked.
     if bank_id.startswith("_"):
@@ -383,10 +394,7 @@ async def create_bank_row_on_conn(conn: "DatabaseConnection", bank_id: str, *, o
     # common "bank exists" case pays nothing.
     from .. import bank_aliases
 
-    if await bank_aliases.alias_exists_on_conn(conn, bank_id):
-        from hindsight_api.extensions import OperationValidationError
-
-        raise OperationValidationError(f"'{bank_id}' is an alias of another bank", status_code=409)
+    await bank_aliases.refuse_alias_as_bank_id_on_conn(conn, bank_id)
 
     internal_id = uuid.uuid4()
     inserted = await conn.fetchval(
@@ -554,104 +562,6 @@ async def set_bank_mission(pool, bank_id: str, mission: str) -> None:
     await bank_info_cache.invalidate(bank_id, "profile")
 
 
-async def merge_bank_mission(pool, llm_config, bank_id: str, new_info: str) -> dict:
-    """
-    Merge new mission information with existing mission using LLM.
-    Normalizes to first person ("I") and resolves conflicts.
-
-    Args:
-        pool: Database connection pool
-        llm_config: LLM configuration for mission merging
-        bank_id: bank IDentifier
-        new_info: New mission information to add/merge
-
-    Returns:
-        Dict with 'mission' (str) key
-    """
-    # Get current profile
-    profile = await get_bank_profile(pool, bank_id)
-    current_mission = profile["mission"]
-
-    # Use LLM to merge missions
-    result = await _llm_merge_mission(llm_config, current_mission, new_info)
-
-    merged_mission = result["mission"]
-
-    # Update in database
-    async with acquire_with_retry(pool) as conn:
-        await conn.execute(
-            f"""
-            UPDATE {fq_table("banks")}
-            SET mission = $2,
-                updated_at = NOW()
-            WHERE bank_id = $1
-            """,
-            bank_id,
-            merged_mission,
-        )
-
-    # The profile row just changed; the next read must not serve the entry loaded before it.
-    from .. import bank_info_cache
-
-    await bank_info_cache.invalidate(bank_id, "profile")
-
-    return {"mission": merged_mission}
-
-
-async def _llm_merge_mission(llm_config, current: str, new_info: str) -> dict:
-    """
-    Use LLM to intelligently merge mission information.
-
-    Args:
-        llm_config: LLM configuration to use
-        current: Current mission text
-        new_info: New information to merge
-
-    Returns:
-        Dict with 'mission' (str) key
-    """
-    prompt = f"""You are helping maintain an agent's mission statement.
-
-Current mission: {current if current else "(empty)"}
-
-New information to add: {new_info}
-
-Instructions:
-1. Merge the new information with the current mission
-2. If there are conflicts, the NEW information overwrites the old
-3. Keep additions that don't conflict
-4. Output in FIRST PERSON ("I") perspective
-5. Be concise - keep it under 500 characters
-6. Return ONLY the merged mission text, no explanations
-
-Merged mission:"""
-
-    try:
-        messages = [{"role": "user", "content": prompt}]
-
-        call_result = await llm_config.call(
-            messages=messages, scope="bank_mission", temperature=0.3, max_completion_tokens=8192
-        )
-        content = call_result.content
-
-        logger.info(f"LLM response for mission merge (first 500 chars): {content[:500]}")
-
-        merged = content.strip()
-        if not merged or merged.lower() in ["(empty)", "none", "n/a"]:
-            merged = new_info if new_info else ""
-        return {"mission": merged}
-
-    except Exception as e:
-        logger.error(f"Error merging mission with LLM: {e}")
-        # Fallback: just append new info
-        if current:
-            merged = f"{current} {new_info}".strip()
-        else:
-            merged = new_info
-
-        return {"mission": merged}
-
-
 # Sort floor for banks that have never been written to and carry no created_at.
 _UNIX_EPOCH = datetime(1970, 1, 1, tzinfo=UTC)
 
@@ -712,14 +622,15 @@ async def list_banks(pool, *, search_query: str | None = None) -> list:
     # Spelled out as UPPER(...) LIKE UPPER(...) rather than ILIKE: the Oracle
     # rewriter only recognizes ILIKE on an unqualified column, and these are
     # alias-qualified.
-    where_clause = ""
+    # Knowledge banks share the `banks` table but have their own list (see hindsight_api/knowledge).
+    where_clause = "WHERE b.kind = 'memory'"
     params: list[str] = []
     if search_query:
         # Aliases are matched too, so searching the id a caller actually uses finds
         # the bank it reaches. Mid-migration that is the only id someone may know:
         # without this, the new id is live in the API but invisible in the picker.
         where_clause = (
-            "WHERE (UPPER(b.bank_id) LIKE UPPER($1) OR UPPER(COALESCE(b.name, '')) LIKE UPPER($2) "
+            "WHERE b.kind = 'memory' AND (UPPER(b.bank_id) LIKE UPPER($1) OR UPPER(COALESCE(b.name, '')) LIKE UPPER($2) "
             f"OR EXISTS (SELECT 1 FROM {fq_table('bank_aliases')} a "
             "WHERE a.bank_id = b.bank_id AND UPPER(a.alias) LIKE UPPER($3)))"
         )
@@ -928,7 +839,10 @@ async def list_banks_among(pool, bank_ids: list[str], *, search_query: str | Non
     return banks
 
 
-#: Banks per store page. The merge consumes one page for a page-1 request however large the tenant.
+#: Banks per store page. The merge consumes one page for a page-1 request however large the tenant,
+#: unless the store's newest-written banks are mostly knowledge banks: those are dropped from the
+#: stream (see `_store_write_stream`), so a page the store fills with them makes the merge pull the
+#: next one. In practice a tenant's banks are overwhelmingly memory banks, so page 1 stays one page.
 _STORE_PAGE = 100
 
 
@@ -954,7 +868,7 @@ async def _merge_ordered_bank_ids(pool, store, want: int, first: "BankWritePage"
 
     out: list[str] = []
     seen: set[str] = set()
-    async with aclosing(_store_write_stream(store, first)) as store_pages:
+    async with aclosing(_store_write_stream(pool, store, first)) as store_pages:
         s_head = await anext(store_pages, None)
         c_idx = 0
         while len(out) < want:
@@ -981,7 +895,7 @@ async def _merge_ordered_bank_ids(pool, store, want: int, first: "BankWritePage"
 # `AsyncGenerator`, not `AsyncIterator`: the caller wraps this in `aclosing`, which needs the
 # `aclose()` an iterator does not promise -- and closing it early is the whole point of the
 # generator (see the docstring), so the weaker type contradicted the use.
-async def _store_write_stream(store, first: "BankWritePage") -> "AsyncGenerator[BankWriteTime, None]":
+async def _store_write_stream(pool, store, first: "BankWritePage") -> "AsyncGenerator[BankWriteTime, None]":
     """The store's banks as one continuous newest-written-first stream, page by page.
 
     A generator rather than a list so the merge pulls only the pages it needs: a page-1 request
@@ -989,12 +903,23 @@ async def _store_write_stream(store, first: "BankWritePage") -> "AsyncGenerator[
 
     The first page is handed in because the caller already fetched it to decide whether this store
     orders at all; re-fetching it here would pay for that decision twice.
+
+    Each page is narrowed to the tenant's MEMORY banks before it is yielded. A store that owns its
+    memories orders every bank it holds, and knowledge banks share the `banks` table and this id
+    space, so its ordering can name one. The creation-ordered half of the merge is already
+    `kind = 'memory'`, so this stream is the only place a non-memory bank could reach the memory
+    list. Dropping them here rather than at hydration keeps them from consuming page slots — which
+    would shorten the page — and keeps the page in step with the `kind = 'memory'` total.
     """
     from ..memories.base import BankWriteTime
 
     page = first
     while True:
+        ids = [bank.bank_id for bank in page.banks]
+        memory_ids = await _memory_kind_ids(pool, ids) if ids else set()
         for bank in page.banks:
+            if bank.bank_id not in memory_ids:
+                continue
             # `_as_utc` is None-tolerant for callers that may not have a timestamp; the store
             # always records one for a bank it returns here, and `BankWriteTime` declares it
             # non-optional.
@@ -1002,6 +927,21 @@ async def _store_write_stream(store, first: "BankWritePage") -> "AsyncGenerator[
         if not page.next_page_token:
             return
         page = await store.list_banks_by_write(limit=_STORE_PAGE, page_token=page.next_page_token)
+
+
+async def _memory_kind_ids(pool, bank_ids: list[str]) -> set[str]:
+    """Of `bank_ids`, the ones that are memory banks.
+
+    A store ordering can name a bank of any kind — knowledge banks share the `banks` table and this
+    id space — and only memory banks belong in the memory list. One batched read per store page.
+    """
+    banks_table = fq_table("banks")
+    async with acquire_with_retry(pool) as conn:
+        rows = await conn.fetch(
+            f"SELECT bank_id FROM {banks_table} WHERE bank_id = ANY($1::text[]) AND kind = 'memory'",
+            bank_ids,
+        )
+    return {row["bank_id"] for row in rows}
 
 
 async def _banks_by_created(pool, want: int) -> "list[BankWriteTime]":
@@ -1018,7 +958,8 @@ async def _banks_by_created(pool, want: int) -> "list[BankWriteTime]":
             # `bank_id` breaks ties: banks created in one batch share a `created_at`, and without a
             # tiebreaker Postgres may order them differently for the page-1 LIMIT than for the
             # page-2 one, which shows up as a bank on both pages or on neither.
-            f"SELECT bank_id, created_at FROM {banks_table} ORDER BY created_at DESC NULLS LAST, bank_id DESC LIMIT $1",
+            f"SELECT bank_id, created_at FROM {banks_table} WHERE kind = 'memory' "
+            "ORDER BY created_at DESC NULLS LAST, bank_id DESC LIMIT $1",
             want,
         )
     return [BankWriteTime(bank_id=r["bank_id"], last_write_at=_as_utc(r["created_at"]) or _UNIX_EPOCH) for r in rows]
@@ -1027,7 +968,7 @@ async def _banks_by_created(pool, want: int) -> "list[BankWriteTime]":
 async def _count_banks(pool) -> int:
     banks_table = fq_table("banks")
     async with acquire_with_retry(pool) as conn:
-        row = await conn.fetchrow(f"SELECT COUNT(*) AS n FROM {banks_table}")
+        row = await conn.fetchrow(f"SELECT COUNT(*) AS n FROM {banks_table} WHERE kind = 'memory'")
     return int(row["n"]) if row else 0
 
 

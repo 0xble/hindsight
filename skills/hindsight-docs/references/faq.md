@@ -15,7 +15,8 @@ Common questions and answers about Hindsight.
 - [Retain, recall, and reflect — what's the difference?](#whats-the-difference-between-retain-recall-and-reflect)
 - [When should I use recall vs reflect?](#when-should-i-use-recall-vs-reflect)
 - [When should I use mental models?](#when-should-i-use-mental-models)
-- [Mental model vs. knowledge page](#whats-the-difference-between-a-mental-model-and-a-knowledge-page)
+- [Mental model vs. page](#whats-the-difference-between-a-mental-model-and-a-page)
+- [Memory banks vs. knowledge banks](#whats-the-difference-between-a-memory-bank-and-a-knowledge-bank)
 - [Latency expectations](#whats-the-typical-latency-for-recall-operations)
 - [Tags, metadata, and entity labels](#does-hindsight-support-metadata-filtering)
 - [Controlling which memory types are recalled](#how-do-i-control-which-types-of-memories-are-recalled)
@@ -92,6 +93,7 @@ Browse all supported integrations in the Integrations Hub.
 - ChatGPT
 - Claude Code
 - Cursor
+- Antigravity
 - GitHub Copilot
 - AWS Bedrock
 - Fireworks AI
@@ -236,11 +238,11 @@ You create a mental model with the question that defines it; Hindsight builds th
 
 ---
 
-### What's the difference between a mental model and a knowledge page?
+### What's the difference between a mental model and a page?
 
-A **knowledge page is a mental model** — the same engine, the same refresh behaviour — with two additions: a place in a folder tree, and a set of defaults tuned for documents rather than answers (built from observations only, refreshed incrementally after each consolidation, never influenced by other pages, and a larger content budget).
+A **page is a mental model** — the same engine, the same refresh behaviour — with two additions: a place in a folder tree, and a set of defaults tuned for documents rather than answers (built from observations only, refreshed incrementally after each consolidation, never influenced by other pages, and a larger content budget).
 
-| | Mental model | Knowledge page |
+| | Mental model | Page |
 |---|---|---|
 | Shape | A standing answer to a question | A markdown document with frontmatter |
 | Organization | Flat list, scoped by tags | Nested folders and pages |
@@ -248,9 +250,28 @@ A **knowledge page is a mental model** — the same engine, the same refresh beh
 | Refresh | Off by default | Delta refresh after each consolidation |
 | Typical consumer | Your application or an agent, by lookup | A person or agent browsing and reading |
 
-Use a plain mental model when something in your system looks up the answer. Use a knowledge page when the result is meant to be browsed and read directly, like a wiki. Anything you can configure on a mental model can be configured on a page.
+Use a plain mental model when something in your system looks up the answer. Use a page when the result is meant to be browsed and read directly, like a wiki. Anything you can configure on a mental model can be configured on a page.
 
-See [Mental Models](developer/api/mental-models.md) and the Knowledge Pages section of the developer docs.
+See [Mental Models](developer/api/mental-models.md) and the Pages section of the developer docs.
+
+---
+
+### What's the difference between a memory bank and a knowledge bank?
+
+A **memory bank** learns from what it is told. Retain sends the content to an LLM, which pulls out facts, people and dates, and consolidation turns those facts into observations. What you get back is what the bank *learned*, not the text you sent.
+
+A **knowledge bank** keeps the text. It is for content that is already right and must stay word for word: product manuals, policies, contracts, research papers, support articles, recorded calls, training videos.
+
+| | Memory bank | Knowledge bank |
+|---|---|---|
+| You send | conversations, notes, events | files and documents |
+| It stores | facts and observations an LLM wrote | the original files, split into passages |
+| You get back | facts, with their sources | passages, with their page or timestamp |
+| Uses an LLM | yes, on every retain | never |
+| Kinds of content | text, plus images through retain | PDF, image, audio, video, text, Office files |
+| Operations | retain, recall, reflect | ingest, search |
+
+The two work together: link a knowledge bank to a memory bank and reflect reads both. Knowledge banks and memory banks share one set of bank ids, so a knowledge bank cannot have the id of an existing memory bank.
 
 ---
 

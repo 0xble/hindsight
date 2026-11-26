@@ -36,7 +36,7 @@ from hindsight_api.engine.cross_encoder import RRFPassthroughCrossEncoder
 from hindsight_api.engine.embeddings import OpenAIEmbeddings
 from hindsight_api.engine.llm_trace import LLMTraceRecorder
 from hindsight_api.engine.llm_wrapper import LLMConfig
-from hindsight_api.engine.memories import RecallArms
+from hindsight_api.engine.memories import RecallArms, ReflectFreshness
 from hindsight_api.engine.memories.postgres import PostgresMemories
 from hindsight_api.engine.memory_engine import DirectivePage, MemoryEngine
 from hindsight_api.engine.providers.mock_llm import _user_text_of
@@ -152,7 +152,7 @@ async def read_harness(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
     engine = MemoryEngine.__new__(MemoryEngine)
     engine._tenant_extension = ApiKeyTenantExtension({"api_key": "fixture-only-key"})
     # State the released constructor initializes and reflect now reads.
-    engine._reflect_decision_model_client = None
+    engine._decision_engine_for = lambda _operation: None
     engine._reflect_decision_model_unsupported_logged = False
     engine._operation_validator = None
     engine._initialized = True
@@ -188,7 +188,7 @@ async def read_harness(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
         }
     )
     # Reflect already authenticates and now uses the internal freshness read.
-    engine._bank_freshness = AsyncMock(return_value={})
+    engine._reflect_freshness = AsyncMock(return_value=ReflectFreshness(pending=0, last_memory_write_at=None))
     engine.list_directives = AsyncMock(return_value=DirectivePage(items=[], total=0))
     engine.attachments_for_memories = AsyncMock(return_value={})
 

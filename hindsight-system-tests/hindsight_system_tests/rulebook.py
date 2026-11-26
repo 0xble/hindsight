@@ -101,6 +101,13 @@ class StubbedReply:
     retry_after_seconds: int | None = None
     """Sent as the error's ``Retry-After`` header: when a rate-limited provider says it resets."""
 
+    native: bool = False
+    """Send a tool call as a native call even on a schema turn, as gpt-oss does (#6520).
+
+    Off, the stub answers a schema turn the way a schema-following model does: the call's
+    JSON as the reply text. On, the call stays in ``tool_calls`` with empty content.
+    """
+
 
 @dataclass(frozen=True)
 class ToolCall:
@@ -123,6 +130,10 @@ class ChatRule:
     was supposed to write the answer.
     """
 
+    budget: list[int] | None = None
+    """When set, how many more calls this rule answers; at zero it stops matching, so the
+    next rule answers. A one-item list because the rule is frozen and the count is not."""
+
     tool: str | None = None
     """When set, match only a turn that offers this tool.
 
@@ -135,6 +146,8 @@ class ChatRule:
         if self.requires_tools and not request.tools:
             return False
         if self.tool is not None and self.tool not in request.tools:
+            return False
+        if self.budget is not None and self.budget[0] <= 0:
             return False
         return all(needle in request.all_text for needle in self.contains)
 
@@ -164,17 +177,35 @@ class RuleBuilder:
             )
         )
 
-    def fails_with_status(self, status: int, *, retry_after_seconds: int | None = None) -> LLMStub:
+    def fails_with_status(
+        self, status: int, *, retry_after_seconds: int | None = None, times: int | None = None
+    ) -> LLMStub:
         """Answer with a provider error at ``status`` — a 429 or a 5xx, say.
 
         For stories about how the server treats a provider that is down or
         rate-limited, which no successful reply can stand in for. ``retry_after_seconds``
         is the provider's reported quota reset, which the worker defers the operation to.
+        ``times`` makes it a blip: after that many failures the next matching rule answers.
         """
-        return self._register(
-            lambda _request: StubbedReply(
+        budget = None if times is None else [times]
+
+        def respond(_request: ChatRequest) -> StubbedReply:
+            if budget is not None:
+                budget[0] -= 1
+            return StubbedReply(
                 message={}, finish_reason="error", error_status=status, retry_after_seconds=retry_after_seconds
             )
+
+        self._stub.add_rule(ChatRule(contains=self._contains, respond=respond, tool=self._tool, budget=budget))
+        return self._stub
+
+    def is_blocked(self) -> LLMStub:
+        """Answer the way a provider's content filter does: no content, ``finish_reason="content_filter"``.
+
+        A block is permanent, so the server must fail the operation once rather than retry it (#6503).
+        """
+        return self._register(
+            lambda _request: StubbedReply(message={"role": "assistant", "content": None}, finish_reason="content_filter")
         )
 
     def returns_text(self, text: str) -> LLMStub:
@@ -194,7 +225,7 @@ class RuleBuilder:
         """
         return self._register(lambda request: _assistant_message(build(request).model_dump_json()))
 
-    def returns_tool_call(self, tool_name: str, **arguments: Any) -> LLMStub:
+    def returns_tool_call(self, tool_name: str, *, native: bool = False, **arguments: Any) -> LLMStub:
         """Answer by calling one named tool with specific arguments.
 
         Needed where the arguments matter — `done` carries the reflect answer in
@@ -203,11 +234,11 @@ class RuleBuilder:
         """
 
         def respond(_request: ChatRequest) -> StubbedReply:
-            return _tool_call(tool_name, arguments)
+            return _tool_call(tool_name, arguments, native=native)
 
         return self._register(respond, requires_tools=True)
 
-    def answers_with_tool_call(self, build: Callable[[ChatRequest], ToolCall]) -> LLMStub:
+    def answers_with_tool_call(self, build: Callable[[ChatRequest], ToolCall], *, native: bool = False) -> LLMStub:
         """Compute the tool call from the request that triggered it.
 
         For a turn whose right answer depends on what already happened in the loop —
@@ -217,11 +248,11 @@ class RuleBuilder:
 
         def respond(request: ChatRequest) -> StubbedReply:
             call = build(request)
-            return _tool_call(call.name, call.arguments)
+            return _tool_call(call.name, call.arguments, native=native)
 
         return self._register(respond, requires_tools=True)
 
-    def calls_the_offered_tool(self, **arguments: Any) -> LLMStub:
+    def calls_the_offered_tool(self, *, native: bool = False, **arguments: Any) -> LLMStub:
         """Answer a forced-tool turn by calling whichever tool it was offered.
 
         The reflect prelude walks a fixed ladder of searches, offering one tool per
@@ -232,7 +263,7 @@ class RuleBuilder:
         """
 
         def respond(request: ChatRequest) -> StubbedReply:
-            return _tool_call(request.tools[0], arguments)
+            return _tool_call(request.tools[0], arguments, native=native)
 
         return self._register(respond, requires_tools=True)
 
@@ -243,7 +274,7 @@ class RuleBuilder:
         return self._stub
 
 
-def _tool_call(tool_name: str, arguments: dict[str, Any]) -> StubbedReply:
+def _tool_call(tool_name: str, arguments: dict[str, Any], *, native: bool = False) -> StubbedReply:
     return StubbedReply(
         message={
             "role": "assistant",
@@ -257,6 +288,7 @@ def _tool_call(tool_name: str, arguments: dict[str, Any]) -> StubbedReply:
             ],
         },
         finish_reason="tool_calls",
+        native=native,
     )
 
 
@@ -318,13 +350,14 @@ class Hold:
     loop first waits on it and raises on the other.
     """
 
-    def __init__(self, anchor: str) -> None:
+    def __init__(self, anchor: str, contains: tuple[str, ...] = ()) -> None:
         self.anchor = anchor
+        self.contains = contains
         self._released = threading.Event()
         self._arrived = threading.Event()
 
     def matches(self, request: ChatRequest) -> bool:
-        return self.anchor in request.all_text
+        return all(needle in request.all_text for needle in (self.anchor, *self.contains))
 
     @property
     def released(self) -> bool:
@@ -406,8 +439,11 @@ class LLMStub:
     def add_rule(self, rule: ChatRule) -> None:
         self._rules.append(rule)
 
-    def hold(self, step: str) -> Hold:
+    def hold(self, step: str, *, contains: str | list[str] | None = None) -> Hold:
         """Park this step's calls until the story releases them.
+
+        ``contains`` narrows it to the calls whose prompt also carries these substrings, as on
+        ``on_step`` — for a story that parks one operation's call while another's goes through.
 
         The rule that answers the step stays whatever the story declared — a hold
         decides *when* the answer is sent, not what it is, so it neither adds a call
@@ -415,7 +451,7 @@ class LLMStub:
         """
         from .steps import anchor_for
 
-        held = Hold(anchor_for(step))
+        held = Hold(anchor_for(step), _as_tuple(contains))
         with self._holds_guard:
             self._holds.append(held)
         return held
@@ -460,6 +496,12 @@ class LLMStub:
         self._install_builtins()
 
 
+@dataclass(frozen=True)
+class EmbeddingCall:
+    model: str
+    inputs: list[str]
+
+
 class EmbeddingStub:
     """Deterministic embeddings — see ``lexical.py`` for why word overlap suffices."""
 
@@ -467,10 +509,15 @@ class EmbeddingStub:
     #: stories about what the server leaves behind when its embeddings backend is down.
     fail_with_status: int | None = None
 
-    def embed(self, text: str) -> list[float]:
+    def __init__(self) -> None:
+        #: Every embeddings request, in arrival order: which model was asked for which
+        #: texts. Lets a story check which embedder a server sent a text to.
+        self.calls: list[EmbeddingCall] = []
+
+    def embed(self, text: str, dimension: int) -> list[float]:
         from .lexical import lexical_embedding
 
-        return lexical_embedding(text)
+        return lexical_embedding(text, dimension)
 
 
 class RerankStub:
@@ -486,6 +533,10 @@ class RerankStub:
     #: retrieval order, which is not stable enough to pin.
     verdicts: dict[str, float]
 
+    #: What the Cohere-shaped /rerank scores a document, keyed by text it contains, for
+    #: the stories about a reranker's order (knowledge search's). Others are scored lexically.
+    rerank_scores: dict[str, float]
+
     #: The state each of those questions arrived with, so a story can see what the
     #: model was told besides the memory.
     states: list[str]
@@ -497,11 +548,24 @@ class RerankStub:
     #: The candidates of every ranking question, as the decision model read them.
     ranked: list[str]
 
+    #: The image formats each decision-model request carried, by placeholder (empty: no images).
+    assets: list[dict[str, str]]
+
+    #: Answer every decision-model request with this provider error instead, for the
+    #: stories about a recall whose decision model fails. The /rerank endpoint ignores it.
+    fail_with_status: int | None = None
+
+    #: Answer every /rerank request with this provider error instead, for the stories
+    #: about a reranker that is down while something searches.
+    rerank_fail_with_status: int | None = None
+
     def __init__(self) -> None:
         self.verdicts = {}
+        self.rerank_scores = {}
         self.states = []
         self.repeats = set()
         self.ranked = []
+        self.assets = []
 
     def repeat(self, memory_a: str, memory_b: str) -> float:
         return 0.9 if any(a in memory_a and b in memory_b for a, b in self.repeats) else 0.1
@@ -509,6 +573,10 @@ class RerankStub:
     def verdict(self, state: str, memory: str) -> float:
         scripted = next((score for text, score in self.verdicts.items() if text in memory), None)
         return self.score(state, memory) if scripted is None else scripted
+
+    def reranked(self, query: str, document: str) -> float:
+        scripted = next((score for text, score in self.rerank_scores.items() if text in document), None)
+        return self.score(query, document) if scripted is None else scripted
 
     def score(self, query: str, document: str) -> float:
         from .lexical import lexical_relevance
@@ -588,10 +656,15 @@ class Stubs:
         go back to its default or it leaks into whatever runs next."""
         self.llm.reset()
         self.embeddings.fail_with_status = None
+        self.embeddings.calls.clear()
         self.rerank.cut_level = RerankStub.cut_level
         self.rerank.verdicts = {}
+        self.rerank.rerank_scores = {}
         self.rerank.states = []
         self.rerank.repeats = set()
+        self.rerank.assets = []
+        self.rerank.fail_with_status = None
+        self.rerank.rerank_fail_with_status = None
         self.triage.reset()
         self.rejected_requests.clear()
         self.webhooks.clear()

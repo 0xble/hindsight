@@ -32,6 +32,7 @@ OBSERVATION = SimpleNamespace(
 VALID = {"updates": [{"text": "Workshop moved to Tuesday", "observation_id": OBS_ID, "source_fact_ids": [F]}]}
 MISSING = {"updates": [{"reason": "PRIVATE_MALFORMED_VALUE"}]}
 STRINGS = {"updates": ["PRIVATE_MALFORMED_VALUE"]}
+WRONG_TOP_LEVEL = [{"facts": ["PRIVATE_MALFORMED_VALUE"]}, {"facts": []}]
 
 
 @pytest.fixture
@@ -99,7 +100,10 @@ async def batch(llm, config, **kwargs):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("malformed", [MISSING, STRINGS, {"creates": ["PRIVATE_MALFORMED_VALUE"]}, {"deletes": [{}]}])
+@pytest.mark.parametrize(
+    "malformed",
+    [MISSING, STRINGS, {"creates": ["PRIVATE_MALFORMED_VALUE"]}, {"deletes": [{}]}, WRONG_TOP_LEVEL],
+)
 async def test_corrects_whole_response_once(provider, config, malformed, caplog):
     stub = install(provider, [malformed, VALID])
     result = await batch(provider, config)
@@ -115,6 +119,9 @@ async def test_corrects_whole_response_once(provider, config, malformed, caplog)
     feedback = second["messages"][-1]["content"]
     assert "COMPLETE" in feedback
     assert "PRIVATE_MALFORMED_VALUE" not in feedback
+    if malformed == WRONG_TOP_LEVEL:
+        assert "(top level): expected one JSON object" in feedback
+        assert "PRIVATE_MALFORMED_VALUE" not in json.dumps(second["messages"])
     assert "PRIVATE_MALFORMED_VALUE" not in caplog.text
     assert result.updates[0].source_fact_ids == [F]
 
@@ -460,10 +467,15 @@ async def test_corrected_topology_and_mixed_invalid_actions_reject_whole_respons
 
 
 @pytest.mark.asyncio
-async def test_correction_failure_counters_and_request_usage(provider, config):
+@pytest.mark.parametrize(
+    ("initial", "replacement"),
+    [(MISSING, MISSING), (WRONG_TOP_LEVEL, MISSING), (MISSING, WRONG_TOP_LEVEL)],
+    ids=["action-action", "batch-action", "action-batch"],
+)
+async def test_correction_failure_counters_and_request_usage(provider, config, initial, replacement):
     from hindsight_api.tracing import get_span_recorder
 
-    stub = install(provider, [MISSING, MISSING, VALID])
+    stub = install(provider, [initial, replacement, VALID])
     budget = c._SchemaCorrectionBudget()
     with patch.object(get_span_recorder(), "record_llm_call") as record:
         result = await batch(provider, config, schema_correction_budget=budget)

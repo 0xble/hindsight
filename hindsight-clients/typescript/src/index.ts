@@ -58,7 +58,7 @@ import type {
   RerankOptions,
   TemporalWindow,
   AsyncOperationSubmitResponse,
-  CreateKnowledgePageResponse,
+  CreatePageResponse,
   CreateMentalModelResponse,
   Base64AttachmentSource,
   DirectiveListResponse,
@@ -70,17 +70,28 @@ import type {
   ExtractedFact,
   ExtractedFactAttachment,
   ExtractionChunk,
-  KnowledgeNode,
-  KnowledgePageBundleResponse,
-  KnowledgePageResponse,
-  KnowledgePageSearchResponse,
-  KnowledgeTreeResponse,
+  PageNode,
+  PageBundleResponse,
+  PageResponse,
+  PageSearchResponse,
+  PageTreeResponse,
+  KnowledgeBankConfigResponse,
+  KnowledgeBankListResponse,
+  KnowledgeBankResponse,
+  KnowledgeDeletedResponse,
+  KnowledgeDocumentDetailResponse,
+  KnowledgeDocumentListResponse,
+  KnowledgeIngestResponse,
+  KnowledgeIngestTextItem,
+  KnowledgeSearchResponse,
+  KnowledgeTagsResponse,
   LabelGroupInput,
   ListDocumentsResponse,
   MentalModelListResponse,
   MentalModelResponse,
   MentalModelTriggerInput,
   MentalModelDryRunRefreshResult,
+  UpdateDocumentRequest,
   UpdateDocumentResponse,
   VersionResponse,
 } from "../generated/types.gen";
@@ -232,7 +243,7 @@ export interface MemoryItemInput {
 }
 
 /**
- * Refresh settings for a mental model or knowledge page, in this client's
+ * Refresh settings for a mental model or page, in this client's
  * camelCase style.
  *
  * One shape for every method that takes a trigger, so a setting exposed on
@@ -324,16 +335,19 @@ function warnIfOperationIdDropped(
 }
 
 /**
- * Tag filter for the knowledge-base tree and search, with recall's semantics: the
+ * Tag filter for the page tree and search, with recall's semantics: the
  * server default `tagsMatch` is "any", which also returns untagged pages.
  */
-export interface KnowledgeTagFilterOptions {
+export interface PageTagFilterOptions {
   tags?: string[];
   tagsMatch?: "any" | "all" | "any_strict" | "all_strict" | "exact";
   tagGroups?: Array<TagGroupLeaf | TagGroupAndInput | TagGroupOrInput | TagGroupNotInput>;
 }
 
-function knowledgeTagQuery(options?: KnowledgeTagFilterOptions) {
+/** @deprecated Use {@link PageTagFilterOptions}. Removed in 2.x. */
+export type KnowledgeTagFilterOptions = PageTagFilterOptions;
+
+function pageTagQuery(options?: PageTagFilterOptions) {
   return {
     ...(options?.tags?.length ? { tags: options.tags } : {}),
     ...(options?.tagsMatch ? { tags_match: options.tagsMatch } : {}),
@@ -928,7 +942,6 @@ export class HindsightClient {
       /** Max inline attachments one extraction chunk may carry. `retainChunkSize`
        *  budgets text only, so this is what bounds attachments. */
       retainMaxAttachmentsPerChunk?: number;
-      fileDeleteAfterRetain?: boolean;
       /**
        * Controlled vocabulary for entity labels. Each group classifies a fact under a
        * `key`: `"value"`/`"multi-values"` pick from the group's declared `values`, while
@@ -985,31 +998,25 @@ export class HindsightClient {
       consolidationLlmBatchSize?: number;
       /** Concurrent LLM calls during consolidation. */
       consolidationLlmParallelism?: number;
-      /** Concurrent LLM calls per consolidation lane. */
-      consolidationLaneLlmParallelism?: number;
-      /** Fetch the oldest facts of many observation-scope groups per consolidation round. */
-      consolidationFairGroupSelection?: boolean;
       /** Memories consolidated per round. */
       consolidationMaxMemoriesPerRound?: number;
-      /** Max schema/detail-loss correction completions per consolidation round; unset uses the round-size formula. */
-      consolidationRoundCorrectionBudget?: number;
-      /** Pre-call input budget before adaptive splitting. */
-      consolidationMaxContextTokens?: number;
       /** Max tokens for source facts across all observations in a pass. */
       consolidationSourceFactsMaxTokens?: number;
       /** Max tokens of source facts per observation in the prompt. */
       consolidationSourceFactsMaxTokensPerObservation?: number;
       /** Debounce between mental-model refreshes. */
       mentalModelMinRefreshIntervalSeconds?: number;
-      /** Trigger fields merged over the built-in default for new knowledge pages. */
+      /** Trigger fields merged over the built-in default for new pages. */
+      pageDefaultTrigger?: Record<string, unknown>;
+      /** @deprecated Use `pageDefaultTrigger`. Removed in 2.x. */
       knowledgePageDefaultTrigger?: Record<string, unknown>;
-      /** Default reflect options for this bank, applied whenever a reflect request (or a mental model's trigger) leaves the option unset: reflect_search_observations_max_tokens, reflect_search_observations_include_entities, reflect_search_mental_models_max_tokens. */
+      /** Default reflect options for this bank, applied whenever a reflect request leaves the option unset (mental-model refreshes use their trigger instead): reflect_search_observations_max_tokens, reflect_search_observations_include_entities, reflect_search_mental_models_max_tokens. */
       reflectDefaultOptions?: Record<string, unknown>;
       /** When the server has a decision model, reflect lets it prune the evidence and decide when to stop (fewer LLM calls). False keeps agent turns. */
       reflectUseDecisionModel?: boolean;
-      /** The same, for knowledge-page refreshes. */
+      /** The same, for page refreshes. */
       mentalModelRefreshUseDecisionModel?: boolean;
-      /** When the server has a decision model, a delta knowledge-page refresh asks it which new memories could change the page instead of running reflect. */
+      /** When the server has a decision model, a delta page refresh asks it which new memories could change the page instead of running reflect. */
       mentalModelDeltaUseDecisionModel?: boolean;
       /** Token budget for source facts during reflect. -1 disables. */
       reflectSourceFactsMaxTokens?: number;
@@ -1045,8 +1052,16 @@ export class HindsightClient {
       recallBudgetMax?: number;
       /** MCP tool names enabled for this bank. */
       mcpEnabledTools?: string[];
-      /** Source-language guard for generated output. */
-      llmLanguageIntegrity?: "off" | "observe" | "retry" | "reject";
+      /** Instructions sent to MCP clients when they connect to this bank's single-bank
+       *  endpoint, in the initialize response. */
+      mcpServerInstructions?: string;
+      /** Knowledge banks linked to this bank: reflect also searches them and treats their
+       *  passages as authoritative. Recall is unchanged. */
+      knowledgeBanks?: string[];
+      /** Media types reflect's knowledge-bank search may return; unset returns all. */
+      reflectKbSearchMediaTypes?: ("document" | "image" | "audio" | "video" | "text")[];
+      /** Filter the knowledge-bank search by the reflect's tags, as its memories are. */
+      reflectKbSearchApplyTags?: boolean;
       /** Gemini/VertexAI safety overrides. */
       llmGeminiSafetySettings?: { category: string; threshold: string }[];
       /** Memory-defense (prompt-injection / secret redaction) settings. */
@@ -1068,8 +1083,6 @@ export class HindsightClient {
       updates.retain_structured_chunk_size = options.retainStructuredChunkSize;
     if (options.retainMaxAttachmentsPerChunk !== undefined)
       updates.retain_max_attachments_per_chunk = options.retainMaxAttachmentsPerChunk;
-    if (options.fileDeleteAfterRetain !== undefined)
-      updates.file_delete_after_retain = options.fileDeleteAfterRetain;
     if (options.entityLabels !== undefined) updates.entity_labels = options.entityLabels;
     if (options.entitiesAllowFreeForm !== undefined)
       updates.entities_allow_free_form = options.entitiesAllowFreeForm;
@@ -1115,16 +1128,8 @@ export class HindsightClient {
       updates.consolidation_llm_batch_size = options.consolidationLlmBatchSize;
     if (options.consolidationLlmParallelism !== undefined)
       updates.consolidation_llm_parallelism = options.consolidationLlmParallelism;
-    if (options.consolidationLaneLlmParallelism !== undefined)
-      updates.consolidation_lane_llm_parallelism = options.consolidationLaneLlmParallelism;
-    if (options.consolidationFairGroupSelection !== undefined)
-      updates.consolidation_fair_group_selection = options.consolidationFairGroupSelection;
     if (options.consolidationMaxMemoriesPerRound !== undefined)
       updates.consolidation_max_memories_per_round = options.consolidationMaxMemoriesPerRound;
-    if (options.consolidationRoundCorrectionBudget !== undefined)
-      updates.consolidation_round_correction_budget = options.consolidationRoundCorrectionBudget;
-    if (options.consolidationMaxContextTokens !== undefined)
-      updates.consolidation_max_context_tokens = options.consolidationMaxContextTokens;
     if (options.consolidationSourceFactsMaxTokens !== undefined)
       updates.consolidation_source_facts_max_tokens = options.consolidationSourceFactsMaxTokens;
     if (options.consolidationSourceFactsMaxTokensPerObservation !== undefined)
@@ -1133,8 +1138,8 @@ export class HindsightClient {
     if (options.mentalModelMinRefreshIntervalSeconds !== undefined)
       updates.mental_model_min_refresh_interval_seconds =
         options.mentalModelMinRefreshIntervalSeconds;
-    if (options.knowledgePageDefaultTrigger !== undefined)
-      updates.knowledge_page_default_trigger = options.knowledgePageDefaultTrigger;
+    const pageDefaultTrigger = options.pageDefaultTrigger ?? options.knowledgePageDefaultTrigger; // deprecated alias, remove in 2.x
+    if (pageDefaultTrigger !== undefined) updates.page_default_trigger = pageDefaultTrigger;
     if (options.reflectDefaultOptions !== undefined)
       updates.reflect_default_options = options.reflectDefaultOptions;
     if (options.reflectUseDecisionModel !== undefined)
@@ -1173,8 +1178,13 @@ export class HindsightClient {
     if (options.recallBudgetMin !== undefined) updates.recall_budget_min = options.recallBudgetMin;
     if (options.recallBudgetMax !== undefined) updates.recall_budget_max = options.recallBudgetMax;
     if (options.mcpEnabledTools !== undefined) updates.mcp_enabled_tools = options.mcpEnabledTools;
-    if (options.llmLanguageIntegrity !== undefined)
-      updates.llm_language_integrity = options.llmLanguageIntegrity;
+    if (options.mcpServerInstructions !== undefined)
+      updates.mcp_server_instructions = options.mcpServerInstructions;
+    if (options.knowledgeBanks !== undefined) updates.knowledge_banks = options.knowledgeBanks;
+    if (options.reflectKbSearchMediaTypes !== undefined)
+      updates.reflect_kb_search_media_types = options.reflectKbSearchMediaTypes;
+    if (options.reflectKbSearchApplyTags !== undefined)
+      updates.reflect_kb_search_apply_tags = options.reflectKbSearchApplyTags;
     if (options.llmGeminiSafetySettings !== undefined)
       updates.llm_gemini_safety_settings = options.llmGeminiSafetySettings;
     if (options.memoryDefense !== undefined) updates.memory_defense = options.memoryDefense;
@@ -1390,7 +1400,9 @@ export class HindsightClient {
       detail?: "metadata" | "content" | "full";
       limit?: number;
       offset?: number;
-      /** Leave out the models that hold knowledge page content (standalone models only). */
+      /** Leave out the models that hold page content (standalone models only). */
+      excludePages?: boolean;
+      /** @deprecated Use `excludePages`. Removed in 2.x. */
       excludeKnowledgePages?: boolean;
       signal?: AbortSignal;
     }
@@ -1404,8 +1416,8 @@ export class HindsightClient {
         ...(options?.detail !== undefined ? { detail: options.detail } : {}),
         ...(options?.limit !== undefined ? { limit: options.limit } : {}),
         ...(options?.offset !== undefined ? { offset: options.offset } : {}),
-        ...(options?.excludeKnowledgePages !== undefined
-          ? { exclude_knowledge_pages: options.excludeKnowledgePages }
+        ...((options?.excludePages ?? options?.excludeKnowledgePages) !== undefined // deprecated alias, remove in 2.x
+          ? { exclude_pages: options?.excludePages ?? options?.excludeKnowledgePages } // deprecated alias, remove in 2.x
           : {}),
       },
       signal: options?.signal,
@@ -1567,51 +1579,51 @@ export class HindsightClient {
   }
 
   /**
-   * Get the knowledge base as a nested folder/page tree.
+   * Get the bank's pages as a nested folder/page tree.
    *
-   * Page bodies are not included — fetch one with `getKnowledgePage`.
+   * Page bodies are not included — fetch one with `getPage`.
    */
-  async getKnowledgeBaseTree(
+  async getPageTree(
     bankId: string,
-    options?: KnowledgeTagFilterOptions & { signal?: AbortSignal }
-  ): Promise<KnowledgeTreeResponse> {
-    const response = await sdk.getKnowledgeBaseTree({
+    options?: PageTagFilterOptions & { signal?: AbortSignal }
+  ): Promise<PageTreeResponse> {
+    const response = await sdk.getPageTree({
       client: this.client,
       path: { bank_id: bankId },
-      query: knowledgeTagQuery(options),
+      query: pageTagQuery(options),
       signal: options?.signal,
     });
 
-    return this.validateResponse(response, "getKnowledgeBaseTree");
+    return this.validateResponse(response, "getPageTree");
   }
 
   /**
-   * Create a knowledge-base folder.
+   * Create a folder.
    */
-  async createKnowledgeFolder(
+  async createPageFolder(
     bankId: string,
     name: string,
     options?: { parentId?: string | null; signal?: AbortSignal }
-  ): Promise<KnowledgeNode> {
-    const response = await sdk.createKnowledgeFolder({
+  ): Promise<PageNode> {
+    const response = await sdk.createPageFolder({
       client: this.client,
       path: { bank_id: bankId },
       body: { name, parent_id: options?.parentId },
       signal: options?.signal,
     });
 
-    return this.validateResponse(response, "createKnowledgeFolder");
+    return this.validateResponse(response, "createPageFolder");
   }
 
   /**
-   * Create a knowledge-base page. Content is generated asynchronously — poll the
+   * Create a page. Content is generated asynchronously — poll the
    * returned `operation_id` to know when the first build has finished.
    *
    * Omit `trigger` to use the page defaults (observation-only, delta mode,
    * refresh after consolidation); a supplied trigger is applied as a patch over
    * them, so the fields you leave out keep their defaults.
    */
-  async createKnowledgePage(
+  async createPage(
     bankId: string,
     name: string,
     sourceQuery: string,
@@ -1629,8 +1641,8 @@ export class HindsightClient {
       trigger?: MentalModelTriggerOptions;
       signal?: AbortSignal;
     }
-  ): Promise<CreateKnowledgePageResponse> {
-    const response = await sdk.createKnowledgePage({
+  ): Promise<CreatePageResponse> {
+    const response = await sdk.createPage({
       client: this.client,
       path: { bank_id: bankId },
       body: {
@@ -1644,55 +1656,55 @@ export class HindsightClient {
       signal: options?.signal,
     });
 
-    return this.validateResponse(response, "createKnowledgePage");
+    return this.validateResponse(response, "createPage");
   }
 
   /**
-   * Get a knowledge page rendered as a markdown document (frontmatter + body).
+   * Get a page rendered as a markdown document (frontmatter + body).
    */
-  async getKnowledgePage(
+  async getPage(
     bankId: string,
     pageId: string,
     options?: { signal?: AbortSignal }
-  ): Promise<KnowledgePageResponse> {
-    const response = await sdk.getKnowledgePage({
+  ): Promise<PageResponse> {
+    const response = await sdk.getPage({
       client: this.client,
       path: { bank_id: bankId, page_id: pageId },
       signal: options?.signal,
     });
 
-    return this.validateResponse(response, "getKnowledgePage");
+    return this.validateResponse(response, "getPage");
   }
 
   /**
-   * Hybrid search (full-text + vector) over the bank's knowledge pages.
+   * Hybrid search (full-text + vector) over the bank's pages.
    */
-  async searchKnowledgeBase(
+  async searchPages(
     bankId: string,
     query: string,
-    options?: KnowledgeTagFilterOptions & { limit?: number; signal?: AbortSignal }
-  ): Promise<KnowledgePageSearchResponse> {
-    const response = await sdk.searchKnowledgeBase({
+    options?: PageTagFilterOptions & { limit?: number; signal?: AbortSignal }
+  ): Promise<PageSearchResponse> {
+    const response = await sdk.searchPages({
       client: this.client,
       path: { bank_id: bankId },
       query: {
         q: query,
         ...(options?.limit !== undefined ? { limit: options.limit } : {}),
-        ...knowledgeTagQuery(options),
+        ...pageTagQuery(options),
       },
       signal: options?.signal,
     });
 
-    return this.validateResponse(response, "searchKnowledgeBase");
+    return this.validateResponse(response, "searchPages");
   }
 
   /**
-   * Rename/move a knowledge node and/or update a page's options.
+   * Rename/move a page node and/or update a page's options.
    *
    * Only the fields present in `options` are sent, so passing `parentId: null`
    * explicitly moves the node to the root.
    */
-  async updateKnowledgeNode(
+  async updatePageNode(
     bankId: string,
     nodeId: string,
     options: {
@@ -1708,8 +1720,8 @@ export class HindsightClient {
       trigger?: MentalModelTriggerInput;
       signal?: AbortSignal;
     }
-  ): Promise<KnowledgeNode> {
-    const response = await sdk.updateKnowledgeNode({
+  ): Promise<PageNode> {
+    const response = await sdk.updatePageNode({
       client: this.client,
       path: { bank_id: bankId, node_id: nodeId },
       body: {
@@ -1723,40 +1735,415 @@ export class HindsightClient {
       signal: options.signal,
     });
 
-    return this.validateResponse(response, "updateKnowledgeNode");
+    return this.validateResponse(response, "updatePageNode");
   }
 
   /**
-   * Delete a knowledge folder or page and its whole subtree.
+   * Delete a folder or page and its whole subtree.
    */
-  async deleteKnowledgeNode(
+  async deletePageNode(
     bankId: string,
     nodeId: string,
     options?: { signal?: AbortSignal }
   ): Promise<unknown> {
-    const response = await sdk.deleteKnowledgeNode({
+    const response = await sdk.deletePageNode({
       client: this.client,
       path: { bank_id: bankId, node_id: nodeId },
       signal: options?.signal,
     });
 
-    return this.validateResponse(response, "deleteKnowledgeNode");
+    return this.validateResponse(response, "deletePageNode");
   }
 
   /**
-   * Export the knowledge base as a portable markdown bundle.
+   * Export the bank's pages as a portable markdown bundle.
    */
-  async exportKnowledgeBase(
+  async exportPages(
     bankId: string,
     options?: { signal?: AbortSignal }
-  ): Promise<KnowledgePageBundleResponse> {
-    const response = await sdk.exportKnowledgeBase({
+  ): Promise<PageBundleResponse> {
+    const response = await sdk.exportPages({
       client: this.client,
       path: { bank_id: bankId },
       signal: options?.signal,
     });
 
-    return this.validateResponse(response, "exportKnowledgeBase");
+    return this.validateResponse(response, "exportPages");
+  }
+
+  // Knowledge bank methods
+
+  /**
+   * Create a knowledge bank: authoritative files, split into passages and searched as written.
+   * It shares the id space of memory banks.
+   */
+  async createKnowledgeBank(
+    bankId: string,
+    options?: { signal?: AbortSignal }
+  ): Promise<KnowledgeBankResponse> {
+    const response = await sdk.createKnowledgeBank({
+      client: this.client,
+      body: { bank_id: bankId },
+      signal: options?.signal,
+    });
+
+    return this.validateResponse(response, "createKnowledgeBank");
+  }
+
+  /**
+   * Get a knowledge bank with its document counts.
+   */
+  async getKnowledgeBank(
+    bankId: string,
+    options?: { signal?: AbortSignal }
+  ): Promise<KnowledgeBankResponse> {
+    const response = await sdk.getKnowledgeBank({
+      client: this.client,
+      path: { bank_id: bankId },
+      signal: options?.signal,
+    });
+
+    return this.validateResponse(response, "getKnowledgeBank");
+  }
+
+  /**
+   * List knowledge banks.
+   */
+  async listKnowledgeBanks(options?: {
+    /** Part of the bank id, case-insensitive */
+    q?: string;
+    limit?: number;
+    offset?: number;
+    signal?: AbortSignal;
+  }): Promise<KnowledgeBankListResponse> {
+    const response = await sdk.listKnowledgeBanks({
+      client: this.client,
+      query: { q: options?.q, limit: options?.limit, offset: options?.offset },
+      signal: options?.signal,
+    });
+
+    return this.validateResponse(response, "listKnowledgeBanks");
+  }
+
+  /**
+   * Delete a knowledge bank and every document in it.
+   */
+  async deleteKnowledgeBank(
+    bankId: string,
+    options?: { signal?: AbortSignal }
+  ): Promise<KnowledgeDeletedResponse> {
+    const response = await sdk.deleteKnowledgeBank({
+      client: this.client,
+      path: { bank_id: bankId },
+      signal: options?.signal,
+    });
+
+    return this.validateResponse(response, "deleteKnowledgeBank");
+  }
+
+  /**
+   * Ingest text documents into a knowledge bank. Each item becomes one document; re-ingesting a
+   * document id replaces it. Returns once every document is searchable, unless `ingestAsync`
+   * queues them and returns their operations at once.
+   */
+  async ingestKnowledgeTexts(
+    bankId: string,
+    items: KnowledgeIngestTextItem[],
+    options?: { ingestAsync?: boolean; signal?: AbortSignal }
+  ): Promise<KnowledgeIngestResponse> {
+    const response = await sdk.ingestKnowledgeTexts({
+      client: this.client,
+      path: { bank_id: bankId },
+      body: { items, async: options?.ingestAsync },
+      signal: options?.signal,
+    });
+
+    return this.validateResponse(response, "ingestKnowledgeTexts");
+  }
+
+  /**
+   * Upload files (PDF, images, audio, video, text, Office) into a knowledge bank. Each file becomes
+   * one document, split and embedded in the background: poll the document's status (or the
+   * returned operation) to know when it is searchable.
+   */
+  async ingestKnowledgeFiles(
+    bankId: string,
+    files: Array<File | Blob>,
+    options?: {
+      /** Per-file options, one per file when given. */
+      filesOptions?: Array<{ document_id?: string; tags?: string[]; strategy?: string }>;
+      signal?: AbortSignal;
+    }
+  ): Promise<KnowledgeIngestResponse> {
+    const filesOptions = options?.filesOptions;
+    if (filesOptions && filesOptions.length !== files.length) {
+      throw new HindsightError(
+        "ingestKnowledgeFiles failed: filesOptions must have one entry per file"
+      );
+    }
+    const response = await sdk.ingestKnowledgeFiles({
+      client: this.client,
+      path: { bank_id: bankId },
+      body: {
+        files,
+        ...(filesOptions?.length ? { request: JSON.stringify({ files: filesOptions }) } : {}),
+      },
+      signal: options?.signal,
+    });
+
+    return this.validateResponse(response, "ingestKnowledgeFiles");
+  }
+
+  /**
+   * Search a knowledge bank. Give at least one of `query`, `queryImage`, `queryVideo`. Hits come
+   * best first, each text hit with the passages around it joined into its `text`.
+   */
+  async searchKnowledgeBank(
+    bankId: string,
+    options: {
+      query?: string;
+      /** Image to search by, as a data URL or base64 */
+      queryImage?: string;
+      /** Video to search by, as a data URL or base64 */
+      queryVideo?: string;
+      /** How deep the search ranks before `maxTokens` picks from it. Default: 'mid' */
+      budget?: Budget;
+      /** What the results may weigh in all, in tokens of their text. Default: 4096 */
+      maxTokens?: number;
+      tags?: string[];
+      /** How to match tags: 'any' (default), 'all', 'any_strict', 'all_strict', 'exact' */
+      tagsMatch?: "any" | "all" | "any_strict" | "all_strict" | "exact";
+      /** Compound boolean tag filter, same shape as recall's `tagGroups` */
+      tagGroups?: Array<TagGroupLeaf | TagGroupAndInput | TagGroupOrInput | TagGroupNotInput>;
+      documentIds?: string[];
+      mediaTypes?: Array<"document" | "image" | "audio" | "video" | "text">;
+      /** Rerank with the cross-encoder; omitted uses the bank's setting */
+      enableReranking?: boolean;
+      /** Also return how the search ranked and what the token budget kept */
+      trace?: boolean;
+      signal?: AbortSignal;
+    }
+  ): Promise<KnowledgeSearchResponse> {
+    const response = await sdk.searchKnowledgeBank({
+      client: this.client,
+      path: { bank_id: bankId },
+      body: {
+        query: options.query,
+        query_image: options.queryImage,
+        query_video: options.queryVideo,
+        budget: options.budget,
+        max_tokens: options.maxTokens,
+        tags: options.tags,
+        tags_match: options.tagsMatch,
+        tag_groups: options.tagGroups,
+        document_ids: options.documentIds,
+        media_types: options.mediaTypes,
+        enable_reranking: options.enableReranking,
+        trace: options.trace,
+      },
+      signal: options.signal,
+    });
+
+    return this.validateResponse(response, "searchKnowledgeBank");
+  }
+
+  /**
+   * List a knowledge bank's documents.
+   */
+  async listKnowledgeDocuments(
+    bankId: string,
+    options?: {
+      /** Substring of the document id or filename */
+      q?: string;
+      status?: string;
+      mediaType?: string;
+      tags?: string[];
+      limit?: number;
+      offset?: number;
+      signal?: AbortSignal;
+    }
+  ): Promise<KnowledgeDocumentListResponse> {
+    const response = await sdk.listKnowledgeDocuments({
+      client: this.client,
+      path: { bank_id: bankId },
+      query: {
+        q: options?.q,
+        status: options?.status,
+        media_type: options?.mediaType,
+        tags: options?.tags,
+        limit: options?.limit,
+        offset: options?.offset,
+      },
+      signal: options?.signal,
+    });
+
+    return this.validateResponse(response, "listKnowledgeDocuments");
+  }
+
+  /**
+   * Get one knowledge document with its status (`ready` once it is searchable).
+   */
+  async getKnowledgeDocument(
+    bankId: string,
+    documentId: string,
+    options?: { signal?: AbortSignal }
+  ): Promise<KnowledgeDocumentDetailResponse> {
+    const response = await sdk.getKnowledgeDocument({
+      client: this.client,
+      path: { bank_id: bankId, document_id: documentId },
+      signal: options?.signal,
+    });
+
+    return this.validateResponse(response, "getKnowledgeDocument");
+  }
+
+  /**
+   * Delete one knowledge document.
+   */
+  async deleteKnowledgeDocument(
+    bankId: string,
+    documentId: string,
+    options?: { signal?: AbortSignal }
+  ): Promise<KnowledgeDeletedResponse> {
+    const response = await sdk.deleteKnowledgeDocument({
+      client: this.client,
+      path: { bank_id: bankId, document_id: documentId },
+      signal: options?.signal,
+    });
+
+    return this.validateResponse(response, "deleteKnowledgeDocument");
+  }
+
+  /**
+   * List the tags on a knowledge bank's documents.
+   */
+  async listKnowledgeBankTags(
+    bankId: string,
+    options?: {
+      /** Wildcard pattern to filter tags (e.g. 'team:*'), case-insensitive */
+      q?: string;
+      limit?: number;
+      offset?: number;
+      signal?: AbortSignal;
+    }
+  ): Promise<KnowledgeTagsResponse> {
+    const response = await sdk.listKnowledgeBankTags({
+      client: this.client,
+      path: { bank_id: bankId },
+      query: { q: options?.q, limit: options?.limit, offset: options?.offset },
+      signal: options?.signal,
+    });
+
+    return this.validateResponse(response, "listKnowledgeBankTags");
+  }
+
+  /**
+   * Get a knowledge bank's settings: the resolved `config` and the bank's `overrides`.
+   */
+  async getKnowledgeBankConfig(
+    bankId: string,
+    options?: { signal?: AbortSignal }
+  ): Promise<KnowledgeBankConfigResponse> {
+    const response = await sdk.getKnowledgeBankConfig({
+      client: this.client,
+      path: { bank_id: bankId },
+      signal: options?.signal,
+    });
+
+    return this.validateResponse(response, "getKnowledgeBankConfig");
+  }
+
+  /**
+   * Override a knowledge bank's settings, named as in `config` (e.g. `{ text_passage_tokens: 256 }`);
+   * a null value clears that override. A change applies to files ingested after it.
+   */
+  async updateKnowledgeBankConfig(
+    bankId: string,
+    updates: Record<string, unknown>,
+    options?: { signal?: AbortSignal }
+  ): Promise<KnowledgeBankConfigResponse> {
+    const response = await sdk.updateKnowledgeBankConfig({
+      client: this.client,
+      path: { bank_id: bankId },
+      body: { updates },
+      signal: options?.signal,
+    });
+
+    return this.validateResponse(response, "updateKnowledgeBankConfig");
+  }
+
+  /**
+   * Drop every override of a knowledge bank's settings, going back to the server's.
+   */
+  async resetKnowledgeBankConfig(
+    bankId: string,
+    options?: { signal?: AbortSignal }
+  ): Promise<KnowledgeBankConfigResponse> {
+    const response = await sdk.resetKnowledgeBankConfig({
+      client: this.client,
+      path: { bank_id: bankId },
+      signal: options?.signal,
+    });
+
+    return this.validateResponse(response, "resetKnowledgeBankConfig");
+  }
+
+  // Deprecated names from when pages were called "knowledge pages". Remove in 2.x.
+
+  /** @deprecated Use {@link HindsightClient.getPageTree}. Removed in 2.x. */
+  getKnowledgeBaseTree(
+    ...args: Parameters<HindsightClient["getPageTree"]>
+  ): ReturnType<HindsightClient["getPageTree"]> {
+    return this.getPageTree(...args);
+  }
+
+  /** @deprecated Use {@link HindsightClient.createPageFolder}. Removed in 2.x. */
+  createKnowledgeFolder(
+    ...args: Parameters<HindsightClient["createPageFolder"]>
+  ): ReturnType<HindsightClient["createPageFolder"]> {
+    return this.createPageFolder(...args);
+  }
+
+  /** @deprecated Use {@link HindsightClient.createPage}. Removed in 2.x. */
+  createKnowledgePage(
+    ...args: Parameters<HindsightClient["createPage"]>
+  ): ReturnType<HindsightClient["createPage"]> {
+    return this.createPage(...args);
+  }
+
+  /** @deprecated Use {@link HindsightClient.getPage}. Removed in 2.x. */
+  getKnowledgePage(
+    ...args: Parameters<HindsightClient["getPage"]>
+  ): ReturnType<HindsightClient["getPage"]> {
+    return this.getPage(...args);
+  }
+
+  /** @deprecated Use {@link HindsightClient.searchPages}. Removed in 2.x. */
+  searchKnowledgeBase(
+    ...args: Parameters<HindsightClient["searchPages"]>
+  ): ReturnType<HindsightClient["searchPages"]> {
+    return this.searchPages(...args);
+  }
+
+  /** @deprecated Use {@link HindsightClient.updatePageNode}. Removed in 2.x. */
+  updateKnowledgeNode(
+    ...args: Parameters<HindsightClient["updatePageNode"]>
+  ): ReturnType<HindsightClient["updatePageNode"]> {
+    return this.updatePageNode(...args);
+  }
+
+  /** @deprecated Use {@link HindsightClient.deletePageNode}. Removed in 2.x. */
+  deleteKnowledgeNode(
+    ...args: Parameters<HindsightClient["deletePageNode"]>
+  ): ReturnType<HindsightClient["deletePageNode"]> {
+    return this.deletePageNode(...args);
+  }
+
+  /** @deprecated Use {@link HindsightClient.exportPages}. Removed in 2.x. */
+  exportKnowledgeBase(
+    ...args: Parameters<HindsightClient["exportPages"]>
+  ): ReturnType<HindsightClient["exportPages"]> {
+    return this.exportPages(...args);
   }
 
   /**
@@ -1859,17 +2246,29 @@ export class HindsightClient {
   }
 
   /**
-   * Update a document's mutable fields.
+   * Update a document's mutable fields. `tags` replaces the whole set; `addTags` /
+   * `removeTags` change only the tags they name (removals first) and can't be combined with it.
    */
   async updateDocument(
     bankId: string,
     documentId: string,
-    options: { tags?: string[]; signal?: AbortSignal }
+    options: {
+      tags?: string[];
+      addTags?: string[];
+      removeTags?: string[];
+      observationScopes?: UpdateDocumentRequest["observation_scopes"];
+      signal?: AbortSignal;
+    }
   ): Promise<UpdateDocumentResponse> {
     const response = await sdk.updateDocument({
       client: this.client,
       path: { bank_id: bankId, document_id: documentId },
-      body: { tags: options.tags },
+      body: {
+        tags: options.tags,
+        add_tags: options.addTags,
+        remove_tags: options.removeTags,
+        observation_scopes: options.observationScopes,
+      },
       signal: options.signal,
     });
 
@@ -1924,7 +2323,7 @@ export class HindsightClient {
    * and everything backing them (documents, facts, observations, attachments and
    * their bytes, the curation archive, the operations log and the maintenance
    * queues); `includeBankConfig` the bank's own config, mental models and their
-   * history, knowledge pages, directives and webhooks; `includeHistory` the audit
+   * history, pages, directives and webhooks; `includeHistory` the audit
    * and LLM-request logs. Embeddings never travel — the importing instance
    * regenerates them, which is what makes an archive portable.
    *
@@ -2208,7 +2607,7 @@ export type {
   RerankOptions,
   TemporalWindow,
   AsyncOperationSubmitResponse,
-  CreateKnowledgePageResponse,
+  CreatePageResponse,
   CreateMentalModelResponse,
   DirectiveListResponse,
   DirectiveResponse,
@@ -2219,11 +2618,11 @@ export type {
   ExtractedFact,
   ExtractedFactAttachment,
   ExtractionChunk,
-  KnowledgeNode,
-  KnowledgePageBundleResponse,
-  KnowledgePageResponse,
-  KnowledgePageSearchResponse,
-  KnowledgeTreeResponse,
+  PageNode,
+  PageBundleResponse,
+  PageResponse,
+  PageSearchResponse,
+  PageTreeResponse,
   LabelGroupInput,
   ListDocumentsResponse,
   MentalModelListResponse,
@@ -2233,6 +2632,45 @@ export type {
   UpdateDocumentResponse,
   VersionResponse,
 };
+
+export type {
+  KnowledgeBankConfigResponse,
+  KnowledgeBankListResponse,
+  KnowledgeBankOverrides,
+  KnowledgeBankResponse,
+  KnowledgeBankSettings,
+  KnowledgeDeletedResponse,
+  KnowledgeDocumentDetailResponse,
+  KnowledgeDocumentListResponse,
+  KnowledgeDocumentResponse,
+  KnowledgeIngestRequest,
+  KnowledgeIngestResponse,
+  KnowledgeIngestTextItem,
+  KnowledgePassageResponse,
+  KnowledgeSearchRequest,
+  KnowledgeSearchResponse,
+  KnowledgeSearchResult,
+  KnowledgeSearchTrace,
+  KnowledgeSearchTraceHit,
+  KnowledgeTagsResponse,
+  KnowledgeTimeseriesBucket,
+  KnowledgeTimeseriesResponse,
+  KnowledgeTraceBudgetStep,
+} from "../generated/types.gen";
+
+// Deprecated type names from when pages were called "knowledge pages". Remove in 2.x.
+/** @deprecated Use {@link PageNode}. */
+export type KnowledgeNode = PageNode;
+/** @deprecated Use {@link PageTreeResponse}. */
+export type KnowledgeTreeResponse = PageTreeResponse;
+/** @deprecated Use {@link CreatePageResponse}. */
+export type CreateKnowledgePageResponse = CreatePageResponse;
+/** @deprecated Use {@link PageResponse}. */
+export type KnowledgePageResponse = PageResponse;
+/** @deprecated Use {@link PageBundleResponse}. */
+export type KnowledgePageBundleResponse = PageBundleResponse;
+/** @deprecated Use {@link PageSearchResponse}. */
+export type KnowledgePageSearchResponse = PageSearchResponse;
 
 // Also export low-level SDK functions for advanced usage
 export * as sdk from "../generated/sdk.gen";

@@ -26,6 +26,7 @@ import pytest
 from aiohttp import web
 from cryptography.hazmat.primitives.asymmetric import rsa
 
+from hindsight_api.engine.llm_interface import ProviderContentPolicyError
 from hindsight_api.config import PROVIDER_DEFAULT_MODELS, clear_config_cache
 from hindsight_api.engine.llm_interface import ProviderRateLimitResetError
 from hindsight_api.engine.llm_wrapper import create_llm_provider, requires_api_key
@@ -807,6 +808,32 @@ async def test_a_tool_turn_schema_is_sent_as_text_format_and_returns_the_dict(ma
     assert not {"tools", "tool_choice"} & sent.keys()
 
 
+async def test_only_the_final_answer_message_is_the_reply(make_llm):
+    """A commentary preamble and the final answer are both JSON under a strict schema;
+    the SDK's ``output_text`` joins them into "Extra data" (#6347)."""
+    schema = {
+        "type": "object",
+        "properties": {"query": {"type": "string"}},
+        "required": ["query"],
+        "additionalProperties": False,
+    }
+
+    def message(item_id: str, phase: str, text: str) -> dict[str, Any]:
+        content = [{"type": "output_text", "text": text, "annotations": []}]
+        return {**_TEXT_ITEM, "id": item_id, "phase": phase, "content": content}
+
+    output = [message("m1", "commentary", '{"query": "draft"}'), message("m2", "final_answer", '{"query": "x"}')]
+    llm = await make_llm(_Upstream([(200, _completed(output))]))
+    result = await llm.call(
+        messages=[{"role": "user", "content": "q"}],
+        response_format=schema_format(ResponseSchema(name="recall", schema=schema)),
+        strict_schema=True,
+        skip_validation=True,
+        max_retries=0,
+    )
+    assert result.content == {"query": "x"}
+
+
 async def test_usage_limit_in_stream_defers(make_llm):
     upstream = _Upstream([(200, _failed("subscription_sharing_usage_limit_exceeded"))])
     llm = await make_llm(upstream)
@@ -1119,3 +1146,19 @@ def test_lost_session_names_the_refresh_error_that_cleared_it(tmp_path):
     _write(tmp_path, _credential(access_token=None, refresh_token=None, last_auth_error="invalid_grant"))
     with pytest.raises(auth.ChatGPTLoginRequiredError, match="last token refresh failed with invalid_grant"):
         auth.ChatGPTAuth.from_home(tmp_path)
+
+
+async def test_a_content_filter_block_is_a_refusal_sent_once(make_llm):
+    """#6503: a stream that ends incomplete on the content filter is permanent, not retried."""
+    blocked = _sse(
+        {
+            "type": "response.incomplete",
+            "sequence_number": 1,
+            "response": _response([], status="incomplete", incomplete_details={"reason": "content_filter"}),
+        }
+    )
+    upstream = _Upstream([(200, blocked)])
+    llm = await make_llm(upstream)
+    with pytest.raises(ProviderContentPolicyError):
+        await llm.call(messages=[{"role": "user", "content": "hi"}], max_retries=2)
+    assert len(upstream.requests) == 1

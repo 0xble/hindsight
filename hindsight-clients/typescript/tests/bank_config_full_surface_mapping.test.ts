@@ -80,7 +80,7 @@ describe("full bank config surface mapping", () => {
       consolidationSourceFactsMaxTokens: 2048,
       consolidationSourceFactsMaxTokensPerObservation: 128,
       mentalModelMinRefreshIntervalSeconds: 3600,
-      knowledgePageDefaultTrigger: { refresh_cron: "0 * * * *" },
+      pageDefaultTrigger: { refresh_cron: "0 * * * *" },
       reflectSourceFactsMaxTokens: 1024,
       maxObservationsPerScope: 25,
       observationScopeLimits: [{ scope: "team", limit: 10 }],
@@ -94,9 +94,13 @@ describe("full bank config surface mapping", () => {
       storeDocumentText: false,
       defaultTimezone: "Asia/Shanghai",
       mcpEnabledTools: ["recall", "reflect"],
+      mcpServerInstructions: "Read the house-rules document first.",
       llmGeminiSafetySettings: [{ category: "HARM_CATEGORY_HARASSMENT", threshold: "BLOCK_NONE" }],
       memoryDefense: { redact_secrets: true },
       auditLogEnabled: true,
+      knowledgeBanks: ["product-docs"],
+      reflectKbSearchMediaTypes: ["document", "text"],
+      reflectKbSearchApplyTags: false,
     });
 
     const body = mockedUpdateConfig.mock.calls[0][0].body as any;
@@ -114,7 +118,7 @@ describe("full bank config surface mapping", () => {
       consolidation_source_facts_max_tokens: 2048,
       consolidation_source_facts_max_tokens_per_observation: 128,
       mental_model_min_refresh_interval_seconds: 3600,
-      knowledge_page_default_trigger: { refresh_cron: "0 * * * *" },
+      page_default_trigger: { refresh_cron: "0 * * * *" },
       reflect_source_facts_max_tokens: 1024,
       max_observations_per_scope: 25,
       observation_scope_limits: [{ scope: "team", limit: 10 }],
@@ -128,11 +132,15 @@ describe("full bank config surface mapping", () => {
       store_document_text: false,
       default_timezone: "Asia/Shanghai",
       mcp_enabled_tools: ["recall", "reflect"],
+      mcp_server_instructions: "Read the house-rules document first.",
       llm_gemini_safety_settings: [
         { category: "HARM_CATEGORY_HARASSMENT", threshold: "BLOCK_NONE" },
       ],
       memory_defense: { redact_secrets: true },
       audit_log_enabled: true,
+      knowledge_banks: ["product-docs"],
+      reflect_kb_search_media_types: ["document", "text"],
+      reflect_kb_search_apply_tags: false,
     });
   });
 

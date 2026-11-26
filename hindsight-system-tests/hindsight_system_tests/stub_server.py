@@ -33,14 +33,17 @@ from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 
 from .lexical import EMBEDDING_DIMENSION
-from .rulebook import ChatRequest, ReceivedWebhook, Stubs, TokenExchange
+from .rulebook import ChatRequest, EmbeddingCall, ReceivedWebhook, Stubs, TokenExchange
 from .validation import RequestRejected, validate_chat, validate_embeddings, validate_rerank, validate_systemone
 
 logger = logging.getLogger(__name__)
 
 
 #: The words Hindsight asks for a forced (named) call with (``tools_via_schema.turn_request``).
-_NAMED_TURN_RX = re.compile(r"^Call `([^`]+)` now")
+# The request closes the last user turn, after the question or the previous result
+# it is joined onto (Hindsight sends no two user turns in a row, #6349), so it is the
+# last line that opens this way.
+_NAMED_TURN_RX = re.compile(r"^Call `([^`]+)` now", re.MULTILINE)
 
 
 @dataclass(frozen=True)
@@ -71,9 +74,9 @@ def _schema_tool_turn(body: dict[str, Any]) -> SchemaToolTurn | None:
         return SchemaToolTurn(tools=tuple(o["properties"]["name"]["enum"][0] for o in options), named=False)
     last = (body.get("messages") or [{}])[-1]
     content = last.get("content")
-    match = _NAMED_TURN_RX.match(content) if schema and isinstance(content, str) else None
-    if match:
-        return SchemaToolTurn(tools=(match.group(1),), named=True)
+    names = _NAMED_TURN_RX.findall(content) if schema and isinstance(content, str) else []
+    if names:
+        return SchemaToolTurn(tools=(names[-1],), named=True)
     return None
 
 
@@ -132,7 +135,7 @@ def create_stub_app(stubs: Stubs) -> FastAPI:
             )
 
         message, finish_reason = reply.message, reply.finish_reason
-        if turn is not None and message.get("tool_calls"):
+        if turn is not None and message.get("tool_calls") and not reply.native:
             message, finish_reason = turn.reply_for(message["tool_calls"][0]["function"]), "stop"
 
         return JSONResponse(
@@ -222,20 +225,19 @@ def create_stub_app(stubs: Stubs) -> FastAPI:
 
         raw_input = body["input"]
         inputs = [raw_input] if isinstance(raw_input, str) else raw_input
+        stubs.embeddings.calls.append(EmbeddingCall(model=body["model"], inputs=list(inputs)))
 
+        # Any width a deployment asks for: the re-embed story moves a schema to a second one.
         dimensions = body.get("dimensions", EMBEDDING_DIMENSION)
-        if dimensions != EMBEDDING_DIMENSION:
-            raise RequestRejected(
-                f"stub embeddings only serve {EMBEDDING_DIMENSION}-dim vectors (the width of the "
-                f"server's vector columns); asked for {dimensions}"
-            )
+        if not isinstance(dimensions, int) or dimensions < 1:
+            raise RequestRejected(f"'dimensions' must be a positive integer; got {dimensions!r}")
 
         return JSONResponse(
             {
                 "object": "list",
                 "model": body["model"],
                 "data": [
-                    {"object": "embedding", "index": index, "embedding": stubs.embeddings.embed(text)}
+                    {"object": "embedding", "index": index, "embedding": stubs.embeddings.embed(text, dimensions)}
                     for index, text in enumerate(inputs)
                 ],
                 "usage": {"prompt_tokens": sum(len(text.split()) for text in inputs), "total_tokens": 0},
@@ -270,6 +272,9 @@ def create_stub_app(stubs: Stubs) -> FastAPI:
         """
         body = await request.json()
         validate_systemone(body)
+        if stubs.rerank.fail_with_status is not None:
+            status = stubs.rerank.fail_with_status
+            return _provider_error(f"stub provider error {status}", code="stub_error", status=status)
 
         answers = {}
         state = body["state"]
@@ -289,6 +294,7 @@ def create_stub_app(stubs: Stubs) -> FastAPI:
                 answers[question_id] = {"type": "choice", "choice": pick, "probabilities": probabilities}
             return JSONResponse({"model": "stub", "answers": answers, "usage": {"input_tokens": 1, "output_tokens": 1}})
 
+        stubs.rerank.assets.append({name: asset["format"] for name, asset in body.get("assets", {}).items()})
         for question_id, question in body["questions"].items():
             if question["type"] == "noul" and "memory_a" in question["instructions"]:
                 instructions = question["instructions"]
@@ -341,11 +347,20 @@ def create_stub_app(stubs: Stubs) -> FastAPI:
     async def rerank(request: Request) -> JSONResponse:
         body = await request.json()
         validate_rerank(body)
+        if stubs.rerank.rerank_fail_with_status is not None:
+            status = stubs.rerank.rerank_fail_with_status
+            return _provider_error(f"stub provider error {status}", code="stub_error", status=status)
 
         query = body["query"]
+        # An image document (knowledge search's page or photo) is scored by its text; its picture is
+        # recorded like a decision model's asset, by its format.
+        documents = [document if isinstance(document, str) else document["text"] for document in body["documents"]]
+        stubs.rerank.assets.append(
+            {str(index): "jpg" for index, document in enumerate(body["documents"]) if not isinstance(document, str)}
+        )
         results = [
-            {"index": index, "relevance_score": stubs.rerank.score(query, document)}
-            for index, document in enumerate(body["documents"])
+            {"index": index, "relevance_score": stubs.rerank.reranked(query, document)}
+            for index, document in enumerate(documents)
         ]
         results.sort(key=lambda item: item["relevance_score"], reverse=True)
         return JSONResponse({"id": "rerank-stub", "results": results})

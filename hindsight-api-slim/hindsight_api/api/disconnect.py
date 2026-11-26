@@ -20,8 +20,8 @@ reflect also copy the token onto their ``RequestContext`` so the engine checks i
 at stage boundaries, which is what stops work running in worker threads. Either
 way, abandoned work stops instead of running to completion.
 
-It only wraps recall, reflect, the retain POST and the graph GET (small or no
-bodies); every other request — uploads, MCP streams, etc. — passes straight
+It only wraps recall, reflect, the retain POST, the graph GET and knowledge-bank
+search; every other request — uploads, MCP streams, etc. — passes straight
 through untouched, so there is no buffering or latency cost elsewhere. The pump
 queue is bounded at one message so a monitored request's body is never held in
 memory ahead of the app reading it.
@@ -51,6 +51,12 @@ _MONITORED_OPERATION_PATH = re.compile(
     r"(?P<operation>memories/recall|reflect|private/(?:recall|reflect)|memories|graph)/?\Z",
     re.DOTALL,
 )
+# Knowledge-bank search is a read queued in the same kind of admission lane. Match the exact
+# route so a document or file path that merely ends in /search is never buffered.
+_MONITORED_KB_SEARCH_PATH = re.compile(
+    r"^(?:(?!/v1/default/knowledge-banks/).)*/v1/default/knowledge-banks/[^/]+/search/?\Z",
+    re.DOTALL,
+)
 
 Scope = MutableMapping[str, Any]
 Receive = Callable[[], Awaitable[MutableMapping[str, Any]]]
@@ -66,7 +72,12 @@ def _should_monitor(scope: Scope) -> bool:
     possibly into a bank deleted while it ran (issue #4526). DELETE shares the same
     path and is not a retain, hence the method check.
     """
-    matched = _MONITORED_OPERATION_PATH.search(scope.get("path", ""))
+    path = scope.get("path", "")
+    # Its body can carry a base64 image or clip, which is fine: the pump holds at most one
+    # message ahead of the app.
+    if _MONITORED_KB_SEARCH_PATH.search(path) is not None:
+        return True
+    matched = _MONITORED_OPERATION_PATH.search(path)
     if matched is None:
         return False
     # The graph read behind the control plane's Memories tabs: several MB and

@@ -16,7 +16,7 @@ from unittest.mock import AsyncMock, patch
 import pytest
 from pydantic import BaseModel
 
-from hindsight_api.engine.llm_interface import OutputTooLongError
+from hindsight_api.engine.llm_interface import OutputTooLongError, ProviderContentPolicyError
 from hindsight_api.engine.providers.openai_responses_llm import OpenAIResponsesLLM
 from hindsight_api.engine.providers.tools_via_schema import ResponseSchema, schema_format
 
@@ -197,6 +197,24 @@ async def test_call_strict_schema_uses_text_format_json_schema():
 
 
 @pytest.mark.asyncio
+async def test_without_phase_labels_the_last_message_is_the_reply():
+    """Several assistant messages are not one reply: the SDK's ``output_text`` joins them (#6347)."""
+
+    def message(text: str) -> types.SimpleNamespace:
+        part = types.SimpleNamespace(type="output_text", text=text)
+        return types.SimpleNamespace(type="message", phase=None, content=[part])
+
+    output = [message('{"answer": "draft"}'), message('{"answer": "42"}')]
+    llm = _make_llm()
+    _mock_create(llm, _fake_response(output_text='{"answer": "draft"}{"answer": "42"}', output=output))
+    with patch("hindsight_api.engine.providers.openai_responses_llm.get_metrics_collector"):
+        result = (
+            await llm.call(messages=[{"role": "user", "content": "q"}], response_format=_Answer, strict_schema=True)
+        ).content
+    assert result == _Answer(answer="42")
+
+
+@pytest.mark.asyncio
 async def test_call_soft_schema_injects_schema_and_uses_json_object():
     llm = _make_llm()
     create = _mock_create(llm, _fake_response(output_text=json.dumps({"answer": "x"})))
@@ -222,6 +240,19 @@ async def test_call_raises_output_too_long_on_truncation():
     with patch("hindsight_api.engine.providers.openai_responses_llm.get_metrics_collector"):
         with pytest.raises(OutputTooLongError):
             await llm.call(messages=[{"role": "user", "content": "hi"}])
+
+
+@pytest.mark.asyncio
+async def test_a_content_filter_block_is_a_refusal_sent_once():
+    """#6503: an incomplete reply blocked by the content filter is permanent, not retried."""
+    llm = _make_llm()
+    blocked = _fake_response(output_text="", status="incomplete")
+    blocked.incomplete_details = types.SimpleNamespace(reason="content_filter")
+    create = _mock_create(llm, blocked)
+    with patch("hindsight_api.engine.providers.openai_responses_llm.get_metrics_collector"):
+        with pytest.raises(ProviderContentPolicyError):
+            await llm.call(messages=[{"role": "user", "content": "hi"}], max_retries=2)
+    assert create.await_count == 1
 
 
 # --------------------------------------------------------------------------- #

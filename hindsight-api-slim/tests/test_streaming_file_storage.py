@@ -167,8 +167,9 @@ async def test_stream_export_bank_empty_bank_manifest():
 
     from hindsight_api.engine.transfer import TransferScope, stream_export_bank
 
-    fake_conn = AsyncMock(spec=["fetch"])
+    fake_conn = AsyncMock(spec=["fetch", "fetchval"])
     fake_conn.fetch = AsyncMock(return_value=[])
+    fake_conn.fetchval = AsyncMock(return_value=1)  # the bank exists, it is just empty
 
     chunks = []
     async for chunk in stream_export_bank(
@@ -366,6 +367,41 @@ async def test_postgres_row_that_only_looks_like_a_manifest_is_a_plain_file(memo
     assert not await fs.exists(key)
 
 
+async def test_postgres_reads_several_files_in_one_statement(memory, monkeypatch):
+    """retrieve_many: plain and chunked files in one read; a missing one is an error, as with retrieve()."""
+    fs = memory._file_storage
+    plain, chunked = _pg_key("plain.bin"), _pg_key("chunked.bin")
+    big = b"Z" * (9 * 1024 * 1024)
+    try:
+        await fs.store(b"plain bytes", plain)
+        await fs.store_stream(chunked, _pieces(big))
+        plain_reads: list[str] = []
+        real_retrieve = fs.retrieve
+
+        async def spy(key: str) -> bytes:
+            plain_reads.append(key)
+            return await real_retrieve(key)
+
+        monkeypatch.setattr(fs, "retrieve", spy)
+        assert await fs.retrieve_many([plain, chunked, plain]) == {plain: b"plain bytes", chunked: big}
+        assert plain_reads == [chunked]  # only the chunked one is put together file by file
+        with pytest.raises(FileNotFoundError):
+            await fs.retrieve_many([plain, _pg_key("missing.bin")])
+    finally:
+        await fs.delete(plain)
+        await fs.delete(chunked)
+
+
+@pytest.mark.parametrize("cls", BACKENDS, ids=lambda c: c.__name__)
+async def test_cloud_storage_reads_several_files(cls):
+    fs = _backend_over_memory_store(cls)
+    await fs.store(b"a", "a.bin")
+    await fs.store(b"b", "b.bin")
+    assert await fs.retrieve_many(["a.bin", "b.bin"]) == {"a.bin": b"a", "b.bin": b"b"}
+    with pytest.raises(FileNotFoundError):
+        await fs.retrieve_many(["a.bin", "missing.bin"])
+
+
 async def test_zip_streamer_never_hands_on_more_than_one_chunk_at_a_time():
     """A source that yields a blob in one piece still leaves the writer as bounded pieces."""
     blob = bytes(range(256)) * (3 * CHUNK_SIZE // 256 + 7)
@@ -379,3 +415,69 @@ async def test_zip_streamer_never_hands_on_more_than_one_chunk_at_a_time():
         assert max(len(c) for c in out) <= CHUNK_SIZE + 64  # deflate framing on a stored block
         archive = b"".join(out) + zs.finish()
         assert zipfile.ZipFile(io.BytesIO(archive)).read("blob.bin") == blob
+
+
+async def _zeros(total: int) -> AsyncIterator[bytes]:
+    piece = bytes(16 * 1024 * 1024)
+    while total > 0:
+        yield piece[: min(total, len(piece))]
+        total -= len(piece)
+
+
+@pytest.mark.asyncio
+async def test_zip64_entry_passes_4_gb_and_reads_back():
+    """A zip64 entry can exceed 4 GB (#6745): history/llm_requests.json does on busy banks.
+
+    Zeros compress to a few MB, so only the uncompressed size crosses the 4 GB line;
+    that is the size the 32-bit data descriptor could not hold.
+    """
+    size = 0xFFFFFFFF + 1024 * 1024
+    zs = ZipStreamer(compression_level=1)
+    buf = io.BytesIO()
+    async for chunk in zs.write_file_bytes("small.json", b"[]"):
+        buf.write(chunk)
+    async for chunk in zs.write_file_chunks("history/llm_requests.json", _zeros(size), zip64=True):
+        buf.write(chunk)
+    async for chunk in zs.write_file_bytes("manifest.json", b"{}"):
+        buf.write(chunk)
+    buf.write(zs.finish())
+
+    with zipfile.ZipFile(io.BytesIO(buf.getvalue())) as zf:
+        assert zf.getinfo("history/llm_requests.json").file_size == size
+        assert zf.read("small.json") == b"[]"
+        assert zf.read("manifest.json") == b"{}"
+        read = 0
+        with zf.open("history/llm_requests.json") as member:  # raises BadZipFile on a CRC mismatch
+            while piece := member.read(16 * 1024 * 1024):
+                read += len(piece)
+        assert read == size
+
+
+@pytest.mark.asyncio
+async def test_zip64_flag_off_still_refuses_past_4_gb():
+    """A plain entry's 32-bit header can't be amended once sent, so it must still refuse."""
+    zs = ZipStreamer(compression_level=1)
+    with pytest.raises(OverflowError, match="zip64=True"):
+        async for _ in zs.write_file_chunks("big.bin", _zeros(0xFFFFFFFF + 1)):
+            pass
+
+
+@pytest.mark.asyncio
+async def test_small_zip64_entry_is_readable_and_plain_entries_are_unchanged():
+    """Opting in costs nothing for small entries; entries that don't opt in keep their bytes."""
+    zs = ZipStreamer()
+    buf = io.BytesIO()
+    async for chunk in zs.write_file_bytes("plain.json", b"[1]"):
+        buf.write(chunk)
+    async for chunk in zs.write_file_chunks("rows.json", _pieces(b"[1, 2, 3]"), zip64=True):
+        buf.write(chunk)
+    buf.write(zs.finish())
+    data = buf.getvalue()
+
+    with zipfile.ZipFile(io.BytesIO(data)) as zf:
+        assert zf.testzip() is None
+        assert zf.read("rows.json") == b"[1, 2, 3]"
+        assert zf.getinfo("plain.json").extract_version == 20
+        assert zf.getinfo("rows.json").extract_version == 45
+    # The plain entry's local header has no extra field.
+    assert data[28:30] == b"\x00\x00"

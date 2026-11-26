@@ -84,6 +84,16 @@ async def test_enough_evidence_answers_after_one_parallel_retrieval(typesafe_cli
     assert {call.input["query"] for call in searches} == {SEARCH}, "every layer searches with the rewritten query"
     assert _reflect_turns(llm) == 1, "the answer is the only reflect turn"
 
+    # The trace's start times give the loop's real order, which the control plane draws: the
+    # rewrite, then every layer at once, then the decision model's calls and the answer.
+    llm_calls = {call.scope: call.started_at_ms for call in response.trace.llm_calls}
+    round_started = {call.started_at_ms for call in searches}
+    assert len(round_started) == 1, "the layers of one round start together"
+    (round_start,) = round_started
+    assert 0 < llm_calls["round_query"] <= round_start
+    later = [start for scope, start in llm_calls.items() if scope != "round_query"]
+    assert later and all(start >= round_start for start in later), response.trace.llm_calls
+
 
 async def test_the_query_rewrite_never_answers_empty(typesafe_client, llm, stubs, decision_bank):
     """The rewrite used to end reflect on NONE, and a local model said it to real questions."""
@@ -158,7 +168,7 @@ def _rewrote_the_query(llm) -> bool:
     return any(anchor_for("reflect_round_query") in call.all_text for call in llm.calls)
 
 
-async def test_a_knowledge_page_refresh_follows_its_own_switch(typesafe_client, llm, stubs, decision_bank):
+async def test_a_page_refresh_follows_its_own_switch(typesafe_client, llm, stubs, decision_bank):
     """``mental_model_refresh_use_decision_model``, not reflect's switch, decides a refresh's path.
 
     Run as dry runs: they execute in the API process, the one with the decision model (this

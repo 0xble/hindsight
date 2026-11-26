@@ -4,6 +4,8 @@
 
 set -e
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
 # Confirmation prompts read stdin; EOF answers "no", so the no-flag
 # variants below print "Operation cancelled" instead of blocking.
 exec </dev/null
@@ -20,6 +22,7 @@ WORK_DIR="$(mktemp -d)"
 cleanup() {
   hindsight bank delete "$BANK" -y >/dev/null 2>&1 || true
   hindsight bank delete "$DEMO_BANK" -y >/dev/null 2>&1 || true
+  hindsight kb delete my-docs -y >/dev/null 2>&1 || true
   rm -rf "$HOME" "$WORK_DIR"
   export HOME="$REAL_HOME"
 }
@@ -28,6 +31,7 @@ trap cleanup EXIT
 # Start from a clean bank
 hindsight bank delete "$BANK" -y >/dev/null 2>&1 || true
 hindsight bank delete "$DEMO_BANK" -y >/dev/null 2>&1 || true
+hindsight kb delete my-docs -y >/dev/null 2>&1 || true
 
 # =============================================================================
 # Configuration
@@ -219,6 +223,9 @@ hindsight document get my-cli-bank "$DOCUMENT_ID"
 # Replace a document's tags
 hindsight document update my-cli-bank "$DOCUMENT_ID" --tags project-x,meetings
 
+# Add or remove single tags, keeping the rest
+hindsight document update my-cli-bank "$DOCUMENT_ID" --add-tags team-c --remove-tags meetings
+
 # Delete document and its memories
 hindsight document delete my-cli-bank "$DOCUMENT_ID"
 # [/docs:cli-documents]
@@ -287,57 +294,109 @@ hindsight webhook delete my-cli-bank "$WEBHOOK_ID" -y
 # [/docs:cli-webhooks]
 
 # =============================================================================
-# Knowledge Base
+# Pages
 # =============================================================================
 
 # [docs:cli-kb-tree]
 # Show the folder/page tree (pages that have fallen behind are marked stale)
-hindsight knowledge-base tree my-cli-bank
+hindsight pages tree my-cli-bank
 # [/docs:cli-kb-tree]
 
 # [docs:cli-kb-create-folder]
 # Create a folder, optionally nested under another
-hindsight knowledge-base create-folder my-cli-bank "Operations"
+hindsight pages create-folder my-cli-bank "Operations"
 # [/docs:cli-kb-create-folder]
-FOLDER_ID=$(hindsight knowledge-base tree "$BANK" -o json | jq -r '[.. | objects | select(.kind? == "folder" and .name? == "Operations")][0].id')
+FOLDER_ID=$(hindsight pages tree "$BANK" -o json | jq -r '[.. | objects | select(.kind? == "folder" and .name? == "Operations")][0].id')
 
 # [docs:cli-kb-create-subfolder]
-hindsight knowledge-base create-folder my-cli-bank "Runbooks" --parent-id "$FOLDER_ID"
+hindsight pages create-folder my-cli-bank "Runbooks" --parent-id "$FOLDER_ID"
 # [/docs:cli-kb-create-subfolder]
 
 # [docs:cli-kb-create-page]
 # Create a page — content is generated in the background
-hindsight knowledge-base create-page my-cli-bank \
+hindsight pages create-page my-cli-bank \
   "Deploying the API" \
   "How is the API deployed?" \
   --parent-id "$FOLDER_ID" \
   --tags ops,type:runbook
 
 # Build a page from raw facts instead of the observation-only default
-hindsight knowledge-base create-page my-cli-bank "Recent Incidents" \
+hindsight pages create-page my-cli-bank "Recent Incidents" \
   "What incidents happened recently?" \
   --fact-types experience,world --mode full
 # [/docs:cli-kb-create-page]
-PAGE_ID=$(hindsight knowledge-base tree "$BANK" -o json | jq -r '[.. | objects | select(.kind? == "page" and .name? == "Recent Incidents")][0].id')
+PAGE_ID=$(hindsight pages tree "$BANK" -o json | jq -r '[.. | objects | select(.kind? == "page" and .name? == "Recent Incidents")][0].id')
 NODE_ID="$FOLDER_ID"
 
 # [docs:cli-kb-manage]
 # Read a page as a markdown document
-hindsight knowledge-base get-page my-cli-bank "$PAGE_ID"
+hindsight pages get-page my-cli-bank "$PAGE_ID"
 
 # Hybrid search (full-text + vector) over whole pages
-hindsight knowledge-base search my-cli-bank "how do we deploy" --limit 5
+hindsight pages search my-cli-bank "how do we deploy" --limit 5
 
 # Rename, move, or reconfigure a node
-hindsight knowledge-base update my-cli-bank "$NODE_ID" --name "New name"
-hindsight knowledge-base update my-cli-bank "$PAGE_ID" --source-query "New question?"
+hindsight pages update my-cli-bank "$NODE_ID" --name "New name"
+hindsight pages update my-cli-bank "$PAGE_ID" --source-query "New question?"
 
-# Export the whole knowledge base as a markdown bundle
-hindsight knowledge-base export my-cli-bank
+# Export all pages as a markdown bundle
+hindsight pages export my-cli-bank
 
 # Delete a folder or page and everything under it
-hindsight knowledge-base delete my-cli-bank "$NODE_ID" -y
+hindsight pages delete my-cli-bank "$NODE_ID" -y
 # [/docs:cli-kb-manage]
+
+# =============================================================================
+# Knowledge Banks
+# =============================================================================
+
+# Files to ingest (not shown in docs)
+mkdir -p "$WORK_DIR/manuals"
+cp "$SCRIPT_DIR/sample.pdf" "$WORK_DIR/manuals/x200.pdf"
+printf '# X200 warranty\n\nThe warranty lasts two years.\n' > "$WORK_DIR/manuals/warranty.md"
+cd "$WORK_DIR"
+
+# [docs:cli-knowledge-banks]
+# Create a knowledge bank, then upload files or whole folders into it.
+# A file's document id is its path (manuals/x200.pdf -> manuals_x200.pdf),
+# so uploading it again replaces it; --wait returns once it is searchable.
+hindsight kb create my-docs
+hindsight kb ingest my-docs manuals --tags x200 --wait
+
+# Ingest a text (returns once it is searchable); `-` reads it from stdin
+hindsight kb ingest-text my-docs "Return an X200 within 30 days." --document-id returns
+echo "Refunds take five days." | hindsight kb ingest-text my-docs - --document-id refunds
+
+# Search by meaning, with filters
+hindsight kb search my-docs "how long is the warranty?"
+hindsight kb search my-docs "warranty" --tags x200 --media-types text --max-tokens 1024
+
+# Browse documents and tags
+hindsight kb get my-docs
+hindsight kb list-documents my-docs --status ready
+hindsight kb get-document my-docs manuals_warranty.md
+hindsight kb list-tags my-docs
+
+# Download an original file, or one passage's page image or clip
+hindsight kb download my-docs manuals_x200.pdf --out x200-copy.pdf
+hindsight kb passage-media my-docs manuals_x200.pdf 0 --out page-1.png
+
+# Background ingests, like a memory bank's operations
+hindsight kb operation list my-docs
+
+# How files are split: show, override, reset
+hindsight kb config my-docs
+hindsight kb set-config my-docs --set text_passage_tokens=256 --unset pdf_bands
+hindsight kb reset-config my-docs -y
+
+# Let a memory bank's recall and reflect search it
+hindsight bank set-config my-cli-bank --knowledge-banks my-docs
+
+# Delete a document, or the whole bank
+hindsight kb delete-document my-docs refunds
+hindsight kb delete my-docs -y
+# [/docs:cli-knowledge-banks]
+cd - > /dev/null
 
 # =============================================================================
 # Audit Logs

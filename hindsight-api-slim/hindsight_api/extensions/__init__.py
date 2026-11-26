@@ -55,16 +55,29 @@ from hindsight_api.extensions.operation_validator import (
     # Consolidation operation
     ConsolidateContext,
     ConsolidateResult,
+    ConsolidationActionsContext,
     CreateBankContext,
+    CreateKnowledgeBankContext,
     # File Conversion
     FileConvertResult,
     # Transfer imports
     ImportArchiveDocument,
     ImportContext,
+    KnowledgeBankDeleteResult,
+    KnowledgeBankIngestResult,
+    KnowledgeBankListContext,
+    KnowledgeBankReadContext,
+    KnowledgeBankReadOperation,
+    KnowledgeBankSearchResult,
+    KnowledgeBankWriteContext,
+    KnowledgeBankWriteOperation,
     # Memory curation
     MemoryCurationAction,
+    # Memory review
+    MemoryReview,
     MemoryUpdateContext,
     MemoryUpdateResult,
+    MentalModelCandidateContext,
     # Mental Model operations
     MentalModelGetContext,
     MentalModelGetResult,
@@ -81,8 +94,11 @@ from hindsight_api.extensions.operation_validator import (
     ReflectResultContext,
     RetainAttachmentInfo,
     RetainContext,
+    RetainFactsContext,
     RetainResult,
     RetainSource,
+    ReviewedConsolidationAction,
+    ReviewedFact,
     TagScopeContext,
     ValidationResult,
 )
@@ -143,9 +159,23 @@ __all__ = [
     "BankWriteOperation",
     "TagScopeContext",
     "CreateBankContext",
+    "CreateKnowledgeBankContext",
+    "KnowledgeBankDeleteResult",
+    "KnowledgeBankIngestResult",
+    "KnowledgeBankListContext",
+    "KnowledgeBankReadContext",
+    "KnowledgeBankReadOperation",
+    "KnowledgeBankSearchResult",
+    "KnowledgeBankWriteContext",
+    "KnowledgeBankWriteOperation",
     # Operation Validator - Consolidation
     "ConsolidateContext",
     "ConsolidateResult",
+    "ConsolidationActionsContext",
+    "MemoryReview",
+    "RetainFactsContext",
+    "ReviewedConsolidationAction",
+    "ReviewedFact",
     # Operation Validator - File Conversion
     "FileConvertResult",
     # Operation Validator - Memory curation
@@ -155,6 +185,7 @@ __all__ = [
     # Operation Validator - Mental Model
     "MentalModelGetContext",
     "MentalModelGetResult",
+    "MentalModelCandidateContext",
     "MentalModelRefreshContext",
     "MentalModelRefreshResult",
     # Tenant/Auth

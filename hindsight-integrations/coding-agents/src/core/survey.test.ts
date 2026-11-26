@@ -20,6 +20,7 @@ import { join } from "node:path";
 import { parse as parseToml } from "smol-toml";
 import { resolveHostConfig } from "./host-client";
 import { resolveConfig } from "./config";
+import { nodeBinary } from "./util";
 
 vi.mock("./host-client", () => ({ resolveHostConfig: vi.fn() }));
 let lockDir: string;
@@ -86,7 +87,7 @@ describe("startCodebaseSurvey", () => {
    *  from the supervisor's spec; the options are the real spawn's (the agent inherits them). */
   function launched(spawn: ReturnType<typeof fakeSpawn>, i = 0) {
     const [node, argv, options] = spawn.mock.calls[i];
-    expect(node).toBe("node");
+    expect(node).toBe(nodeBinary());
     // Only the script path on the command line: the payload rides in the environment (#4255).
     expect(argv).toEqual(["/x/survey-supervisor.js"]);
     const spec = JSON.parse(options.env[SURVEY_SPEC_ENV]) as SurveySupervisorSpec;
@@ -166,7 +167,7 @@ describe("startCodebaseSurvey", () => {
     expect(bin).toBe("codex");
     expect(argv.slice(0, 3)).toEqual(["exec", "--sandbox", "read-only"]);
     expect(argv).toContain(SURVEY_PROMPT);
-    expect(argv).toContain(`mcp_servers.hindsight.command="node"`);
+    expect(argv).toContain(`mcp_servers.hindsight.command=${JSON.stringify(nodeBinary())}`);
     expect(argv).toContain(`mcp_servers.hindsight.args=[ "/x/mcp-server.js" ]`);
     // Without this the survey's findings were stamped harness:claude-code and landed in Claude
     // Code's bank even though Codex ran the survey (#3603).
@@ -222,6 +223,43 @@ describe("startCodebaseSurvey", () => {
     });
     expect(ok).toBe(false);
     expect(spawn).not.toHaveBeenCalled();
+  });
+
+  // A host with no survey recipe of its own (pi, opencode2, kilo, …) gets no survey: it must never
+  // run on another installed agent's account. Every installed agent is offered here.
+  it.each(["pi", "opencode2", "kilo"])("%s: no survey, never another agent's CLI", async (h) => {
+    const spawn = fakeSpawn();
+    const ok = await startCodebaseSurvey("/repo", {
+      harness: h as never,
+      spawn,
+      // binOnPath's contract: it throws on no name at all (#6251).
+      resolveBin: (b) => {
+        if (typeof b !== "string") throw new TypeError("no bin name");
+        return `/bin/${b}`;
+      },
+    });
+    expect(ok).toBe(false);
+    expect(spawn).not.toHaveBeenCalled();
+  });
+
+  // #6075: terminal managers name the user's pane in env vars and hook the agent's Stop, so a
+  // survey inheriting them closed (Orca) or rebound (Herdr) the user's own pane.
+  it("does not hand the survey the user's terminal-manager pane identity", async () => {
+    const vars = { ORCA_PANE_KEY: "p1", HERDR_PANE_ID: "p2", ORCAS: "kept", MY_HERDR_X: "kept" };
+    Object.assign(process.env, vars);
+    try {
+      const spawn = fakeSpawn();
+      await startCodebaseSurvey("/repo", { harness: "codex", spawn, resolveBin: yes });
+      const env = launched(spawn)[2].env;
+      expect(env.ORCA_PANE_KEY).toBeUndefined();
+      expect(env.HERDR_PANE_ID).toBeUndefined();
+      expect(env.ORCAS).toBe("kept");
+      expect(env.MY_HERDR_X).toBe("kept");
+      expect(env.PATH).toBe(process.env.PATH);
+      expect(env.HINDSIGHT_DISABLE_HOOKS).toBe("1");
+    } finally {
+      for (const k of Object.keys(vars)) delete process.env[k];
+    }
   });
 
   it.skipIf(process.platform === "win32").each([
@@ -295,18 +333,17 @@ describe("startCodebaseSurvey", () => {
     expect(launched(spawn)[0]).toBe("/opt/codex");
   });
 
-  it("falls back to another available agent when the preferred harness's CLI is missing", async () => {
+  it("runs nothing when the harness's own CLI is missing, even with another agent installed", async () => {
     const spawn = fakeSpawn();
-    // Prefer Antigravity, but only codex is installed → survey runs under codex.
-    await startCodebaseSurvey("/repo", {
+    // Antigravity is the host, only codex is installed → no survey.
+    const ok = await startCodebaseSurvey("/repo", {
       harness: "antigravity-cli",
       mcpServerPath: "/x/mcp-server.js",
       spawn,
       resolveBin: (b) => (b === "codex" ? b : undefined),
     });
-    const [bin, argv] = launched(spawn);
-    expect(bin).toBe("codex");
-    expect(argv[0]).toBe("exec");
+    expect(ok).toBe(false);
+    expect(spawn).not.toHaveBeenCalled();
   });
 
   it("no capable agent found → no spawn (fail open; the git-log seed still ran)", async () => {

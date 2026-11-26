@@ -123,6 +123,14 @@ echo ""
 # Remove any existing container with the same name
 docker rm -f "$CONTAINER_NAME" 2>/dev/null || true
 
+# The long HF download timeout is for the model preload at build time only. Baked
+# into the image as an ENV, it makes a blocked huggingface.co check at startup
+# outlast the 300s watchdog, which then kills a healthy container (#6494).
+if docker image inspect --format '{{json .Config.Env}}' "$IMAGE" | grep -q 'HF_HUB_DOWNLOAD_TIMEOUT='; then
+    echo -e "${RED}Image sets HF_HUB_DOWNLOAD_TIMEOUT at runtime; keep it inside the build RUN step${NC}"
+    exit 1
+fi
+
 # Start container based on target type
 echo "Starting container..."
 if [ "$TARGET" = "cp-only" ]; then
@@ -137,6 +145,12 @@ else
         DOCKER_CMD="$DOCKER_CMD -e HINDSIGHT_API_LLM_API_KEY=${HINDSIGHT_API_LLM_API_KEY}"
     fi
     DOCKER_CMD="$DOCKER_CMD -e HINDSIGHT_API_LLM_MODEL=$LLM_MODEL"
+    if [ -n "${HINDSIGHT_API_LLM_BASE_URL:-}" ]; then
+        DOCKER_CMD="$DOCKER_CMD -e HINDSIGHT_API_LLM_BASE_URL=${HINDSIGHT_API_LLM_BASE_URL}"
+    fi
+    if [ -n "${HINDSIGHT_API_LLM_OPENAI_COMPATIBLE_JSON_MODE:-}" ]; then
+        DOCKER_CMD="$DOCKER_CMD -e HINDSIGHT_API_LLM_OPENAI_COMPATIBLE_JSON_MODE=${HINDSIGHT_API_LLM_OPENAI_COMPATIBLE_JSON_MODE}"
+    fi
 
     # Add Vertex AI config if provider is vertexai
     if [ "$LLM_PROVIDER" = "vertexai" ]; then
@@ -167,6 +181,15 @@ else
     if [ -n "${HINDSIGHT_API_COHERE_API_KEY:-}" ]; then
         DOCKER_CMD="$DOCKER_CMD -e HINDSIGHT_API_COHERE_API_KEY=${HINDSIGHT_API_COHERE_API_KEY}"
     fi
+
+    # Optional retry tuning, so CI can ride out a provider blip (#6186).
+    for var in HINDSIGHT_API_LLM_MAX_RETRIES HINDSIGHT_API_LLM_INITIAL_BACKOFF \
+        HINDSIGHT_API_EMBEDDINGS_MAX_RETRIES HINDSIGHT_API_EMBEDDINGS_MAX_BACKOFF HINDSIGHT_API_EMBEDDINGS_RETRY_BUDGET \
+        HINDSIGHT_API_RERANKER_MAX_RETRIES HINDSIGHT_API_RERANKER_MAX_BACKOFF HINDSIGHT_API_RERANKER_RETRY_BUDGET; do
+        if [ -n "${!var:-}" ]; then
+            DOCKER_CMD="$DOCKER_CMD -e $var=${!var}"
+        fi
+    done
 
     DOCKER_CMD="$DOCKER_CMD -p ${HEALTH_PORT}:${HEALTH_PORT}"
     if [ -n "$CP_PORT" ]; then

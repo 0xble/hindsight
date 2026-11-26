@@ -100,7 +100,7 @@ results = await asyncio.gather(*tasks, return_exceptions=True)
 - **No direct database access in `api/http.py`** (or any API router). HTTP handlers must not build SQL, call `acquire_with_retry` / `conn.fetch` / `conn.fetchrow` / `conn.execute`, or reference `fq_table(...)`. All persistence and queries live in `MemoryEngine` (the engine layer). A handler parses/validates the request, calls an engine method, shapes the HTTP response, and maps domain results to status codes (e.g. a `None` return → 404).
 - **Authentication/tenancy is enforced inside each engine method, not assumed by the handler.** Every engine method that touches bank-scoped data must authenticate via `request_context` — typically `await self._authenticate_tenant(request_context)` (often indirectly through `get_bank_profile(...)`) — so the correct tenant schema is resolved before any query runs. Handlers must thread `request_context` through to the engine method; never query a tenant-scoped table assuming the schema is already set.
 - Engine methods return typed models (Pydantic/dataclass), not raw dicts (see Type Safety).
-- **Every list endpoint paginates, following the existing ones.** A `GET` that returns a collection whose size grows with the data (banks, documents, memories, entities, operations, webhook deliveries, audit logs, …) must take `limit`/`offset` and bound its result — an unbounded list is an unbounded payload plus unbounded per-row work (per-item counts, config resolution, embedding hydration). Copy the shape `list_documents` uses, don't invent a new one: `limit: int = Query(default=100, ge=0)` and `offset: int = Query(default=0, ge=0)` on the handler, matching keyword args on the engine method, and a response carrying the page **plus `total`, `limit`, `offset`** so a client knows when to stop. Add a `q` search param when the collection is something a user picks from in a UI — client-side filtering only ever sees the loaded page. Bounded-by-construction endpoints are the exception, not the rule: a tree/export that is whole-structure by design, or a table capped at write time (e.g. `observation_history` / `mental_model_history`, trimmed to `*_max_entries` on insert). If it isn't bounded, paginate it.
+- **Every list endpoint paginates, following the existing ones.** A `GET` that returns a collection whose size grows with the data (banks, documents, memories, entities, operations, webhook deliveries, audit logs, …) must take `limit`/`offset` and bound its result — an unbounded list is an unbounded payload plus unbounded per-row work (per-item counts, config resolution, embedding hydration). Copy the shape `list_documents` uses, don't invent a new one: `limit: Annotated[int, Query(ge=0), TRIM_TO_PAGE] = 100` and `offset: int = Query(default=0, ge=0)` on the handler (a limit over the cap is trimmed, not refused — see `hindsight_api/pagination.py`; `test_every_endpoint_that_takes_a_limit_trims_it` fails on a plain `Query`), matching keyword args on the engine method, and a response carrying the page **plus `total`, `limit`, `offset`** so a client knows when to stop. Add a `q` search param when the collection is something a user picks from in a UI — client-side filtering only ever sees the loaded page. Bounded-by-construction endpoints are the exception, not the rule: a tree/export that is whole-structure by design, or a table capped at write time (e.g. `observation_history` / `mental_model_history`, trimmed to `*_max_entries` on insert). If it isn't bounded, paginate it.
 
 ### HTTP Middleware
 - **Never add a `BaseHTTPMiddleware`** — that means no `@app.middleware("http")` (the decorator installs one) and no `add_middleware(SomethingSubclassingBaseHTTPMiddleware)`. Starlette runs each such middleware's downstream app in a **child task**, piping the request and response through a pair of anyio memory-object streams. That costs a task spawn plus several scheduling hops per request, and because the cost is *scheduling*, it grows exactly when the event loop is already contended: removing the API's two of them took `/health/live` from ~2.4k to ~7.9k rps and p99 from ~107ms to ~18ms at the same concurrency (#4235). It also breaks `Request.is_disconnected()` for everything underneath it — the `http.disconnect` event never reaches the route (#2122) — and swallows `BackgroundTask` / streaming semantics in subtle ways.
@@ -125,10 +125,21 @@ results = await asyncio.gather(*tasks, return_exceptions=True)
 - **Watch two smells:** (a) a caller-supplied id used in the `WHERE` with no adjacent `bank_id`, while a *neighbouring* statement in the same method does carry `bank_id` (asymmetry is the tell); (b) a `bank_id` predicate applied only under `if bank_id:` with a `bank_id: str | None = None` default — latent even if all current callers pass one.
 - **Cross-bank by design must rewrite `bank_id` to the destination.** The transfer/import path is the only one that legitimately crosses banks; verify every write pins the *destination* `bank_id` and never inherits a source row's `bank_id`.
 
+### Memory Banks vs Knowledge Banks: one API each
+- **Memory banks and knowledge banks share one id space (`banks` table, `kind` column) but never share an endpoint.** Every route under `/v1/default/banks/{bank_id}` is for memory banks only; a knowledge bank is reached only through `/v1/default/knowledge-banks/{bank_id}`. Every MCP tool is memory-bank only too.
+- **One guard enforces it — don't re-implement it per endpoint.** The HTTP route class (`api/unknown_params.py`, `_refuse_knowledge_bank`) runs `MemoryEngine.refuse_knowledge_bank` for every `/v1/default/banks/{bank_id}` route, and `mcp_tools._resolve_bank` runs it for every MCP tool. It answers 400 pointing at the knowledge-bank API, after the knowledge bank's own `GET_KNOWLEDGE_BANK` read hook, so a caller that hook rejects learns nothing.
+- **A knowledge bank answers only to the knowledge-bank validator hooks** (`validate_knowledge_bank_read` / `_write`, with their own `KnowledgeBank*Operation` names), never `validate_bank_read` / `_write` or tag scopes. When the knowledge-bank service reuses engine code that runs memory hooks (jobs, bank delete), it calls `KnowledgeService._authorize` / `_open_bank` first and passes `_knowledge_bank=True` so the memory hooks are skipped.
+- **A knowledge bank needing something a memory route offers gets its own route under `/knowledge-banks/{bank_id}`** (as its operations, config and stats did), with a `KnowledgeBank*Operation` name, calling the shared engine code with `_knowledge_bank=True`. Never "let the memory route accept a knowledge bank".
+
 ### Database Locking
 - **Never use PostgreSQL advisory locks** (`pg_advisory_lock`, `pg_try_advisory_lock`, `pg_advisory_xact_lock`, `pg_advisory_unlock`, …) in migrations, engine code, or anything else. Hindsight runs against connection poolers and managed/PG-compatible services where advisory locks are unreliable or unsupported: session-level locks silently leak or vanish when a pooler hands the session to another client, and callers can block forever on a lock the server never grants. Reject any new occurrence, including ones that look "safe" because they are transaction-scoped.
 - The pre-existing usage in `hindsight_api/migrations.py` is grandfathered, not a precedent — it is tracked for removal. Don't copy it.
 - Design the concurrency out instead of locking around it: give each process its own object to write (e.g. per-schema DDL rather than a shared `public.` object), make the operation idempotent, or use a real row/table constraint (`INSERT ... ON CONFLICT`, `SELECT ... FOR UPDATE` in a fixed order). See #2690 for a migration that reached for `pg_advisory_xact_lock` and had to be reverted.
+
+### Text in SQL: SQL_ASCII databases are supported
+- Some users run Postgres with a `SQL_ASCII` database. There, string functions count **bytes**, not characters. `LEFT`, `RIGHT`, `SUBSTRING`/`substr`, `lpad`/`rpad` and `overlay` can cut a multibyte character (CJK, emoji, accents) in half, and the query fails with `invalid byte sequence for encoding "UTF8"` (#5986). `length()`/`char_length()` silently return byte counts.
+- **Never cut or measure user text in SQL.** Select the column and slice it in Python, where `str[:n]` is by character. `convert_from(convert_to(...))` does not help: on `SQL_ASCII` it still cuts by byte.
+- Exception: `LEFT(query, 200)` on `pg_stat_activity` in `worker/poller.py` is debug-only logging inside a `try/except`.
 
 ### Concurrency: asyncio vs threading primitives
 
@@ -175,6 +186,9 @@ warm-once-under-a-lock over locking the hot path.
 ### Branch Hygiene
 - **Always start new feature branches from `origin/main`** — rebase to ensure a clean base.
 - **Only include commits relevant to the PR/branch/feature** — no unrelated changes. If the branch contains commits that don't belong, they must be removed before merging.
+
+### Naming: knowledge banks are `kb`
+Knowledge-bank names use `kb`, never `knowledge`: env vars `HINDSIGHT_API_KB_*` (or `..._KB_...` inside a group, e.g. `HINDSIGHT_API_ADMISSION_KB_SEARCH_MAX_WAIT_MS`), config fields `kb_*`, lane/metric/operation ids `kb_search`. Flag any new `KNOWLEDGE`/`knowledge_` in those names. Module paths (`hindsight_api/knowledge/`) and user-facing prose ("knowledge bank") stay as they are.
 
 ### General Principles
 - Don't add features, refactor code, or make "improvements" beyond what was asked
@@ -351,6 +365,10 @@ For each statement against a multi-bank table (`memory_units`, `documents`, `ent
 
 **Flag as a must fix** any statement filtering a multi-bank table by a caller-supplied, non-globally-unique key (`document_id`, `mental_models.id`, an entity name, …) with **no** `bank_id` predicate — construct the concrete two-bank scenario (two banks share the id; the statement reads/counts/updates/deletes the wrong bank's rows or over-reports) to confirm it's real before flagging. Prime tells: a `bank_id`-carrying sibling statement right next to a `bank_id`-less one; a `WHERE bank_id` guarded by `if bank_id:` with a `None` default; an import/transfer write that inherits a source `bank_id` instead of pinning the destination.
 
+### 7c-bis. Check memory-bank and knowledge-bank surfaces stay apart
+
+See **Memory Banks vs Knowledge Banks** above. **Must fix**: a route that serves a knowledge bank under `/v1/default/banks/{bank_id}` (a route registered outside the `UnknownParamsRoute` route class, or a path change that slips past `MEMORY_BANK_PATH`); a knowledge-bank code path that runs `validate_bank_read`/`validate_bank_write`/tag scopes instead of the knowledge-bank hooks; a new knowledge-bank route without its own `KnowledgeBank*Operation` name, or missing from `test_every_knowledge_bank_operation_goes_through_its_own_hook`; a new MCP tool that takes a bank id without going through `_resolve_bank`. A comment or docstring that claims a guard the code does not enforce is a must fix too.
+
 ### 7d. Check list endpoints paginate
 
 For every added or changed `GET` handler that returns a collection, confirm it takes `limit`/`offset` and returns `total` — see **API Layer & Data Access** above for the exact shape. Then check the fix is real end to end, since a param that nothing enforces is worse than none:
@@ -453,6 +471,14 @@ Grep the diff for `advisory` (`git diff main...HEAD | grep -in advisory`). Any n
 `pg_advisory_unlock` call is a **must fix** — see Database Locking above. Point the
 author at the alternatives (per-process objects, idempotent DDL, row-level
 constraints) rather than just asking them to drop the lock.
+
+### 11h. Check SQL does not cut or measure text
+
+Grep the diff for SQL string functions on user text
+(`git diff main...HEAD | grep -inE "\b(left|right|substring|substr|lpad|rpad|overlay|char_length|length)\s*\("`).
+Any new one applied to user content (page bodies, memory text, names, queries) is a
+**must fix** — see "Text in SQL" above. Ask for the full column to be selected and
+cut in Python instead.
 
 ### 11e. Check for BaseHTTPMiddleware
 

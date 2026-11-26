@@ -18,6 +18,7 @@ import signal
 import time
 from collections import Counter
 from collections.abc import Awaitable, Callable, Iterable
+from contextlib import nullcontext
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING, Any
@@ -28,10 +29,16 @@ from ..config import (
     ENV_RETAIN_WALL_TIMEOUT,
     get_config,
 )
+from ..engine.permit_wait import excluding_permit_wait
 from ..engine.schema import fq_table_explicit as fq_table
 from ..metrics import OperationOutcome, get_metrics_collector
 from ..operation_runs import worker_task
-from .backpressure import is_append_conflict, is_store_backpressure
+from .backpressure import (
+    RATE_LIMIT_DEFERRED_TASKS,
+    is_append_conflict,
+    is_store_backpressure,
+    is_upstream_rate_limit,
+)
 from .exceptions import DeferOperation, RetryTaskAt, format_task_error
 
 
@@ -58,11 +65,25 @@ from .stage import StageHolder, bind_holder
 _APPEND_CONFLICT_DEFER_BASE_SECONDS = 2.0
 _APPEND_CONFLICT_DEFER_MAX_SECONDS = 300.0
 _APPEND_CONFLICT_DEFER_COUNT_KEY = "append_conflict_defers"
+# How a knowledge ingest whose embedder kept answering 429 backs off. Reaching the worker means the
+# embedder's own retries (a minute of them) ran out, so the first redo waits longer than an append's,
+# and doubles (jittered, so the batches that hit it together do not come back together) up to the
+# same ceiling. Uncapped in count for the append's reason: an old pending operation with a rising
+# count is recoverable, a failed one loses the documents.
+_RATE_LIMIT_DEFER_BASE_SECONDS = 15.0
+_RATE_LIMIT_DEFER_COUNT_KEY = "rate_limit_defers"
+
+# How many times a store may shed one task before the task fails. Unlike a lost append race, a
+# shed has no winner that finishes: a store that never recovers (say a cutover that never ends)
+# would defer the task forever, silently (#6529). 180 deferrals at the default 120s is ~6 hours,
+# far past any backlog a healthy store drains.
+_STORE_BACKPRESSURE_DEFER_COUNT_KEY = "store_backpressure_defers"
+_STORE_BACKPRESSURE_MAX_DEFERS = 180
 
 
-def _append_conflict_defer_seconds(defer_count: int) -> float:
+def _append_conflict_defer_seconds(defer_count: int, base: float = _APPEND_CONFLICT_DEFER_BASE_SECONDS) -> float:
     """Jittered exponential backoff for the ``defer_count``-th deferral (1-based)."""
-    delay = _APPEND_CONFLICT_DEFER_BASE_SECONDS * (2 ** max(0, defer_count - 1))
+    delay = base * (2 ** max(0, defer_count - 1))
     return min(delay, _APPEND_CONFLICT_DEFER_MAX_SECONDS) * random.uniform(0.5, 1.5)
 
 
@@ -95,6 +116,11 @@ class _WallCeiling:
     config_attr: str
     env_var: str
     extends_on_progress: bool = False
+    #: Time spent queued for a shared LLM permit does not count. A refresh is one
+    #: reflect whose calls queue behind every other refresh under a small per-op
+    #: cap; counting the queue cancelled healthy refreshes whenever a burst was
+    #: submitted together, and paused their pages (#6140). Retain stays absolute.
+    excludes_permit_wait: bool = False
 
 
 _WALL_CEILINGS: dict[str, _WallCeiling] = {
@@ -109,7 +135,9 @@ _WALL_CEILINGS: dict[str, _WallCeiling] = {
     ),
     # A refresh is one reflect plus its write, so it shares reflect's budget. Without
     # a ceiling a wedged refresh held its worker slot until restart (#4581).
-    "refresh_mental_model": _WallCeiling(config_attr="reflect_wall_timeout", env_var=ENV_REFLECT_WALL_TIMEOUT),
+    "refresh_mental_model": _WallCeiling(
+        config_attr="reflect_wall_timeout", env_var=ENV_REFLECT_WALL_TIMEOUT, excludes_permit_wait=True
+    ),
 }
 
 
@@ -427,6 +455,9 @@ class WorkerPoller:
 
         self._optional_routines = OptionalRoutines(self._backend)
         self._shutdown = asyncio.Event()
+        # Loop time at which shutdown began: the drain budget counts from here, so a
+        # drain started by a signal overlaps the HTTP server's own drain (#6021).
+        self._shutdown_started_at: float | None = None
         # Set when a task finishes: the idle poll wakes at once to fill the freed slot
         # instead of sleeping out the rest of poll_interval_ms (#5650). A new submit
         # deliberately does NOT wake it: the wait is what lets repeated refresh and
@@ -788,6 +819,11 @@ class WorkerPoller:
                 task_dict = json.loads(payload) if isinstance(payload, str) else payload
                 task_dict["_retry_count"] = row["retry_count"]
                 task_dict["_operation_id"] = str(row["operation_id"])
+                # The row says which bank and operation the job belongs to; the payload
+                # only carries its arguments. Every submitter writes the same values in
+                # both, so taking them from the row keeps one source of truth.
+                task_dict["bank_id"] = row["bank_id"]
+                task_dict["operation_id"] = str(row["operation_id"])
                 # The DB column is authoritative for operation_type — inject it
                 # into task_dict so in-flight tracking and slot accounting work.
                 db_op_type = row["operation_type"]
@@ -1176,18 +1212,20 @@ class WorkerPoller:
             return
         logger.warning(f"Task {operation_id} scheduled for retry at {retry_at}: {error_message}")
 
-    async def _append_conflict_defer_count(self, task: ClaimedTask) -> int:
-        """How many times this task has already been deferred for a lost append race.
+    async def _defer_count(self, task: ClaimedTask, key: str = _APPEND_CONFLICT_DEFER_COUNT_KEY) -> int:
+        """How many times this task has already been deferred for the reason ``key`` counts: a lost
+        append race by default, an upstream still rate-limiting with ``_RATE_LIMIT_DEFER_COUNT_KEY``,
+        a store shedding the write with ``_STORE_BACKPRESSURE_DEFER_COUNT_KEY``.
+        (Was ``_append_conflict_defer_count``; renamed once it counted more than append races.)
 
-        Only drives the backoff and the log line, so a read that fails is not worth failing the
-        task over — it falls back to 0, i.e. the shortest delay.
+        Drives backoff, caps and log lines, so a read that fails is not worth failing the task
+        over — it falls back to 0.
         """
         table = fq_table("async_operations", task.schema)
         try:
             async with self._backend.acquire() as conn:
                 value = await conn.fetchval(
-                    f"SELECT result_metadata->>'{_APPEND_CONFLICT_DEFER_COUNT_KEY}' FROM {table} "
-                    "WHERE operation_id = $1",
+                    f"SELECT result_metadata->>'{key}' FROM {table} WHERE operation_id = $1",
                     task.operation_id,
                 )
             return int(value or 0)
@@ -1312,7 +1350,8 @@ class WorkerPoller:
 
                     progress_holder.on_progress = _extend_deadline
                 try:
-                    await self._executor(task.task_dict)
+                    with excluding_permit_wait(cm, wall_timeout) if ceiling.excludes_permit_wait else nullcontext():
+                        await self._executor(task.task_dict)
                 finally:
                     if holder is not None:
                         holder.on_progress = None
@@ -1328,6 +1367,8 @@ class WorkerPoller:
         the engine's own ``except`` blocks — the ones that fire a consolidation
         failure webhook — are skipped. Without this notification a timed-out
         consolidation would be the single failure mode subscribers never hear about.
+        Also used when the store sheds a task past its cap: the engine re-raises a shed
+        untouched, so its failure handling is skipped there too.
         """
         if self._on_wall_timeout is None:
             return
@@ -1382,8 +1423,12 @@ class WorkerPoller:
         try:
             schema_info = f", schema={task.schema}" if task.schema else ""
             logger.debug(f"Executing task {task.operation_id} (type={task_type}, bank={bank_id}{schema_info})")
+            # The job runs in the schema it was claimed from. The default schema is
+            # None here and its jobs never carry ``_schema``, so drop any the payload has.
             if task.schema:
                 task.task_dict["_schema"] = task.schema
+            else:
+                task.task_dict.pop("_schema", None)
             with worker_task(task.operation_id, task.queued_at):
                 await self._run_executor(task, task_type, holder)
             logger.debug(f"Task {task.operation_id} execution finished")
@@ -1412,17 +1457,54 @@ class WorkerPoller:
             # documents in flight when the backlog crosses the bound — the task's small retry
             # budget runs out while the store is still legitimately shedding. Checked before the
             # failure path so the operation keeps its retries for things that are actually wrong.
+            # A shed is counted, and capped: a store that never recovers (a cutover that never ends)
+            # would otherwise defer the task forever and nobody would hear of it (#6529).
+            stuck_store = ""
             if is_store_backpressure(e):
-                retry_at = datetime.now(timezone.utc) + timedelta(seconds=_backpressure_defer_seconds())
+                defers = await self._defer_count(task, _STORE_BACKPRESSURE_DEFER_COUNT_KEY) + 1
+                if defers <= _STORE_BACKPRESSURE_MAX_DEFERS:
+                    retry_at = datetime.now(timezone.utc) + timedelta(seconds=_backpressure_defer_seconds())
+                    logger.warning(
+                        "Task %s deferred until %s: store backpressure (deferral #%d): %s",
+                        task.operation_id,
+                        retry_at,
+                        defers,
+                        str(e)[:200],
+                    )
+                    reason = f"store backpressure (deferral #{defers}): {str(e)[:400]}"
+                    metadata = {_STORE_BACKPRESSURE_DEFER_COUNT_KEY: defers}
+                    await self._release_on_write_failure(
+                        task,
+                        "backpressure defer",
+                        self._defer_all(task, retry_at, reason, metadata),
+                    )
+                    return
+                stuck_store = (
+                    f"the store kept shedding this write: deferred {_STORE_BACKPRESSURE_MAX_DEFERS} times "
+                    "for backpressure and never accepted it. Last error: "
+                )
+            # An embedder still answering 429 after its own retries is the same shape of answer for a
+            # knowledge ingest: "not now". Failing it is what lost whole PDFs on a busy gateway; the
+            # batch commits nothing on a transient error, and a document it committed before is
+            # skipped on the redo, so deferring is safe.
+            if task_type in RATE_LIMIT_DEFERRED_TASKS and is_upstream_rate_limit(e):
+                defers = await self._defer_count(task, _RATE_LIMIT_DEFER_COUNT_KEY) + 1
+                retry_at = datetime.now(timezone.utc) + timedelta(
+                    seconds=_append_conflict_defer_seconds(defers, _RATE_LIMIT_DEFER_BASE_SECONDS)
+                )
                 logger.warning(
-                    "Task %s deferred until %s: store backpressure (%s)",
+                    "Task %s deferred until %s: upstream rate limit (deferral #%d, bank=%s): %s",
                     task.operation_id,
                     retry_at,
+                    defers,
+                    bank_id,
                     str(e)[:200],
                 )
-                reason = f"store backpressure: {str(e)[:400]}"
+                reason = f"upstream rate limit (deferral #{defers}): {str(e)[:400]}"
                 await self._release_on_write_failure(
-                    task, "backpressure defer", self._defer_all(task, retry_at, reason)
+                    task,
+                    "rate-limit defer",
+                    self._defer_all(task, retry_at, reason, {_RATE_LIMIT_DEFER_COUNT_KEY: defers}),
                 )
                 return
             # An append that lost its race is the same shape of answer: "the document moved, read
@@ -1431,7 +1513,7 @@ class WorkerPoller:
             # (issue #5393). The pipeline already redoes it a few times in-process; reaching the
             # worker means the contention outlasted that, which a later attempt usually clears.
             if is_append_conflict(e):
-                defers = await self._append_conflict_defer_count(task) + 1
+                defers = await self._defer_count(task) + 1
                 retry_at = datetime.now(timezone.utc) + timedelta(seconds=_append_conflict_defer_seconds(defers))
                 documents = sorted(
                     {
@@ -1462,10 +1544,16 @@ class WorkerPoller:
                 return
             # exc_info rather than print_exc(): the stderr copy carries no task id
             # and is the first thing lost to log rotation (issue #3218).
-            error_message = format_task_error(e)
+            error_message = stuck_store + format_task_error(e)
             logger.error(f"Task {task.operation_id} failed: {error_message}", exc_info=True)
             await self._write_terminal(task, "failed", lambda: self._mark_all_failed(task, error_message))
             terminal_success = False
+            if stuck_store:
+                # The engine re-raised the shed untouched, so none of its failure handling ran: no
+                # consolidation webhook, no failed-refresh record. This hook is the one that fires
+                # them for a failure the engine never saw. `.backoff` marks it a temporary failure,
+                # so a refresh is recorded as failed without pausing its automatic triggers.
+                await self._notify_wall_timeout(task, error_message, "store_backpressure.backoff")
         else:
             # Outside the except clauses on purpose: the work already ran, so a
             # failing 'completed' write must never be turned into 'failed'.
@@ -2066,6 +2154,19 @@ class WorkerPoller:
 
         logger.info(f"Worker {self._worker_id} polling loop stopped")
 
+    def begin_shutdown(self) -> float:
+        """Stop claiming new work and start the drain clock. Idempotent.
+
+        Call it the moment the process is told to stop (the API does, from its
+        SIGTERM handler): every claim taken after the signal is work that must
+        then fit into what is left of the platform's grace period (#6021).
+        """
+        if self._shutdown_started_at is None:
+            self._shutdown_started_at = asyncio.get_running_loop().time()
+            logger.info(f"Worker {self._worker_id} stopped claiming new tasks")
+        self._shutdown.set()
+        return self._shutdown_started_at
+
     async def shutdown_graceful(self, timeout: float = 30.0):
         """
         Signal shutdown and wait for current tasks to complete.
@@ -2075,18 +2176,19 @@ class WorkerPoller:
         write that never landed — is handed back to 'pending' before returning.
 
         Args:
-            timeout: Maximum time to wait for in-flight tasks (seconds)
+            timeout: Maximum time to wait for in-flight tasks (seconds), counted
+                from `begin_shutdown` when that ran first.
         """
         logger.info(f"Worker {self._worker_id} initiating graceful shutdown")
-        self._shutdown.set()
+        started_at = self.begin_shutdown()
 
         # Wait for in-flight tasks to complete
         drained = False
-        start_time = asyncio.get_event_loop().time()
+        loop = asyncio.get_running_loop()
         # The task set is mutated synchronously on the event-loop thread, so
         # snapshot it without taking the in-flight registration lock. A task may
         # be waiting on that lock, and shutdown must still be able to cancel it.
-        while asyncio.get_event_loop().time() - start_time < timeout:
+        while loop.time() - started_at < timeout:
             active_task_objects = list(self._current_tasks)
 
             if not active_task_objects:

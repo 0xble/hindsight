@@ -107,6 +107,8 @@ The MCP server operates in two modes depending on the URL:
 
 **Multi-bank mode** exposes all tools with an optional `bank_id` parameter, plus bank management tools (`list_banks`, `create_bank`, `get_bank_stats`).
 
+**Knowledge banks** have their own endpoint, `/mcp/kb/{bank_id}/`, which lists only the [knowledge-bank tools](#knowledge-bank-tools). A memory bank's `/mcp/{bank_id}/` never lists them. `/mcp/` lists both, plus `list_knowledge_banks` and `create_knowledge_bank`.
+
 ## Tool Metadata and Instructions
 
 Hindsight can append deployment-specific guidance to the `retain` and `recall` MCP tool descriptions. Set `HINDSIGHT_API_MCP_INSTRUCTIONS` on the API server when clients should see local rules, such as which tags to use or which memories should be retained.
@@ -114,6 +116,16 @@ Hindsight can append deployment-specific guidance to the `retain` and `recall` M
 ```bash
 export HINDSIGHT_API_MCP_INSTRUCTIONS="Use project:<name> tags for project-specific memories."
 ```
+
+### Per-bank server instructions
+
+A bank can carry its own MCP server instructions in its `mcp_server_instructions` config field. They are sent in the `initialize` response to every client that connects to the bank's single-bank endpoint (`/mcp/{bank_id}/`), so a newly connected agent knows how to use the bank without a hand-pasted prompt: which document to read first, which tags to save new facts with, and so on. Set it with the [bank config API](./configuration.md#mcp-server) or in the control plane's bank configuration.
+
+- The text is read when a client connects, so a change applies to the next connection.
+- At most 4,000 characters. Set it to `null` to remove it.
+- The multi-bank endpoint (`/mcp/`) does not send it: a multi-bank connection reaches every bank, so no one bank's instructions describe it.
+- How the text is used is up to the client. Clients that support MCP server instructions add them to the model's context; others ignore them.
+- Anyone who can change the bank's config can change what every connecting agent is told, including an agent with the `update_bank` tool. Restrict that tool with [`mcp_enabled_tools`](./api/memory-banks.md#mcp_enabled_tools) if connected agents should not edit it.
 
 MCP clients that read tool annotations also receive safety hints from the built-in tools:
 
@@ -281,7 +293,7 @@ Create a mental model — a living document that stays current with your memorie
 |-----------|------|----------|-------------|
 | `name` | string | Yes | Human-readable name for the mental model |
 | `source_query` | string | Yes | The query used to generate and refresh the model |
-| `mental_model_id` | string | No | Custom ID (alphanumeric lowercase with hyphens). Auto-generated if not provided |
+| `mental_model_id` | string | No | Custom ID (same rules as a bank id: at most 192 bytes of UTF-8, no '/' and no control characters). Auto-generated if not provided |
 | `tags` | list[string] | No | Tags for organizing and filtering models |
 | `tags_match` | string | No | How the model's tags are matched against memories on refresh: `any`, `all`, `any_strict`, `all_strict`, or `exact`. See the note below on the default |
 | `trigger` | object | No | Refresh policy — see [Trigger settings](#trigger-settings) |
@@ -370,7 +382,7 @@ Update a mental model's metadata or settings.
 
 ### Trigger settings
 
-`trigger` carries a mental model's (or knowledge page's) refresh policy: **when**
+`trigger` carries a mental model's (or page's) refresh policy: **when**
 it rebuilds itself and **what** it rebuilds from. It accepts every field the HTTP
 API accepts, so anything you can configure through `PATCH /mental_models/{id}`
 you can also configure from an agent over MCP.
@@ -399,7 +411,7 @@ model refreshes either after consolidation or on a schedule, never both. Setting
 one clears the other.
 
 **On create**, omitted fields take the engine defaults (`mode: full`, no
-schedule, all fact types); for a knowledge page they take the page defaults
+schedule, all fact types); for a page they take the page defaults
 (`mode: delta`, observation-only, auto-refresh, siblings excluded).
 
 **On update, `trigger` is a patch**: only the fields you send change, so putting
@@ -675,15 +687,15 @@ Clear all memories from a bank without deleting the bank itself. Optionally filt
 
 ---
 
-### get_knowledge_base_tree
+### get_page_tree
 
-Browse the knowledge base as a nested tree of folders and pages. Each page reports `is_stale`: `false` means it is provably up to date, `true` means the bank has been written to since the page last refreshed.
+Browse the bank's pages as a nested tree of folders and pages. Each page reports `is_stale`: `false` means it is provably up to date, `true` means the bank has been written to since the page last refreshed.
 
 ---
 
-### search_knowledge_base
+### search_pages
 
-Find knowledge pages by relevance (hybrid BM25 + vector search over page names and content). Returns ranked pages with a snippet each.
+Find pages by relevance (hybrid BM25 + vector search over page names and content). Returns ranked pages with a snippet each.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
@@ -692,9 +704,9 @@ Find knowledge pages by relevance (hybrid BM25 + vector search over page names a
 
 ---
 
-### get_knowledge_page
+### get_page
 
-Read a knowledge page as a markdown document (YAML frontmatter + synthesized body).
+Read a page as a markdown document (YAML frontmatter + synthesized body).
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
@@ -702,9 +714,9 @@ Read a knowledge page as a markdown document (YAML frontmatter + synthesized bod
 
 ---
 
-### create_knowledge_folder
+### create_page_folder
 
-Create a folder in the knowledge base. Folders group pages and hold no content of their own.
+Create a folder for pages. Folders group pages and hold no content of their own.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
@@ -713,7 +725,7 @@ Create a folder in the knowledge base. Folders group pages and hold no content o
 
 ---
 
-### create_knowledge_page
+### create_page
 
 Create a page — a living document whose content is synthesized from the bank's memories by running `source_query`. Content is generated asynchronously; use the returned `operation_id` to track completion.
 
@@ -724,7 +736,7 @@ Create a page — a living document whose content is synthesized from the bank's
 | `parent_id` | string | No | Parent folder id (a `kf-...` node id). Omit to create at the top level |
 | `tags` | array | No | Tags scoping which memories the page is built from |
 | `max_tokens` | integer | No | Maximum tokens for the generated content (default: 4096) |
-| `trigger` | object | No | Refresh policy — see [Trigger settings](#trigger-settings). Omitted fields keep the knowledge-page defaults: `delta` rebuilds from consolidated observations after each consolidation, ignoring sibling pages |
+| `trigger` | object | No | Refresh policy — see [Trigger settings](#trigger-settings). Omitted fields keep the page defaults: `delta` rebuilds from consolidated observations after each consolidation, ignoring sibling pages |
 | `refresh_after_consolidation` | boolean | No | Legacy shorthand for `trigger.refresh_after_consolidation` |
 
 Set `trigger.refresh_cron` to move a page off consolidation-driven rebuilds and
@@ -733,7 +745,7 @@ the auto-refresh while leaving the page's `mode` and `fact_types` alone.
 
 ---
 
-### update_knowledge_node
+### update_page_node
 
 Rename or move a folder/page, and/or update a page's options. Only the arguments you pass are changed. Changing `source_query` schedules an async refresh so the page rebuilds against the new question.
 
@@ -750,7 +762,7 @@ Rename or move a folder/page, and/or update a page's options. Only the arguments
 
 ---
 
-### delete_knowledge_node
+### delete_page_node
 
 Delete a folder or page and its whole subtree. Each deleted page takes its backing mental model with it.
 
@@ -759,9 +771,32 @@ Delete a folder or page and its whole subtree. Each deleted page takes its backi
 | `node_id` | string | Yes | The folder (`kf-...`) or page (`kp-...`) to delete |
 
 :::note
-Exporting the knowledge base is deliberately not an MCP tool — it returns the whole
+Exporting pages is deliberately not an MCP tool — it returns the whole
 bank as a single markdown bundle. Use the HTTP endpoint
-`GET /v1/default/banks/{bank_id}/knowledge-base/export` instead.
+`GET /v1/default/banks/{bank_id}/pages/export` instead.
+:::
+
+---
+
+## Knowledge-Bank Tools
+
+These work on a [knowledge bank](./knowledge-banks.md), and answer with the same JSON as its HTTP API. Connect to `/mcp/kb/{bank_id}/` for one knowledge bank, or to `/mcp/`, where each takes an optional `bank_id`. Authentication and the operation validator apply as on the HTTP API. They are hidden when `HINDSIGHT_API_ENABLE_KB` is off.
+
+| Tool | What it does |
+|------|--------------|
+| `list_knowledge_banks` | Lists knowledge banks, newest first (`query`, `limit`, `offset`). Multi-bank mode only |
+| `create_knowledge_bank` | Creates a knowledge bank, or returns it if it exists (`bank_id`). Multi-bank mode only |
+| `get_knowledge_bank` | Document and passage counts, by status and media type |
+| `delete_knowledge_bank` | Deletes the bank and every document in it |
+| `search_knowledge_bank` | Finds passages by meaning (`query`, `max_tokens`, `budget`, `tags`, `tags_match`, `tag_groups`, `document_ids`, `media_types`) |
+| `ingest_knowledge_text` | Adds a text or markdown document and returns once it is searchable (`text`, `document_id`, `filename`, `tags`, `strategy`) |
+| `list_knowledge_documents` | Lists documents (`q`, `status`, `media_type`, `tags`, `limit`, `offset`) |
+| `get_knowledge_document` | A document with all its passages (`document_id`) |
+| `delete_knowledge_document` | Deletes a document, its passages and its file (`document_id`) |
+| `list_knowledge_tags` | The tags on the bank's documents, most used first (`q`, `limit`, `offset`) |
+
+:::note
+Uploading files, downloading a document's file or a passage's media, searching by image or video, search traces and per-bank ingest settings are HTTP only: use the [knowledge-bank API](./api/knowledge-banks.md).
 :::
 
 ---

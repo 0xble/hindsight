@@ -263,6 +263,33 @@ def test_parse_llm_json_preserves_raw_line_breaks_in_strings():
     assert parse_llm_json('{"a": "back\\\\slash and \\" quote"}') == {"a": 'back\\slash and " quote'}
 
 
+def test_parse_llm_json_stray_quote_keeps_later_objects():
+    """One unescaped quote in a value must not wreck the objects after it (#6729).
+
+    The quote used to throw off the newline-escaping pass, so the repair saw the
+    rest of the reply as one string and returned the first fact plus fragments.
+    """
+    from hindsight_api.engine.llm_wrapper import parse_llm_json
+
+    raw = (
+        "```json\n"
+        '{\n  "facts": [\n'
+        '    {\n      "what": "Tools disabled: `a` and `b".",\n      "fact_type": "world"\n    },\n'
+        '    {\n      "what": "User kept compaction off.",\n      "fact_type": "world"\n    }\n'
+        "  ]\n}\n```"
+    )
+    facts = parse_llm_json(raw)["facts"]
+    assert [type(f) for f in facts] == [dict, dict]
+    assert facts[1] == {"what": "User kept compaction off.", "fact_type": "world"}
+
+
+def test_parse_llm_json_repair_keeps_raw_line_breaks():
+    """A reply that needs repair still keeps the line breaks inside its strings."""
+    from hindsight_api.engine.llm_wrapper import parse_llm_json
+
+    assert parse_llm_json('{"a": "row 1\nrow 2",}') == {"a": "row 1\nrow 2"}
+
+
 @pytest.mark.parametrize("garbage", ["", "   ", "not json at all !!!", "```json\n```"])
 def test_parse_llm_json_unrecoverable_raises(garbage):
     """Repair that yields an empty result must not masquerade as success — the
@@ -326,3 +353,26 @@ def test_llm_provider_constructor_ignores_global_safety_settings(monkeypatch):
     assert provider.gemini_safety_settings is None  # not inherited from global config
 
     clear_config_cache()
+
+
+def test_reask_messages_appends_the_reply_as_text_and_the_correction():
+    """The re-ask keeps the request as a prefix and replays any reply shape as a string (#4965)."""
+    from pydantic import BaseModel
+
+    from hindsight_api.engine.llm_wrapper import reask_messages
+
+    class _Reply(BaseModel):
+        facts: list[str]
+
+    request = [{"role": "system", "content": "s"}, {"role": "user", "content": "u"}]
+    for reply, text in [
+        ({"a": "é"}, '{"a": "é"}'),
+        ([{"a": 1}, {"a": 2}], '[{"a": 1}, {"a": 2}]'),
+        (_Reply(facts=["x"]), '{"facts":["x"]}'),
+        ("raw text", "raw text"),
+        (None, ""),
+    ]:
+        out = reask_messages(request, reply, "fix it")
+        assert out[:2] == request
+        assert out[2:] == [{"role": "assistant", "content": text}, {"role": "user", "content": "fix it"}]
+    assert len(request) == 2  # the caller's list is not mutated

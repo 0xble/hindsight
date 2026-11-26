@@ -21,13 +21,14 @@ import hashlib
 import json
 import logging
 import math
+import re
 import time
 import uuid
 from collections import defaultdict
 from collections.abc import Callable, Iterable
 from contextlib import AsyncExitStack
 from dataclasses import asdict, dataclass, field, replace
-from datetime import datetime, timezone
+from datetime import datetime, timezone, tzinfo
 from enum import StrEnum
 from fnmatch import fnmatchcase
 from itertools import combinations
@@ -38,6 +39,11 @@ import asyncpg
 from pydantic import AliasChoices, BaseModel, ConfigDict, Field, PrivateAttr, ValidationError, field_validator
 
 from ...config import get_config
+from ...extensions.operation_validator import (
+    ConsolidationActionsContext,
+    ReviewedConsolidationAction,
+    resolve_reviews,
+)
 from ...metrics import get_metrics_collector
 from ...operation_runs import timed_operation
 from ...worker.stage import set_stage
@@ -81,7 +87,7 @@ from ..memories.base import MemoryTextSize
 from ..response_models import Budget
 from ..retain import embedding_utils
 from ..schema import fq_memory_store_table, fq_table
-from ..stored_dates import finite_utc
+from ..stored_dates import bank_timezone, finite_utc
 from ..structured_output import provider_json_schema, strict_json_schema
 from ..token_encoding import count_tokens
 from .detail_loss import Anchor, Evidence, dropped_merge_anchors, dropped_supported_anchors, without_temporal_suffix
@@ -94,6 +100,7 @@ from .triage import TriageResult, fact_sentence, triage_facts, triage_model
 if TYPE_CHECKING:
     # The engine's connection abstraction, which is what every caller passes; the annotations
     # below named asyncpg's concrete type, which predates it.
+    from ...extensions.operation_validator import OperationValidatorExtension
     from ...models import RequestContext
     from ..db.base import DatabaseConnection
     from ..memories.base import StoredMemory
@@ -1552,7 +1559,7 @@ class _FactBatchResponse(BaseModel):
         code compares the times, gemma-4 got them wrong both ways. ``marked``: the prompt told the
         model so (``(stated after this fact)`` or ``newer_than_input_facts``). A marked change adds
         the fact to the observation as its earlier state, in brackets after the current text, most
-        recent first, and the fact creates nothing — its ``new`` would restate that earlier state as
+        recent first and at most :data:`_MAX_EARLIER_STATES` of them, and the fact creates nothing — its ``new`` would restate that earlier state as
         current. The code writes that note, not the model: asked for it, gemini-3.1-flash-lite
         wrote an older rule as the removal of the newer one ("until it was removed"), or repeated
         the whole observation. An unmarked change was written as if the fact were newer: the
@@ -1625,10 +1632,9 @@ class _FactBatchResponse(BaseModel):
                     text = base
                 elif later:
                     history = True
-                    # Facts come oldest first: each older fact's note goes ahead of the ones before it.
-                    notes.setdefault(oid, []).insert(0, f"({earlier_states[f.fact_id]})")
+                    notes.setdefault(oid, []).append(f"({earlier_states[f.fact_id]})")
                     head = heads.setdefault(oid, base)
-                    text = " ".join([_end_sentence(head), *notes[oid]])
+                    text = _with_earlier_states(head, notes[oid])
                 elif not change.text.strip():
                     text = base
                 else:
@@ -2114,6 +2120,21 @@ def _end_sentence(text: str) -> str:
     return text if text[-1:] in ".!?)。！？）" else f"{text}."
 
 
+#: Earlier-state notes an observation keeps. Unbounded, a topic that keeps coming up piles up
+#: near-identical notes, and small models copying them loop until the output cap (#6264).
+_MAX_EARLIER_STATES = 3
+_EARLIER_STATE_START = re.compile(r"\s+(?=\(\d{4}-\d{2}-\d{2} \d{2}:\d{2}: )")
+
+
+def _with_earlier_states(text: str, new_notes: list[str]) -> str:
+    """``text`` with ``new_notes`` added to the notes it already has: newest first, duplicates and
+    all but the newest :data:`_MAX_EARLIER_STATES` dropped. Each note starts with its date, so a
+    plain sort orders them; the dropped facts stay cited by the observation."""
+    head, *old = _EARLIER_STATE_START.split(text.strip())
+    kept = sorted({*old, *new_notes}, reverse=True)[:_MAX_EARLIER_STATES]
+    return " ".join([_end_sentence(head), *kept])
+
+
 def _build_fact_response_model(
     fact_ids: list[str], remaining_observation_slots: int | None = None
 ) -> type[_FactBatchResponse]:
@@ -2240,7 +2261,7 @@ def _as_dt(v: "datetime | str | None") -> "datetime | None":
     return finite_utc(datetime.fromisoformat(v) if isinstance(v, str) else v)
 
 
-def _prompt_time(v: "datetime | str | None") -> str | None:
+def _prompt_time(v: "datetime | str | None", tz: tzinfo = timezone.utc) -> str | None:
     """Every time the consolidation prompt shows, in ONE format (``2026-10-21T09:48Z``).
 
     The model decides recency by comparing a fact's ``mentioned_at`` with an observation's, and the
@@ -2249,9 +2270,15 @@ def _prompt_time(v: "datetime | str | None") -> str | None:
     than 10:48 on half the calls and let the older rule overwrite its amendment (#5938); one format
     took that call from 5/10 to 10/10. Minute precision: seconds and the sub-second offsets retain
     adds to order one document's facts carry nothing the model needs.
+
+    Shown in the bank's zone with its offset (``2026-11-08T14:35+08:00``): the model copies the
+    wall clock into the observation text, and a UTC wall clock read as local time (#6441). Every
+    time in one prompt uses the same zone, so the single-format rule above still holds.
     """
     dt = _as_dt(v)
-    return dt.strftime("%Y-%m-%dT%H:%MZ") if dt else None
+    if dt is None:
+        return None
+    return dt.astimezone(tz).isoformat(timespec="minutes").replace("+00:00", "Z")
 
 
 def _latest_time(*values: "datetime | str | None") -> "datetime | None":
@@ -3790,18 +3817,15 @@ async def _process_memory_batch(
         str(memories[i]["id"]): {str(obs.id) for obs in r.results} for i, r in enumerate(per_fact_recalls)
     }
 
-    # Union all observations (deduped by id)
-    seen_ids: set[str] = set()
-    union_observations: list["MemoryFact"] = []
+    # Keep the first observation for each id, in recall order.
+    observations_by_id: dict[str, "MemoryFact"] = {}
     union_source_facts: dict[str, "MemoryFact"] = {}
     for recall_result in per_fact_recalls:
         for obs in recall_result.results:
-            obs_id = str(obs.id)
-            if obs_id not in seen_ids:
-                seen_ids.add(obs_id)
-                union_observations.append(obs)
+            observations_by_id.setdefault(str(obs.id), obs)
         if recall_result.source_facts:
             union_source_facts.update(recall_result.source_facts)
+    union_observations = list(observations_by_id.values())
 
     # Facts and recalled observations are concise, derived memory text. Language
     # validation instead needs the bank-scoped source chunks behind every fact an
@@ -3834,8 +3858,9 @@ async def _process_memory_batch(
             )
 
     # 2c. Triage: restatements and chatter are settled by a typed judgment, not the LLM.
+    # The engine is the one this MemoryEngine was given, the same way config is this batch's.
     triage = TriageResult()
-    if (decision_model := triage_model(config)) is not None:
+    if (decision_model := triage_model(config, memory_engine.decision_engine_for)) is not None:
         triage = await triage_facts(
             memories,
             [list(r.results) for r in per_fact_recalls],
@@ -3921,7 +3946,6 @@ async def _process_memory_batch(
     # one place. They are still applied first inside the transaction, so an observation
     # slot freed by a delete is available to a create in the same response.
     prepared_deletes: list[_PreparedDelete] = []
-    pool_ids = {str(obs.id) for obs in union_observations}
     # A response can both UPDATE and DELETE one observation (seen when a fact supersedes it:
     # the model rewrites it to the new state and also deletes "the old one"). Deletes apply
     # first, so the update then found no row and was skipped while its source facts were
@@ -3936,13 +3960,15 @@ async def _process_memory_batch(
             )
             continue
         # Security: the observation must be present in the unioned recall
-        if delete.observation_id not in pool_ids:
+        if delete.observation_id not in observations_by_id:
             logger.debug(
                 f"Batch consolidation: rejected delete — observation {delete.observation_id} not in unioned recall"
             )
             continue
         # A merge target must be one the model was shown, like any other target it names.
-        target = delete.merged_into if delete.merged_into in pool_ids - {delete.observation_id} else None
+        target = delete.merged_into
+        if target == delete.observation_id or target not in observations_by_id:
+            target = None
         prepared_deletes.append(
             _PreparedDelete(observation_id=delete.observation_id, is_merge=bool(delete.merged_into), merged_into=target)
         )
@@ -4162,6 +4188,13 @@ async def _process_memory_batch(
     prepared_creates: list[_PreparedCreate] = await _gather_or_cancel(
         [_bounded(_adjudicate_create(p)) for p in checked_creates]
     )
+
+    # --- Review: the extension may drop an action or replace its tags ---------
+    # After every slow step (so it sees the final decision, folds included) and before the
+    # transaction (so a slow extension holds no locks).
+    if (validator := memory_engine._validator_with_hook("filter_consolidation_actions")) is not None:
+        reviewed = await _review_actions(validator, bank_id, request_context, prepared_updates, prepared_creates)
+        prepared_updates, prepared_creates = reviewed.updates, reviewed.creates
 
     # --- Apply: one transaction for everything this LLM response decided ------
     deleted_count = 0
@@ -4625,6 +4658,63 @@ async def _process_memory_batch(
     return results, deleted_count, llm_result.failed
 
 
+@dataclass
+class _ReviewedActions:
+    updates: list[_PreparedUpdate]
+    creates: list[_PreparedCreate]
+
+
+async def _review_actions(
+    validator: "OperationValidatorExtension",
+    bank_id: str,
+    request_context: "RequestContext",
+    updates: list[_PreparedUpdate],
+    creates: list[_PreparedCreate],
+) -> _ReviewedActions:
+    """Run ``filter_consolidation_actions`` over a batch's prepared updates and creates."""
+
+    def _merge_into(dedup: _DedupOutcome | None) -> str | None:
+        return dedup.best_id if dedup is not None and dedup.should_merge else None
+
+    actions = [
+        ReviewedConsolidationAction(
+            kind="update",
+            text=u.update.text,
+            tags=list(u.source_fact_tags or []),
+            source_memory_ids=[str(i) for i in u.source_memory_ids],
+            observation_id=u.update.observation_id,
+            merge_into=_merge_into(u.dedup),
+        )
+        for u in updates
+    ] + [
+        ReviewedConsolidationAction(
+            kind="create",
+            text=c.text,
+            tags=list(c.source_fact_tags or []),
+            source_memory_ids=[str(i) for i in c.source_memory_ids],
+            merge_into=_merge_into(c.dedup),
+        )
+        for c in creates
+    ]
+    if not actions:
+        return _ReviewedActions(updates=updates, creates=creates)
+    ctx = ConsolidationActionsContext(bank_id=bank_id, request_context=request_context, actions=actions)
+    reviews = resolve_reviews(
+        await validator.filter_consolidation_actions(ctx), len(actions), "filter_consolidation_actions"
+    )
+    kept: list[_PreparedUpdate | _PreparedCreate] = []
+    for prepared, review in zip([*updates, *creates], reviews, strict=True):
+        if not review.keep:
+            continue
+        if review.tags is not None:
+            prepared.source_fact_tags = list(review.tags)
+        kept.append(prepared)
+    return _ReviewedActions(
+        updates=[p for p in kept if isinstance(p, _PreparedUpdate)],
+        creates=[p for p in kept if isinstance(p, _PreparedCreate)],
+    )
+
+
 def _min_date(dates: "Any") -> "datetime | None":
     """Return the minimum known datetime from an iterable (None and placeholders skipped)."""
     return min((d for d in map(_as_dt, dates) if d is not None), default=None)
@@ -4771,7 +4861,7 @@ async def _apply_update_action(
     # SECURITY: Merge source fact's tags into existing observation tags so all contributors can see it
     existing_tags = set(current_tags)
     source_tags = set(source_fact_tags or [])
-    merged_tags = list(existing_tags | source_tags)
+    merged_tags = sorted(existing_tags | source_tags)
 
     t0 = time.perf_counter()
     if not store.store_owned_for(bank_id):
@@ -5168,6 +5258,7 @@ def _build_observations_for_llm(
     observations: "list[MemoryFact]",
     source_facts: "dict[str, MemoryFact]",
     newest_input_fact: "datetime | None" = None,
+    tz: tzinfo = timezone.utc,
 ) -> list[dict[str, Any]]:
     """Serialize MemoryFact observations into dicts for the consolidation LLM prompt.
 
@@ -5186,7 +5277,7 @@ def _build_observations_for_llm(
             "proof_count": len(unique_ids) or 1,
         }
         for key in ("occurred_start", "occurred_end", "mentioned_at"):
-            if shown := _prompt_time(getattr(obs, key)):
+            if shown := _prompt_time(getattr(obs, key), tz):
                 obs_data[key] = shown
         obs_time = _latest_time(obs.occurred_start, obs.occurred_end, obs.mentioned_at)
         if newest_input_fact and obs_time and obs_time > newest_input_fact:
@@ -5201,7 +5292,7 @@ def _build_observations_for_llm(
             # text already says what the fact means (#5996). The new facts carry none either.
             sf_data: dict[str, Any] = {"text": sf.text}
             for key in ("occurred_start", "occurred_end", "mentioned_at"):
-                if shown := _prompt_time(getattr(sf, key)):
+                if shown := _prompt_time(getattr(sf, key), tz):
                     sf_data[key] = shown
             source_memories.append(sf_data)
         if source_memories:
@@ -5263,7 +5354,10 @@ def _classify_batch_failure(exc: Exception) -> _BatchFailureClass:
        byte-identical payload, so a re-send asks a greedy decoder the same question
        and gets the same answer — the reporter measured twelve failures at the same
        character offset. Retrying still costs a full generation, and for a JSON
-       parse error that is on top of the four the provider already burned.
+       parse error that is on top of the four the provider already burned. A
+       schema-invalid reply has also already had its one re-ask with the errors
+       (``_schema_correction_feedback``) where eligible, which does vary the input;
+       failing that too, it lands here.
 
     ``FAIL_FAST`` is not "give up": the batch is still reported failed, so the
     caller's adaptive bisection halves it and tries again. That path *does* vary
@@ -5378,7 +5472,7 @@ class _SchemaCorrectionBudget:
 
 
 def _schema_correction_feedback(exc: ValidationError, response_model: type[BaseModel]) -> str | None:
-    """Whitelist expected action-shape errors; never echo model-controlled values.
+    """Whitelist expected batch and action shape errors; never echo model-controlled values.
 
     Pydantic exposes a title rather than model identity on ValidationError. Require
     the exact expected response title AND only known action paths/types. All other
@@ -5400,6 +5494,11 @@ def _schema_correction_feedback(exc: ValidationError, response_model: type[BaseM
     for error in errors:
         loc = list(error["loc"])
         kind = error["type"]
+        # #5572: two consecutive JSON objects can be repaired into a list.
+        # Give that reply the same bounded correction as a malformed action.
+        if not loc and kind == "model_type" and len(errors) == 1:
+            locations.append("(top level): expected one JSON object, not a list or scalar")
+            continue
         if len(loc) < 2 or loc[0] not in fields or type(loc[1]) is not int or loc[1] < 0:
             return None
         nested = (
@@ -5735,6 +5834,7 @@ async def _consolidate_batch_with_llm(
     """
     if config is None:
         raise ValueError("config is required for _consolidate_batch_with_llm")
+    tz = bank_timezone(config)
     obs_time = {str(o.id): _latest_time(o.occurred_start, o.occurred_end, o.mentioned_at) for o in union_observations}
     fact_time = {
         str(m["id"]): _latest_time(m.get("occurred_start"), m.get("occurred_end"), m.get("mentioned_at"))
@@ -5756,7 +5856,7 @@ async def _consolidate_batch_with_llm(
         newest_input_fact = _latest_time(
             *(m.get(key) for m in memories for key in ("occurred_start", "occurred_end", "mentioned_at"))
         )
-        obs_list = _build_observations_for_llm(union_observations, union_source_facts, newest_input_fact)
+        obs_list = _build_observations_for_llm(union_observations, union_source_facts, newest_input_fact, tz)
         for o in obs_list:
             o["id"] = _short(str(o["id"]))
         # One observation per line, no indentation: the pool is nearly all of a batch's
@@ -5770,7 +5870,7 @@ async def _consolidate_batch_with_llm(
         temporal_parts = [
             f"{key}={shown}"
             for key in ("occurred_start", "occurred_end", "mentioned_at")
-            if (shown := _prompt_time(m.get(key)))
+            if (shown := _prompt_time(m.get(key), tz))
         ]
         if temporal_parts:
             text += f" ({', '.join(temporal_parts)})"
@@ -5820,6 +5920,7 @@ async def _consolidate_batch_with_llm(
         observations_text=observations_text,
         observations_mission=config.observations_mission,
         observation_capacity_note=observation_capacity_note,
+        timezone_name=getattr(config, "default_timezone", None),
     )
 
     language_mode = configured_mode(config)
@@ -5917,6 +6018,7 @@ async def _consolidate_batch_with_llm(
     batch_label = f"{len(memory_ids)} memories [{ids_label}]"
     for request_attempt in range(1, max_requests + 1):
         attempts_made = request_attempt
+        answer: _FactBatchResponse | None = None
         try:
             if prompt_tokens + count_tokens(language_retry_instruction) > max_context_tokens:
                 last_exc = RuntimeError("language correction would exceed the configured context limit")
@@ -5953,7 +6055,8 @@ async def _consolidate_batch_with_llm(
             if inner_max_retries is not None:
                 call_kwargs["max_retries"] = inner_max_retries
             try:
-                batch_call = await llm_config.call(**call_kwargs)
+                first = (await llm_config.call(**call_kwargs)).content
+                answer = first if isinstance(first, _FactBatchResponse) else response_model.model_validate(first)
             except ValidationError as schema_exc:
                 feedback = _schema_correction_feedback(schema_exc, response_model)
                 if feedback is None or correction_used:
@@ -5991,13 +6094,18 @@ async def _consolidate_batch_with_llm(
                 # Enforce a single actual completion, including those hidden paths.
                 with single_completion(correction_budget.start) as correction:
                     try:
-                        batch_call = await llm_config.call(**call_kwargs)
+                        corrected = (await llm_config.call(**call_kwargs)).content
                         if not correction.started:
                             raise CompletionAttemptLimitError("provider did not enforce a correction attempt boundary")
+                        answer = (
+                            corrected
+                            if isinstance(corrected, _FactBatchResponse)
+                            else response_model.model_validate(corrected)
+                        )
                     finally:
                         correction_started = correction.started
                         attempts_made += int(correction_started)
-            answer: _FactBatchResponse = batch_call.content
+            assert answer is not None
             response = convert_answer(answer)
             # The fork rejects malformed references before action preparation.
             # Keep released #5273 visibility at that earlier boundary: otherwise

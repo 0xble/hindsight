@@ -52,7 +52,7 @@ afterEach(() => {
 const makeClient = () => ({
   reflect: vi.fn(async () => "A past decision."),
   listPages: vi.fn(async () => ({ items: [] })),
-  searchKnowledgePages: vi.fn(async () => []),
+  searchPages: vi.fn(async () => []),
   recallObservations: vi.fn(async () => [] as string[]),
 });
 
@@ -90,7 +90,7 @@ describe("automatic memory injection excludes synthetic hook prompts", () => {
         expect(existsSync(cacheFile)).toBe(false);
       }
       expect(client.reflect).not.toHaveBeenCalled();
-      expect(client.searchKnowledgePages).not.toHaveBeenCalled();
+      expect(client.searchPages).not.toHaveBeenCalled();
       expect(client.recallObservations).not.toHaveBeenCalled();
       expect(client.listPages).not.toHaveBeenCalled();
     }
@@ -135,7 +135,7 @@ describe("automatic memory injection excludes synthetic hook prompts", () => {
         autoInject === "reflect"
           ? client.reflect
           : autoInject === "pages"
-            ? client.searchKnowledgePages
+            ? client.searchPages
             : client.recallObservations;
       expect(source).toHaveBeenCalledWith(
         autoInject === "reflect" ? buildReflectQuery(prompt) : prompt,
@@ -148,7 +148,7 @@ describe("automatic memory injection excludes synthetic hook prompts", () => {
   it("retries after reflection and retrieval all fail, even with synthetic turns between", async () => {
     const client = makeClient();
     client.reflect.mockRejectedValueOnce(new ReflectError("reflect 502", 502, false));
-    client.searchKnowledgePages.mockRejectedValueOnce(new Error("pages unavailable"));
+    client.searchPages.mockRejectedValueOnce(new Error("pages unavailable"));
     client.recallObservations.mockRejectedValueOnce(new Error("recall unavailable"));
     const args = { harness: "claude-code", cfg: resolveConfig({}), client, cacheFile };
     const first = await buildHookOutput({ ...args, prompt });

@@ -282,6 +282,16 @@ When running without a cross-encoder (e.g., slim image with no external reranker
 
 ---
 
+### Stage 2 With a Decision Model {#decision-model-ranking}
+
+When a [decision model](./decision-models.md) is set up for recall, it takes the cross-encoder's place. It asks of each candidate on its own whether showing it would help answer the question, telling it the date the question is asked (the recall's question date, else today), and orders the pool by that.
+
+That order is final. Recall skips Stage 3's recency, temporal and proof-count boosts, publishes no reranker score (`scores.reranker` is `null`), and rejects [`min_scores.reranker`](./api/recall.md#min_scores) with HTTP 400 — use `min_scores.final` instead. If the decision model fails or refuses after retries, the recall fails, as it does with any remote reranker. With [`HINDSIGHT_API_RECALL_DECISION_MODEL_FALLBACK=true`](./configuration.md#decision-model), that recall is ranked by the configured cross-encoder instead (`HINDSIGHT_API_RERANKER_*`, failover chain included), as any reranker's would be: Stage 3's boosts apply and `scores.reranker` is published. `min_scores.reranker` is still refused, since a recall cannot know in advance which one will rank it.
+
+With [`HINDSIGHT_API_RECALL_DECISION_MODEL_PRUNE=true`](./configuration.md#decision-model), recall also drops the candidates judged no help instead of only ordering them. The best candidate always survives. To keep the cross-encoder for recall while other operations use the decision model, set `HINDSIGHT_API_RECALL_DECISION_MODEL_PROVIDER=none`.
+
+---
+
 ### Stage 3: Combined Scoring (Boosts)
 
 The normalized cross-encoder score is adjusted by three **multiplicative boosts** that incorporate signals the cross-encoder can't see: recency, temporal proximity, and evidence strength.
@@ -302,7 +312,7 @@ boost = 1 + α × (signal - 0.5)
 
 | Boost | α | Max adjustment | What it rewards |
 |-------|---|----------------|-----------------|
-| **Recency** | 0.2 | ±10% | Recent memories over older ones |
+| **Recency** | 0.2 (set with [`HINDSIGHT_API_RECENCY_ALPHA`](./configuration.md#retrieval)) | ±10% at the default | Recent memories over older ones |
 | **Temporal proximity** | 0.2 | ±10% | Memories close to a queried time window |
 | **Proof count** | 0.1 | ±5% | Observations backed by more evidence |
 
@@ -314,7 +324,7 @@ Linear decay over 365 days from the memory's occurrence date:
 recency = clamp(1.0 - days_ago / 365, 0.1, 1.0)
 ```
 
-A memory from the query timestamp has recency 1.0 (+10% boost). A memory from 6 months before the query timestamp has recency ~0.5 (neutral). A memory more than a year before the query timestamp has recency 0.1 (-8% penalty). If no `query_timestamp` is provided, the server's current time is used. Memories without dates get 0.5 (neutral — no boost or penalty).
+With the default α of 0.2, a memory from the query timestamp has recency 1.0 (+10% boost). A memory from 6 months before the query timestamp has recency ~0.5 (neutral). A memory more than a year before the query timestamp has recency 0.1 (-8% penalty). If no `query_timestamp` is provided, the server's current time is used. Memories without dates get 0.5 (neutral — no boost or penalty).
 
 #### Temporal proximity signal
 

@@ -3,7 +3,9 @@ import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { Agent, getGlobalDispatcher, setGlobalDispatcher } from "undici";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { describeError } from "./log";
 import {
   DEFAULT_MAX_PARALLEL_RETAINS,
   DEFAULT_OBSERVATION_SCOPES,
@@ -488,6 +490,21 @@ describe("HindsightClient credential refresh", () => {
     return { calls, fetchMock };
   }
 
+  it("keeps the status and server detail in a capped error despite a long query (#6341)", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => jsonResponse(400, { detail: "invalid byte sequence for encoding UTF8" }))
+    );
+    const client = new HindsightClient({ apiUrl: "http://x", bank: "b" });
+    const url = `http://x/v1/default/banks/b/search?q=${encodeURIComponent("知识页面".repeat(20))}`;
+    const shown = await client.req("GET", url).then(
+      () => "",
+      (e) => describeError(e)
+    );
+    expect(shown).toContain("400");
+    expect(shown).toContain("invalid byte sequence");
+  });
+
   it("identifies itself with the integration's User-Agent", async () => {
     const { fetchMock } = server(() => undefined);
     await new HindsightClient({ apiUrl: "http://x", bank: "b" }).req("GET", "http://x/thing");
@@ -731,17 +748,15 @@ describe("HindsightClient.reflect failures", () => {
     );
     await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
     const { port } = server.address() as AddressInfo;
-    void globalThis.Headers; // loads Node's undici, which installs the global dispatcher
-    const key = Symbol.for("undici.globalDispatcher.1");
-    const g = globalThis as Record<symbol, unknown>;
-    const original = g[key] as object;
-    const Agent = original.constructor as new (opts: object) => object;
-    g[key] = new Agent({ headersTimeout: 100 });
+    const original = getGlobalDispatcher();
+    const shortHeadersTimeout = new Agent({ headersTimeout: 100 });
+    setGlobalDispatcher(shortHeadersTimeout);
     try {
       const client = new HindsightClient({ apiUrl: `http://127.0.0.1:${port}`, bank: "b" });
       expect(await client.reflect("why?", { timeoutMs: 10_000 })).toBe("late answer");
     } finally {
-      g[key] = original;
+      setGlobalDispatcher(original);
+      await shortHeadersTimeout.close();
       server.close();
     }
   });

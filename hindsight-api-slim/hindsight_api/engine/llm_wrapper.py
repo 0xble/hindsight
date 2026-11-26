@@ -7,6 +7,7 @@ import json
 import logging
 import re
 import time
+from collections.abc import Callable
 from contextlib import AsyncExitStack, asynccontextmanager
 from typing import TYPE_CHECKING, Any, Union
 
@@ -14,7 +15,7 @@ from json_repair import repair_json
 from pydantic import BaseModel
 
 from .._cross_loop import CrossLoopSemaphore
-from .response_models import LLMCallResult
+from .response_models import LLMCallResult, TokenUsage
 
 # Vertex AI credentials (for LLMProvider to pass to GeminiLLM). Only checked for
 # here; google-auth is imported where a key is actually loaded, not on every start.
@@ -30,6 +31,7 @@ from ..config import (
     ENV_RETAIN_LLM_MAX_CONCURRENT,
     _get_raw_config,
 )
+from ..provider_auth import is_custom_llm_provider
 
 # Re-exported: this module is where callers have always imported it from.
 from ..provider_auth import requires_api_key as requires_api_key
@@ -167,16 +169,28 @@ async def _acquire_permits(stack: AsyncExitStack, scope: str) -> None:
     slow LLM call can be attributed to queueing rather than to the provider --
     the two are otherwise indistinguishable in the reported duration (#3881).
     """
+    from ..schema_context import get_current_bank_id, get_current_schema
     from ..worker.background import in_background_task
-    from .llm_trace import record_queue_wait
+    from .llm_trace import current_call_metadata, current_trace_context, record_queue_wait
+    from .permit_wait import waiting_for_permit
 
     # Calls from a background worker task yield the next free permit to any waiting
     # live request.
     background = in_background_task()
+    # Waiters take turns by tenant, then bank, so one bank's big document does not
+    # make every other bank's calls wait behind all of its chunks. Inside a bank, the
+    # document closest to done goes first.
+    tenant = get_current_schema()
+    trace_ctx = current_trace_context()
+    bank = (trace_ctx.bank_id if trace_ctx is not None else None) or get_current_bank_id()
+    call_meta = current_call_metadata()
+    document = call_meta.get("document_id") if call_meta else None
     queue_start = time.monotonic()
-    for sem in _semaphores_for_scope(scope):
-        await sem.acquire(background=background)
-        stack.callback(sem.release)
+    # Queued time is not this operation's work; time limits that opted in exclude it (#6140).
+    with waiting_for_permit():
+        for sem in _semaphores_for_scope(scope):
+            await sem.acquire(background=background, tenant=tenant, bank=bank, document=document)
+            stack.callback(sem.release)
     record_queue_wait(time.monotonic() - queue_start)
 
 
@@ -449,10 +463,41 @@ def parse_llm_json(raw: str) -> Any:
         # failing loudly in that case rather than let an empty object masquerade
         # as a successful parse: callers (retry ladders, the #1833 fail-loud path)
         # rely on JSONDecodeError to retry or surface the failure.
-        repaired = repair_json(cleaned, return_objects=True)
+        #
+        # Repair the text as the model wrote it, not ``cleaned``. The escaping pass
+        # tracks string state by counting quotes, so one unescaped quote inside a
+        # value (Gemma 4: ``"... `cmd".",``) flips it, and every newline between
+        # later fields is escaped as if it were string content. The repair then sees
+        # one long string and returns the first fact plus a list of fragments, which
+        # retain drops as malformed (#6729). ``repair_json`` handles raw control
+        # characters on its own, and ``sanitize_value`` scrubs what it keeps.
+        repaired = repair_json(text, return_objects=True)
         if not repaired:
             raise
         return sanitize_value(repaired)
+
+
+def reask_messages(messages: list[dict[str, Any]], reply: Any, correction: str) -> list[dict[str, Any]]:
+    """The request again, plus the refused reply and what was wrong with it: one re-ask.
+
+    Every structured call that re-asks after a bad reply (retain, consolidation, the
+    mental-model delta) goes through here. At a fixed low temperature an identical prompt
+    returns the identical bad reply (#3421), so the re-ask must change the input: it quotes
+    the reply and the errors. It appends and never rewrites, so the original request stays a
+    byte-identical prefix and the provider's prompt cache still covers it.
+
+    The reply goes back as text. A provider parses the body when the call set a
+    ``response_format`` (a dict under ``skip_validation``, a model otherwise), and a strict
+    request validator refuses anything but a string as ``content`` with a 422 (#4965).
+    Serialized, not stringified, so the model reads back the JSON it wrote.
+    """
+    if isinstance(reply, BaseModel):
+        text = reply.model_dump_json()
+    elif isinstance(reply, dict | list):
+        text = json.dumps(reply, ensure_ascii=False, default=str)
+    else:
+        text = "" if reply is None else str(reply)
+    return [*messages, {"role": "assistant", "content": text}, {"role": "user", "content": correction}]
 
 
 def _validate_ollama_num_ctx(value: Any) -> int | None:
@@ -464,6 +509,43 @@ def _validate_ollama_num_ctx(value: Any) -> int | None:
     if value < 1:
         raise ValueError(f"ollama_num_ctx must be >= 1, got {value}")
     return value
+
+
+def _create_custom_llm_provider(
+    *,
+    provider: str,
+    api_key: str,
+    base_url: str,
+    model: str,
+    reasoning_effort: str | None,
+    timeout: float | None,
+    extra_body: dict[str, Any] | None,
+    default_headers: dict[str, str] | None,
+) -> LLMInterface:
+    """Build the operator's own provider named by ``provider`` (``package.module:ClassName``).
+
+    The class must subclass ``LLMInterface``. It is constructed with keyword arguments
+    only: the ``LLMInterface.__init__`` ones plus ``extra_body`` and ``default_headers``,
+    so a subclass of ``OpenAICompatibleLLM`` takes them as-is and a direct
+    ``LLMInterface`` subclass receives the last two in ``**kwargs``.
+    """
+    # Lazy: the extensions package imports the engine.
+    from ..extensions.loader import ExtensionLoadError, resolve_class_path
+
+    try:
+        provider_class = resolve_class_path(provider, LLMInterface)
+    except ExtensionLoadError as e:
+        raise ValueError(f"Cannot load custom LLM provider {provider!r}: {e}") from e
+    return provider_class(
+        provider=provider,
+        api_key=api_key,
+        base_url=base_url,
+        model=model,
+        reasoning_effort=reasoning_effort,
+        timeout=timeout,
+        extra_body=extra_body,
+        default_headers=default_headers,
+    )
 
 
 def create_llm_provider(
@@ -555,6 +637,18 @@ def create_llm_provider(
     # Each provider (and its SDK) loads only when chosen; see providers/__init__.py.
     from . import providers
 
+    if is_custom_llm_provider(provider):
+        return _create_custom_llm_provider(
+            provider=provider,
+            api_key=api_key,
+            base_url=base_url,
+            model=model,
+            reasoning_effort=reasoning_effort,
+            timeout=timeout,
+            extra_body=extra_body,
+            default_headers=default_headers,
+        )
+
     provider_lower = provider.lower()
     if provider_lower == "gemini":
         from ..config import parse_gemini_service_tier
@@ -577,6 +671,16 @@ def create_llm_provider(
 
     elif provider_lower == "cursor":
         return providers.CursorLLM(
+            provider=provider,
+            api_key=api_key,
+            base_url=base_url,
+            model=model,
+            reasoning_effort=reasoning_effort,
+            timeout=timeout,
+        )
+
+    elif provider_lower == "antigravity":
+        return providers.AntigravityLLM(
             provider=provider,
             api_key=api_key,
             base_url=base_url,
@@ -940,7 +1044,8 @@ class LLMProvider:
         pure function of its arguments — which is what lets each member of a multi-LLM chain be
         configured independently.
         """
-        self.provider = provider.lower()
+        # A custom provider is a class path, and class names are case-sensitive.
+        self.provider = provider if is_custom_llm_provider(provider) else provider.lower()
         self.api_key = api_key
         self.base_url = base_url
         self.model = model
@@ -1002,6 +1107,7 @@ class LLMProvider:
             "chatgpt",
             "claude-code",
             "cursor",
+            "antigravity",
             "github-copilot",
             "mock",
             "none",
@@ -1021,8 +1127,11 @@ class LLMProvider:
             "xai-oauth",
             "meta",
         ]
-        if self.provider not in valid_providers:
-            raise ValueError(f"Invalid LLM provider: {self.provider}. Must be one of: {', '.join(valid_providers)}")
+        if self.provider not in valid_providers and not is_custom_llm_provider(self.provider):
+            raise ValueError(
+                f"Invalid LLM provider: {self.provider}. Must be one of: {', '.join(valid_providers)}, "
+                "or package.module:ClassName for a custom provider."
+            )
 
         # Set default base URLs
         if not self.base_url:
@@ -1272,8 +1381,13 @@ class LLMProvider:
         skip_validation: bool = False,
         strict_schema: bool | None = None,
         prompt_cache: PromptCachePrefix | None = None,
+        accept_reply: Callable[[LLMCallResult], bool] | None = None,
     ) -> LLMCallResult:
         """Make an LLM API call with retry logic — see ``_call`` for the arguments.
+
+        ``accept_reply`` is for a fallback chain (``MultiLLMProvider``), which asks its
+        next member when it returns False. A single provider has no other member to ask,
+        so it ignores the check and the caller handles the reply itself.
 
         An installed LLM request extension decides first how the call is sent: its
         credentials, or a different LLM altogether, which then runs the call in this
@@ -1465,10 +1579,12 @@ class LLMProvider:
                         **cache_kwarg,
                         **attempt_kwarg,
                     )
-                except Exception as e:
+                except BaseException as e:
                     # The provider call may have succeeded (and incurred token
                     # cost) before local parsing/validation raised; attach the
                     # provider-reported usage to the error trace when available.
+                    # BaseException so a cancelled call (client gone mid-reflect)
+                    # still leaves a span; it is re-raised unchanged (#6624).
                     usage = current_response_usage()
                     get_span_recorder().record_llm_call(
                         provider=self.provider,
@@ -1515,6 +1631,7 @@ class LLMProvider:
         max_backoff: float | None = None,
         tool_choice: LLMToolChoice = LLM_TOOL_CHOICE_REQUIRED,
         declared_tools: list[dict[str, Any]] | None = None,
+        strict_schema: bool = True,
     ) -> "LLMToolCallResult":
         """One turn of a tool-using conversation: the call the model makes next.
 
@@ -1528,6 +1645,9 @@ class LLMProvider:
         not just ``tools`` (the ones this turn may call): declaring the same functions on
         every turn of a conversation keeps its prompt prefix, and the provider's cache of
         it, the same while a turn narrows what it may call.
+
+        ``strict_schema`` holds the reply to the schema with the provider's grammar; ``False``
+        sends it the soft way (in the prompt), for models that run away under the grammar.
         """
         from .llm_trace import SchemaToolTurn, reset_schema_tool_turn, set_schema_tool_turn
         from .providers import tools_via_schema
@@ -1547,55 +1667,101 @@ class LLMProvider:
                 max_backoff=max_backoff,
                 tool_choice=tool_choice,
             )
-        held = tools_via_schema.response_schema(tools, tool_choice)
-        text_messages = [
-            *tools_via_schema.as_text_messages(messages, declared_tools or tools),
-            {"role": "user", "content": tools_via_schema.turn_request(tools, tool_choice)},
-        ]
+        declared = declared_tools or tools
+        # Claude keeps a cached prefix only while the reply schema stays the same, so there every
+        # turn is held to "one of the declared functions" and a forced or narrowed turn is checked
+        # below instead: with a schema per turn kind, no reflect turn read a cache back on Bedrock.
+        # Elsewhere a forced turn keeps its own schema, which small models need to follow it
+        # (Gemma 4 made 1/12 forced searches without it, see tools_via_schema).
+        # The price on Claude: the reply schema no longer holds a turn's own limits. A forced or
+        # narrowed turn is checked below, and the closing ``done``'s cited-handle limits
+        # (reflect's ``_with_cited_handles``) go: an invented handle is dropped when the answer
+        # is read (``_cited_ids``), and a reply that runs to the token cap fails the closing
+        # call, which falls back to the standalone synthesis prompt.
+        shared_shape = self._provider_impl.caches_marked_prefix()
+        reply_choice = LLM_TOOL_CHOICE_REQUIRED if shared_shape else tool_choice
+        held = tools_via_schema.response_schema(declared if shared_shape else tools, reply_choice)
+        request = tools_via_schema.turn_request(tools, tool_choice, as_call=shared_shape)
+        if shared_shape:
+            text_messages = tools_via_schema.with_cached_turn_request(
+                tools_via_schema.as_text_messages(messages, declared, keep_parts=True), request
+            )
+        else:
+            text_messages = tools_via_schema.as_text_messages(
+                [*messages, {"role": "user", "content": request}], declared
+            )
         # The model-call record is built inside ``call``: bound here, it carries the turn's calls.
         turn_token = set_schema_tool_turn(SchemaToolTurn(tools=tools, tool_choice=tool_choice))
+        usage = TokenUsage()  # a correction is billed too
         try:
-            for attempt in range(2):
-                try:
-                    result = await self.call(
-                        messages=text_messages,
-                        response_format=tools_via_schema.schema_format(held),
-                        max_completion_tokens=max_completion_tokens,
-                        temperature=temperature,
-                        scope=scope,
-                        max_retries=max_retries,
-                        initial_backoff=initial_backoff,
-                        max_backoff=max_backoff,
-                        skip_validation=True,
-                        strict_schema=True,
-                    )
+            for correction in range(2):
+                for attempt in range(2):
+                    try:
+                        result = await self.call(
+                            messages=text_messages,
+                            response_format=tools_via_schema.schema_format(held),
+                            max_completion_tokens=max_completion_tokens,
+                            temperature=temperature,
+                            scope=scope,
+                            max_retries=max_retries,
+                            initial_backoff=initial_backoff,
+                            max_backoff=max_backoff,
+                            skip_validation=True,
+                            strict_schema=strict_schema,
+                        )
+                        break
+                    except OutputTooLongError:
+                        # A held reply that loops (whitespace, a digit run) until the cap is a sampling
+                        # accident: one more sample came back whole in every case measured on Gemma 4.
+                        if attempt:
+                            raise
+                        logger.warning(f"[{scope}] schema reply hit the token cap; sampling once more")
+                    except json.JSONDecodeError as exc:
+                        # Prose where the schema asked for JSON, after the provider's own retries: a
+                        # model that does not follow the schema. A turn with no call, as a prose reply
+                        # always was, so the caller can say the model is the problem (reflect raises
+                        # ReflectToolCallError on a first turn) rather than fail on a parse error.
+                        logger.warning(f"[{scope}] reply did not follow the response schema: {exc}")
+                        # The prose rides as content, so the error can quote what the model said.
+                        return LLMToolCallResult(content=exc.doc or None, tool_calls=[], finish_reason="stop")
+                usage = usage + result.usage
+                reply = (
+                    result.content
+                    if isinstance(result.content, str)
+                    else json.dumps(result.content, ensure_ascii=False)
+                )
+                tool_calls = tools_via_schema.calls_from_reply(reply, tools, reply_choice)
+                violation = tools_via_schema.reply_violation(reply, tool_calls, tools)
+                forced = tool_choice.function_name
+                if violation is None and forced is not None and tool_calls[0].name != forced:
+                    violation = f"this turn must call `{forced}`, not `{tool_calls[0].name}`"
+                if violation is None:
                     break
-                except OutputTooLongError:
-                    # A held reply that loops (whitespace, a digit run) until the cap is a sampling
-                    # accident: one more sample came back whole in every case measured on Gemma 4.
-                    if attempt:
-                        raise
-                    logger.warning(f"[{scope}] schema reply hit the token cap; sampling once more")
-                except json.JSONDecodeError as exc:
-                    # Prose where the schema asked for JSON, after the provider's own retries: a
-                    # model that does not follow the schema. A turn with no call, as a prose reply
-                    # always was, so the caller can say the model is the problem (reflect raises
-                    # ReflectToolCallError on a first turn) rather than fail on a parse error.
-                    logger.warning(f"[{scope}] reply did not follow the response schema: {exc}")
-                    # The prose rides as content, so the error can quote what the model said.
-                    return LLMToolCallResult(content=exc.doc or None, tool_calls=[], finish_reason="stop")
+                if correction:
+                    # Corrected once and still wrong: a model (or endpoint) that does not follow
+                    # the schema. A turn with no call, so the caller reports that, not a missing answer.
+                    logger.warning(f"[{scope}] reply broke the response schema after a correction: {violation}")
+                    tool_calls = []
+                    break
+                logger.warning(f"[{scope}] reply broke the response schema, asking once more: {violation}")
+                text_messages = [
+                    *text_messages,
+                    {"role": "assistant", "content": reply},
+                    {
+                        "role": "user",
+                        "content": f"That reply does not fit the required format: {violation}. " + request,
+                    },
+                ]
         finally:
             reset_schema_tool_turn(turn_token)
-        reply = result.content if isinstance(result.content, str) else json.dumps(result.content, ensure_ascii=False)
-        tool_calls = tools_via_schema.calls_from_reply(reply, tools, tool_choice)
         return LLMToolCallResult(
             content=None if tool_calls else reply,
             tool_calls=tool_calls,
             finish_reason="tool_calls" if tool_calls else "stop",
-            input_tokens=result.usage.input_tokens,
-            output_tokens=result.usage.output_tokens,
-            cached_tokens=result.usage.cached_tokens,
-            thoughts_tokens=result.usage.thoughts_tokens,
+            input_tokens=usage.input_tokens,
+            output_tokens=usage.output_tokens,
+            cached_tokens=usage.cached_tokens,
+            thoughts_tokens=usage.thoughts_tokens,
         )
 
     async def _call_with_tools(
@@ -1700,10 +1866,12 @@ class LLMProvider:
                         tool_choice=tool_choice,
                         **attempt_kwarg,
                     )
-                except Exception as e:
+                except BaseException as e:
                     # The provider call may have succeeded (and incurred token
                     # cost) before local parsing/validation raised; attach the
                     # provider-reported usage to the error trace when available.
+                    # BaseException so a cancelled call (client gone mid-reflect)
+                    # still leaves a span; it is re-raised unchanged (#6624).
                     usage = current_response_usage()
                     get_span_recorder().record_llm_call(
                         provider=self.provider,

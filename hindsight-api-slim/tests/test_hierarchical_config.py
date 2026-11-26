@@ -143,6 +143,7 @@ async def test_hierarchical_fields_categorization():
     assert "reflect_source_facts_max_tokens" in configurable
     assert "llm_gemini_safety_settings" in configurable
     assert "mcp_enabled_tools" in configurable
+    assert "mcp_server_instructions" in configurable
     assert "retain_chunk_batch_size" in configurable
     assert "enable_auto_consolidation" in configurable
     assert "consolidation_use_decision_model" in configurable
@@ -160,8 +161,11 @@ async def test_hierarchical_fields_categorization():
     assert "recall_decision_model_prune" in configurable
     assert "recall_decision_model_dedup" in configurable
     assert "mental_model_min_refresh_interval_seconds" in configurable
-    assert "knowledge_page_default_trigger" in configurable
+    assert "page_default_trigger" in configurable
     assert "reflect_default_options" in configurable
+    assert "knowledge_banks" in configurable
+    assert "reflect_kb_search_media_types" in configurable
+    assert "reflect_kb_search_apply_tags" in configurable
 
     # Keep the exact surface count, including released recall_decision_model_prune
     # and recall_decision_model_dedup above and the six retained fork settings:
@@ -170,7 +174,7 @@ async def test_hierarchical_fields_categorization():
     # llm_language_integrity, and consolidation_round_correction_budget.
     assert "llm_language_integrity" in configurable
     assert "llm_output_language" in static
-    assert len(configurable) == 66
+    assert len(configurable) == 70
 
     # Verify credential fields (NEVER exposed)
     assert "llm_api_key" in credentials

@@ -9,6 +9,16 @@ The Hindsight CLI provides command-line access to memory operations and bank man
 curl -fsSL https://hindsight.vectorize.io/get-cli | bash
 ```
 
+### Windows (x64)
+
+Each release ships `hindsight-windows-amd64.exe`. Download it from PowerShell, then move `hindsight.exe` to a folder on your `PATH`:
+
+```powershell
+Invoke-WebRequest https://github.com/vectorize-io/hindsight/releases/latest/download/hindsight-windows-amd64.exe -OutFile hindsight.exe
+```
+
+Configuration and profiles work the same as on Linux and macOS. `hindsight fs mount` works in the foreground; background mounts (`fs start`, `mount --detach`) are Unix-only. Windows ARM64 is not built.
+
 ## Configuration
 
 Configure the API URL:
@@ -247,6 +257,9 @@ hindsight document get my-cli-bank "$DOCUMENT_ID"
 # Replace a document's tags
 hindsight document update my-cli-bank "$DOCUMENT_ID" --tags project-x,meetings
 
+# Add or remove single tags, keeping the rest
+hindsight document update my-cli-bank "$DOCUMENT_ID" --add-tags team-c --remove-tags meetings
+
 # Delete document and its memories
 hindsight document delete my-cli-bank "$DOCUMENT_ID"
 ```
@@ -305,61 +318,108 @@ hindsight webhook deliveries my-cli-bank "$WEBHOOK_ID"
 hindsight webhook delete my-cli-bank "$WEBHOOK_ID" -y
 ```
 
-## Knowledge Base
+## Pages
 
-Manage a bank's knowledge pages — living documents organized in a folder tree. See [Knowledge Pages](../developer/api/knowledge-pages.md) for what they are and how they refresh.
+Manage a bank's pages — living documents organized in a folder tree. See [Pages](../developer/api/pages.md) for what they are and how they refresh.
 
 ```bash
 # Show the folder/page tree (pages that have fallen behind are marked stale)
-hindsight knowledge-base tree my-cli-bank
+hindsight pages tree my-cli-bank
 ```
 
 ```bash
 # Create a folder, optionally nested under another
-hindsight knowledge-base create-folder my-cli-bank "Operations"
+hindsight pages create-folder my-cli-bank "Operations"
 ```
 
 ```bash
-hindsight knowledge-base create-folder my-cli-bank "Runbooks" --parent-id "$FOLDER_ID"
+hindsight pages create-folder my-cli-bank "Runbooks" --parent-id "$FOLDER_ID"
 ```
 
 ```bash
 # Create a page — content is generated in the background
-hindsight knowledge-base create-page my-cli-bank \
+hindsight pages create-page my-cli-bank \
   "Deploying the API" \
   "How is the API deployed?" \
   --parent-id "$FOLDER_ID" \
   --tags ops,type:runbook
 
 # Build a page from raw facts instead of the observation-only default
-hindsight knowledge-base create-page my-cli-bank "Recent Incidents" \
+hindsight pages create-page my-cli-bank "Recent Incidents" \
   "What incidents happened recently?" \
   --fact-types experience,world --mode full
 ```
 
 ```bash
 # Read a page as a markdown document
-hindsight knowledge-base get-page my-cli-bank "$PAGE_ID"
+hindsight pages get-page my-cli-bank "$PAGE_ID"
 
 # Hybrid search (full-text + vector) over whole pages
-hindsight knowledge-base search my-cli-bank "how do we deploy" --limit 5
+hindsight pages search my-cli-bank "how do we deploy" --limit 5
 
 # Rename, move, or reconfigure a node
-hindsight knowledge-base update my-cli-bank "$NODE_ID" --name "New name"
-hindsight knowledge-base update my-cli-bank "$PAGE_ID" --source-query "New question?"
+hindsight pages update my-cli-bank "$NODE_ID" --name "New name"
+hindsight pages update my-cli-bank "$PAGE_ID" --source-query "New question?"
 
-# Export the whole knowledge base as a markdown bundle
-hindsight knowledge-base export my-cli-bank
+# Export all pages as a markdown bundle
+hindsight pages export my-cli-bank
 
 # Delete a folder or page and everything under it
-hindsight knowledge-base delete my-cli-bank "$NODE_ID" -y
+hindsight pages delete my-cli-bank "$NODE_ID" -y
 ```
 
 > **💡 Tip**
 >
-`hindsight fs mount --bank <bank_id>` mirrors the same knowledge base onto disk as
+`hindsight fs mount --bank <bank_id>` mirrors the same pages onto disk as
 real markdown files, kept current by a background refresh loop — handy when you'd
 rather use `grep`, `rg`, or your editor than the commands above.
+## Knowledge Banks
+
+Store files and texts as they are and search their passages by meaning, with no memory extraction. See [Knowledge Banks](../developer/knowledge-banks.md) for how ingest and search work, and the [API page](../developer/api/knowledge-banks.md) for every field.
+
+```bash
+# Create a knowledge bank, then upload files or whole folders into it.
+# A file's document id is its path (manuals/x200.pdf -> manuals_x200.pdf),
+# so uploading it again replaces it; --wait returns once it is searchable.
+hindsight kb create my-docs
+hindsight kb ingest my-docs manuals --tags x200 --wait
+
+# Ingest a text (returns once it is searchable); `-` reads it from stdin
+hindsight kb ingest-text my-docs "Return an X200 within 30 days." --document-id returns
+echo "Refunds take five days." | hindsight kb ingest-text my-docs - --document-id refunds
+
+# Search by meaning, with filters
+hindsight kb search my-docs "how long is the warranty?"
+hindsight kb search my-docs "warranty" --tags x200 --media-types text --max-tokens 1024
+
+# Browse documents and tags
+hindsight kb get my-docs
+hindsight kb list-documents my-docs --status ready
+hindsight kb get-document my-docs manuals_warranty.md
+hindsight kb list-tags my-docs
+
+# Download an original file, or one passage's page image or clip
+hindsight kb download my-docs manuals_x200.pdf --out x200-copy.pdf
+hindsight kb passage-media my-docs manuals_x200.pdf 0 --out page-1.png
+
+# Background ingests, like a memory bank's operations
+hindsight kb operation list my-docs
+
+# How files are split: show, override, reset
+hindsight kb config my-docs
+hindsight kb set-config my-docs --set text_passage_tokens=256 --unset pdf_bands
+hindsight kb reset-config my-docs -y
+
+# Let a memory bank's recall and reflect search it
+hindsight bank set-config my-cli-bank --knowledge-banks my-docs
+
+# Delete a document, or the whole bank
+hindsight kb delete-document my-docs refunds
+hindsight kb delete my-docs -y
+```
+
+`kb search` also takes `--image PATH` and `--video PATH` (alone or with a text query) when the server has a multimodal knowledge embedder, plus `--budget`, `--tags-match`, `--tag-groups`, `--document-ids`, `--no-rerank` and `--trace`. Downloads write to `--out PATH`, or to stdout with `--out -`.
+
 ## Audit Logs
 
 Inspect the audit trail for a bank:

@@ -164,29 +164,27 @@ async def retrieve_semantic_bm25_combined_sql(
         updated_range_clause += f" AND updated_at < ${_next_idx}"
         _next_idx += 1
 
-    # --- Semantic UNION ALL arms (one per fact_type) ---
-    # Each arm has its own ORDER BY ... LIMIT, enabling the partial HNSW indexes
-    # per fact_type instead of forcing a full sequential scan.
-    arms = [
-        dialect.build_semantic_arm(
-            table=table,
-            cols=cols,
-            fact_type=ft,
-            embedding_param="$1",
-            bank_id_param="$2",
-            fetch_limit=semantic_fetch,
-            min_similarity=sem_min,
-            tags_clause=tags_clause,
-            groups_clause=groups_clause,
-            extra_where=updated_range_clause,
-        )
-        for ft in fact_types
-    ]
+    # --- Semantic UNION ALL arms (one per fact_type on PostgreSQL) ---
+    # Each PG arm has its own ORDER BY ... LIMIT, enabling the partial HNSW indexes
+    # per fact_type instead of forcing a full sequential scan. Oracle ranks every
+    # fact_type in one scan instead (see OracleDialect.build_semantic_arms).
+    arms = dialect.build_semantic_arms(
+        table=table,
+        cols=cols,
+        fact_types=fact_types,
+        embedding_param="$1",
+        bank_id_param="$2",
+        fetch_limit=semantic_fetch,
+        min_similarity=sem_min,
+        tags_clause=tags_clause,
+        groups_clause=groups_clause,
+        extra_where=updated_range_clause,
+    )
 
     # --- BM25 UNION ALL arms (one per fact_type, only when tokens present) ---
     if _include_bm25:
         text_ext = config.text_search_extension
-        # Shared with knowledge search (search_knowledge_pages) so the two BM25
+        # Shared with page search (search_pages) so the two BM25
         # paths cannot drift apart on query shape again — see build_bm25_query_text.
         bm25_text_param: str = await build_bm25_query_text(
             conn,
@@ -255,21 +253,18 @@ async def retrieve_semantic_bm25_combined_sql(
             if created_before is not None:
                 fb_updated_clause += f" AND updated_at < ${fb_next_idx}"
                 fb_next_idx += 1
-            fb_arms = [
-                dialect.build_semantic_arm(
-                    table=table,
-                    cols=cols,
-                    fact_type=ft,
-                    embedding_param="$1",
-                    bank_id_param="$2",
-                    fetch_limit=semantic_fetch,
-                    min_similarity=sem_min,
-                    tags_clause=fb_tags_clause,
-                    groups_clause=fb_groups_clause,
-                    extra_where=fb_updated_clause,
-                )
-                for ft in fact_types
-            ]
+            fb_arms = dialect.build_semantic_arms(
+                table=table,
+                cols=cols,
+                fact_types=fact_types,
+                embedding_param="$1",
+                bank_id_param="$2",
+                fetch_limit=semantic_fetch,
+                min_similarity=sem_min,
+                tags_clause=fb_tags_clause,
+                groups_clause=fb_groups_clause,
+                extra_where=fb_updated_clause,
+            )
             fb_query = "\nUNION ALL\n".join(fb_arms)
             fb_params: list = [query_emb_str, bank_id]
             if tags:

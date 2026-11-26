@@ -10,11 +10,13 @@ from hindsight_client_api.api.document_transfer_api import DocumentTransferApi
 from hindsight_client_api.api.documents_api import DocumentsApi
 from hindsight_client_api.api.entities_api import EntitiesApi
 from hindsight_client_api.api.files_api import FilesApi
+from hindsight_client_api.api.knowledge_banks_api import KnowledgeBanksApi
 from hindsight_client_api.api.knowledge_base_api import KnowledgeBaseApi
 from hindsight_client_api.api.llm_traces_api import LLMTracesApi
 from hindsight_client_api.api.memory_api import MemoryApi
 from hindsight_client_api.api.mental_models_api import MentalModelsApi
 from hindsight_client_api.api.monitoring_api import MonitoringApi
 from hindsight_client_api.api.operations_api import OperationsApi
+from hindsight_client_api.api.pages_api import PagesApi
 from hindsight_client_api.api.webhooks_api import WebhooksApi
 

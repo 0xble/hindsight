@@ -551,6 +551,12 @@ export type BankStatsResponse = {
    * Total number of observations
    */
   total_observations?: number;
+  /**
+   * Paused Mental Models
+   *
+   * Number of mental models whose last refresh failed, so the automatic triggers (`refresh_after_consolidation`, `refresh_cron`, `full_refresh_cron`) skip them until an explicit refresh succeeds. Their content stops updating, so alert on this being above 0. Each model's `last_refresh_failed_at` says which ones, and its history says why.
+   */
+  paused_mental_models?: number;
 };
 
 /**
@@ -649,13 +655,13 @@ export type BankTemplateConfig = {
   /**
    * Mental Model Refresh Use Decision Model
    *
-   * The same, for knowledge-page refreshes
+   * The same, for page refreshes
    */
   mental_model_refresh_use_decision_model?: boolean | null;
   /**
    * Mental Model Delta Use Decision Model
    *
-   * When the server has a decision model, a delta knowledge-page refresh asks it which new memories could change the page instead of running reflect
+   * When the server has a decision model, a delta page refresh asks it which new memories could change the page instead of running reflect
    */
   mental_model_delta_use_decision_model?: boolean | null;
   /**
@@ -721,6 +727,30 @@ export type BankTemplateConfig = {
    */
   mcp_enabled_tools?: Array<string> | null;
   /**
+   * Mcp Server Instructions
+   *
+   * Instructions sent to MCP clients in the initialize response when they connect to this bank
+   */
+  mcp_server_instructions?: string | null;
+  /**
+   * Knowledge Banks
+   *
+   * Knowledge banks whose passages this bank's reflect reads
+   */
+  knowledge_banks?: Array<string> | null;
+  /**
+   * Reflect Kb Search Media Types
+   *
+   * Media types reflect's knowledge-bank search may return (None = all)
+   */
+  reflect_kb_search_media_types?: Array<"document" | "image" | "audio" | "video" | "text"> | null;
+  /**
+   * Reflect Kb Search Apply Tags
+   *
+   * Filter the knowledge-bank search by the reflect's tags, as its memories are
+   */
+  reflect_kb_search_apply_tags?: boolean | null;
+  /**
    * Consolidation Llm Batch Size
    *
    * LLM batch size for observation consolidation
@@ -777,9 +807,19 @@ export type BankTemplateConfig = {
    */
   reflect_source_facts_max_tokens?: number | null;
   /**
+   * Page Default Trigger
+   *
+   * Trigger fields merged over the built-in page default when a page is created (e.g. {"refresh_cron": "0 * * * *"}). A trigger sent with the create request still wins.
+   */
+  page_default_trigger?: {
+    [key: string]: unknown;
+  } | null;
+  /**
    * Knowledge Page Default Trigger
    *
-   * Trigger fields merged over the built-in knowledge-page default when a page is created (e.g. {"refresh_cron": "0 * * * *"}). A trigger sent with the create request still wins.
+   * Deprecated alias of page_default_trigger. Remove in 2.x.
+   *
+   * @deprecated
    */
   knowledge_page_default_trigger?: {
     [key: string]: unknown;
@@ -787,7 +827,7 @@ export type BankTemplateConfig = {
   /**
    * Reflect Default Options
    *
-   * Default reflect options for this bank (e.g. {"reflect_search_observations_max_tokens": 3000, "reflect_search_observations_include_entities": false}). Applied to every reflect in the bank -- API, MCP and mental-model refresh -- whenever the request (or the model's trigger) leaves the option unset.
+   * Default reflect options for this bank (e.g. {"reflect_search_observations_max_tokens": 3000, "reflect_search_observations_include_entities": false}). Applied to every reflect request in the bank (API and MCP) that leaves the option unset. Mental-model refreshes do not read it: they take these options from their own trigger, defaulted per bank by page_default_trigger.
    */
   reflect_default_options?: {
     [key: string]: unknown;
@@ -879,7 +919,7 @@ export type BankTemplateConfig = {
   /**
    * Default Timezone
    *
-   * IANA zone (e.g. 'Europe/Rome') a retain timestamp, or a time the LLM extracts, is read in when it carries no UTC offset.
+   * IANA zone (e.g. 'Europe/Rome') a retain timestamp, or a time the LLM extracts, is read in when it carries no UTC offset, and the zone the LLM reads memory times in.
    */
   default_timezone?: string | null;
   /**
@@ -1115,7 +1155,7 @@ export type BankTemplateMentalModel = {
   /**
    * Id
    *
-   * Unique ID for the mental model (alphanumeric lowercase with hyphens)
+   * Unique ID for the mental model (same rules as a bank id: at most 192 bytes of UTF-8, no '/' and no control characters)
    */
   id: string;
   /**
@@ -1237,6 +1277,20 @@ export type BodyImportDocuments = {
    * Transfer ZIP archive
    */
   file: Blob | File;
+};
+
+/**
+ * Body_ingest_knowledge_files
+ */
+export type BodyIngestKnowledgeFiles = {
+  /**
+   * Files
+   */
+  files: Array<Blob | File>;
+  /**
+   * Request
+   */
+  request?: string | null;
 };
 
 /**
@@ -1609,7 +1663,7 @@ export type CreateBankAliasRequest = {
   /**
    * Alias
    *
-   * The extra bank id. Same rules as a bank id (non-empty, at most 192 bytes of UTF-8, no control characters, no leading underscore), and it must not already name a bank or another alias.
+   * The extra bank id. Same rules as a bank id (non-empty, at most 192 bytes of UTF-8, no '/', no control characters, no leading underscore), and it must not already name a bank or another alias.
    */
   alias: string;
   /**
@@ -1723,7 +1777,7 @@ export type CreateBankRequest = {
   /**
    * Enable Text Search
    *
-   * Toggle the keyword (BM25) retrieval arm during recall. Disabling leaves pure vector search: the arm is left out of the query entirely rather than filtered to nothing, so none of its cost is paid. Also drops the keyword arm from knowledge-page search.
+   * Toggle the keyword (BM25) retrieval arm during recall. Disabling leaves pure vector search: the arm is left out of the query entirely rather than filtered to nothing, so none of its cost is paid. Also drops the keyword arm from page search.
    */
   enable_text_search?: boolean | null;
   /**
@@ -1801,23 +1855,15 @@ export type CreateFolderRequest = {
 };
 
 /**
- * CreateKnowledgePageResponse
- *
- * Result of creating a page: the node id, its mental model, and the refresh op.
+ * CreateKnowledgeBankRequest
  */
-export type CreateKnowledgePageResponse = {
+export type CreateKnowledgeBankRequest = {
   /**
-   * Page Id
+   * Bank Id
+   *
+   * Id of the new knowledge bank. It shares the id space of memory banks.
    */
-  page_id: string;
-  /**
-   * Mental Model Id
-   */
-  mental_model_id: string;
-  /**
-   * Operation Id
-   */
-  operation_id?: string | null;
+  bank_id: string;
 };
 
 /**
@@ -1829,7 +1875,7 @@ export type CreateMentalModelRequest = {
   /**
    * Id
    *
-   * Optional custom ID for the mental model (alphanumeric lowercase with hyphens)
+   * Optional custom ID for the mental model (same rules as a bank id: at most 192 bytes of UTF-8, no '/' and no control characters)
    */
   id?: string | null;
   /**
@@ -1914,6 +1960,26 @@ export type CreatePageRequest = {
 };
 
 /**
+ * CreatePageResponse
+ *
+ * Result of creating a page: the node id, its mental model, and the refresh op.
+ */
+export type CreatePageResponse = {
+  /**
+   * Page Id
+   */
+  page_id: string;
+  /**
+   * Mental Model Id
+   */
+  mental_model_id: string;
+  /**
+   * Operation Id
+   */
+  operation_id?: string | null;
+};
+
+/**
  * CreateWebhookRequest
  *
  * Request model for registering a webhook.
@@ -1934,7 +2000,7 @@ export type CreateWebhookRequest = {
   /**
    * Event Types
    *
-   * List of event types to deliver. Supported: 'retain.completed', 'consolidation.completed', 'memory_defense.triggered'.
+   * List of event types to deliver. Supported: 'retain.completed', 'consolidation.completed', 'memory_defense.triggered', 'mental_model.refreshed'.
    */
   event_types?: Array<string>;
   /**
@@ -2439,7 +2505,7 @@ export type DocumentEvent = {
  * DocumentEventKind
  *
  * What a change was. A named enum, not a Literal: inline enums are named after their field by
- * the generated Rust client, and ``kind`` already names the knowledge-base node enum there.
+ * the generated Rust client, and ``kind`` already names the page node enum there.
  */
 export type DocumentEventKind =
   | "retain"
@@ -3250,6 +3316,12 @@ export type FeaturesInfo = {
    */
   document_import_api: boolean;
   /**
+   * Knowledge Banks
+   *
+   * Whether knowledge banks are enabled
+   */
+  knowledge_banks?: boolean;
+  /**
    * Audit Log
    *
    * Whether audit logging is enabled by default (overridable per bank)
@@ -3423,169 +3495,288 @@ export type IncludeOptions = {
 export type JsonValue = unknown;
 
 /**
- * KnowledgeNode
- *
- * A node in the knowledge-base tree — a folder or a page.
- *
- * Pages carry ``description``/``tags`` from their backing mental model. The
- * knowledge base is client-managed (CRUD); ``managed`` lets a client tag a node
- * as system-owned vs. hand-authored.
+ * KnowledgeBankConfigResponse
  */
-export type KnowledgeNode = {
+export type KnowledgeBankConfigResponse = {
   /**
-   * Id
+   * Bank Id
    */
-  id: string;
+  bank_id: string;
   /**
-   * Kind
+   * Every per-bank ingest setting as the bank splits files with it: its override, else the server's default.
    */
-  kind: "folder" | "page";
+  config: KnowledgeBankSettings;
   /**
-   * Name
+   * Only the settings this bank overrides.
    */
-  name: string;
+  overrides: KnowledgeBankOverrides;
+};
+
+/**
+ * KnowledgeBankConfigUpdate
+ */
+export type KnowledgeBankConfigUpdate = {
   /**
-   * Parent Id
-   */
-  parent_id?: string | null;
-  /**
-   * Mental Model Id
+   * Updates
    *
-   * Backing mental model id (pages only).
+   * Settings to override (named as in `config`); a null value clears that override. Each change applies to files ingested after it: re-uploading an unchanged file re-splits it.
    */
-  mental_model_id?: string | null;
+  updates: {
+    [key: string]: unknown;
+  };
+};
+
+/**
+ * KnowledgeBankListResponse
+ */
+export type KnowledgeBankListResponse = {
   /**
-   * Managed
-   *
-   * Client-set flag: true = system-owned, false = hand-authored.
+   * Banks
    */
-  managed?: boolean;
+  banks: Array<KnowledgeBankResponse>;
   /**
-   * Description
+   * Total
    *
-   * Page source query (the page's `description`).
+   * Knowledge banks matching `q`, before paging
    */
-  description?: string | null;
+  total: number;
+  /**
+   * Limit
+   */
+  limit: number;
+  /**
+   * Offset
+   */
+  offset: number;
+};
+
+/**
+ * KnowledgeBankOverrides
+ *
+ * What a bank overrides; a field left None follows the server. Strict, so ``"5"`` or ``true``
+ * is not taken for a number.
+ */
+export type KnowledgeBankOverrides = {
+  /**
+   * Text Passage Tokens
+   */
+  text_passage_tokens?: number | null;
+  /**
+   * Pdf Page Pixels
+   */
+  pdf_page_pixels?: number | null;
+  /**
+   * Pdf Bands
+   */
+  pdf_bands?: boolean | null;
+  /**
+   * Image Tokens
+   */
+  image_tokens?: number | null;
+  /**
+   * Audio Window Seconds
+   */
+  audio_window_seconds?: number | null;
+  /**
+   * Video Window Seconds
+   */
+  video_window_seconds?: number | null;
+  /**
+   * Media Overlap Seconds
+   */
+  media_overlap_seconds?: number | null;
+  /**
+   * Max Media Seconds
+   */
+  max_media_seconds?: number | null;
+  /**
+   * Max Pdf Pages
+   */
+  max_pdf_pages?: number | null;
+  /**
+   * Disabled Media Types
+   */
+  disabled_media_types?: Array<"document" | "image" | "audio" | "video" | "text"> | null;
+};
+
+/**
+ * KnowledgeBankResponse
+ */
+export type KnowledgeBankResponse = {
+  /**
+   * Bank Id
+   */
+  bank_id: string;
+  /**
+   * Created At
+   */
+  created_at: string | null;
+  /**
+   * Document Count
+   */
+  document_count: number;
+  /**
+   * Passage Count
+   */
+  passage_count: number;
+  /**
+   * Ready Count
+   */
+  ready_count: number;
+  /**
+   * Pending Count
+   */
+  pending_count: number;
+  /**
+   * Failed Count
+   */
+  failed_count: number;
+  /**
+   * Documents By Media Type
+   */
+  documents_by_media_type: {
+    [key: string]: number;
+  };
+  /**
+   * Last Document At
+   *
+   * When a document was last added or changed; null for an empty bank
+   */
+  last_document_at?: string | null;
+};
+
+/**
+ * KnowledgeBankSettings
+ *
+ * The ingest settings a knowledge bank splits its files with: its overrides, else the server's.
+ */
+export type KnowledgeBankSettings = {
+  /**
+   * Text Passage Tokens
+   */
+  text_passage_tokens: number;
+  /**
+   * Pdf Page Pixels
+   */
+  pdf_page_pixels: number;
+  /**
+   * Pdf Bands
+   */
+  pdf_bands: boolean;
+  /**
+   * Image Tokens
+   */
+  image_tokens: number;
+  /**
+   * Audio Window Seconds
+   */
+  audio_window_seconds: number;
+  /**
+   * Video Window Seconds
+   */
+  video_window_seconds: number;
+  /**
+   * Media Overlap Seconds
+   */
+  media_overlap_seconds: number;
+  /**
+   * Max Media Seconds
+   */
+  max_media_seconds: number;
+  /**
+   * Max Pdf Pages
+   */
+  max_pdf_pages: number;
+  /**
+   * Disabled Media Types
+   */
+  disabled_media_types: Array<"document" | "image" | "audio" | "video" | "text">;
+};
+
+/**
+ * KnowledgeDeletedResponse
+ */
+export type KnowledgeDeletedResponse = {
+  /**
+   * Deleted
+   */
+  deleted?: boolean;
+};
+
+/**
+ * KnowledgeDocumentDetailResponse
+ */
+export type KnowledgeDocumentDetailResponse = {
+  /**
+   * Document Id
+   */
+  document_id: string;
+  /**
+   * Filename
+   */
+  filename: string | null;
+  /**
+   * Content Type
+   */
+  content_type: string;
+  /**
+   * Knowledge Media Type
+   */
+  media_type: "document" | "image" | "audio" | "video" | "text";
+  /**
+   * Size Bytes
+   */
+  size_bytes: number;
+  /**
+   * Knowledge Document Status
+   */
+  status: "pending" | "processing" | "ready" | "failed";
+  /**
+   * Error
+   */
+  error: string | null;
+  /**
+   * Passage Count
+   */
+  passage_count: number;
   /**
    * Tags
    */
-  tags?: Array<string>;
+  tags: Array<string>;
   /**
-   * Timestamp
+   * Created At
+   */
+  created_at: string | null;
+  /**
+   * Updated At
+   */
+  updated_at: string | null;
+  /**
+   * Document Url
    *
-   * Last refresh (page) or last update (folder).
+   * API path that streams the original file.
    */
-  timestamp?: string | null;
+  document_url: string;
   /**
-   * Is Stale
+   * Source Document Id
    *
-   * Pages only, populated by the tree endpoint. True when a memory in *this page's* scope — its tags and fact types — has been written since the page last read the memories. That is the same check a scheduled refresh runs before spending an LLM call, so a flagged page is one a refresh would actually rewrite. Deletions are not observed: removing an in-scope memory leaves no write behind, so it does not raise this flag.
+   * The document a pre-processing strategy split this one out of.
    */
-  is_stale?: boolean | null;
+  source_document_id?: string | null;
   /**
-   * Last Refresh Failed At
-   *
-   * Pages only: when this page's most recent refresh failed, in ISO format, or null when the last one succeeded. While it is set the page does not rebuild itself on its trigger — see the same field on the mental model. An explicit refresh still runs.
+   * Passages
    */
-  last_refresh_failed_at?: string | null;
-  /**
-   * Pages only: the page's refresh settings — when it rebuilds itself (`refresh_after_consolidation` or `refresh_cron`, plus any `full_refresh_cron`), in which mode, and over which facts. This is the EFFECTIVE policy: a setting the page never stored is reported at its default, so compare the fields you care about rather than the whole object against a patch you sent. Absent on folders, which have no backing mental model, and on a page with no trigger stored.
-   */
-  trigger?: MentalModelTriggerOutput | null;
-  /**
-   * Children
-   */
-  children?: Array<KnowledgeNode>;
+  passages: Array<KnowledgePassageResponse>;
 };
 
 /**
- * KnowledgePageBundleFile
- *
- * One file in a portable markdown bundle.
+ * KnowledgeDocumentListResponse
  */
-export type KnowledgePageBundleFile = {
+export type KnowledgeDocumentListResponse = {
   /**
-   * Path
+   * Documents
    */
-  path: string;
-  /**
-   * Content
-   */
-  content: string;
-};
-
-/**
- * KnowledgePageBundleResponse
- *
- * A portable markdown bundle — a flat set of markdown files (index + pages + logs).
- */
-export type KnowledgePageBundleResponse = {
-  /**
-   * Files
-   */
-  files: Array<KnowledgePageBundleFile>;
-};
-
-/**
- * KnowledgePageResponse
- *
- * A knowledge page rendered as a markdown document.
- */
-export type KnowledgePageResponse = {
-  /**
-   * Id
-   */
-  id: string;
-  /**
-   * Name
-   */
-  name: string;
-  /**
-   * Type
-   *
-   * Page type — from a `type:<x>` tag, else 'knowledge-page'.
-   */
-  type: string;
-  /**
-   * Description
-   *
-   * The source query that rebuilds the page.
-   */
-  description?: string | null;
-  /**
-   * Tags
-   */
-  tags?: Array<string>;
-  /**
-   * Timestamp
-   *
-   * Last refresh time (falls back to creation).
-   */
-  timestamp?: string | null;
-  /**
-   * Body
-   *
-   * The page's synthesized markdown body, exactly as stored. Empty until a refresh writes one — unlike `markdown`, which says so in words. Build a UI's own empty state off this field; read `markdown` to show the document itself.
-   */
-  body?: string | null;
-  /**
-   * Markdown
-   *
-   * The full markdown document: YAML frontmatter + markdown body. A page with no body yet renders 'No content yet.' as its body rather than frontmatter alone, which reads as a page that failed to render. The notice is added here on the way out; the stored body in `body` stays empty, and the export bundle keeps the bare document.
-   */
-  markdown: string;
-};
-
-/**
- * KnowledgePageSearchResponse
- *
- * Ranked knowledge-page search results (BM25 + vector, RRF-fused).
- */
-export type KnowledgePageSearchResponse = {
-  /**
-   * Results
-   */
-  results: Array<KnowledgePageSearchResult>;
+  documents: Array<KnowledgeDocumentResponse>;
   /**
    * Total
    */
@@ -3593,57 +3784,679 @@ export type KnowledgePageSearchResponse = {
 };
 
 /**
- * KnowledgePageSearchResult
- *
- * One hybrid-search hit: a knowledge page and its fused relevance score.
+ * KnowledgeDocumentResponse
  */
-export type KnowledgePageSearchResult = {
+export type KnowledgeDocumentResponse = {
   /**
-   * Id
+   * Document Id
    */
-  id: string;
+  document_id: string;
   /**
-   * Name
+   * Filename
    */
-  name: string;
+  filename: string | null;
   /**
-   * Mental Model Id
+   * Content Type
    */
-  mental_model_id?: string | null;
+  content_type: string;
   /**
-   * Source Query
-   *
-   * The question the page answers.
+   * Knowledge Media Type
    */
-  source_query?: string | null;
+  media_type: "document" | "image" | "audio" | "video" | "text";
   /**
-   * Snippet
-   *
-   * The page's opening text. A page whose body is still empty says so in words — 'No content yet.' — rather than coming back blank, so a caller can tell an unwritten page from a page whose snippet simply did not render. The marker is produced on the way out; the stored body stays empty and out of the search index.
+   * Size Bytes
    */
-  snippet: string;
+  size_bytes: number;
   /**
-   * Score
-   *
-   * Rank-fusion score in 0..1, where 1.0 means every search arm placed this page first. It reflects where the page ranked for this query, not how well its text matched, so it is only comparable within one result set.
+   * Knowledge Document Status
    */
-  score: number;
+  status: "pending" | "processing" | "ready" | "failed";
+  /**
+   * Error
+   */
+  error: string | null;
+  /**
+   * Passage Count
+   */
+  passage_count: number;
+  /**
+   * Tags
+   */
+  tags: Array<string>;
+  /**
+   * Created At
+   */
+  created_at: string | null;
   /**
    * Updated At
    */
-  updated_at?: string | null;
+  updated_at: string | null;
+  /**
+   * Document Url
+   *
+   * API path that streams the original file.
+   */
+  document_url: string;
+  /**
+   * Source Document Id
+   *
+   * The document a pre-processing strategy split this one out of.
+   */
+  source_document_id?: string | null;
 };
 
 /**
- * KnowledgeTreeResponse
- *
- * The knowledge base as a nested folder/page tree.
+ * KnowledgeIngestRequest
  */
-export type KnowledgeTreeResponse = {
+export type KnowledgeIngestRequest = {
   /**
-   * Roots
+   * Items
    */
-  roots: Array<KnowledgeNode>;
+  items: Array<KnowledgeIngestTextItem>;
+  /**
+   * Async
+   *
+   * If true, queue each document and return at once (202), as the file ingest always does. If false, return once every document is searchable (default: false).
+   */
+  async?: boolean;
+};
+
+/**
+ * KnowledgeIngestResponse
+ */
+export type KnowledgeIngestResponse = {
+  /**
+   * Document Ids
+   *
+   * Every document ingested, in request order.
+   */
+  document_ids: Array<string>;
+  /**
+   * Operation Ids
+   *
+   * For each document that was queued, the one background operation that processes the whole ingest (the same id for all of them). Empty for a sync ingest.
+   */
+  operation_ids: Array<string>;
+  /**
+   * Unchanged Document Ids
+   *
+   * Documents identical to what is stored: nothing was queued for them.
+   */
+  unchanged_document_ids?: Array<string>;
+};
+
+/**
+ * KnowledgeIngestTextItem
+ */
+export type KnowledgeIngestTextItem = {
+  /**
+   * Document Id
+   *
+   * Stable id; ingesting it again replaces the document.
+   */
+  document_id?: string | null;
+  /**
+   * Text
+   */
+  text: string;
+  /**
+   * Filename
+   *
+   * Defaults to <document_id>.md.
+   */
+  filename?: string | null;
+  /**
+   * Tags
+   */
+  tags?: Array<string>;
+  /**
+   * Strategy
+   *
+   * Ingestion strategy for this item (one of the server's `HINDSIGHT_API_KB_INGEST_STRATEGIES`). Omit it and the server's default applies. A file whose type the strategy does not map is chunked as it is.
+   */
+  strategy?: string | null;
+};
+
+/**
+ * KnowledgePassageResponse
+ */
+export type KnowledgePassageResponse = {
+  /**
+   * Index
+   */
+  index: number;
+  /**
+   * Knowledge Media Type
+   */
+  media_type: "document" | "image" | "audio" | "video" | "text";
+  /**
+   * Text
+   */
+  text?: string | null;
+  /**
+   * Page
+   *
+   * 1-based page number (PDF pages and images).
+   */
+  page?: number | null;
+  /**
+   * Start Ms
+   *
+   * Window start, for audio and video.
+   */
+  start_ms?: number | null;
+  /**
+   * End Ms
+   */
+  end_ms?: number | null;
+  /**
+   * Passage Url
+   *
+   * API path that streams this passage's page image or audio/video clip.
+   */
+  passage_url?: string | null;
+};
+
+/**
+ * KnowledgeSearchRequest
+ */
+export type KnowledgeSearchRequest = {
+  /**
+   * Query
+   *
+   * Text query.
+   */
+  query?: string | null;
+  /**
+   * Query Image
+   *
+   * Base64 image to search with (alone or with text).
+   */
+  query_image?: string | null;
+  /**
+   * Query Video
+   *
+   * Base64 MP4 clip to search with. Text, image and video can be combined: they are embedded together as one query.
+   */
+  query_video?: string | null;
+  /**
+   * Budget
+   *
+   * How deep the search ranks before `max_tokens` picks from it: low is fastest, high reaches the most candidates (as memory-bank recall's budget).
+   */
+  budget?: "low" | "mid" | "high";
+  /**
+   * Max Tokens
+   *
+   * What the results may weigh in all, as the tokens of their text. Hits come best first, each text hit with the passages around it joined into its `text`, as many as fit; the rest of the budget widens the best hits' context. An image, page or clip costs a small fixed amount plus its text.
+   */
+  max_tokens?: number;
+  /**
+   * Tags
+   *
+   * Filter by document tags, matched as memory-bank recall matches memory tags.
+   */
+  tags?: Array<string> | null;
+  /**
+   * Tags Match
+   *
+   * How to match tags: 'any' (OR, includes untagged), 'all' (AND, includes untagged), 'any_strict' (OR, excludes untagged), 'all_strict' (AND, excludes untagged), 'exact' (set-equality, excludes untagged). With 'exact' and no tags (or []), only untagged documents match.
+   */
+  tags_match?: "any" | "all" | "any_strict" | "all_strict" | "exact";
+  /**
+   * Tag Groups
+   *
+   * Compound tag filter using boolean groups, as memory-bank recall takes it. Groups in the list are AND-ed. Each group is a leaf {tags, match} or compound {and: [...]}, {or: [...]}, {not: ...}. A leaf may set resolve='fuzzy' to match its tags against this bank's document tags by trigram similarity.
+   */
+  tag_groups?: Array<TagGroupLeaf | TagGroupAndInput | TagGroupOrInput | TagGroupNotInput> | null;
+  /**
+   * Document Ids
+   */
+  document_ids?: Array<string> | null;
+  /**
+   * Knowledge Media Types
+   */
+  media_types?: Array<"document" | "image" | "audio" | "video" | "text"> | null;
+  /**
+   * Enable Reranking
+   *
+   * false keeps the search's own order; true reranks the best hits when the server has a knowledge reranker (HINDSIGHT_API_KB_RERANKER_URL); without one, true does nothing. Unset follows the server's HINDSIGHT_API_KB_ENABLE_RERANKING (default true).
+   */
+  enable_reranking?: boolean | null;
+  /**
+   * Trace
+   *
+   * Also return how the search ranked and what the token budget kept: every ranked candidate with its score step by step, the keyword words and their weights, and each phase's time.
+   */
+  trace?: boolean;
+};
+
+/**
+ * KnowledgeSearchResponse
+ *
+ * Results best first. Ranks are what a caller compares: scores are fused per query and mean nothing
+ * across responses, so a result does not carry one; ``trace: true`` returns them, step by step.
+ */
+export type KnowledgeSearchResponse = {
+  /**
+   * Results
+   */
+  results: Array<KnowledgeSearchResult>;
+  trace?: KnowledgeSearchTrace | null;
+};
+
+/**
+ * KnowledgeSearchResult
+ */
+export type KnowledgeSearchResult = {
+  /**
+   * Index
+   */
+  index: number;
+  /**
+   * Knowledge Media Type
+   */
+  media_type: "document" | "image" | "audio" | "video" | "text";
+  /**
+   * Text
+   */
+  text?: string | null;
+  /**
+   * Page
+   *
+   * 1-based page number (PDF pages and images).
+   */
+  page?: number | null;
+  /**
+   * Start Ms
+   *
+   * Window start, for audio and video.
+   */
+  start_ms?: number | null;
+  /**
+   * End Ms
+   */
+  end_ms?: number | null;
+  /**
+   * Passage Url
+   *
+   * API path that streams this passage's page image or audio/video clip.
+   */
+  passage_url?: string | null;
+  /**
+   * Document Id
+   */
+  document_id: string;
+  /**
+   * Filename
+   */
+  filename: string | null;
+  /**
+   * Tags
+   */
+  tags: Array<string>;
+  /**
+   * Document Url
+   */
+  document_url: string;
+};
+
+/**
+ * KnowledgeSearchTrace
+ */
+export type KnowledgeSearchTrace = {
+  /**
+   * Budget
+   */
+  budget: "low" | "mid" | "high";
+  /**
+   * Depth
+   *
+   * How many of the scored candidates the budget level keeps for max_tokens
+   */
+  depth: number;
+  /**
+   * Max Tokens
+   */
+  max_tokens: number;
+  /**
+   * Tokens Used
+   *
+   * What the results weigh, in tokens of their text
+   */
+  tokens_used: number;
+  /**
+   * Candidates
+   *
+   * Passages the candidate searches found, before scoring
+   */
+  candidates: number;
+  /**
+   * Keyword Weight
+   *
+   * The keyword score's share of the final score
+   */
+  keyword_weight: number;
+  /**
+   * Keyword Terms
+   *
+   * Each query word the keyword search used, with its IDF; a word less than half as rare (IDF) as the query's rarest word is left out, unless its IDF reaches 2 (in under ~13% of the bank's passages)
+   */
+  keyword_terms: {
+    [key: string]: number;
+  };
+  /**
+   * Timings Ms
+   *
+   * Each phase's time: open_bank, embed, store.search (and its store.* parts), rerank, context
+   */
+  timings_ms: {
+    [key: string]: number;
+  };
+  /**
+   * Candidate Searches
+   *
+   * Step 1: each candidate search's own list
+   */
+  candidate_searches: Array<KnowledgeTraceArm>;
+  /**
+   * Hits
+   *
+   * Steps 2-3: every candidate scored, best first
+   */
+  hits: Array<KnowledgeSearchTraceHit>;
+  /**
+   * Budget Steps
+   *
+   * Step 4: how max_tokens was filled, in order
+   */
+  budget_steps: Array<KnowledgeTraceBudgetStep>;
+};
+
+/**
+ * KnowledgeSearchTraceHit
+ *
+ * One ranked candidate: its score step by step, and what the token budget did with it.
+ */
+export type KnowledgeSearchTraceHit = {
+  /**
+   * Rank
+   *
+   * Its place among all scored candidates, from 1
+   */
+  rank: number;
+  /**
+   * Outcome
+   *
+   * returned: a result of its own; merged: inside a better hit's text (merged_into_rank); over_budget: nothing of it fit in max_tokens; below_depth: ranked past what the budget level keeps
+   */
+  outcome: "returned" | "merged" | "over_budget" | "below_depth";
+  /**
+   * Result Rank
+   *
+   * Its place in `results`, from 1, when returned
+   */
+  result_rank?: number | null;
+  /**
+   * Merged Into Rank
+   *
+   * The rank of the hit whose text holds it
+   */
+  merged_into_rank?: number | null;
+  /**
+   * Document Id
+   */
+  document_id: string;
+  /**
+   * Filename
+   */
+  filename: string | null;
+  /**
+   * Index
+   */
+  index: number;
+  /**
+   * Knowledge Media Type
+   */
+  media_type: "document" | "image" | "audio" | "video" | "text";
+  /**
+   * Page
+   */
+  page?: number | null;
+  /**
+   * Start Ms
+   */
+  start_ms?: number | null;
+  /**
+   * End Ms
+   */
+  end_ms?: number | null;
+  /**
+   * Snippet
+   *
+   * The start of the passage's own text
+   */
+  snippet?: string | null;
+  /**
+   * Score
+   *
+   * The final score it was ranked by; comparable within this search only
+   */
+  score: number;
+  /**
+   * Found By
+   *
+   * The candidate searches that found it: vector, extra_vectors, keyword, document (a text passage of one of the best documents)
+   */
+  found_by: Array<string>;
+  /**
+   * Similarity
+   *
+   * Cosine similarity of the query and the passage's main vector
+   */
+  similarity: number;
+  /**
+   * Roles
+   *
+   * Best similarity of each extra vector (band, page_text, unit, sentence)
+   */
+  roles: {
+    [key: string]: number;
+  };
+  /**
+   * Passage Score
+   *
+   * The similarity with the extra vectors mixed in
+   */
+  passage_score: number;
+  /**
+   * With Document
+   *
+   * Averaged with its document's best passage score
+   */
+  with_document: number;
+  /**
+   * Keyword
+   *
+   * Keyword score: the summed IDF of the query words it contains
+   */
+  keyword: number;
+};
+
+/**
+ * KnowledgeTagItem
+ */
+export type KnowledgeTagItem = {
+  /**
+   * Tag
+   */
+  tag: string;
+  /**
+   * Count
+   *
+   * How many of the bank's documents carry this tag
+   */
+  count: number;
+};
+
+/**
+ * KnowledgeTagsResponse
+ *
+ * One page of a knowledge bank's document tags, most used first (as memory-bank `list_tags`).
+ */
+export type KnowledgeTagsResponse = {
+  /**
+   * Items
+   */
+  items: Array<KnowledgeTagItem>;
+  /**
+   * Total
+   *
+   * Distinct tags matching `q`, past this page too
+   */
+  total: number;
+  /**
+   * Limit
+   */
+  limit: number;
+  /**
+   * Offset
+   */
+  offset: number;
+};
+
+/**
+ * KnowledgeTimeseriesBucket
+ */
+export type KnowledgeTimeseriesBucket = {
+  /**
+   * Time
+   */
+  time: string;
+  /**
+   * Documents
+   *
+   * Documents first written in this bucket.
+   */
+  documents: number;
+  /**
+   * Passages
+   *
+   * Passages those documents hold now.
+   */
+  passages: number;
+};
+
+/**
+ * KnowledgeTimeseriesResponse
+ */
+export type KnowledgeTimeseriesResponse = {
+  /**
+   * Bank Id
+   */
+  bank_id: string;
+  /**
+   * Period
+   */
+  period: "1d" | "7d" | "30d" | "90d";
+  /**
+   * Trunc
+   */
+  trunc: "hour" | "day";
+  /**
+   * Buckets
+   */
+  buckets: Array<KnowledgeTimeseriesBucket>;
+};
+
+/**
+ * KnowledgeTraceArm
+ *
+ * One candidate search, with its own list, best first.
+ */
+export type KnowledgeTraceArm = {
+  /**
+   * Name
+   */
+  name: "vector" | "extra_vectors" | "keyword" | "document";
+  /**
+   * Results
+   */
+  results: Array<KnowledgeTraceArmHit>;
+};
+
+/**
+ * KnowledgeTraceArmHit
+ */
+export type KnowledgeTraceArmHit = {
+  /**
+   * Document Id
+   */
+  document_id: string;
+  /**
+   * Index
+   */
+  index: number;
+  /**
+   * Score
+   *
+   * Its score in this search: cosine similarity, or ts_rank_cd for keywords
+   */
+  score: number;
+};
+
+/**
+ * KnowledgeTraceBudgetStep
+ *
+ * One step of filling max_tokens, in order.
+ */
+export type KnowledgeTraceBudgetStep = {
+  /**
+   * Action
+   *
+   * window: a text hit with its free neighbours; alone: no room for its neighbours; media: an image, page or clip; merged: already inside a better hit's result; widened: leftover budget added a passage to a result (5 at most); skipped: nothing of it fit
+   */
+  action: "window" | "alone" | "media" | "merged" | "widened" | "skipped";
+  /**
+   * Rank
+   *
+   * The candidate's rank
+   */
+  rank: number;
+  /**
+   * Document Id
+   */
+  document_id: string;
+  /**
+   * First
+   *
+   * The window's first passage after this step
+   */
+  first: number;
+  /**
+   * Last
+   *
+   * The window's last passage after this step
+   */
+  last: number;
+  /**
+   * Tokens
+   *
+   * Tokens this step added
+   */
+  tokens: number;
+  /**
+   * Total
+   *
+   * Tokens used after this step
+   */
+  total: number;
+  /**
+   * Into Rank
+   *
+   * For merged: the rank of the hit whose result holds it
+   */
+  into_rank?: number | null;
 };
 
 /**
@@ -3664,6 +4477,12 @@ export type LlmCallTrace = {
    * Execution time in milliseconds
    */
   duration_ms: number;
+  /**
+   * Started At Ms
+   *
+   * When the call started, in Unix epoch milliseconds
+   */
+  started_at_ms?: number;
 };
 
 /**
@@ -4819,6 +5638,7 @@ export type MentalModelDryRunRefreshResult = {
     | "structured_doc_unreadable"
     | "delta_ops_failed"
     | "delta_ops_all_skipped"
+    | "grounding_gone"
     | null;
   /**
    * Outcome
@@ -5056,6 +5876,7 @@ export type MentalModelRefreshTrace = {
     | "structured_doc_unreadable"
     | "delta_ops_failed"
     | "delta_ops_all_skipped"
+    | "grounding_gone"
     | null;
   /**
    * Outcome
@@ -5198,9 +6019,17 @@ export type MentalModelResponse = {
    */
   created_at?: string | null;
   /**
+   * Is Page
+   *
+   * True when this model holds a page's content rather than being a standalone mental model. Set by the list and get endpoints.
+   */
+  is_page?: boolean | null;
+  /**
    * Is Knowledge Page
    *
-   * True when this model holds a knowledge page's content rather than being a standalone mental model. Set by the list and get endpoints.
+   * Deprecated: use is_page.
+   *
+   * @deprecated
    */
   is_knowledge_page?: boolean | null;
   /**
@@ -5320,6 +6149,12 @@ export type MentalModelTraceToolCall = {
    * Agent loop iteration (1-based) this call belongs to.
    */
   iteration?: number;
+  /**
+   * Started At Ms
+   *
+   * When the call started, in Unix epoch milliseconds.
+   */
+  started_at_ms?: number;
 };
 
 /**
@@ -5331,7 +6166,7 @@ export type MentalModelTraceToolCall = {
  * whole document, so it wants its own retrieval and iteration settings. This
  * trigger is therefore the only source for them — a bank's
  * ``reflect_default_options`` deliberately does not reach a refresh. The
- * per-bank default for these fields is ``knowledge_page_default_trigger``,
+ * per-bank default for these fields is ``page_default_trigger``,
  * which is merged over this same shape when a page is created.
  */
 export type MentalModelTriggerInput = {
@@ -5454,7 +6289,7 @@ export type MentalModelTriggerInput = {
  * whole document, so it wants its own retrieval and iteration settings. This
  * trigger is therefore the only source for them — a bank's
  * ``reflect_default_options`` deliberately does not reach a refresh. The
- * per-bank default for these fields is ``knowledge_page_default_trigger``,
+ * per-bank default for these fields is ``page_default_trigger``,
  * which is merged over this same shape when a page is created.
  */
 export type MentalModelTriggerOutput = {
@@ -5616,7 +6451,7 @@ export type MinScores = {
   /**
    * Reranker
    *
-   * Post-query: minimum normalized reranker score (0-1). Applied to every returned result. Rejected with HTTP 400 when the reranker scores by rank position (TypeSafe), since a floor would only keep a fixed share of the results.
+   * Post-query: minimum normalized reranker score (0-1). Applied to every returned result. Rejected with HTTP 400 when the reranker scores by rank position (a decision model, or TypeSafe), since a floor would only keep a fixed share of the results.
    */
   reranker?: number | null;
   /**
@@ -5693,6 +6528,149 @@ export type ObservationScopesResponse = {
    * Offset this page started at
    */
   offset: number;
+};
+
+/**
+ * ObservationTreeFile
+ *
+ * A markdown file in the observation tree: a folder's index.md or one topic (an OKF concept).
+ */
+export type ObservationTreeFile = {
+  /**
+   * Path
+   *
+   * Path from the tree root, e.g. `gemma/vllm.md` or `gemma/index.md`.
+   */
+  path: string;
+  /**
+   * Name
+   */
+  name: string;
+  /**
+   * `index`: a folder's overview (OKF's reserved `index.md`) and best-supported observations. `topic`: every observation in one topic.
+   */
+  kind: ObservationTreeFileKind;
+  /**
+   * Title
+   */
+  title: string;
+  /**
+   * Observation Count
+   *
+   * Observations in the topic, or in the whole folder for an index.
+   */
+  observation_count: number;
+  /**
+   * About
+   *
+   * The entities that set this topic apart from its siblings.
+   */
+  about: Array<string>;
+  /**
+   * Related
+   *
+   * Paths of related topic files elsewhere in the tree.
+   */
+  related: Array<string>;
+  /**
+   * Observations
+   *
+   * What the file lists, best-supported first.
+   */
+  observations: Array<ObservationTreeObservation>;
+  /**
+   * Content
+   *
+   * The same file as markdown, with dates and source counts on every line.
+   */
+  content: string;
+};
+
+/**
+ * ObservationTreeFileKind
+ *
+ * What a observation-tree file is. A named enum, not a Literal: inline enums are named after
+ * their field by the generated Rust client, and ``kind`` already names the page node enum
+ * there (an inline ``kind`` here took the name and broke the CLI's ``Kind::Folder``).
+ */
+export type ObservationTreeFileKind = "index" | "topic";
+
+/**
+ * ObservationTreeFolder
+ *
+ * A topic folder in the observation tree.
+ */
+export type ObservationTreeFolder = {
+  /**
+   * Path
+   *
+   * Path from the tree root; empty for the root.
+   */
+  path: string;
+  /**
+   * Name
+   */
+  name: string;
+  /**
+   * Title
+   *
+   * Human-readable topic name.
+   */
+  title: string;
+  /**
+   * Observation Count
+   */
+  observation_count: number;
+  /**
+   * Folders
+   */
+  folders: Array<ObservationTreeFolder>;
+  /**
+   * Files
+   */
+  files: Array<ObservationTreeFile>;
+};
+
+/**
+ * ObservationTreeObservation
+ *
+ * An observation as the observation tree lists it.
+ */
+export type ObservationTreeObservation = {
+  /**
+   * Id
+   */
+  id: string;
+  /**
+   * Text
+   */
+  text: string;
+  /**
+   * Proof Count
+   *
+   * How many source memories back it.
+   */
+  proof_count: number;
+  /**
+   * Occurred Start
+   */
+  occurred_start?: string | null;
+  /**
+   * Occurred End
+   */
+  occurred_end?: string | null;
+  /**
+   * Mentioned At
+   */
+  mentioned_at?: string | null;
+  /**
+   * Updated At
+   */
+  updated_at?: string | null;
+  /**
+   * Tags
+   */
+  tags: Array<string>;
 };
 
 /**
@@ -5979,6 +6957,230 @@ export type OperationsListResponse = {
    * Operations
    */
   operations: Array<OperationResponse>;
+};
+
+/**
+ * PageBundleFile
+ *
+ * One file in a portable markdown bundle.
+ */
+export type PageBundleFile = {
+  /**
+   * Path
+   */
+  path: string;
+  /**
+   * Content
+   */
+  content: string;
+};
+
+/**
+ * PageBundleResponse
+ *
+ * A portable markdown bundle — a flat set of markdown files (index + pages + logs).
+ */
+export type PageBundleResponse = {
+  /**
+   * Files
+   */
+  files: Array<PageBundleFile>;
+};
+
+/**
+ * PageNode
+ *
+ * A node in the page tree — a folder or a page.
+ *
+ * Pages carry ``description``/``tags`` from their backing mental model. The
+ * pages is client-managed (CRUD); ``managed`` lets a client tag a node
+ * as system-owned vs. hand-authored.
+ */
+export type PageNode = {
+  /**
+   * Id
+   */
+  id: string;
+  /**
+   * Kind
+   */
+  kind: "folder" | "page";
+  /**
+   * Name
+   */
+  name: string;
+  /**
+   * Parent Id
+   */
+  parent_id?: string | null;
+  /**
+   * Mental Model Id
+   *
+   * Backing mental model id (pages only).
+   */
+  mental_model_id?: string | null;
+  /**
+   * Managed
+   *
+   * Client-set flag: true = system-owned, false = hand-authored.
+   */
+  managed?: boolean;
+  /**
+   * Description
+   *
+   * Page source query (the page's `description`).
+   */
+  description?: string | null;
+  /**
+   * Tags
+   */
+  tags?: Array<string>;
+  /**
+   * Timestamp
+   *
+   * Last refresh (page) or last update (folder).
+   */
+  timestamp?: string | null;
+  /**
+   * Is Stale
+   *
+   * Pages only, populated by the tree endpoint. True when a memory in *this page's* scope — its tags and fact types — has been written since the page last read the memories. That is the same check a scheduled refresh runs before spending an LLM call, so a flagged page is one a refresh would actually rewrite. Deletions are not observed: removing an in-scope memory leaves no write behind, so it does not raise this flag.
+   */
+  is_stale?: boolean | null;
+  /**
+   * Last Refresh Failed At
+   *
+   * Pages only: when this page's most recent refresh failed, in ISO format, or null when the last one succeeded. While it is set the page does not rebuild itself on its trigger — see the same field on the mental model. An explicit refresh still runs.
+   */
+  last_refresh_failed_at?: string | null;
+  /**
+   * Pages only: the page's refresh settings — when it rebuilds itself (`refresh_after_consolidation` or `refresh_cron`, plus any `full_refresh_cron`), in which mode, and over which facts. This is the EFFECTIVE policy: a setting the page never stored is reported at its default, so compare the fields you care about rather than the whole object against a patch you sent. Absent on folders, which have no backing mental model, and on a page with no trigger stored.
+   */
+  trigger?: MentalModelTriggerOutput | null;
+  /**
+   * Children
+   */
+  children?: Array<PageNode>;
+};
+
+/**
+ * PageResponse
+ *
+ * A page rendered as a markdown document.
+ */
+export type PageResponse = {
+  /**
+   * Id
+   */
+  id: string;
+  /**
+   * Name
+   */
+  name: string;
+  /**
+   * Type
+   *
+   * Page type — from a `type:<x>` tag, else 'page'.
+   */
+  type: string;
+  /**
+   * Description
+   *
+   * The source query that rebuilds the page.
+   */
+  description?: string | null;
+  /**
+   * Tags
+   */
+  tags?: Array<string>;
+  /**
+   * Timestamp
+   *
+   * Last refresh time (falls back to creation).
+   */
+  timestamp?: string | null;
+  /**
+   * Body
+   *
+   * The page's synthesized markdown body, exactly as stored. Empty until a refresh writes one — unlike `markdown`, which says so in words. Build a UI's own empty state off this field; read `markdown` to show the document itself.
+   */
+  body?: string | null;
+  /**
+   * Markdown
+   *
+   * The full markdown document: YAML frontmatter + markdown body. A page with no body yet renders 'No content yet.' as its body rather than frontmatter alone, which reads as a page that failed to render. The notice is added here on the way out; the stored body in `body` stays empty, and the export bundle keeps the bare document.
+   */
+  markdown: string;
+};
+
+/**
+ * PageSearchResponse
+ *
+ * Ranked page search results (BM25 + vector, RRF-fused).
+ */
+export type PageSearchResponse = {
+  /**
+   * Results
+   */
+  results: Array<PageSearchResult>;
+  /**
+   * Total
+   */
+  total: number;
+};
+
+/**
+ * PageSearchResult
+ *
+ * One hybrid-search hit: a page and its fused relevance score.
+ */
+export type PageSearchResult = {
+  /**
+   * Id
+   */
+  id: string;
+  /**
+   * Name
+   */
+  name: string;
+  /**
+   * Mental Model Id
+   */
+  mental_model_id?: string | null;
+  /**
+   * Source Query
+   *
+   * The question the page answers.
+   */
+  source_query?: string | null;
+  /**
+   * Snippet
+   *
+   * The page's opening text. A page whose body is still empty says so in words — 'No content yet.' — rather than coming back blank, so a caller can tell an unwritten page from a page whose snippet simply did not render. The marker is produced on the way out; the stored body stays empty and out of the search index.
+   */
+  snippet: string;
+  /**
+   * Score
+   *
+   * Rank-fusion score in 0..1, where 1.0 means every search arm placed this page first. It reflects where the page ranked for this query, not how well its text matched, so it is only comparable within one result set.
+   */
+  score: number;
+  /**
+   * Updated At
+   */
+  updated_at?: string | null;
+};
+
+/**
+ * PageTreeResponse
+ *
+ * The pages as a nested folder/page tree.
+ */
+export type PageTreeResponse = {
+  /**
+   * Roots
+   */
+  roots: Array<PageNode>;
 };
 
 /**
@@ -6545,6 +7747,12 @@ export type ReflectLlmCall = {
    * Execution time in milliseconds
    */
   duration_ms: number;
+  /**
+   * Started At Ms
+   *
+   * When the call started, in Unix epoch milliseconds
+   */
+  started_at_ms?: number;
 };
 
 /**
@@ -6752,6 +7960,12 @@ export type ReflectToolCall = {
    * Iteration number (1-based) when this tool was called
    */
   iteration?: number;
+  /**
+   * Started At Ms
+   *
+   * When the call started, in Unix epoch milliseconds
+   */
+  started_at_ms?: number;
 };
 
 /**
@@ -6807,6 +8021,7 @@ export type RefreshMentalModelOperationDetails = {
     | "refresh_failed_empty_candidate"
     | "refresh_failed_delta_not_applied"
     | "refresh_failed_structured_output"
+    | "refresh_failed_candidate_rejected"
     | "refresh_failed_error";
   /**
    * Failure Reason
@@ -6820,6 +8035,7 @@ export type RefreshMentalModelOperationDetails = {
     | "delta_ops_all_skipped"
     | "delta_not_applied"
     | "structured_output_failed"
+    | "candidate_rejected"
     | "retrieval_failed"
     | "no_answer"
     | "unexpected_error"
@@ -7400,9 +8616,21 @@ export type UpdateDocumentRequest = {
   /**
    * Tags
    *
-   * The complete new set of tags for the document and its memory units — this REPLACES the existing tags rather than adding to them, so omitting a tag drops it and `[]` clears them all. Triggers observation invalidation and re-consolidation.
+   * The complete new set of tags for the document and its memory units — this REPLACES the existing tags rather than adding to them, so omitting a tag drops it and `[]` clears them all. Triggers observation invalidation and re-consolidation. To change only some tags, use `add_tags` / `remove_tags` instead.
    */
   tags?: Array<string> | null;
+  /**
+   * Add Tags
+   *
+   * Tags to add to the document, keeping the ones it has. Cannot be combined with `tags`.
+   */
+  add_tags?: Array<string> | null;
+  /**
+   * Remove Tags
+   *
+   * Tags to remove from the document, keeping the rest (applied before `add_tags`). Cannot be combined with `tags`. Tags a memory carries from an entity label group with `tag: true` stay on that memory.
+   */
+  remove_tags?: Array<string> | null;
   /**
    * UpdateDocumentObservationScopes
    *
@@ -7848,6 +9076,970 @@ export type WebhookResponse = {
   updated_at?: string | null;
 };
 
+export type ListKnowledgeBanksData = {
+  body?: never;
+  headers?: {
+    /**
+     * Authorization
+     */
+    authorization?: string | null;
+  };
+  path?: never;
+  query?: {
+    /**
+     * Limit
+     *
+     * Maximum number of knowledge banks to return. Values above 1000 are trimmed to 1000.
+     */
+    limit?: number;
+    /**
+     * Offset
+     */
+    offset?: number;
+    /**
+     * Q
+     *
+     * Part of the bank id, case-insensitive
+     */
+    q?: string | null;
+  };
+  url: "/v1/default/knowledge-banks";
+};
+
+export type ListKnowledgeBanksErrors = {
+  /**
+   * Validation Error
+   */
+  422: HttpValidationError;
+};
+
+export type ListKnowledgeBanksError = ListKnowledgeBanksErrors[keyof ListKnowledgeBanksErrors];
+
+export type ListKnowledgeBanksResponses = {
+  /**
+   * Successful Response
+   */
+  200: KnowledgeBankListResponse;
+};
+
+export type ListKnowledgeBanksResponse =
+  ListKnowledgeBanksResponses[keyof ListKnowledgeBanksResponses];
+
+export type CreateKnowledgeBankData = {
+  body: CreateKnowledgeBankRequest;
+  headers?: {
+    /**
+     * Authorization
+     */
+    authorization?: string | null;
+  };
+  path?: never;
+  query?: never;
+  url: "/v1/default/knowledge-banks";
+};
+
+export type CreateKnowledgeBankErrors = {
+  /**
+   * Validation Error
+   */
+  422: HttpValidationError;
+};
+
+export type CreateKnowledgeBankError = CreateKnowledgeBankErrors[keyof CreateKnowledgeBankErrors];
+
+export type CreateKnowledgeBankResponses = {
+  /**
+   * Successful Response
+   */
+  200: KnowledgeBankResponse;
+};
+
+export type CreateKnowledgeBankResponse =
+  CreateKnowledgeBankResponses[keyof CreateKnowledgeBankResponses];
+
+export type DeleteKnowledgeBankData = {
+  body?: never;
+  headers?: {
+    /**
+     * Authorization
+     */
+    authorization?: string | null;
+  };
+  path: {
+    /**
+     * Bank Id
+     */
+    bank_id: string;
+  };
+  query?: never;
+  url: "/v1/default/knowledge-banks/{bank_id}";
+};
+
+export type DeleteKnowledgeBankErrors = {
+  /**
+   * Validation Error
+   */
+  422: HttpValidationError;
+};
+
+export type DeleteKnowledgeBankError = DeleteKnowledgeBankErrors[keyof DeleteKnowledgeBankErrors];
+
+export type DeleteKnowledgeBankResponses = {
+  /**
+   * Successful Response
+   */
+  200: KnowledgeDeletedResponse;
+};
+
+export type DeleteKnowledgeBankResponse =
+  DeleteKnowledgeBankResponses[keyof DeleteKnowledgeBankResponses];
+
+export type GetKnowledgeBankData = {
+  body?: never;
+  headers?: {
+    /**
+     * Authorization
+     */
+    authorization?: string | null;
+  };
+  path: {
+    /**
+     * Bank Id
+     */
+    bank_id: string;
+  };
+  query?: never;
+  url: "/v1/default/knowledge-banks/{bank_id}";
+};
+
+export type GetKnowledgeBankErrors = {
+  /**
+   * Validation Error
+   */
+  422: HttpValidationError;
+};
+
+export type GetKnowledgeBankError = GetKnowledgeBankErrors[keyof GetKnowledgeBankErrors];
+
+export type GetKnowledgeBankResponses = {
+  /**
+   * Successful Response
+   */
+  200: KnowledgeBankResponse;
+};
+
+export type GetKnowledgeBankResponse = GetKnowledgeBankResponses[keyof GetKnowledgeBankResponses];
+
+export type ResetKnowledgeBankConfigData = {
+  body?: never;
+  headers?: {
+    /**
+     * Authorization
+     */
+    authorization?: string | null;
+  };
+  path: {
+    /**
+     * Bank Id
+     */
+    bank_id: string;
+  };
+  query?: never;
+  url: "/v1/default/knowledge-banks/{bank_id}/config";
+};
+
+export type ResetKnowledgeBankConfigErrors = {
+  /**
+   * Validation Error
+   */
+  422: HttpValidationError;
+};
+
+export type ResetKnowledgeBankConfigError =
+  ResetKnowledgeBankConfigErrors[keyof ResetKnowledgeBankConfigErrors];
+
+export type ResetKnowledgeBankConfigResponses = {
+  /**
+   * Successful Response
+   */
+  200: KnowledgeBankConfigResponse;
+};
+
+export type ResetKnowledgeBankConfigResponse =
+  ResetKnowledgeBankConfigResponses[keyof ResetKnowledgeBankConfigResponses];
+
+export type GetKnowledgeBankConfigData = {
+  body?: never;
+  headers?: {
+    /**
+     * Authorization
+     */
+    authorization?: string | null;
+  };
+  path: {
+    /**
+     * Bank Id
+     */
+    bank_id: string;
+  };
+  query?: never;
+  url: "/v1/default/knowledge-banks/{bank_id}/config";
+};
+
+export type GetKnowledgeBankConfigErrors = {
+  /**
+   * Validation Error
+   */
+  422: HttpValidationError;
+};
+
+export type GetKnowledgeBankConfigError =
+  GetKnowledgeBankConfigErrors[keyof GetKnowledgeBankConfigErrors];
+
+export type GetKnowledgeBankConfigResponses = {
+  /**
+   * Successful Response
+   */
+  200: KnowledgeBankConfigResponse;
+};
+
+export type GetKnowledgeBankConfigResponse =
+  GetKnowledgeBankConfigResponses[keyof GetKnowledgeBankConfigResponses];
+
+export type UpdateKnowledgeBankConfigData = {
+  body: KnowledgeBankConfigUpdate;
+  headers?: {
+    /**
+     * Authorization
+     */
+    authorization?: string | null;
+  };
+  path: {
+    /**
+     * Bank Id
+     */
+    bank_id: string;
+  };
+  query?: never;
+  url: "/v1/default/knowledge-banks/{bank_id}/config";
+};
+
+export type UpdateKnowledgeBankConfigErrors = {
+  /**
+   * Validation Error
+   */
+  422: HttpValidationError;
+};
+
+export type UpdateKnowledgeBankConfigError =
+  UpdateKnowledgeBankConfigErrors[keyof UpdateKnowledgeBankConfigErrors];
+
+export type UpdateKnowledgeBankConfigResponses = {
+  /**
+   * Successful Response
+   */
+  200: KnowledgeBankConfigResponse;
+};
+
+export type UpdateKnowledgeBankConfigResponse =
+  UpdateKnowledgeBankConfigResponses[keyof UpdateKnowledgeBankConfigResponses];
+
+export type GetKnowledgeBankTimeseriesData = {
+  body?: never;
+  headers?: {
+    /**
+     * Authorization
+     */
+    authorization?: string | null;
+  };
+  path: {
+    /**
+     * Bank Id
+     */
+    bank_id: string;
+  };
+  query?: {
+    /**
+     * Period
+     */
+    period?: "1d" | "7d" | "30d" | "90d";
+    /**
+     * Media Type
+     *
+     * Only documents of this media type.
+     */
+    media_type?: "document" | "image" | "audio" | "video" | "text" | null;
+  };
+  url: "/v1/default/knowledge-banks/{bank_id}/stats/timeseries";
+};
+
+export type GetKnowledgeBankTimeseriesErrors = {
+  /**
+   * Validation Error
+   */
+  422: HttpValidationError;
+};
+
+export type GetKnowledgeBankTimeseriesError =
+  GetKnowledgeBankTimeseriesErrors[keyof GetKnowledgeBankTimeseriesErrors];
+
+export type GetKnowledgeBankTimeseriesResponses = {
+  /**
+   * Successful Response
+   */
+  200: KnowledgeTimeseriesResponse;
+};
+
+export type GetKnowledgeBankTimeseriesResponse =
+  GetKnowledgeBankTimeseriesResponses[keyof GetKnowledgeBankTimeseriesResponses];
+
+export type IngestKnowledgeFilesData = {
+  body: BodyIngestKnowledgeFiles;
+  headers?: {
+    /**
+     * Authorization
+     */
+    authorization?: string | null;
+  };
+  path: {
+    /**
+     * Bank Id
+     */
+    bank_id: string;
+  };
+  query?: never;
+  url: "/v1/default/knowledge-banks/{bank_id}/files/ingest";
+};
+
+export type IngestKnowledgeFilesErrors = {
+  /**
+   * Validation Error
+   */
+  422: HttpValidationError;
+};
+
+export type IngestKnowledgeFilesError =
+  IngestKnowledgeFilesErrors[keyof IngestKnowledgeFilesErrors];
+
+export type IngestKnowledgeFilesResponses = {
+  /**
+   * Successful Response
+   */
+  202: KnowledgeIngestResponse;
+};
+
+export type IngestKnowledgeFilesResponse =
+  IngestKnowledgeFilesResponses[keyof IngestKnowledgeFilesResponses];
+
+export type IngestKnowledgeTextsData = {
+  body: KnowledgeIngestRequest;
+  headers?: {
+    /**
+     * Authorization
+     */
+    authorization?: string | null;
+  };
+  path: {
+    /**
+     * Bank Id
+     */
+    bank_id: string;
+  };
+  query?: never;
+  url: "/v1/default/knowledge-banks/{bank_id}/ingest";
+};
+
+export type IngestKnowledgeTextsErrors = {
+  /**
+   * Validation Error
+   */
+  422: HttpValidationError;
+};
+
+export type IngestKnowledgeTextsError =
+  IngestKnowledgeTextsErrors[keyof IngestKnowledgeTextsErrors];
+
+export type IngestKnowledgeTextsResponses = {
+  /**
+   * Successful Response
+   */
+  200: KnowledgeIngestResponse;
+  /**
+   * Queued (`async: true`)
+   */
+  202: KnowledgeIngestResponse;
+};
+
+export type IngestKnowledgeTextsResponse =
+  IngestKnowledgeTextsResponses[keyof IngestKnowledgeTextsResponses];
+
+export type ListKnowledgeDocumentsData = {
+  body?: never;
+  headers?: {
+    /**
+     * Authorization
+     */
+    authorization?: string | null;
+  };
+  path: {
+    /**
+     * Bank Id
+     */
+    bank_id: string;
+  };
+  query?: {
+    /**
+     * Limit
+     *
+     * Maximum number of documents to return. Values above 500 are trimmed to 500.
+     */
+    limit?: number;
+    /**
+     * Offset
+     */
+    offset?: number;
+    /**
+     * Q
+     *
+     * Substring of the id or filename.
+     */
+    q?: string | null;
+    /**
+     * Status
+     */
+    status?: string | null;
+    /**
+     * Media Type
+     */
+    media_type?: string | null;
+    /**
+     * Tags
+     */
+    tags?: Array<string> | null;
+  };
+  url: "/v1/default/knowledge-banks/{bank_id}/documents";
+};
+
+export type ListKnowledgeDocumentsErrors = {
+  /**
+   * Validation Error
+   */
+  422: HttpValidationError;
+};
+
+export type ListKnowledgeDocumentsError =
+  ListKnowledgeDocumentsErrors[keyof ListKnowledgeDocumentsErrors];
+
+export type ListKnowledgeDocumentsResponses = {
+  /**
+   * Successful Response
+   */
+  200: KnowledgeDocumentListResponse;
+};
+
+export type ListKnowledgeDocumentsResponse =
+  ListKnowledgeDocumentsResponses[keyof ListKnowledgeDocumentsResponses];
+
+export type DeleteKnowledgeDocumentData = {
+  body?: never;
+  headers?: {
+    /**
+     * Authorization
+     */
+    authorization?: string | null;
+  };
+  path: {
+    /**
+     * Bank Id
+     */
+    bank_id: string;
+    /**
+     * Document Id
+     */
+    document_id: string;
+  };
+  query?: never;
+  url: "/v1/default/knowledge-banks/{bank_id}/documents/{document_id}";
+};
+
+export type DeleteKnowledgeDocumentErrors = {
+  /**
+   * Validation Error
+   */
+  422: HttpValidationError;
+};
+
+export type DeleteKnowledgeDocumentError =
+  DeleteKnowledgeDocumentErrors[keyof DeleteKnowledgeDocumentErrors];
+
+export type DeleteKnowledgeDocumentResponses = {
+  /**
+   * Successful Response
+   */
+  200: KnowledgeDeletedResponse;
+};
+
+export type DeleteKnowledgeDocumentResponse =
+  DeleteKnowledgeDocumentResponses[keyof DeleteKnowledgeDocumentResponses];
+
+export type GetKnowledgeDocumentData = {
+  body?: never;
+  headers?: {
+    /**
+     * Authorization
+     */
+    authorization?: string | null;
+  };
+  path: {
+    /**
+     * Bank Id
+     */
+    bank_id: string;
+    /**
+     * Document Id
+     */
+    document_id: string;
+  };
+  query?: never;
+  url: "/v1/default/knowledge-banks/{bank_id}/documents/{document_id}";
+};
+
+export type GetKnowledgeDocumentErrors = {
+  /**
+   * Validation Error
+   */
+  422: HttpValidationError;
+};
+
+export type GetKnowledgeDocumentError =
+  GetKnowledgeDocumentErrors[keyof GetKnowledgeDocumentErrors];
+
+export type GetKnowledgeDocumentResponses = {
+  /**
+   * Successful Response
+   */
+  200: KnowledgeDocumentDetailResponse;
+};
+
+export type GetKnowledgeDocumentResponse =
+  GetKnowledgeDocumentResponses[keyof GetKnowledgeDocumentResponses];
+
+export type ListKnowledgeBankOperationsData = {
+  body?: never;
+  headers?: {
+    /**
+     * Authorization
+     */
+    authorization?: string | null;
+  };
+  path: {
+    /**
+     * Bank Id
+     */
+    bank_id: string;
+  };
+  query?: {
+    /**
+     * Status
+     *
+     * Filter by status: pending, processing, completed, failed, or cancelled
+     */
+    status?: string | null;
+    /**
+     * Type
+     *
+     * Filter by operation type
+     */
+    type?: string | null;
+    /**
+     * Limit
+     *
+     * Maximum number of operations to return. Values above 100 are trimmed to 100.
+     */
+    limit?: number;
+    /**
+     * Offset
+     */
+    offset?: number;
+    /**
+     * Exclude Parents
+     *
+     * Exclude parent batch operations from results
+     */
+    exclude_parents?: boolean;
+  };
+  url: "/v1/default/knowledge-banks/{bank_id}/operations";
+};
+
+export type ListKnowledgeBankOperationsErrors = {
+  /**
+   * Validation Error
+   */
+  422: HttpValidationError;
+};
+
+export type ListKnowledgeBankOperationsError =
+  ListKnowledgeBankOperationsErrors[keyof ListKnowledgeBankOperationsErrors];
+
+export type ListKnowledgeBankOperationsResponses = {
+  /**
+   * Successful Response
+   */
+  200: OperationsListResponse;
+};
+
+export type ListKnowledgeBankOperationsResponse =
+  ListKnowledgeBankOperationsResponses[keyof ListKnowledgeBankOperationsResponses];
+
+export type CancelKnowledgeBankOperationData = {
+  body?: never;
+  headers?: {
+    /**
+     * Authorization
+     */
+    authorization?: string | null;
+  };
+  path: {
+    /**
+     * Bank Id
+     */
+    bank_id: string;
+    /**
+     * Operation Id
+     */
+    operation_id: string;
+  };
+  query?: never;
+  url: "/v1/default/knowledge-banks/{bank_id}/operations/{operation_id}";
+};
+
+export type CancelKnowledgeBankOperationErrors = {
+  /**
+   * Validation Error
+   */
+  422: HttpValidationError;
+};
+
+export type CancelKnowledgeBankOperationError =
+  CancelKnowledgeBankOperationErrors[keyof CancelKnowledgeBankOperationErrors];
+
+export type CancelKnowledgeBankOperationResponses = {
+  /**
+   * Successful Response
+   */
+  200: CancelOperationResponse;
+};
+
+export type CancelKnowledgeBankOperationResponse =
+  CancelKnowledgeBankOperationResponses[keyof CancelKnowledgeBankOperationResponses];
+
+export type GetKnowledgeBankOperationData = {
+  body?: never;
+  headers?: {
+    /**
+     * Authorization
+     */
+    authorization?: string | null;
+  };
+  path: {
+    /**
+     * Bank Id
+     */
+    bank_id: string;
+    /**
+     * Operation Id
+     */
+    operation_id: string;
+  };
+  query?: {
+    /**
+     * Include Payload
+     *
+     * Include the raw task payload in the response.
+     */
+    include_payload?: boolean;
+  };
+  url: "/v1/default/knowledge-banks/{bank_id}/operations/{operation_id}";
+};
+
+export type GetKnowledgeBankOperationErrors = {
+  /**
+   * Validation Error
+   */
+  422: HttpValidationError;
+};
+
+export type GetKnowledgeBankOperationError =
+  GetKnowledgeBankOperationErrors[keyof GetKnowledgeBankOperationErrors];
+
+export type GetKnowledgeBankOperationResponses = {
+  /**
+   * Successful Response
+   */
+  200: OperationStatusResponse;
+};
+
+export type GetKnowledgeBankOperationResponse =
+  GetKnowledgeBankOperationResponses[keyof GetKnowledgeBankOperationResponses];
+
+export type RetryKnowledgeBankOperationData = {
+  body?: never;
+  headers?: {
+    /**
+     * Authorization
+     */
+    authorization?: string | null;
+  };
+  path: {
+    /**
+     * Bank Id
+     */
+    bank_id: string;
+    /**
+     * Operation Id
+     */
+    operation_id: string;
+  };
+  query?: never;
+  url: "/v1/default/knowledge-banks/{bank_id}/operations/{operation_id}/retry";
+};
+
+export type RetryKnowledgeBankOperationErrors = {
+  /**
+   * Validation Error
+   */
+  422: HttpValidationError;
+};
+
+export type RetryKnowledgeBankOperationError =
+  RetryKnowledgeBankOperationErrors[keyof RetryKnowledgeBankOperationErrors];
+
+export type RetryKnowledgeBankOperationResponses = {
+  /**
+   * Successful Response
+   */
+  200: RetryOperationResponse;
+};
+
+export type RetryKnowledgeBankOperationResponse =
+  RetryKnowledgeBankOperationResponses[keyof RetryKnowledgeBankOperationResponses];
+
+export type DeleteKnowledgeBankOperationData = {
+  body?: never;
+  headers?: {
+    /**
+     * Authorization
+     */
+    authorization?: string | null;
+  };
+  path: {
+    /**
+     * Bank Id
+     */
+    bank_id: string;
+    /**
+     * Operation Id
+     */
+    operation_id: string;
+  };
+  query?: never;
+  url: "/v1/default/knowledge-banks/{bank_id}/operations/{operation_id}/delete";
+};
+
+export type DeleteKnowledgeBankOperationErrors = {
+  /**
+   * Validation Error
+   */
+  422: HttpValidationError;
+};
+
+export type DeleteKnowledgeBankOperationError =
+  DeleteKnowledgeBankOperationErrors[keyof DeleteKnowledgeBankOperationErrors];
+
+export type DeleteKnowledgeBankOperationResponses = {
+  /**
+   * Successful Response
+   */
+  200: DeleteOperationResponse;
+};
+
+export type DeleteKnowledgeBankOperationResponse =
+  DeleteKnowledgeBankOperationResponses[keyof DeleteKnowledgeBankOperationResponses];
+
+export type ListKnowledgeBankTagsData = {
+  body?: never;
+  headers?: {
+    /**
+     * Authorization
+     */
+    authorization?: string | null;
+  };
+  path: {
+    /**
+     * Bank Id
+     */
+    bank_id: string;
+  };
+  query?: {
+    /**
+     * Q
+     *
+     * Wildcard pattern to filter tags (e.g. 'team:*'). Use '*' as wildcard. Case-insensitive.
+     */
+    q?: string | null;
+    /**
+     * Limit
+     *
+     * Maximum number of tags to return. Values above 1000 are trimmed to 1000.
+     */
+    limit?: number;
+    /**
+     * Offset
+     */
+    offset?: number;
+  };
+  url: "/v1/default/knowledge-banks/{bank_id}/tags";
+};
+
+export type ListKnowledgeBankTagsErrors = {
+  /**
+   * Validation Error
+   */
+  422: HttpValidationError;
+};
+
+export type ListKnowledgeBankTagsError =
+  ListKnowledgeBankTagsErrors[keyof ListKnowledgeBankTagsErrors];
+
+export type ListKnowledgeBankTagsResponses = {
+  /**
+   * Successful Response
+   */
+  200: KnowledgeTagsResponse;
+};
+
+export type ListKnowledgeBankTagsResponse =
+  ListKnowledgeBankTagsResponses[keyof ListKnowledgeBankTagsResponses];
+
+export type GetKnowledgeDocumentFileData = {
+  body?: never;
+  headers?: {
+    /**
+     * Authorization
+     */
+    authorization?: string | null;
+  };
+  path: {
+    /**
+     * Bank Id
+     */
+    bank_id: string;
+    /**
+     * Document Id
+     */
+    document_id: string;
+  };
+  query?: never;
+  url: "/v1/default/knowledge-banks/{bank_id}/documents/{document_id}/file";
+};
+
+export type GetKnowledgeDocumentFileErrors = {
+  /**
+   * Validation Error
+   */
+  422: HttpValidationError;
+};
+
+export type GetKnowledgeDocumentFileError =
+  GetKnowledgeDocumentFileErrors[keyof GetKnowledgeDocumentFileErrors];
+
+export type GetKnowledgeDocumentFileResponses = {
+  /**
+   * Successful Response
+   */
+  200: unknown;
+};
+
+export type GetKnowledgePassageMediaData = {
+  body?: never;
+  headers?: {
+    /**
+     * Authorization
+     */
+    authorization?: string | null;
+  };
+  path: {
+    /**
+     * Bank Id
+     */
+    bank_id: string;
+    /**
+     * Document Id
+     */
+    document_id: string;
+    /**
+     * Index
+     */
+    index: number;
+  };
+  query?: never;
+  url: "/v1/default/knowledge-banks/{bank_id}/documents/{document_id}/passages/{index}/media";
+};
+
+export type GetKnowledgePassageMediaErrors = {
+  /**
+   * Validation Error
+   */
+  422: HttpValidationError;
+};
+
+export type GetKnowledgePassageMediaError =
+  GetKnowledgePassageMediaErrors[keyof GetKnowledgePassageMediaErrors];
+
+export type GetKnowledgePassageMediaResponses = {
+  /**
+   * Successful Response
+   */
+  200: unknown;
+};
+
+export type SearchKnowledgeBankData = {
+  body: KnowledgeSearchRequest;
+  headers?: {
+    /**
+     * Authorization
+     */
+    authorization?: string | null;
+  };
+  path: {
+    /**
+     * Bank Id
+     */
+    bank_id: string;
+  };
+  query?: never;
+  url: "/v1/default/knowledge-banks/{bank_id}/search";
+};
+
+export type SearchKnowledgeBankErrors = {
+  /**
+   * Validation Error
+   */
+  422: HttpValidationError;
+};
+
+export type SearchKnowledgeBankError = SearchKnowledgeBankErrors[keyof SearchKnowledgeBankErrors];
+
+export type SearchKnowledgeBankResponses = {
+  /**
+   * Successful Response
+   */
+  200: KnowledgeSearchResponse;
+};
+
+export type SearchKnowledgeBankResponse =
+  SearchKnowledgeBankResponses[keyof SearchKnowledgeBankResponses];
+
 export type HealthEndpointHealthGetData = {
   body?: never;
   path?: never;
@@ -7943,6 +10135,8 @@ export type GetGraphData = {
     type?: string | null;
     /**
      * Limit
+     *
+     * Maximum number of memories to return. Values above 5000 are trimmed to 5000.
      */
     limit?: number;
     /**
@@ -8068,6 +10262,8 @@ export type ListMemoriesData = {
     end_date?: string | null;
     /**
      * Limit
+     *
+     * Maximum number of memories to return. Values above 1000 are trimmed to 1000.
      */
     limit?: number;
     /**
@@ -8640,7 +10836,7 @@ export type ListBanksData = {
     /**
      * Limit
      *
-     * Maximum number of banks to return
+     * Maximum number of banks to return. Values above 1000 are trimmed to 1000.
      */
     limit?: number;
     /**
@@ -8825,7 +11021,7 @@ export type ListEntitiesData = {
     /**
      * Limit
      *
-     * Maximum number of entities to return
+     * Maximum number of entities to return. Values above 1000 are trimmed to 1000.
      */
     limit?: number;
     /**
@@ -8878,6 +11074,66 @@ export type ListEntitiesResponses = {
 
 export type ListEntitiesResponse = ListEntitiesResponses[keyof ListEntitiesResponses];
 
+export type GetObservationTreeData = {
+  body?: never;
+  headers?: {
+    /**
+     * Authorization
+     */
+    authorization?: string | null;
+  };
+  path: {
+    /**
+     * Bank Id
+     */
+    bank_id: string;
+  };
+  query?: {
+    /**
+     * Tags
+     *
+     * Only group observations carrying these tags (the scope), as in recall.
+     */
+    tags?: Array<string> | null;
+    /**
+     * Tags Match
+     *
+     * How `tags` match (same modes as recall).
+     */
+    tags_match?: "any" | "all" | "any_strict" | "all_strict" | "exact";
+    /**
+     * Tag Groups
+     *
+     * Compound tag filter as a JSON-encoded list of tag groups — the same shape `tag_groups` takes in a recall body (leaves {tags, match, resolve} and {and: [...]}, {or: [...]}, {not: ...}; groups are AND-ed). Mutually exclusive with `tags`.
+     */
+    tag_groups?: string | null;
+  };
+  url: "/v1/default/banks/{bank_id}/observations/tree";
+};
+
+export type GetObservationTreeErrors = {
+  /**
+   * The bank does not exist.
+   */
+  404: unknown;
+  /**
+   * Validation Error
+   */
+  422: HttpValidationError;
+};
+
+export type GetObservationTreeError = GetObservationTreeErrors[keyof GetObservationTreeErrors];
+
+export type GetObservationTreeResponses = {
+  /**
+   * Successful Response
+   */
+  200: ObservationTreeFolder;
+};
+
+export type GetObservationTreeResponse =
+  GetObservationTreeResponses[keyof GetObservationTreeResponses];
+
 export type GetEntityGraphData = {
   body?: never;
   headers?: {
@@ -8896,7 +11152,7 @@ export type GetEntityGraphData = {
     /**
      * Limit
      *
-     * Maximum number of co-occurrence edges to return
+     * Maximum number of co-occurrence edges to return. Values above 5000 are trimmed to 5000.
      */
     limit?: number;
     /**
@@ -9085,6 +11341,8 @@ export type ListMentalModelsData = {
     detail?: "metadata" | "content" | "full";
     /**
      * Limit
+     *
+     * Maximum number of mental models to return. Values above 1000 are trimmed to 1000.
      */
     limit?: number;
     /**
@@ -9092,9 +11350,17 @@ export type ListMentalModelsData = {
      */
     offset?: number;
     /**
+     * Exclude Pages
+     *
+     * Leave out the mental models that hold page content (list standalone models only).
+     */
+    exclude_pages?: boolean;
+    /**
      * Exclude Knowledge Pages
      *
-     * Leave out the mental models that hold knowledge page content (list standalone models only).
+     * Deprecated: use exclude_pages.
+     *
+     * @deprecated
      */
     exclude_knowledge_pages?: boolean;
   };
@@ -9506,11 +11772,70 @@ export type GetKnowledgeBaseTreeResponses = {
   /**
    * Successful Response
    */
-  200: KnowledgeTreeResponse;
+  200: PageTreeResponse;
 };
 
 export type GetKnowledgeBaseTreeResponse =
   GetKnowledgeBaseTreeResponses[keyof GetKnowledgeBaseTreeResponses];
+
+export type GetPageTreeData = {
+  body?: never;
+  headers?: {
+    /**
+     * Authorization
+     */
+    authorization?: string | null;
+  };
+  path: {
+    /**
+     * Bank Id
+     */
+    bank_id: string;
+  };
+  query?: {
+    /**
+     * Tags
+     *
+     * Only return pages carrying these tags (matched per `tags_match`, like recall).
+     */
+    tags?: Array<string> | null;
+    /**
+     * Tags Match
+     *
+     * How `tags` match a page's tags: any, all, any_strict, all_strict, exact. 'any'/'all' also return untagged pages; the _strict modes and 'exact' do not.
+     */
+    tags_match?: "any" | "all" | "any_strict" | "all_strict" | "exact";
+    /**
+     * Tag Groups
+     *
+     * JSON-encoded compound tag filter, same shape as recall's `tag_groups`, e.g. `[{"or":[{"tags":["user:kate"],"match":"all_strict"},{"tags":["team"]}]}]`. Top-level groups are AND-ed, and AND-ed with `tags`.
+     */
+    tag_groups?: string | null;
+  };
+  url: "/v1/default/banks/{bank_id}/pages/tree";
+};
+
+export type GetPageTreeErrors = {
+  /**
+   * The bank does not exist.
+   */
+  404: unknown;
+  /**
+   * Validation Error
+   */
+  422: HttpValidationError;
+};
+
+export type GetPageTreeError = GetPageTreeErrors[keyof GetPageTreeErrors];
+
+export type GetPageTreeResponses = {
+  /**
+   * Successful Response
+   */
+  200: PageTreeResponse;
+};
+
+export type GetPageTreeResponse = GetPageTreeResponses[keyof GetPageTreeResponses];
 
 export type CreateKnowledgeFolderData = {
   body: CreateFolderRequest;
@@ -9544,11 +11869,47 @@ export type CreateKnowledgeFolderResponses = {
   /**
    * Successful Response
    */
-  201: KnowledgeNode;
+  201: PageNode;
 };
 
 export type CreateKnowledgeFolderResponse =
   CreateKnowledgeFolderResponses[keyof CreateKnowledgeFolderResponses];
+
+export type CreatePageFolderData = {
+  body: CreateFolderRequest;
+  headers?: {
+    /**
+     * Authorization
+     */
+    authorization?: string | null;
+  };
+  path: {
+    /**
+     * Bank Id
+     */
+    bank_id: string;
+  };
+  query?: never;
+  url: "/v1/default/banks/{bank_id}/pages/folders";
+};
+
+export type CreatePageFolderErrors = {
+  /**
+   * Validation Error
+   */
+  422: HttpValidationError;
+};
+
+export type CreatePageFolderError = CreatePageFolderErrors[keyof CreatePageFolderErrors];
+
+export type CreatePageFolderResponses = {
+  /**
+   * Successful Response
+   */
+  201: PageNode;
+};
+
+export type CreatePageFolderResponse = CreatePageFolderResponses[keyof CreatePageFolderResponses];
 
 export type CreateKnowledgePageData = {
   body: CreatePageRequest;
@@ -9581,11 +11942,47 @@ export type CreateKnowledgePageResponses = {
   /**
    * Successful Response
    */
-  201: CreateKnowledgePageResponse;
+  201: CreatePageResponse;
 };
 
-export type CreateKnowledgePageResponse2 =
+export type CreateKnowledgePageResponse =
   CreateKnowledgePageResponses[keyof CreateKnowledgePageResponses];
+
+export type CreatePageData = {
+  body: CreatePageRequest;
+  headers?: {
+    /**
+     * Authorization
+     */
+    authorization?: string | null;
+  };
+  path: {
+    /**
+     * Bank Id
+     */
+    bank_id: string;
+  };
+  query?: never;
+  url: "/v1/default/banks/{bank_id}/pages";
+};
+
+export type CreatePageErrors = {
+  /**
+   * Validation Error
+   */
+  422: HttpValidationError;
+};
+
+export type CreatePageError = CreatePageErrors[keyof CreatePageErrors];
+
+export type CreatePageResponses = {
+  /**
+   * Successful Response
+   */
+  201: CreatePageResponse;
+};
+
+export type CreatePageResponse2 = CreatePageResponses[keyof CreatePageResponses];
 
 export type ExportKnowledgeBaseData = {
   body?: never;
@@ -9622,11 +12019,51 @@ export type ExportKnowledgeBaseResponses = {
   /**
    * Successful Response
    */
-  200: KnowledgePageBundleResponse;
+  200: PageBundleResponse;
 };
 
 export type ExportKnowledgeBaseResponse =
   ExportKnowledgeBaseResponses[keyof ExportKnowledgeBaseResponses];
+
+export type ExportPagesData = {
+  body?: never;
+  headers?: {
+    /**
+     * Authorization
+     */
+    authorization?: string | null;
+  };
+  path: {
+    /**
+     * Bank Id
+     */
+    bank_id: string;
+  };
+  query?: never;
+  url: "/v1/default/banks/{bank_id}/pages/export";
+};
+
+export type ExportPagesErrors = {
+  /**
+   * The bank does not exist.
+   */
+  404: unknown;
+  /**
+   * Validation Error
+   */
+  422: HttpValidationError;
+};
+
+export type ExportPagesError = ExportPagesErrors[keyof ExportPagesErrors];
+
+export type ExportPagesResponses = {
+  /**
+   * Successful Response
+   */
+  200: PageBundleResponse;
+};
+
+export type ExportPagesResponse = ExportPagesResponses[keyof ExportPagesResponses];
 
 export type SearchKnowledgeBaseData = {
   body?: never;
@@ -9652,7 +12089,7 @@ export type SearchKnowledgeBaseData = {
     /**
      * Limit
      *
-     * Maximum results to return
+     * Maximum results to return. Values above 50 are trimmed to 50.
      */
     limit?: number;
     /**
@@ -9694,11 +12131,82 @@ export type SearchKnowledgeBaseResponses = {
   /**
    * Successful Response
    */
-  200: KnowledgePageSearchResponse;
+  200: PageSearchResponse;
 };
 
 export type SearchKnowledgeBaseResponse =
   SearchKnowledgeBaseResponses[keyof SearchKnowledgeBaseResponses];
+
+export type SearchPagesData = {
+  body?: never;
+  headers?: {
+    /**
+     * Authorization
+     */
+    authorization?: string | null;
+  };
+  path: {
+    /**
+     * Bank Id
+     */
+    bank_id: string;
+  };
+  query: {
+    /**
+     * Q
+     *
+     * Search query
+     */
+    q: string;
+    /**
+     * Limit
+     *
+     * Maximum results to return. Values above 50 are trimmed to 50.
+     */
+    limit?: number;
+    /**
+     * Tags
+     *
+     * Only return pages carrying these tags (matched per `tags_match`, like recall).
+     */
+    tags?: Array<string> | null;
+    /**
+     * Tags Match
+     *
+     * How `tags` match a page's tags: any, all, any_strict, all_strict, exact. 'any'/'all' also return untagged pages; the _strict modes and 'exact' do not.
+     */
+    tags_match?: "any" | "all" | "any_strict" | "all_strict" | "exact";
+    /**
+     * Tag Groups
+     *
+     * JSON-encoded compound tag filter, same shape as recall's `tag_groups`, e.g. `[{"or":[{"tags":["user:kate"],"match":"all_strict"},{"tags":["team"]}]}]`. Top-level groups are AND-ed, and AND-ed with `tags`.
+     */
+    tag_groups?: string | null;
+  };
+  url: "/v1/default/banks/{bank_id}/pages/search";
+};
+
+export type SearchPagesErrors = {
+  /**
+   * The bank does not exist.
+   */
+  404: unknown;
+  /**
+   * Validation Error
+   */
+  422: HttpValidationError;
+};
+
+export type SearchPagesError = SearchPagesErrors[keyof SearchPagesErrors];
+
+export type SearchPagesResponses = {
+  /**
+   * Successful Response
+   */
+  200: PageSearchResponse;
+};
+
+export type SearchPagesResponse = SearchPagesResponses[keyof SearchPagesResponses];
 
 export type GetKnowledgePageData = {
   body?: never;
@@ -9735,10 +12243,50 @@ export type GetKnowledgePageResponses = {
   /**
    * Successful Response
    */
-  200: KnowledgePageResponse;
+  200: PageResponse;
 };
 
 export type GetKnowledgePageResponse = GetKnowledgePageResponses[keyof GetKnowledgePageResponses];
+
+export type GetPageData = {
+  body?: never;
+  headers?: {
+    /**
+     * Authorization
+     */
+    authorization?: string | null;
+  };
+  path: {
+    /**
+     * Bank Id
+     */
+    bank_id: string;
+    /**
+     * Page Id
+     */
+    page_id: string;
+  };
+  query?: never;
+  url: "/v1/default/banks/{bank_id}/pages/{page_id}";
+};
+
+export type GetPageErrors = {
+  /**
+   * Validation Error
+   */
+  422: HttpValidationError;
+};
+
+export type GetPageError = GetPageErrors[keyof GetPageErrors];
+
+export type GetPageResponses = {
+  /**
+   * Successful Response
+   */
+  200: PageResponse;
+};
+
+export type GetPageResponse = GetPageResponses[keyof GetPageResponses];
 
 export type DeleteKnowledgeNodeData = {
   body?: never;
@@ -9813,11 +12361,89 @@ export type UpdateKnowledgeNodeResponses = {
   /**
    * Successful Response
    */
-  200: KnowledgeNode;
+  200: PageNode;
 };
 
 export type UpdateKnowledgeNodeResponse =
   UpdateKnowledgeNodeResponses[keyof UpdateKnowledgeNodeResponses];
+
+export type DeletePageNodeData = {
+  body?: never;
+  headers?: {
+    /**
+     * Authorization
+     */
+    authorization?: string | null;
+  };
+  path: {
+    /**
+     * Bank Id
+     */
+    bank_id: string;
+    /**
+     * Node Id
+     */
+    node_id: string;
+  };
+  query?: never;
+  url: "/v1/default/banks/{bank_id}/pages/nodes/{node_id}";
+};
+
+export type DeletePageNodeErrors = {
+  /**
+   * Validation Error
+   */
+  422: HttpValidationError;
+};
+
+export type DeletePageNodeError = DeletePageNodeErrors[keyof DeletePageNodeErrors];
+
+export type DeletePageNodeResponses = {
+  /**
+   * Successful Response
+   */
+  200: unknown;
+};
+
+export type UpdatePageNodeData = {
+  body: UpdateNodeRequest;
+  headers?: {
+    /**
+     * Authorization
+     */
+    authorization?: string | null;
+  };
+  path: {
+    /**
+     * Bank Id
+     */
+    bank_id: string;
+    /**
+     * Node Id
+     */
+    node_id: string;
+  };
+  query?: never;
+  url: "/v1/default/banks/{bank_id}/pages/nodes/{node_id}";
+};
+
+export type UpdatePageNodeErrors = {
+  /**
+   * Validation Error
+   */
+  422: HttpValidationError;
+};
+
+export type UpdatePageNodeError = UpdatePageNodeErrors[keyof UpdatePageNodeErrors];
+
+export type UpdatePageNodeResponses = {
+  /**
+   * Successful Response
+   */
+  200: PageNode;
+};
+
+export type UpdatePageNodeResponse = UpdatePageNodeResponses[keyof UpdatePageNodeResponses];
 
 export type ListDirectivesData = {
   body?: never;
@@ -9854,6 +12480,8 @@ export type ListDirectivesData = {
     active_only?: boolean;
     /**
      * Limit
+     *
+     * Maximum number of directives to return. Values above 1000 are trimmed to 1000.
      */
     limit?: number;
     /**
@@ -10093,6 +12721,8 @@ export type ListDocumentsData = {
     end_date?: string | null;
     /**
      * Limit
+     *
+     * Maximum number of documents to return. Values above 1000 are trimmed to 1000.
      */
     limit?: number;
     /**
@@ -10147,7 +12777,7 @@ export type ListDocumentChunksData = {
     /**
      * Limit
      *
-     * Maximum number of chunks to return
+     * Maximum number of chunks to return. Values above 1000 are trimmed to 1000.
      */
     limit?: number;
     /**
@@ -10201,7 +12831,7 @@ export type GetDocumentHistoryData = {
     /**
      * Limit
      *
-     * Maximum number of operations to read
+     * Maximum number of operations to read. Values above 1000 are trimmed to 1000.
      */
     limit?: number;
     /**
@@ -10424,7 +13054,7 @@ export type ListTagsData = {
     /**
      * Limit
      *
-     * Maximum number of tags to return
+     * Maximum number of tags to return. Values above 1000 are trimmed to 1000.
      */
     limit?: number;
     /**
@@ -10525,7 +13155,7 @@ export type ListOperationsData = {
     /**
      * Limit
      *
-     * Maximum number of operations to return
+     * Maximum number of operations to return. Values above 100 are trimmed to 100.
      */
     limit?: number;
     /**
@@ -11305,7 +13935,7 @@ export type ExportDocumentsData = {
     /**
      * Include Knowledge Base
      *
-     * Also export Mental Models and Knowledge Pages (restored on import; whole-bank only)
+     * Also export Mental Models and Pages (restored on import; whole-bank only)
      */
     include_knowledge_base?: boolean;
   };
@@ -11494,7 +14124,7 @@ export type CloneBankData = {
     /**
      * Include Data
      *
-     * Copy the memories, what backs them, and the mental models and knowledge pages synthesized from them
+     * Copy the memories, what backs them, and the mental models and pages synthesized from them
      */
     include_data?: boolean;
     /**
@@ -11681,7 +14311,7 @@ export type ListObservationScopesData = {
     /**
      * Limit
      *
-     * Maximum number of scopes to return
+     * Maximum number of scopes to return. Values above 1000 are trimmed to 1000.
      */
     limit?: number;
     /**
@@ -12011,7 +14641,7 @@ export type ListWebhooksData = {
     /**
      * Limit
      *
-     * Maximum number of webhooks to return
+     * Maximum number of webhooks to return. Values above 1000 are trimmed to 1000.
      */
     limit?: number;
     /**
@@ -12184,7 +14814,7 @@ export type ListWebhookDeliveriesData = {
     /**
      * Limit
      *
-     * Maximum number of deliveries to return
+     * Maximum number of deliveries to return. Values above 200 are trimmed to 200.
      */
     limit?: number;
     /**
@@ -12375,7 +15005,7 @@ export type ListAuditLogsData = {
     /**
      * Limit
      *
-     * Max items to return
+     * Max items to return. Values above 500 are trimmed to 500.
      */
     limit?: number;
     /**
@@ -12591,7 +15221,7 @@ export type ListLlmRequestsData = {
     /**
      * Limit
      *
-     * Max items to return
+     * Max items to return. Values above 500 are trimmed to 500.
      */
     limit?: number;
     /**

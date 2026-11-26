@@ -59,10 +59,10 @@ from hindsight_api.config import (
 )
 from hindsight_api.engine.aiohttp_session import LoopLocalSession
 from hindsight_api.engine.cache_affinity import XAI_CONV_ID_HEADER, cache_affinity_id
-from hindsight_api.engine.llm_interface import LLMInterface
+from hindsight_api.engine.llm_interface import LLMInterface, ProviderContentPolicyError
 from hindsight_api.engine.llm_trace import LLMResponseUsage, stash_response_usage
 from hindsight_api.engine.llm_transport import build_aiohttp_timeout
-from hindsight_api.engine.providers.openai_compatible_llm import _strip_code_fences
+from hindsight_api.engine.providers.openai_compatible_llm import _strip_code_fences, record_retried_attempt
 from hindsight_api.engine.providers.xai_oauth_auth import (
     DEFAULT_REFRESH_SKEW_SECONDS,
     LOGIN_COMMAND,
@@ -733,6 +733,7 @@ class XaiOAuthLLM(LLMInterface):
 
         last_exception: Exception | None = None
         for attempt in range(max_retries + 1):
+            attempt_started = time.perf_counter()
             try:
                 async with attempt_context() if attempt_context is not None else nullcontext():
                     set_stage(f"llm.xai_oauth.{scope}.attempt={attempt + 1}/{max_retries + 1}")
@@ -817,6 +818,14 @@ class XaiOAuthLLM(LLMInterface):
                         scope,
                         e,
                     )
+                    record_retried_attempt(
+                        provider=self.provider,
+                        model=self.model,
+                        scope=scope,
+                        messages=messages,
+                        error=e,
+                        started=attempt_started,
+                    )
                     await asyncio.sleep(self._backoff_seconds(e, attempt, initial_backoff, max_backoff))
                     continue
                 logger.error("xai-oauth call failed (scope=%s, attempt %d): %s", scope, attempt + 1, e)
@@ -874,6 +883,12 @@ class XaiOAuthLLM(LLMInterface):
             )
         choice = completion.choices[0]
         content = choice.message.content if choice.message is not None else None
+        if not content and choice.finish_reason == "content_filter":
+            # A content block is permanent: fail once, don't retry (#6503).
+            raise ProviderContentPolicyError(
+                f"{_actual_host(self.base_url)} blocked the request (model={self.model}, scope={scope}, "
+                "finish_reason=content_filter); not retrying"
+            )
         if not content:
             raise _UpstreamStatusError(
                 f"{_actual_host(self.base_url)} returned empty message content (model={self.model}, scope={scope}, "

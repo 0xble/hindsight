@@ -31,7 +31,7 @@ BANK = {"name": "TestBank", "mission": ""}
 
 @pytest.fixture(autouse=True)
 def _freeze_current_datetime(monkeypatch):
-    monkeypatch.setattr(prompts, "_current_utc_datetime", lambda: "2026-08-09 14:32 UTC")
+    monkeypatch.setattr(prompts, "_current_datetime", lambda tz: "2026-08-09 14:32 UTC")
 
 
 _HEADER = (
@@ -41,7 +41,10 @@ _HEADER = (
 
 _DEFAULT_ROLE = "You are a reflection agent that answers questions by reasoning over retrieved memories."
 
-_CURRENT_DATETIME = "## Current Date and Time\nThe current date and time is 2026-08-09 14:32 UTC."
+_CURRENT_DATETIME = (
+    "## Current Date and Time\nThe current date and time is 2026-08-09 14:32 UTC. "
+    "Every time in the tool results is in this zone."
+)
 
 _LANGUAGE_AND_RULES = """\
 ## LANGUAGE RULE (default - directives take precedence)
@@ -149,6 +152,7 @@ You have access to THREE levels of knowledge. Use them in this order:
 - Auto-consolidated knowledge from memories
 - Check `is_stale` field - if stale, ALSO use recall() to verify
 - Good for understanding patterns and summaries
+- A bracket after an observation's text, `(YYYY-MM-DD HH:MM: …)`, is an EARLIER state that the text before it replaced — not the current value
 
 ### 3. RAW FACTS (recall) - Ground Truth
 - Individual memories (world facts and experiences)
@@ -198,6 +202,7 @@ You have access to TWO levels of knowledge. Use them in this order:
 - Auto-consolidated knowledge from memories
 - Check `is_stale` field - if stale, ALSO use recall() to verify
 - Good for understanding patterns and summaries
+- A bracket after an observation's text, `(YYYY-MM-DD HH:MM: …)`, is an EARLIER state that the text before it replaced — not the current value
 
 ### 2. RAW FACTS (recall) - Ground Truth
 - Individual memories (world facts and experiences)

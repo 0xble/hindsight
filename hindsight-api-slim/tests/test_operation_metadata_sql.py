@@ -72,7 +72,7 @@ async def test_operation_metadata_query_survives_oracle_rewrite(captured_engine,
     assert "JSON_MERGEPATCH(" in sql
     assert "TO_CLOB('{}')" in sql
     assert "CASE WHEN operation_type = 'file_convert_retain'" in sql
-    assert translated.returning_cols == ["operation_id"]
+    assert translated.returning_cols == ("operation_id",)
     assert set(re.findall(r":(\d+)\b", sql)) == {str(i) for i in range(1, len(params) + 1)}
     assert json.loads(params[2]) == {"failure_class": None, "failure_reason": None, "parsers": None}
     if action == "failure":

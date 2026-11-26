@@ -9,15 +9,15 @@ BaseException'), which happened when last_error was only set in the
 BadRequestError handler and not for non-dict JSON responses.
 """
 
-from hindsight_api.engine.response_models import LLMCallResult, TokenUsage
-from hindsight_api.engine.retain.fact_extraction import ExtractionPrompt
-
 import dataclasses
 import json
 from datetime import datetime, timezone
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+
+from hindsight_api.engine.response_models import LLMCallResult, TokenUsage
+from hindsight_api.engine.retain.fact_extraction import ExtractionPrompt
 
 
 def test_output_retry_split_preserves_conversation_array_boundaries():
@@ -292,6 +292,8 @@ async def test_missing_facts_key_retries_with_correction():
     assert llm_config.call.call_count == 2
     retry_messages = llm_config.call.call_args_list[1].kwargs["messages"]
     assert retry_messages[-1] == {"role": "user", "content": _ENVELOPE_CORRECTION}
+    # The refused reply is replayed before the correction, so the model sees what it got wrong.
+    assert retry_messages[-2] == {"role": "assistant", "content": json.dumps(wrapped)}
 
 
 @pytest.mark.asyncio
@@ -622,6 +624,41 @@ async def test_zero_retry_budget_performs_single_chunk_extraction_call():
     assert llm_config.call.call_count == 1
     assert "max_retries" not in llm_config.call.call_args.kwargs
     assert len(facts) == 1
+
+
+@pytest.mark.asyncio
+async def test_schema_echo_on_a_chain_is_answered_by_the_fallback_member():
+    """No retry budget and a two-member chain: a reply that copies the JSON schema instead
+    of the facts must reach the fallback member, not fail the document."""
+    from hindsight_api.config import LLMStrategyConfig
+    from hindsight_api.engine.multi_llm import MultiLLMProvider
+    from hindsight_api.engine.retain.fact_extraction import _extract_facts_from_chunk
+
+    config = _make_config(llm_max_retries=3, retain_llm_max_retries=0)
+    echo = {"$defs": {"ExtractedFact": {"properties": {"what": {"type": "string"}}}}, "properties": {}}
+    primary = _make_llm_config(mock_response=echo)
+    fallback = _make_llm_config(
+        mock_response={"facts": [{"what": "Alice visited Paris", "when": "2023", "who": "Alice", "why": "vacation"}]}
+    )
+    chain = MultiLLMProvider([primary, fallback], LLMStrategyConfig(mode="failover"))
+
+    with patch(
+        "hindsight_api.engine.retain.fact_extraction._build_extraction_prompt_and_schema",
+        return_value=ExtractionPrompt(system_prompt="system prompt", response_schema=MagicMock()),
+    ):
+        facts, _usage = await _extract_facts_from_chunk(
+            chunk="Alice visited Paris in 2023.",
+            chunk_index=0,
+            total_chunks=1,
+            event_date=datetime(2023, 1, 1, tzinfo=timezone.utc),
+            context="",
+            llm_config=chain,
+            config=config,
+            agent_name="test-agent",
+        )
+
+    assert [f.fact.split(" | ")[0] for f in facts] == ["Alice visited Paris"]
+    assert (primary.call.call_count, fallback.call.call_count) == (1, 1)
 
 
 @pytest.mark.asyncio

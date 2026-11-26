@@ -9,11 +9,12 @@ carry it; only the connection and ``fq_table`` resolver are now parameters.
 
 from __future__ import annotations
 
+import json
 from collections.abc import Callable
 from datetime import datetime
 from typing import Any
 
-from ...search.tags import TagGroup, build_tag_groups_where_clause
+from ...search.tags import TagClause, TagGroup, build_tag_groups_where_clause
 
 
 async def consolidation_freshness(*, conn, fq_table: Callable[[str], str], bank_id: str) -> dict[str, Any]:
@@ -59,6 +60,29 @@ async def consolidation_freshness(*, conn, fq_table: Callable[[str], str], bank_
     }
 
 
+async def has_pending_consolidation(*, conn, fq_table: Callable[[str], str], bank_id: str) -> bool:
+    """Whether the bank has one fact consolidation will still pick up.
+
+    Same predicate as ``consolidation_freshness``'s ``pending``, but stops at the
+    first match on ``idx_memory_units_unconsolidated`` instead of counting the bank.
+    Reads newest first: consolidation works oldest first, so permanently failed facts
+    collect at the old end and would otherwise be stepped over one by one.
+    """
+    found = await conn.fetchval(
+        f"""
+        SELECT 1 FROM {fq_table("memory_units")}
+        WHERE bank_id = $1
+          AND consolidated_at IS NULL
+          AND consolidation_failed_at IS NULL
+          AND fact_type IN ('experience', 'world')
+        ORDER BY created_at DESC
+        LIMIT 1
+        """,
+        bank_id,
+    )
+    return found is not None
+
+
 async def link_counts(*, conn, fq_table: Callable[[str], str], bank_id: str) -> dict[str, int]:
     """``{link_type: count}`` of live links in a bank.
 
@@ -86,7 +110,8 @@ async def link_counts(*, conn, fq_table: Callable[[str], str], bank_id: str) -> 
             WHERE mu.bank_id = $1
             GROUP BY ue.entity_id
         )
-        SELECT COALESCE(SUM(LEAST(n - 1, $2)), 0)::bigint AS count
+        -- Each of the n units sharing an entity links to up to LEAST(n - 1, cap) others.
+        SELECT COALESCE(SUM(n * LEAST(n - 1, $2)), 0)::bigint AS count
         FROM per_entity
         """,
         bank_id,
@@ -169,30 +194,92 @@ async def observation_scope_counts(
     SQL — the whole histogram never crosses the wire. ``tag_groups`` (a caller's
     forced tag scope) keeps only the observations it admits.
     """
-    groups = build_tag_groups_where_clause(tag_groups, 2)
-    scopes_select = f"""
-        SELECT COALESCE(ARRAY(SELECT unnest(tags) ORDER BY 1), '{{}}'::text[]) AS scope
-        FROM {fq_table("memory_units")}
-        WHERE bank_id = $1 AND fact_type = 'observation' {groups.sql}
-    """
+    from ...schema import _is_oracle  # noqa: PLC0415
 
-    total_row = await conn.fetchrow(
+    groups = build_tag_groups_where_clause(tag_groups, 2)
+    if _is_oracle():
+        return await _oracle_observation_scope_counts(
+            conn=conn, fq_table=fq_table, bank_id=bank_id, limit=limit, offset=offset, groups=groups
+        )
+    limit_idx = groups.next_param_offset
+    # A scope is the observation's tags, sorted. Sorting per observation is the
+    # expensive part, and many observations share the exact same tag list, so
+    # count identical lists first (a cheap hash aggregate) and sort only the
+    # distinct ones, then merge lists that differ only in order. The page and
+    # the total both read that one materialized result. Previously two queries
+    # each sorted every observation's tags: 287 ms -> 33 ms at 100k
+    # observations over 53 tag sets, 3.2 s -> 0.1 s at 1M (#6328).
+    rows = await conn.fetch(
         f"""
-        SELECT COUNT(*) AS total
-        FROM (SELECT DISTINCT scope FROM ({scopes_select}) s) d
+        WITH raw_counts AS (
+            SELECT tags, COUNT(*) AS count
+            FROM {fq_table("memory_units")}
+            WHERE bank_id = $1 AND fact_type = 'observation' {groups.sql}
+            GROUP BY tags
+        ),
+        scopes AS MATERIALIZED (
+            SELECT COALESCE(ARRAY(SELECT unnest(tags) ORDER BY 1), '{{}}'::text[]) AS scope,
+                   SUM(count)::bigint AS count
+            FROM raw_counts
+            GROUP BY 1
+        ),
+        page AS (
+            SELECT scope, count FROM scopes
+            ORDER BY count DESC, scope
+            LIMIT ${limit_idx} OFFSET ${limit_idx + 1}
+        )
+        SELECT tally.total, page.scope, page.count
+        FROM (SELECT COUNT(*) AS total FROM scopes) tally
+        LEFT JOIN page ON TRUE
+        ORDER BY page.count DESC, page.scope
         """,
         bank_id,
         *groups.params,
+        limit,
+        offset,
     )
-    total = int(total_row["total"]) if total_row else 0
+    # The LEFT JOIN keeps one row carrying the total when the page is empty
+    # (offset past the end); its scope is NULL, while a real untagged scope is '{}'.
+    total = int(rows[0]["total"])
+    rows = [r for r in rows if r["scope"] is not None]
+    return {
+        "scopes": [{"tags": list(r["scope"]), "count": int(r["count"])} for r in rows],
+        "total": total,
+        "limit": limit,
+        "offset": offset,
+    }
 
+
+async def _oracle_observation_scope_counts(
+    *, conn, fq_table: Callable[[str], str], bank_id: str, limit: int, offset: int, groups: TagClause
+) -> dict[str, Any]:
+    """Oracle shape of ``observation_scope_counts`` (#6585).
+
+    Oracle keeps ``tags`` as a JSON array in a CLOB, which it cannot group by and which
+    has no ``unnest``, so each observation's tags are sorted into a JSON string first and
+    the strings are grouped. The ``tags`` column stays unaliased: the SQL rewriter only
+    translates the tag-group operators on a bare column name. Ties on ``count`` order by
+    that string, not element by element as PostgreSQL does, so a tie can page differently.
+    """
+    # ponytail: VARCHAR2(4000) caps one observation's sorted tag list at 4000 characters;
+    # past that Oracle errors (ORA-40478). Hash-group the CLOB if real tag sets grow that big.
+    scopes_sql = f"""
+        SELECT scope, COUNT(*) AS n
+        FROM (
+            SELECT COALESCE(
+                (SELECT JSON_ARRAYAGG(jt.val ORDER BY jt.val RETURNING VARCHAR2(4000))
+                 FROM JSON_TABLE(tags, '$[*]' COLUMNS (val VARCHAR2(256) PATH '$')) jt),
+                '[]') AS scope
+            FROM {fq_table("memory_units")}
+            WHERE bank_id = $1 AND fact_type = 'observation' {groups.sql}
+        )
+        GROUP BY scope
+    """
     limit_idx = groups.next_param_offset
     rows = await conn.fetch(
         f"""
-        SELECT scope, COUNT(*) AS count
-        FROM ({scopes_select}) s
-        GROUP BY scope
-        ORDER BY count DESC, scope
+        SELECT scope, n, COUNT(*) OVER () AS total FROM ({scopes_sql})
+        ORDER BY n DESC, scope
         LIMIT ${limit_idx} OFFSET ${limit_idx + 1}
         """,
         bank_id,
@@ -200,8 +287,13 @@ async def observation_scope_counts(
         limit,
         offset,
     )
+    if rows:
+        total = int(rows[0]["total"])
+    else:
+        # Past the last page (or no observations): the window carried no total.
+        total = int(await conn.fetchval(f"SELECT COUNT(*) FROM ({scopes_sql})", bank_id, *groups.params) or 0)
     return {
-        "scopes": [{"tags": list(r["scope"]), "count": int(r["count"])} for r in rows],
+        "scopes": [{"tags": json.loads(r["scope"]), "count": int(r["n"])} for r in rows],
         "total": total,
         "limit": limit,
         "offset": offset,
@@ -211,6 +303,7 @@ async def observation_scope_counts(
 __all__ = [
     "consolidation_freshness",
     "document_memory_counts",
+    "has_pending_consolidation",
     "link_counts",
     "memories_timeseries",
     "observation_scope_counts",

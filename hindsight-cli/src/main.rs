@@ -104,9 +104,14 @@ enum Commands {
     #[command(subcommand)]
     MentalModel(MentalModelCommands),
 
-    /// Manage the knowledge base (folder/page tree, search, export)
-    #[command(subcommand)]
-    KnowledgeBase(KnowledgeBaseCommands),
+    /// Manage the bank's pages (folder/page tree, search, export)
+    // `knowledge-base` is the old name, kept so existing scripts work. Remove in 2.x.
+    #[command(subcommand, alias = "knowledge-base")]
+    Pages(PagesCommands),
+
+    /// Manage knowledge banks: files and texts searched as they are, without memory extraction
+    #[command(subcommand, name = "kb")]
+    KnowledgeBank(KnowledgeBankCommands),
 
     /// Manage directives (behavioral rules)
     #[command(subcommand)]
@@ -120,7 +125,7 @@ enum Commands {
     #[command(subcommand)]
     Audit(AuditCommands),
 
-    /// Mirror a bank's knowledge base as a live local folder of markdown files
+    /// Mirror a bank's pages as a live local folder of markdown files
     #[command(subcommand)]
     Fs(commands::fs::FsCommands),
 
@@ -395,6 +400,10 @@ enum BankCommands {
         /// Disposition empathy trait (1-5)
         #[arg(long, value_parser = clap::value_parser!(i64).range(1..=5))]
         disposition_empathy: Option<i64>,
+
+        /// Knowledge banks recall and reflect also search (comma-separated ids; '' unlinks all)
+        #[arg(long, value_delimiter = ',')]
+        knowledge_banks: Option<Vec<String>>,
     },
 
     /// Reset bank configuration to defaults (remove all overrides)
@@ -434,7 +443,7 @@ enum BankCommands {
         bank_id: String,
 
         /// Write manifest to this file instead of stdout
-        #[arg(short = 'o', long)]
+        #[arg(long)]
         out: Option<PathBuf>,
     },
 
@@ -501,6 +510,25 @@ enum BankAliasCommands {
 
 #[derive(Subcommand)]
 enum MemoryCommands {
+    /// Show the bank's observations as a tree of topic files (an Open Knowledge Format bundle),
+    /// or write the bundle to a folder with --out
+    ObservationTree {
+        /// Bank ID
+        bank_id: String,
+
+        /// Only observations carrying these tags (comma-separated, e.g. team:a)
+        #[arg(long, value_delimiter = ',')]
+        tags: Vec<String>,
+
+        /// Tag matching mode: any, all, any_strict, all_strict, exact (default: any)
+        #[arg(long)]
+        tags_match: Option<String>,
+
+        /// Write every file's markdown under this directory instead of printing the tree
+        #[arg(long)]
+        out: Option<std::path::PathBuf>,
+    },
+
     /// List memory units with pagination
     List {
         /// Bank ID
@@ -669,7 +697,9 @@ enum MemoryCommands {
         document_tags: Option<Vec<String>>,
     },
 
-    /// Bulk import memories from files (retain)
+    /// Bulk import memories from files (retain). Each file is stored under a
+    /// document id built from its path relative to the current dir
+    /// (`notes/a/README.md` -> `notes_a_README.md`), so re-running updates it.
     RetainFiles {
         /// Bank ID
         bank_id: String,
@@ -809,8 +839,16 @@ enum DocumentCommands {
 
         /// New tag list (comma-separated); `--tags ""` removes every tag. Triggers observation
         /// invalidation + re-consolidation.
-        #[arg(long, value_delimiter = ',')]
+        #[arg(long, value_delimiter = ',', conflicts_with_all = ["add_tags", "remove_tags"])]
         tags: Option<Vec<String>>,
+
+        /// Tags to add, keeping the others (comma-separated)
+        #[arg(long, value_delimiter = ',')]
+        add_tags: Option<Vec<String>>,
+
+        /// Tags to remove, keeping the others (comma-separated; applied before --add-tags)
+        #[arg(long, value_delimiter = ',')]
+        remove_tags: Option<Vec<String>>,
 
         /// New observation scopes: per_tag, combined, all_combinations, shared, or a JSON list
         /// of tag lists (e.g. '[["user:alice"]]'). Memories whose scopes move are re-consolidated.
@@ -1239,7 +1277,293 @@ enum MentalModelCommands {
 }
 
 #[derive(Subcommand)]
-enum KnowledgeBaseCommands {
+enum KnowledgeBankCommands {
+    /// List knowledge banks
+    List {
+        /// Only banks whose id contains this text (case-insensitive)
+        #[arg(short = 'q', long)]
+        query: Option<String>,
+
+        /// Maximum number of banks to return
+        #[arg(long, default_value = "100")]
+        limit: u64,
+
+        /// Offset for pagination
+        #[arg(long, default_value = "0")]
+        offset: u64,
+    },
+
+    /// Create a knowledge bank (its id shares the id space of memory banks)
+    Create {
+        /// Knowledge bank ID
+        bank_id: String,
+    },
+
+    /// Show a knowledge bank with its document and passage counts
+    Get {
+        /// Knowledge bank ID
+        bank_id: String,
+    },
+
+    /// Delete a knowledge bank with all its documents and files
+    Delete {
+        /// Knowledge bank ID
+        bank_id: String,
+
+        /// Skip confirmation prompt
+        #[arg(short = 'y', long)]
+        yes: bool,
+    },
+
+    /// Show how the bank splits files: every setting, and which ones it overrides
+    Config {
+        /// Knowledge bank ID
+        bank_id: String,
+
+        /// Show only this bank's overrides
+        #[arg(long)]
+        overrides_only: bool,
+    },
+
+    /// Override ingest settings (e.g. --set text_passage_tokens=256 --set disabled_media_types='["video"]').
+    /// A change applies to files ingested from then on.
+    SetConfig {
+        /// Knowledge bank ID
+        bank_id: String,
+
+        /// Setting to override, as KEY=VALUE. VALUE is read as JSON when it parses, else as text.
+        #[arg(long = "set", value_name = "KEY=VALUE")]
+        set: Vec<String>,
+
+        /// Setting whose override to remove (back to the server default)
+        #[arg(long, value_name = "KEY")]
+        unset: Vec<String>,
+    },
+
+    /// Remove every override of a knowledge bank
+    ResetConfig {
+        /// Knowledge bank ID
+        bank_id: String,
+
+        /// Skip confirmation prompt
+        #[arg(short = 'y', long)]
+        yes: bool,
+    },
+
+    /// Upload files or folders: each file becomes one document, split into passages and embedded
+    /// in the background. Its document id is its path relative to the current dir
+    /// (`docs/a/manual.pdf` -> `docs_a_manual.pdf`), so uploading it again replaces it.
+    Ingest {
+        /// Knowledge bank ID
+        bank_id: String,
+
+        /// Files or folders (folders are read recursively, skipping hidden files). A file the
+        /// server can't read fails on its own; the rest still upload.
+        #[arg(required = true)]
+        paths: Vec<PathBuf>,
+
+        /// Document id to store the file under (only with a single file)
+        #[arg(long)]
+        document_id: Option<String>,
+
+        /// Tags for every uploaded document (comma-separated)
+        #[arg(long, value_delimiter = ',')]
+        tags: Vec<String>,
+
+        /// Ingestion strategy (one of the server's HINDSIGHT_API_KB_INGEST_STRATEGIES)
+        #[arg(short = 's', long)]
+        strategy: Option<String>,
+
+        /// Wait until every document is searchable (or failed)
+        #[arg(long)]
+        wait: bool,
+    },
+
+    /// Ingest a text as a markdown document. Returns once it is searchable, unless --async.
+    IngestText {
+        /// Knowledge bank ID
+        bank_id: String,
+
+        /// The text, or `-` to read it from stdin
+        text: String,
+
+        /// Document id; ingesting the same id again replaces the document
+        #[arg(long)]
+        document_id: Option<String>,
+
+        /// Filename to show for the document (default: <document_id>.md)
+        #[arg(long)]
+        filename: Option<String>,
+
+        /// Tags for the document (comma-separated)
+        #[arg(long, value_delimiter = ',')]
+        tags: Vec<String>,
+
+        /// Ingestion strategy (one of the server's HINDSIGHT_API_KB_INGEST_STRATEGIES)
+        #[arg(short = 's', long)]
+        strategy: Option<String>,
+
+        /// Queue the document and return at once
+        #[arg(long)]
+        r#async: bool,
+    },
+
+    /// Search passages by meaning, with a text, an image, a video clip, or several together
+    Search {
+        /// Knowledge bank ID
+        bank_id: String,
+
+        /// Text query
+        query: Option<String>,
+
+        /// Image file to search with
+        #[arg(long = "image", value_name = "PATH")]
+        query_image: Option<PathBuf>,
+
+        /// MP4 clip to search with
+        #[arg(long = "video", value_name = "PATH")]
+        query_video: Option<PathBuf>,
+
+        /// How deep the search ranks: low, mid, high (server default: mid)
+        #[arg(short = 'b', long)]
+        budget: Option<String>,
+
+        /// What the results may weigh in all, in tokens (server default: 4096)
+        #[arg(long)]
+        max_tokens: Option<u64>,
+
+        /// Only documents carrying these tags (comma-separated)
+        #[arg(long, value_delimiter = ',')]
+        tags: Vec<String>,
+
+        /// Tag matching mode: any, all, any_strict, all_strict, exact (default: any,
+        /// which also returns untagged documents)
+        #[arg(long)]
+        tags_match: Option<String>,
+
+        /// Compound tag filter as JSON, same shape as recall's tag_groups
+        #[arg(long)]
+        tag_groups: Option<String>,
+
+        /// Only these documents (comma-separated ids)
+        #[arg(long, value_delimiter = ',')]
+        document_ids: Vec<String>,
+
+        /// Only these media types (comma-separated): document, image, audio, video, text
+        #[arg(long, value_delimiter = ',')]
+        media_types: Vec<String>,
+
+        /// Keep the search's own order instead of reranking the best hits
+        #[arg(long)]
+        no_rerank: bool,
+
+        /// Also show how the search ranked and what the token budget kept
+        #[arg(long)]
+        trace: bool,
+    },
+
+    /// List a knowledge bank's documents
+    ListDocuments {
+        /// Knowledge bank ID
+        bank_id: String,
+
+        /// Only documents whose id or filename contains this text
+        #[arg(short = 'q', long)]
+        query: Option<String>,
+
+        /// Only documents in this status: pending, processing, ready, failed
+        #[arg(long)]
+        status: Option<String>,
+
+        /// Only documents of this media type: document, image, audio, video, text
+        #[arg(long)]
+        media_type: Option<String>,
+
+        /// Only documents carrying these tags (comma-separated)
+        #[arg(long, value_delimiter = ',')]
+        tags: Vec<String>,
+
+        /// Maximum number of documents to return (1-500)
+        #[arg(long, default_value = "50")]
+        limit: u64,
+
+        /// Offset for pagination
+        #[arg(long, default_value = "0")]
+        offset: u64,
+    },
+
+    /// Show a document with its passages
+    GetDocument {
+        /// Knowledge bank ID
+        bank_id: String,
+
+        /// Document ID
+        document_id: String,
+    },
+
+    /// Delete a document
+    DeleteDocument {
+        /// Knowledge bank ID
+        bank_id: String,
+
+        /// Document ID
+        document_id: String,
+    },
+
+    /// Download a document's original file
+    Download {
+        /// Knowledge bank ID
+        bank_id: String,
+
+        /// Document ID
+        document_id: String,
+
+        /// Where to write it (`-` for stdout; default: the document's filename in the current dir)
+        #[arg(long)]
+        out: Option<PathBuf>,
+    },
+
+    /// Download one passage's media: its page image, image, or audio/video window
+    PassageMedia {
+        /// Knowledge bank ID
+        bank_id: String,
+
+        /// Document ID
+        document_id: String,
+
+        /// Passage index (as `get-document` lists them)
+        index: i64,
+
+        /// Where to write it (`-` for stdout)
+        #[arg(long)]
+        out: PathBuf,
+    },
+
+    /// Manage a knowledge bank's background operations (ingests): list, get, cancel, retry, delete
+    #[command(subcommand)]
+    Operation(OperationCommands),
+
+    /// List the document tags of a knowledge bank, with how many documents carry each
+    ListTags {
+        /// Knowledge bank ID
+        bank_id: String,
+
+        /// Wildcard pattern to filter tags (e.g. 'team:*'), case-insensitive
+        #[arg(short = 'q', long)]
+        query: Option<String>,
+
+        /// Maximum number of tags to return
+        #[arg(long, default_value = "100")]
+        limit: u64,
+
+        /// Offset for pagination
+        #[arg(long, default_value = "0")]
+        offset: u64,
+    },
+}
+
+#[derive(Subcommand)]
+enum PagesCommands {
     /// Show the folder/page tree for a bank
     Tree {
         /// Bank ID
@@ -1383,7 +1707,7 @@ enum KnowledgeBaseCommands {
         yes: bool,
     },
 
-    /// Export the knowledge base as a markdown bundle
+    /// Export all pages as a markdown bundle
     Export {
         /// Bank ID
         bank_id: String,
@@ -1665,6 +1989,7 @@ fn run() -> Result<()> {
                 disposition_skepticism,
                 disposition_literalism,
                 disposition_empathy,
+                knowledge_banks,
             } => commands::bank::set_config(
                 &client,
                 &bank_id,
@@ -1681,6 +2006,7 @@ fn run() -> Result<()> {
                 disposition_skepticism,
                 disposition_literalism,
                 disposition_empathy,
+                knowledge_banks,
                 verbose,
                 output_format,
             ),
@@ -1740,6 +2066,19 @@ fn run() -> Result<()> {
                 limit,
                 offset,
                 verbose,
+                output_format,
+            ),
+            MemoryCommands::ObservationTree {
+                bank_id,
+                tags,
+                tags_match,
+                out,
+            } => commands::memory::observation_tree(
+                &client,
+                &bank_id,
+                tags,
+                tags_match,
+                out,
                 output_format,
             ),
             MemoryCommands::Get { bank_id, memory_id } => {
@@ -1917,16 +2256,24 @@ fn run() -> Result<()> {
                 bank_id,
                 document_id,
                 tags,
+                add_tags,
+                remove_tags,
                 observation_scopes,
             } => {
                 // `--tags ""` parses as one empty tag; drop blanks so it clears the set
                 // instead of storing "".
-                let tags = tags.map(|t| t.into_iter().filter(|tag| !tag.is_empty()).collect());
+                let non_blank = |t: Option<Vec<String>>| {
+                    t.map(|t| t.into_iter().filter(|tag| !tag.is_empty()).collect())
+                };
                 commands::document::update(
                     &client,
                     &bank_id,
                     &document_id,
-                    tags,
+                    api::TagChange {
+                        tags: non_blank(tags),
+                        add_tags: non_blank(add_tags),
+                        remove_tags: non_blank(remove_tags),
+                    },
                     observation_scopes,
                     verbose,
                     output_format,
@@ -1973,43 +2320,13 @@ fn run() -> Result<()> {
         },
 
         // Operation commands
-        Commands::Operation(op_cmd) => match op_cmd {
-            OperationCommands::List { bank_id } => {
-                commands::operation::list(&client, &bank_id, verbose, output_format)
-            }
-            OperationCommands::Get {
-                bank_id,
-                operation_id,
-            } => commands::operation::get(&client, &bank_id, &operation_id, verbose, output_format),
-            OperationCommands::Cancel {
-                bank_id,
-                operation_id,
-            } => commands::operation::cancel(
-                &client,
-                &bank_id,
-                &operation_id,
-                verbose,
-                output_format,
-            ),
-            OperationCommands::Retry {
-                bank_id,
-                operation_id,
-            } => {
-                commands::operation::retry(&client, &bank_id, &operation_id, verbose, output_format)
-            }
-            OperationCommands::Delete {
-                bank_id,
-                operation_id,
-                yes,
-            } => commands::operation::delete(
-                &client,
-                &bank_id,
-                &operation_id,
-                yes,
-                verbose,
-                output_format,
-            ),
-        },
+        Commands::Operation(op_cmd) => commands::operation::run(
+            &client,
+            op_cmd,
+            api::BankKind::Memory,
+            verbose,
+            output_format,
+        ),
 
         // Mental model commands
         Commands::MentalModel(mm_cmd) => match mm_cmd {
@@ -2132,25 +2449,28 @@ fn run() -> Result<()> {
             ),
         },
 
-        // Knowledge base commands
-        Commands::KnowledgeBase(kb_cmd) => match kb_cmd {
-            KnowledgeBaseCommands::Tree {
+        // Pages commands
+        Commands::KnowledgeBank(cmd) => {
+            commands::knowledge_bank::run(&client, cmd, verbose, output_format)
+        }
+        Commands::Pages(kb_cmd) => match kb_cmd {
+            PagesCommands::Tree {
                 bank_id,
                 tags,
                 tags_match,
                 tag_groups,
-            } => commands::knowledge_base::tree(
+            } => commands::pages::tree(
                 &client,
                 &bank_id,
-                &commands::knowledge_base::tag_filter(tags, tags_match, tag_groups)?,
+                &commands::pages::tag_filter(tags, tags_match, tag_groups)?,
                 verbose,
                 output_format,
             ),
-            KnowledgeBaseCommands::CreateFolder {
+            PagesCommands::CreateFolder {
                 bank_id,
                 name,
                 parent_id,
-            } => commands::knowledge_base::create_folder(
+            } => commands::pages::create_folder(
                 &client,
                 &bank_id,
                 &name,
@@ -2158,7 +2478,7 @@ fn run() -> Result<()> {
                 verbose,
                 output_format,
             ),
-            KnowledgeBaseCommands::CreatePage {
+            PagesCommands::CreatePage {
                 bank_id,
                 name,
                 source_query,
@@ -2167,7 +2487,7 @@ fn run() -> Result<()> {
                 max_tokens,
                 mode,
                 fact_types,
-            } => commands::knowledge_base::create_page(
+            } => commands::pages::create_page(
                 &client,
                 &bank_id,
                 &name,
@@ -2180,32 +2500,26 @@ fn run() -> Result<()> {
                 verbose,
                 output_format,
             ),
-            KnowledgeBaseCommands::GetPage { bank_id, page_id } => {
-                commands::knowledge_base::get_page(
-                    &client,
-                    &bank_id,
-                    &page_id,
-                    verbose,
-                    output_format,
-                )
+            PagesCommands::GetPage { bank_id, page_id } => {
+                commands::pages::get_page(&client, &bank_id, &page_id, verbose, output_format)
             }
-            KnowledgeBaseCommands::Search {
+            PagesCommands::Search {
                 bank_id,
                 query,
                 limit,
                 tags,
                 tags_match,
                 tag_groups,
-            } => commands::knowledge_base::search(
+            } => commands::pages::search(
                 &client,
                 &bank_id,
                 &query,
                 limit,
-                &commands::knowledge_base::tag_filter(tags, tags_match, tag_groups)?,
+                &commands::pages::tag_filter(tags, tags_match, tag_groups)?,
                 verbose,
                 output_format,
             ),
-            KnowledgeBaseCommands::Update {
+            PagesCommands::Update {
                 bank_id,
                 node_id,
                 name,
@@ -2213,7 +2527,7 @@ fn run() -> Result<()> {
                 source_query,
                 tags,
                 max_tokens,
-            } => commands::knowledge_base::update(
+            } => commands::pages::update(
                 &client,
                 &bank_id,
                 &node_id,
@@ -2225,20 +2539,13 @@ fn run() -> Result<()> {
                 verbose,
                 output_format,
             ),
-            KnowledgeBaseCommands::Delete {
+            PagesCommands::Delete {
                 bank_id,
                 node_id,
                 yes,
-            } => commands::knowledge_base::delete(
-                &client,
-                &bank_id,
-                &node_id,
-                yes,
-                verbose,
-                output_format,
-            ),
-            KnowledgeBaseCommands::Export { bank_id } => {
-                commands::knowledge_base::export(&client, &bank_id, verbose, output_format)
+            } => commands::pages::delete(&client, &bank_id, &node_id, yes, verbose, output_format),
+            PagesCommands::Export { bank_id } => {
+                commands::pages::export(&client, &bank_id, verbose, output_format)
             }
         },
 
@@ -2653,7 +2960,14 @@ fn handle_profile(cmd: ProfileCommands, output_format: OutputFormat) -> Result<(
 #[cfg(test)]
 mod tests {
     use super::{Cli, Commands, OperationCommands};
-    use clap::Parser;
+    use clap::{CommandFactory, Parser};
+
+    /// Clap checks flag clashes (two `-o`s) only when a command is built, so a clash panics at
+    /// runtime; this builds every subcommand at once.
+    #[test]
+    fn every_command_definition_is_valid() {
+        Cli::command().debug_assert();
+    }
 
     #[test]
     fn parses_operation_delete_with_confirmation_bypass() {
