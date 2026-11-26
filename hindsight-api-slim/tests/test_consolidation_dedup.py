@@ -342,6 +342,7 @@ async def test_process_batch_unchanged_currency_merge_has_one_request(shape: str
         embeddings=object(),
         _consolidation_llm_config=types.SimpleNamespace(with_config=lambda *a, **k: llm),
         _validator_with_hook=lambda name: None,
+        decision_engine_for=lambda operation: None,
     )
     # Drive the real prepare/adjudicate/apply batch path from one parsed CREATE.
     # Only the unrelated initial consolidation response is supplied, not dedup.
