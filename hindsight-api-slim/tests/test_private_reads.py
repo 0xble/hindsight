@@ -27,7 +27,7 @@ def http_reads(monkeypatch):
     """Real HTTP handlers with only the engine's expensive retrieval seam stubbed."""
     engine = MemoryEngine.__new__(MemoryEngine)
     engine._tenant_extension = ApiKeyTenantExtension({"api_key": "fixture-key"})
-    engine._reflect_decision_model_client = None
+    engine._decision_engine_for = lambda _operation: None
     engine._reflect_decision_model_unsupported_logged = False
     engine._operation_validator = None
     engine._config_resolver = ConfigResolver(None, engine._tenant_extension)

@@ -360,14 +360,14 @@ async def test_dry_run_gate_intersects_caller_and_page_scopes(memory, request_co
         )
     scope = [TagGroupLeaf(tags=["caller"], match="all_strict")]
     monkeypatch.setattr(memory, "_operation_validator", _ScopeByApiKey({"scoped": scope}))
-    memory._reflect_decision_model_client.could_change_page.side_effect = None
-    memory._reflect_decision_model_client.could_change_page.return_value = True
+    gated.model.could_change_page.side_effect = None
+    gated.model.could_change_page.return_value = True
 
     preview = await memory.dry_run_refresh_mental_model(
         page.bank_id, page.mm_id, request_context=RequestContext(api_key="scoped")
     )
 
-    decision_inputs = [call.args[2] for call in memory._reflect_decision_model_client.could_change_page.await_args_list]
+    decision_inputs = [call.args[2] for call in gated.model.could_change_page.await_args_list]
     assert decision_inputs == [RELEVANT]
     assert RELEVANT in str(preview.based_on)
     assert UNRELATED not in str(preview.based_on)
